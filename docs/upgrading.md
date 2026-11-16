@@ -38,6 +38,25 @@ never published), with each section below.
 
 ## 2.4 to 2.5
 
+2.5 answers a third report from the project that runs an identity
+service on domainkit. The sections below say what a project that relied
+on 2.4's behaviour changes.
+
+### Decorate the service of a route that asks for an act's authorization
+
+A `ResourceRouter` route that asks `StepUp(for_=...)` and runs a
+service not decorated with `requires_authorization` of that act warns
+when it is declared (`DomainkitDeprecationWarning`), and 3.0 refuses it
+([A use case as the act](auth/actions.md#a-use-case-as-the-act)).
+Decorate the route's own service, not one it calls, so the route is
+known to spend what it asks for. A route that runs a `@use_case` takes
+the copy `requires_authorization(ACTION)(use_case)` makes: one that runs
+the use case itself is refused in 2.5 already, as it never spent the
+authorization.
+
+2.5 breaks nothing. Each item of this list says what a project may see
+change, and what it does then.
+
 2.5 changes no API a project calls. A project's CI can still fail after
 upgrading: `makemessages --check` finds texts it did not find before.
 Each item of this list says what a project may see change, and what it

@@ -20,6 +20,7 @@ and a status.
   `ARCHITECTURE["DOMAIN_ALLOWED"]` may drop it
   ([i18n.md](docs/i18n.md#messages-of-the-domain-layer), ADR 0166, user
   report I2).
+
 - `makemessages` also reads the project's own modules: the package that
   holds the settings module, and the one that holds `ROOT_ROUTER`'s
   module, without the installed domains. What they mark is added to the
@@ -30,16 +31,62 @@ and a status.
   translates already, and `--check` fails on them
   ([i18n.md](docs/i18n.md#the-projects-own-messages), ADR 0166, user
   report I6).
+
 - Devices' mails, `devices/enrollment_code` and `devices/device_bound`,
   ship in Arabic. A test holds every mail template domainkit ships to
   have its files in each language its catalogs translate (user report
   I7).
+
 - A `MAIL.TEMPLATE_DIRS` directory may hold a template's files in one
   language alone: readers of that language get them, and every other
   reader the template's own. A directory with the template's own text
   body still wins over a later directory's translation
   ([mail.md](docs/mail.md#templates-in-other-languages), ADR 0166, user
   report I8).
+
+- `requires_authorization(ACTION)` takes a `@use_case`: it returns a
+  copy whose `run`, and so its call, spends the act's authorization,
+  and leaves the use case as it was, so a route that runs it without an
+  act (the phone's) asks nothing. Give the copy to the route that asks
+  (`ResourceRouter.use_case(..., rule=StepUp(for_=...))`), which gets
+  its twin as a command route does. `Action(command=...)` takes the use
+  case, for its command. A use case of another command than the
+  action's is refused when guarded. A `ResourceRouter` route that asks
+  `StepUp(for_=...)` and runs the use case itself, or another act's
+  service, is refused when declared: it would run the act with
+  arguments nobody confirmed, and `check` could not see it. It returned
+  a plain function, which
+  no route of a use case could take
+  ([A use case as the act](docs/auth/actions.md#a-use-case-as-the-act),
+  ADR 0161) (user report A13).
+
+- An action's `show` may take the unit of work the act runs in,
+  `show(command, uow)`, and read through its port: it is given it open,
+  and left without a commit. A `ResourceRouter`'s twin lends its
+  route's, and `request_action_authorization(..., unit_of_work=<its
+  class>)` makes one. A `show` that commits is refused.
+  So an action can live beside its use case in `controllers.py`, which
+  may not import the unit of work on the database. A rule whose
+  `ask_authorization` also takes `uow` is given the route's unit of
+  work; a rule written for 2.4 is called as before (ADR 0161) (user
+  report A13).
+
+- The twin's `201` (`ActionAuthorizationOut`) carries `methods`, what
+  confirming the authorization must prove, as `GET
+  /auth/authorizations/{id}` answers it, so a page knows at once which
+  ways to offer. Approvals' approve twin and the act the phone lists
+  carry it too (user report A17).
+
+- `domainkit.testing.authorize_act(client, url, app=None, *, json=None,
+  password=None, prefix="/auth")` asks an act's twin for an
+  authorization and confirms it; `confirm_authorization(client,
+  authorization_id, app=None, ...)` confirms one asked elsewhere. Each
+  returns `<id>.<code>`. With an `Authenticator`, a code confirms it
+  through the routes, as `confirm_sca` does; without, auth confirms it
+  in the test as proving what the act asks, the phone included, refused
+  unless `ENVIRONMENT = "test"`. Asking still needs the user to have a
+  way to confirm the act: an authenticator app, or a bound device
+  ([Testing](docs/auth/actions.md#testing)) (user report A17).
 
 ### Changed
 
@@ -49,15 +96,27 @@ and a status.
   lists them all. A domain layer that imports `domainkit.i18n.lazy` so
   loads no settings (ADR 0166, user report I2).
 
+### Deprecated
+
+- A `ResourceRouter` route that asks `StepUp(for_=...)` and runs a
+  service not decorated with `requires_authorization` warns when it is
+  declared (`DomainkitDeprecationWarning`); 3.0 refuses it. Such a
+  service may call a decorated one, as in 2.4, but nothing checked that
+  it spends the act's authorization, so a route could run the act with
+  arguments nobody confirmed. Decorate the route's service itself
+  ([upgrading.md](docs/upgrading.md#24-to-25)) (user report A13).
+
 ### Fixed
 
 - A lazy string (`gettext_lazy`) given as a `DomainError`'s message, an
   `InvalidField`'s, or `error_response`'s detail is answered as its text
   in the caller's language. It made a `500`: the body refused anything
   but text (user report I2).
+
 - `LocaleMiddleware` reads `LANGUAGE_CODE` and `LANGUAGES` per request,
   not when the application is built: a test that overrides them is
   served in the new ones (user report I5).
+
 - `makemessages` extracts the texts marked with `gettext_noop`, as the
   docs said it did (user report I2).
 

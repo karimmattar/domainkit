@@ -182,6 +182,7 @@ def test_the_phone_confirms_one_act_in_the_servers_words_and_it_is_spent_once(
             "details": [{"label": "New first name", "value": "Al"}],
         },
         "expires_at": asked["expires_at"],
+        "methods": ["otp"],
         "digest": row["digest"],
     }
     assert approved.status_code == 204, approved.json()
