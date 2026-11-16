@@ -39,7 +39,10 @@ never published), with each section below.
 ## 2.3 to 2.4
 
 2.4 answers a report from a project that runs an identity service on
-domainkit.
+domainkit. Tables of auth, ciba, and object permissions change: make and
+apply the migrations the sections below name before the new code serves
+requests. Each item of this list says what a project that relied on
+2.3's behaviour changes.
 
 - **Signups refuse a `username` where usernames identify no one.** With
   `AUTH.IDENTIFIERS` set to the email address or the mobile number, `POST

@@ -9,6 +9,28 @@ and a status.
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-11-16
+
+2.4 answers a report from a project that runs an identity service on
+domainkit, and the gaps an audit of it found. Codes that open an account
+go only where it was proved, and a user's new address or number waits
+for its code (ADRs 0141 and 0153). A step-up authorizes one act, which
+the phone signs, not a window of time (ADR 0144). Gates see how a login
+was made and may keep it shorter, events name who caused them, new
+passwords can be checked against breaches, and codes and pushes are
+written in their reader's language (ADRs 0146 to 0149). A route can take
+its tenant from its path, where members hold permissions; object grants
+expire and come in roles; admin changes can wait for approval (ADRs
+0150, 0151 and 0154). While the broker is away, relaying workers run the
+outbox; live events reach every process; replicas are read only within
+their lag; a refusal that will come again is not retried (ADRs 0142,
+0143, 0159 and 0156). Outgoing calls, statements, and requests are
+counted and traced (ADR 0158), and `manage.py serve` runs the production
+server from the settings (ADR 0160). Several apps gain tables or columns:
+make and apply the migrations, and read
+[upgrading.md](docs/upgrading.md#23-to-24) for what else a project
+changes.
+
 ### Added
 
 - `DEVICES["PUSH_TOKEN_CHECK"] = {"ENABLED": True}` asks a push token's
@@ -7439,7 +7461,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.3.0...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.4.0...HEAD
+[2.4.0]: https://github.com/karimmattar/domainkit/compare/v2.3.0...v2.4.0
 [2.3.0]: https://github.com/karimmattar/domainkit/compare/v2.2.1...v2.3.0
 [2.2.1]: https://github.com/karimmattar/domainkit/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/karimmattar/domainkit/compare/v2.1.2...v2.2.0
