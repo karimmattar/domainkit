@@ -216,6 +216,7 @@ OPERATED: Final = {
         "messages cancel",
         "messages release",
     ],
+    "domainkit.contrib.objectpermissions": ["cleargrants"],
     "domainkit.contrib.privacy": ["privacy"],
     "domainkit.contrib.webhooks": ["webhooks replay"],
     "domainkit": ["flush", "loaddata", "partitions"],

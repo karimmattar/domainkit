@@ -356,10 +356,59 @@ ways with `owned_router`:
 from domainkit.contrib.webhooks.owned import owned_router
 
 router.include_router(
-    owned_router(owner=lambda user: str(user.tenant_id)), prefix="/webhooks"
+    owned_router(owner=lambda user: f"tenant:{user.tenant_id}"), prefix="/webhooks"
 )
-expose(InvoicePaid, "invoice.paid", owner=lambda event: event.tenant_id)
+expose(InvoicePaid, "invoice.paid", owner=lambda event: f"tenant:{event.tenant_id}")
 ```
+
+Give owners that are not users a prefix, such as `tenant:`. A user's
+subscriptions are owned by the user's bare id, and with integer ids user
+42 and tenant 42 would otherwise be one owner, each seeing the other's
+subscriptions and events.
+
+### Owners the caller administers
+
+A user may manage the webhooks of something else, such as a company they
+administer, with the company named in the path (since 2.4,
+[ADR 0151](../adr/0151-object-grants-that-expire-roles-and-owners-a-caller-administers.md)).
+Give `owned_router` a `resolver`: a FastAPI dependency that returns the
+owner, or `None` when the caller may not manage it:
+
+```python
+from uuid import UUID
+
+from domainkit.contrib.auth import AuthenticatedUser
+from domainkit.contrib.webhooks.owned import owned_router
+
+
+async def company_owner(company_id: UUID, user: AuthenticatedUser) -> str | None:
+    """A company's webhooks, for its administrators only."""
+    if await administers(user, company_id):  # The project's own rule.
+        return f"company:{company_id}"
+    return None
+
+
+router.include_router(
+    owned_router(resolver=company_owner), prefix="/companies/{company_id}/webhooks"
+)
+expose(InvoicePaid, "invoice.paid", owner=lambda event: f"company:{event.company_id}")
+```
+
+Every route asks the resolver, after it authenticates the user: list,
+create, read, change, rotate, deliveries, and delete. `None` answers
+`403 permission_denied`, on each of them; the resolver may raise an error
+of its own instead, such as a 404 for a company that does not exist.
+FastAPI fills the resolver's parameters (the path's `company_id`, the
+user, a header), and the API schema shows them. Within a company's
+routes, another owner's subscription is 404, as for a user's. The user's
+own routes (`router`, or `owned_router()`) are unchanged, and the user
+stays their default owner: mount both to offer both. `administers` can be
+an [object permission](../auth/users.md#permissions-of-another-model) on
+the company, such as `has_perm(user, "webhooks.add_subscription",
+company)` with `grantable_on(Company, "webhooks.add_subscription")`.
+
+Erasing a person (`privacy erase`) deletes the subscriptions they own,
+never a company's.
 
 An owner may have `MAX_SUBSCRIPTIONS_PER_OWNER` subscriptions. Past that,
 a create gets 422 `webhook_subscription_limit`. The count is taken after
@@ -483,6 +532,9 @@ NOTHING`).
   had a delivery.
 - **Expecting owned subscriptions to get an event without `owner`.** Pass
   `owner=` to `expose`, and name owners the same way in `owned_router`.
+- **Owners of two kinds with the same names.** A tenant or a company
+  named by its bare id can be the same owner as a user with that id.
+  Prefix them: `tenant:42`, `company:42`.
 - **Pointing a test receiver at `localhost`.** It is refused. In
   development, turn on `DEBUG` and use a public tunnel, or allow a private
   network.

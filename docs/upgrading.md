@@ -93,6 +93,17 @@ domainkit.
   rule configured gets `ImproperlyConfigured`; call
   `await avalidate_password(...)` there instead.
 
+### Make and apply the object permissions' migration
+
+With `domainkit.contrib.objectpermissions` installed, the grants table
+gains two nullable columns, `expires_at` and `role`, and an index on
+`expires_at`, for grants that expire and roles
+([ADR 0151](adr/0151-object-grants-that-expire-roles-and-owners-a-caller-administers.md)).
+Run `python manage.py makemigrations`, review the revision, then
+`migrate`, before the new code serves requests: reading grants fails
+until the columns exist. Grants made before never expire and name no
+role. `grants_on` now lists the grants in force only.
+
 ### uvicorn becomes an extra in 3.0
 
 Every install of 2.x brings uvicorn (`uvicorn[standard]`), even where

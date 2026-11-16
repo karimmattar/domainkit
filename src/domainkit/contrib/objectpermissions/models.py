@@ -4,9 +4,16 @@ A grant names its object by content type (``catalog.product``) and id, and
 whom it is for: a user or a group, never both. The id is kept in the
 column of its type (``object_uuid``, ``object_int``, or ``object_text``),
 so the database compares it with the object's own id column as it is.
+
+A grant may expire (``expires_at``): from that moment it no longer counts,
+wherever grants are read. It may also name the role it came with
+(``role``): an ``ObjectRole`` is a named set of permissions granted and
+revoked together, one grant per permission.
 """
 
-from dataclasses import field
+import re
+from collections.abc import Iterable
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Annotated, Final, NewType, Self
 from uuid import UUID, uuid4
@@ -21,6 +28,9 @@ KEY_LENGTH: Final = 255
 type ObjectId = UUID | int | str
 """What objects' ids may be."""
 
+PERMISSION_KEY: Final = re.compile(r"\w+\.\w+")
+"""A permission's key: a domain's label and a codename (``catalog.view_product``)."""
+
 
 class ObjectPermissionGranted(DomainEvent):
     """A user or a group may now do something to one object."""
@@ -32,6 +42,11 @@ class ObjectPermissionGranted(DomainEvent):
     user_id: UUID | None
     group_id: UUID | None
     by: UUID | None
+    expires_at: datetime | None = None
+    """When the grant stops counting; None: never. Granting again with
+    another expiry records the same grant (``grant_id``) granted again."""
+    role: str | None = None
+    """The ``ObjectRole`` it was granted with; None for a permission alone."""
 
 
 class ObjectPermissionRevoked(DomainEvent):
@@ -44,6 +59,8 @@ class ObjectPermissionRevoked(DomainEvent):
     user_id: UUID | None
     group_id: UUID | None
     by: UUID | None
+    role: str | None = None
+    """The ``ObjectRole`` it was granted with; None for a permission alone."""
 
 
 class ObjectPermission(AggregateRoot[ObjectPermissionId]):
@@ -58,6 +75,10 @@ class ObjectPermission(AggregateRoot[ObjectPermissionId]):
     group_id: UUID | None = None
     granted_by: UUID | None = None
     granted_at: datetime = field(default_factory=now)
+    expires_at: datetime | None = None
+    """When it stops counting (from that moment on); None: never."""
+    role: Annotated[str, MaxLength(KEY_LENGTH)] | None = None
+    """The ``ObjectRole`` it was granted with; None for a permission alone."""
 
     class Meta:
         """Django's four permissions; ``add`` and ``delete`` grant and revoke."""
@@ -74,6 +95,8 @@ class ObjectPermission(AggregateRoot[ObjectPermissionId]):
         user_id: UUID | None,
         group_id: UUID | None,
         by: UUID | None,
+        expires_at: datetime | None = None,
+        role: str | None = None,
     ) -> Self:
         """A new grant, recorded as granted.
 
@@ -90,20 +113,35 @@ class ObjectPermission(AggregateRoot[ObjectPermissionId]):
             user_id=user_id,
             group_id=group_id,
             granted_by=by,
+            expires_at=expires_at,
+            role=role,
         )
         setattr(grant, object_column(type(object_id)), object_id)
-        grant.record(
-            ObjectPermissionGranted(
-                grant_id=grant.id,
-                content_type=content_type,
-                object_id=str(object_id),
-                permission=permission,
-                user_id=user_id,
-                group_id=group_id,
-                by=by,
-            )
-        )
+        grant.record(grant._granted(by))
         return grant
+
+    def renew(self, expires_at: datetime | None, by: UUID | None) -> None:
+        """Make the grant last until ``expires_at`` (None: no end), granted again."""
+        self.expires_at = expires_at
+        self.record(self._granted(by))
+
+    def expired(self, at: datetime | None = None) -> bool:
+        """Whether it no longer counts at ``at`` (default: now)."""
+        return self.expires_at is not None and (at or now()) >= self.expires_at
+
+    def _granted(self, by: UUID | None) -> ObjectPermissionGranted:
+        """The event of this grant as it stands, granted by ``by``."""
+        return ObjectPermissionGranted(
+            grant_id=self.id,
+            content_type=self.content_type,
+            object_id=str(self.object_id),
+            permission=self.permission,
+            user_id=self.user_id,
+            group_id=self.group_id,
+            by=by,
+            expires_at=self.expires_at,
+            role=self.role,
+        )
 
     @property
     def object_id(self) -> ObjectId:
@@ -125,8 +163,44 @@ class ObjectPermission(AggregateRoot[ObjectPermissionId]):
                 user_id=self.user_id,
                 group_id=self.group_id,
                 by=by,
+                role=self.role,
             )
         )
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class ObjectRole:
+    """A named set of permissions on objects, granted and revoked together.
+
+    ``ObjectRole("editor", ["catalog.view_product", "catalog.change_product"])``:
+    ``grant_role`` grants each permission on one object, as one grant each
+    named after the role, and ``revoke_role`` takes back those grants.
+    """
+
+    name: str
+    permissions: tuple[str, ...]
+    """The permission keys, sorted, each once."""
+
+    def __init__(self, name: str, permissions: Iterable[str]) -> None:
+        """Name the role and its permissions.
+
+        Raises:
+            ValueError: The name is empty or longer than 255 characters, a
+                key is not ``domain.codename``, or there is no permission.
+        """
+        keys = tuple(sorted(set(permissions)))
+        if not 1 <= len(name) <= KEY_LENGTH:
+            raise ValueError(f"A role's name has 1 to {KEY_LENGTH} characters.")
+        if not keys:
+            raise ValueError(f"Role {name!r} has no permission.")
+        for key in keys:
+            if not PERMISSION_KEY.fullmatch(key):
+                raise ValueError(
+                    f"Role {name!r} names {key!r}, not a permission key "
+                    "(domain.codename)."
+                )
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "permissions", keys)
 
 
 def object_column(kind: type) -> str:

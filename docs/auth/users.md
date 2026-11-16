@@ -543,12 +543,15 @@ products = ResourceRouter(
   object, and `objectpermissions.add_objectpermission` to grant
   (`delete_objectpermission` to revoke). Superusers have both. No one
   grants to themselves, and a permission of another model is refused
-  with `InvalidGrant`. Granting twice changes nothing. Each takes an
-  optional `uow`, an `ObjectPermissionsUnitOfWork`, to join your
+  with `InvalidGrant`, unless a domain made it
+  [grantable on the model](#permissions-of-another-model). Granting twice
+  changes nothing. `revoke_permission` takes the permission back however
+  it was granted to that user or group, alone or with a role. Each takes
+  an optional `uow`, an `ObjectPermissionsUnitOfWork`, to join your
   transaction.
 - **Each grant and revocation is an event** (`ObjectPermissionGranted`,
-  `ObjectPermissionRevoked`) that names who gave what to whom, so the
-  audit trail records it.
+  `ObjectPermissionRevoked`) that names who gave what to whom, with the
+  grant's expiry and role, so the audit trail records it.
 - **`visible_scope("view", Product)`** is a resource's `scope`. Callers
   who hold `catalog.view_product` see every product. Others see those
   granted to them or to one of their groups, filtered in SQL with an
@@ -580,6 +583,88 @@ products = ResourceRouter(
 The other names of the domain: `ObjectPermission` (one grant, with its
 `ObjectPermissionId`), `ObjectPermissionRepository` (find grants with
 `about(...)`), and `ObjectPermissionsUnitOfWork`.
+
+#### Grants that expire
+
+A grant may end at a moment you give (since 2.4,
+[ADR 0151](../adr/0151-object-grants-that-expire-roles-and-owners-a-caller-administers.md)):
+
+```python
+from datetime import timedelta
+
+from domainkit.clock import now
+
+await grant_permission(
+    actor,
+    "catalog.change_product",
+    product,
+    user=ada.id,
+    expires_at=now() + timedelta(days=7),
+)
+```
+
+From `expires_at` on, the grant counts nowhere: not in `has_perm`, not in
+`visible_scope` and `visible_to` (pages and counts alike), not in the
+admin API's bounds on staff, and not in `grants_on`. Each reads the
+clock, so no job has to run first. The expiry must be in the future, with
+its time zone; otherwise `InvalidGrant`. Granting again sets the expiry
+you give: the same one changes nothing, another one (or `None`, for no
+end) renews the grant under its id and records `ObjectPermissionGranted`
+again. That also brings back a grant past its expiry.
+
+Expired grants stay in the table until deleted. `python manage.py
+cleargrants`, or `clear_expired_grants()`, deletes them in every database
+that holds grants; run it from a scheduled job, as `cleartokens`.
+
+#### Roles
+
+A role is a named set of permissions, granted and taken back together:
+
+```python
+from domainkit.contrib.objectpermissions import ObjectRole, grant_role, revoke_role
+
+EDITOR = ObjectRole("editor", ["catalog.view_product", "catalog.change_product"])
+
+await grant_role(actor, EDITOR, product, user=ada.id, expires_at=friday)
+await revoke_role(actor, EDITOR, product, user=ada.id)
+```
+
+`grant_role` makes one grant per permission, named after the role
+(`ObjectPermission.role`), in one transaction: all of them, or none. The
+actor must hold each permission, as for `grant_permission`. Checks read
+the grants, so a role costs nothing more when a request is checked.
+`revoke_role` takes back the grants named after the role; the same
+permission granted alone, or with another role, stays. Roles live in your
+code, not in the database. Change a role's permissions, and grants made
+before keep what they had: `grant_role` adds what is new, and
+`revoke_role` takes back all the role's grants, those the role no longer
+names included.
+
+#### Permissions of another model
+
+A permission belongs to one model, and is granted on that model's
+objects: `catalog.change_product` on a product. Some permissions are
+about another object: "Ada may add members to this company" is
+`memberships.add_membership`, on one `Company`. A domain says where such
+a permission applies, in its `ready()` (since 2.4):
+
+```python
+from domainkit.apps import DomainConfig
+from domainkit.contrib.objectpermissions import grantable_on
+
+
+class CompaniesConfig(DomainConfig):
+    def ready(self) -> None:
+        grantable_on(Company, "memberships.add_membership")
+```
+
+Then `grant_permission(actor, "memberships.add_membership", company,
+user=ada.id)` is a grant, `has_perm(ada, "memberships.add_membership",
+company)` answers yes, and `visible_to(ada, "memberships.add_membership",
+Company)` lists the companies she may add members to. Holders of the
+permission on the model may do it everywhere, as with any permission.
+Without `grantable_on`, such a grant is refused with `InvalidGrant`, as
+before, and on every other model it stays refused.
 
 ## Passwords
 

@@ -11,6 +11,7 @@ In SQL, ``VisibleTo`` is an ``EXISTS`` on the grants table, so pages,
 counts, and cursors never see the rest. Credentials limited to scopes see
 nothing unless their scopes hold the permission. In memory (``InMemoryRepository``),
 it reads the grants it is given: ``visible_scope(..., grants=fake_grants)``.
+Expired grants show nothing, in SQL and in memory.
 """
 
 from collections.abc import Awaitable, Callable, Iterator
@@ -21,6 +22,7 @@ from uuid import UUID
 from sqlalchemy import ColumnElement, and_, exists, false, or_
 from starlette.requests import HTTPConnection
 
+from domainkit.clock import now
 from domainkit.contrib.auth import current_user
 from domainkit.contrib.auth.backends import has_perm
 from domainkit.contrib.auth.models import AnyUser
@@ -30,6 +32,7 @@ from domainkit.ddd.query import Condition, Criteria
 from domainkit.http.access import scopes_of
 
 from .models import ObjectId, object_column
+from .services import grantable_permissions
 from .tables import object_permissions
 
 
@@ -53,7 +56,8 @@ class VisibleTo(Criteria):
     """Objects on which ``permission`` is granted to a user or their groups.
 
     ``permission`` is a key (``catalog.view_product``), or an action
-    (``view``) that ``bind`` completes with the model's content type.
+    (``view``) that ``bind`` completes with the model's content type. A key
+    of another domain must be ``grantable_on`` the model.
     """
 
     permission: str
@@ -64,11 +68,12 @@ class VisibleTo(Criteria):
     """The model's content type, once bound."""
 
     def bind(self, model: type) -> "VisibleTo":
-        """Complete the permission, and check it is the model's.
+        """Complete the permission, and check it may be granted on the model.
 
         Raises:
             InvalidQuery: The model is not mapped in an installed domain,
-                or the permission is another model's.
+                or the permission is of another domain and not
+                ``grantable_on`` the model.
         """
         from domainkit.db.models import model_key as content_type_key
 
@@ -81,9 +86,12 @@ class VisibleTo(Criteria):
             if "." in self.permission
             else f"{domain}.{self.permission}_{name}"
         )
-        if not key.startswith(f"{domain}."):
-            raise InvalidQuery(f"{key} is not a permission of {domain}.{name}.")
-        return replace(self, permission=key, content_type=f"{domain}.{name}")
+        content_type = f"{domain}.{name}"
+        if not key.startswith(f"{domain}.") and key not in grantable_permissions(
+            content_type
+        ):
+            raise InvalidQuery(f"{key} is not a permission of {content_type}.")
+        return replace(self, permission=key, content_type=content_type)
 
     def evaluate(self, candidate: object) -> bool:
         """Whether the grants given allow the permission on ``candidate``.
@@ -155,7 +163,7 @@ def visible_scope(
 def compile_visible(
     criteria: VisibleTo, model: type, dialect: str
 ) -> ColumnElement[bool]:
-    """``EXISTS`` a grant on the row's id, to the user or one of their groups."""
+    """``EXISTS`` a grant in force on the row's id, to the user or their groups."""
     whom: list[ColumnElement[bool]] = []
     grants = object_permissions.c
     if criteria.user_id is not None:
@@ -172,6 +180,7 @@ def compile_visible(
             grants.permission == criteria.permission,
             column == identifier,
             or_(*whom),
+            or_(grants.expires_at.is_(None), grants.expires_at > now()),
         )
     )
 

@@ -69,6 +69,7 @@ CONTRIB_COMMANDS = (
     "domainkit.contrib.evidence.management.commands",
     "domainkit.contrib.auth.management.commands",
     "domainkit.contrib.flags.management.commands",
+    "domainkit.contrib.objectpermissions.management.commands",
     "domainkit.contrib.webhooks.management.commands",
     "domainkit.contrib.privacy.management.commands",
 )

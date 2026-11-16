@@ -6,6 +6,9 @@ fixtures: they hold no secrets. They are guarded, though: ``loaddata``
 writes them only with ``--include-guarded``, and ``flush`` keeps them
 unless it is given, but for the grants on the objects it deletes, which go
 with them (``about_model``), as with a repository's ``remove``.
+
+``expires_at`` is indexed for ``clear_expired_grants``, which deletes the
+grants past it.
 """
 
 from sqlalchemy import CheckConstraint, Index, Table
@@ -44,6 +47,7 @@ object_permissions: Table = table_for(
     ),
     Index("ix_domainkit_object_permissions_user", "user_id"),
     Index("ix_domainkit_object_permissions_group", "group_id"),
+    Index("ix_domainkit_object_permissions_expires_at", "expires_at"),
     domain="objectpermissions",
 )
 object_permissions.info["guarded"] = True
