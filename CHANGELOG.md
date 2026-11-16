@@ -11,6 +11,37 @@ and a status.
 
 ### Added
 
+- A domain layer may import `domainkit.i18n.lazy`, and no other module of
+  `domainkit.i18n`: `gettext_noop` marks a refusal the boundary
+  translates, and `gettext_lazy`, `ngettext_lazy` and `pgettext_lazy`
+  make labels translated when they are shown. Importing it loads no
+  settings and no catalog: `domainkit.i18n` now imports its names on
+  first use. A project that allowed all of `domainkit.i18n` in
+  `ARCHITECTURE["DOMAIN_ALLOWED"]` may drop it
+  ([i18n.md](docs/i18n.md#messages-of-the-domain-layer), ADR 0166, user
+  report I2).
+
+- `makemessages` also reads the project's own modules: the package that
+  holds the settings module, and the one that holds `ROOT_ROUTER`'s
+  module, without the installed domains. What they mark is added to the
+  catalogs of the first `LOCALE_PATHS` directory, which keep every entry
+  they hold, the project's rewordings of others' messages too. Without
+  `LOCALE_PATHS`, a run names those messages on stderr, and `--check`
+  fails ([i18n.md](docs/i18n.md#the-projects-own-messages), ADR 0166,
+  user report I6).
+
+- Devices' mails, `devices/enrollment_code` and `devices/device_bound`,
+  ship in Arabic. A test holds every mail template domainkit ships to
+  have its files in each language its catalogs translate (user report
+  I7).
+
+- A `MAIL.TEMPLATE_DIRS` directory may hold a template's files in one
+  language alone: readers of that language get them, and every other
+  reader the template's own. A directory with the template's own text
+  body still wins over a later directory's translation
+  ([mail.md](docs/mail.md#templates-in-other-languages), ADR 0166, user
+  report I8).
+
 - `AUTH.ADMIN_ACTION` (off by default): each change of the admin API asks
   for an authorization of its own, the action `auth.admin_change`, in
   place of a step-up window, so the phone confirms making staff, giving
@@ -32,12 +63,14 @@ and a status.
   While the setting is off, the admin API loads nothing of it
   ([Each change, authorized as one act](docs/auth/routes.md#each-change-authorized-as-one-act),
   ADR 0163) (user report A6).
+
 - `on_create_staff` (`auth.gates`) registers a check of creating a user
   who is staff in the admin API, run with the creation's own checks and
   in its twin. Approvals refuses there, while `ADMIN_APPROVALS` holds
   making staff, what it refused in its `on_admin_change` check, so asking
   for an authorization of such a creation is refused too (ADR 0163)
   (user report A6).
+
 - `APPROVALS.SUBMIT_ACTION`, `REJECT_ACTION`, and `CANCEL_ACTION` (each
   off by default), as `APPROVE_ACTION`: submitting at `POST /requests`,
   rejecting, and cancelling each ask for an authorization of their own,
@@ -55,6 +88,13 @@ and a status.
   ADR 0163) (user report A6).
 
 ### Fixed
+
+- `LocaleMiddleware` reads `LANGUAGE_CODE` and `LANGUAGES` per request,
+  not when the application is built: a test that overrides them is
+  served in the new ones (user report I5).
+
+- `makemessages` extracts the texts marked with `gettext_noop`, as the
+  docs said it did (user report I2).
 
 - `check` refused a route that asks `StepUp(for_=...)` for an act that
   code spends with `spend_authorization`, as the docs offer for code that
