@@ -72,7 +72,7 @@ second was left open.
   verification email to a new email address"; "the user's email will be
   updated to the new one after being verified". `updateEmail`, which
   changes it at once, is deprecated, and refused where email enumeration
-  protection is on [8] [9].
+  protection is on [8], [9].
 - **Auth0**: the Management API sets a new address at once; it is
   unverified unless the request says otherwise, and `verify_email` mails
   a verification [10]. It is an administrator's API, as domainkit's admin
