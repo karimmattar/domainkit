@@ -36,6 +36,9 @@ calls. Every call:
   time tries the host again (unless the client has ``breaker=False``);
 - sends the request id (``X-Request-ID``) and the trace context
   (``traceparent``, ``tracestate``) of the work it serves;
+- sends a multipart form with ``files=`` (and ``data=`` for its other
+  fields), as httpx2 does; each file is bytes or a file that can seek,
+  so a retry sends it whole again;
 - reads at most ``MAX_RESPONSE_BYTES`` of the answer, both as it comes
   and decompressed, or raises ``ResponseTooLarge``: httpx2 inflates a
   compressed answer a piece of at most 1 MiB at a time, each counted
@@ -66,11 +69,17 @@ request does not catch it.
 
 In tests, ``stub(handler)`` sends every call to ``handler`` through
 httpx2's ``MockTransport``; the handler takes an ``httpx2.Request`` and
-returns an ``httpx2.Response``, or an awaitable of one. A client made with
-``transport=`` always uses that transport; a guarded client takes none.
+returns an ``httpx2.Response``, or an awaitable of one. It holds for the
+block and the tasks it starts, a context variable's reach: a fixture whose
+context the test does not share (an async fixture of a sync test, a sync
+fixture after an async one) uses ``stub(handler, everywhere=True)``, which
+holds for every call of the process until the block ends. A client made
+with ``transport=`` always uses that transport; a guarded client takes
+none.
 """
 
 import asyncio
+import io
 import logging
 import math
 import random
@@ -94,7 +103,7 @@ from datetime import UTC
 from email.utils import parsedate_to_datetime
 from functools import cache, partial
 from pathlib import Path
-from typing import Any, ClassVar, Final, cast
+from typing import IO, Any, ClassVar, Final, cast
 from urllib.parse import unquote_to_bytes
 from weakref import WeakSet
 
@@ -165,6 +174,17 @@ type Handler = (
     | Callable[[httpx2.Request], Coroutine[None, None, httpx2.Response]]
 )
 """A stub's answer to a request: a response, sync or async."""
+type FileContent = bytes | IO[bytes]
+"""A file a form sends: bytes, or a binary file that can seek."""
+type FormFile = (
+    FileContent
+    | tuple[str | None, FileContent]
+    | tuple[str | None, FileContent, str | None]
+    | tuple[str | None, FileContent, str | None, Mapping[str, str]]
+)
+"""A form's file: its content, or ``(filename, content[, type[, headers]])``."""
+type Files = Mapping[str, FormFile] | Sequence[tuple[str, FormFile]]
+"""A form's files by field, as httpx2 takes them."""
 
 logger = logging.getLogger(__name__)
 
@@ -318,6 +338,11 @@ class CircuitBreaker:
 _stub: ContextVar[httpx2.AsyncBaseTransport | None] = ContextVar(
     "domainkit_http_stub", default=None
 )
+_everywhere: list[httpx2.AsyncBaseTransport] = []
+"""The stubs of ``stub(..., everywhere=True)`` blocks, the last one in use."""
+_everywhere_lock = threading.Lock()
+_shared_stub: httpx2.AsyncBaseTransport | None = None
+"""The stub every context uses where it set none: the last of ``_everywhere``."""
 _clients: WeakSet["HttpClient"] = WeakSet()
 """Every client made, so ``close_all`` finds their pools, and metrics their circuits."""
 _clients_lock = threading.Lock()
@@ -446,6 +471,7 @@ class HttpClient:
         headers: Mapping[str, str] | None = None,
         content: bytes | str | None = None,
         data: Mapping[str, Any] | None = None,
+        files: Files | None = None,
         json: Any = None,  # noqa: ANN401 - any JSON value.
         timeout: float | None = None,  # noqa: ASYNC109 - bounds the call, retries too.
         retry: bool | None = None,
@@ -453,7 +479,10 @@ class HttpClient:
         """Send one call: ``method`` to ``url``, retried as the module says.
 
         ``timeout`` replaces the client's for this call; ``retry`` forces
-        retries (True) or forbids them (False).
+        retries (True) or forbids them (False). ``files`` sends a
+        ``multipart/form-data`` form (New in 2.5), ``data`` its other
+        fields: each file is bytes or a binary file that can seek, read
+        from its start on every attempt.
 
         Raises:
             DeadlineExceeded: The deadline of the work passed.
@@ -462,11 +491,15 @@ class HttpClient:
             ResponseTooLarge: The answer was over ``MAX_RESPONSE_BYTES``.
             UnsafeURL: A guarded client was asked for a URL it may not call.
             httpx2.HTTPError: The call failed on its last try.
+            ValueError: A file cannot be sent again, or ``files`` comes with
+                ``content`` or ``json``.
         """
         if timeout is not None and not (math.isfinite(timeout) and timeout > 0):
             raise ValueError(
                 f"A call's timeout must be a finite number above 0, not {timeout!r}."
             )
+        if files is not None:
+            _check_files(files, content, json)
         method = method.upper()
         started = clock.monotonic()
         try:
@@ -477,6 +510,7 @@ class HttpClient:
                 headers=headers,
                 content=content,
                 data=data,
+                files=files,
                 json=json,
                 timeout=timeout,
                 retry=retry,
@@ -496,6 +530,7 @@ class HttpClient:
         headers: Mapping[str, str] | None,
         content: bytes | str | None,
         data: Mapping[str, Any] | None,
+        files: Files | None,
         json: Any,  # noqa: ANN401 - any JSON value.
         timeout: float | None,  # noqa: ASYNC109 - bounds the call, retries too.
         retry: bool | None,
@@ -524,6 +559,7 @@ class HttpClient:
                     headers=self._headers(config, headers),
                     content=content,
                     data=data,
+                    files=cast("Any", files),
                     json=json,
                 )
                 return await self._send(call, pool, request, config)
@@ -706,7 +742,7 @@ class HttpClient:
         a bundle of CAs takes tens of milliseconds, which would hold the loop
         (CONC-06). It is built once per bundle; later loops find it built.
         """
-        stubbed = _stub.get()
+        stubbed = _stub.get() or _shared_stub
         if stubbed is not None:
             return httpx2.AsyncClient(transport=stubbed, follow_redirects=False)
         pool = self._pools.find()
@@ -1070,7 +1106,9 @@ class GuardedTransport(httpx2.AsyncHTTPTransport):
 
 
 @contextmanager
-def stub(handler: Handler | httpx2.AsyncBaseTransport) -> Iterator[None]:
+def stub(
+    handler: Handler | httpx2.AsyncBaseTransport, *, everywhere: bool = False
+) -> Iterator[None]:
     """Send every call made in the block (and tasks it starts) to ``handler``.
 
     ``handler`` takes an ``httpx2.Request`` and returns an
@@ -1078,17 +1116,63 @@ def stub(handler: Handler | httpx2.AsyncBaseTransport) -> Iterator[None]:
     ``MockTransport``; a transport is used as it is. The URL checks of
     guarded clients still apply; address checks need the network, so a
     stub skips them.
+
+    ``everywhere`` (New in 2.5) sends every call of the process to it
+    until the block ends, from any task, thread, or context, unless a
+    plain ``stub`` holds there: for a pytest fixture, whose context the
+    test may not share. Blocks may end in any order.
     """
     transport = (
         handler
         if isinstance(handler, httpx2.AsyncBaseTransport)
         else httpx2.MockTransport(handler)
     )
+    if everywhere:
+        with _shared(transport):
+            yield
+        return
     token = _stub.set(transport)
     try:
         yield
     finally:
         _stub.reset(token)
+
+
+@contextmanager
+def _shared(transport: httpx2.AsyncBaseTransport) -> Iterator[None]:
+    """Use ``transport`` in every context of the process until the block ends."""
+    global _shared_stub  # The one stub every context reads.
+    with _everywhere_lock:
+        _everywhere.append(transport)
+        _shared_stub = transport
+    try:
+        yield
+    finally:
+        with _everywhere_lock:
+            _everywhere.remove(transport)
+            _shared_stub = _everywhere[-1] if _everywhere else None
+
+
+def _check_files(files: Files, content: bytes | str | None, json: object) -> None:
+    """Refuse a form that a retry could not send again, or that has a body too.
+
+    Raises:
+        ValueError: A file is neither bytes nor a binary file that can
+            seek, or ``content`` or ``json`` is given too.
+    """
+    if content is not None or json is not None:
+        raise ValueError("files= sends a form: it takes no content= or json=.")
+    items = files.values() if isinstance(files, Mapping) else (f for _, f in files)
+    for item in items:
+        given = item[1] if isinstance(item, tuple) else item
+        if isinstance(given, bytes):
+            continue
+        seekable = getattr(given, "seekable", None)
+        if isinstance(given, io.TextIOBase) or not (callable(seekable) and seekable()):
+            raise ValueError(
+                "A form's file is bytes or a binary file that can seek, so that "
+                "a retry sends it whole again."
+            )
 
 
 def every_client() -> list[HttpClient]:
