@@ -13,6 +13,7 @@ import pytest
 from pydantic import BaseModel, TypeAdapter
 from pydantic.fields import FieldInfo
 
+from domainkit.conf import override_settings
 from domainkit.conf.env import project_root
 from domainkit.conf.global_settings import (
     ArchitectureConfig,
@@ -23,6 +24,7 @@ from domainkit.conf.global_settings import (
     HttpClientConfig,
     LedgerConfig,
     LiveFanoutConfig,
+    ServeConfig,
     Settings,
     ShardConfig,
     StorageConfig,
@@ -58,7 +60,8 @@ from domainkit.contrib.mail.settings import MailSettings, SmtpSettings
 from domainkit.contrib.messaging.settings import MessagingSettings
 from domainkit.contrib.notifications.settings import NotificationsSettings
 from domainkit.contrib.webhooks.settings import WebhooksSettings
-from domainkit.management import BUILTIN_COMMANDS, _find_commands
+from domainkit.log import build_logging_config
+from domainkit.management import BUILTIN_COMMANDS, _find_commands, call_command
 from domainkit.management.commands.docs import link
 
 DOCS = Path(__file__).parents[1] / "docs"
@@ -106,6 +109,7 @@ def documented(pages: str) -> set[str]:
         (TenancyConfig, REFERENCE),
         (DebugToolbarConfig, REFERENCE),
         (HttpClientConfig, REFERENCE),
+        (ServeConfig, REFERENCE),
         (LiveFanoutConfig, "live.md"),
         (ArchitectureConfig, REFERENCE),
         (MessagingSettings, "contrib/messaging.md"),
@@ -530,6 +534,7 @@ SETTINGS_TABLES: tuple[tuple[type[BaseModel], str, str], ...] = (
     (BrokerConfig, REFERENCE, "BROKERS"),
     (TenancyConfig, REFERENCE, "TENANCY"),
     (HttpClientConfig, REFERENCE, "HTTP_CLIENT"),
+    (ServeConfig, REFERENCE, "SERVE"),
     (LiveFanoutConfig, "live.md", "LIVE_FANOUT"),
     (DebugToolbarConfig, REFERENCE, "DEBUG_TOOLBAR"),
     (MessagingSettings, "contrib/messaging.md", "MESSAGING"),
@@ -562,7 +567,7 @@ SETTINGS_TABLES: tuple[tuple[type[BaseModel], str, str], ...] = (
 """Each settings model, the page of its table, and how the table is found."""
 PROSE_DEFAULTS = {
     "Settings": {"SETTINGS_MODULE", "BASE_DIR", "MIDDLEWARE", "LOGGING"}
-    | {"HTTP_CLIENT", "DEBUG_TOOLBAR", "ARCHITECTURE", "LIVE_FANOUT"},
+    | {"HTTP_CLIENT", "DEBUG_TOOLBAR", "ARCHITECTURE", "LIVE_FANOUT", "SERVE"},
     "DatabaseConfig": {"URL", "COMMAND_TIMEOUT", "POOL_SIZE", "MAX_OVERFLOW"}
     | {"POOL_TIMEOUT", "POOL_RECYCLE"},
     "LedgerConfig": {"URL"},
@@ -844,64 +849,120 @@ def test_the_upgrade_entries_are_read_from_their_sections() -> None:
     ) == ["**Breaking:** a security fix (S-1).\n", "Old (D-2).\n"]
 
 
-def test_the_projects_image_runs_uvicorn_with_the_limits_the_reference_gives() -> None:
-    """The ``Dockerfile`` ``init`` writes keeps "Server limits" (INFRA-09).
+def test_the_projects_images_run_serve() -> None:
+    """Both ``Dockerfile``s ``init`` writes run ``manage.py serve`` (INFRA-09).
 
-    Its own processes are the image's ``WEB_CONCURRENCY``, not ``--workers``.
+    Its processes are the image's ``WEB_CONCURRENCY``, said up top; its
+    limits are ``SERVE``'s, which the tests below hold to "Server limits".
+    The Granian image's notes link to its section (user report S1).
     """
+    templates = ROOT / "src/domainkit/management/templates"
+    images = {
+        "uvicorn": templates / "project/Dockerfile-tpl",
+        "Granian": templates / "servers/granian/Dockerfile-tpl",
+    }
+    for server, path in images.items():
+        dockerfile = path.read_text(encoding="utf-8")
+        command = json.loads(dockerfile.split("CMD ", 1)[1])
+        header = dockerfile.split("FROM", 1)[0]
+
+        assert command == ["python", "manage.py", "serve"], server
+        assert f"WEB_CONCURRENCY sets {server}'s worker processes" in header
+    granian = images["Granian"].read_text(encoding="utf-8")
+    assert "{{ docs }}/reference/servers.md#granian" in granian
+
+
+APPLICATION = "config.asgi:application"
+
+
+def reference_block(intro: str) -> str:
+    """The ``bash`` block under ``intro`` in "Server limits", its lines joined."""
     reference = (DOCS / "reference/servers.md").read_text(encoding="utf-8")
-    block = reference.split("uvicorn, one process per core:\n\n```bash\n", 1)[1]
-    given = shlex.split(block.split("```", 1)[0].replace("\\\n", " "))
-    workers = given.index("--workers")
-    dockerfile = (
-        ROOT / "src/domainkit/management/templates/project/Dockerfile-tpl"
-    ).read_text(encoding="utf-8")
-    command = json.loads(dockerfile.split("CMD ", 1)[1].replace("\\\n", " "))
-
-    assert given[:2] == command[:2] == ["uvicorn", "config.asgi:application"]
-    assert command[2:8] == [
-        "--app-dir",
-        "src",
-        "--host",
-        "0.0.0.0",  # noqa: S104 - in the container, behind the proxy.
-        "--port",
-        "8000",
-    ]
-    assert command[8:] == given[2:workers] + given[workers + 2 :]
-    assert "WEB_CONCURRENCY" in dockerfile.split("FROM", 1)[0]  # Said up top.
+    block = reference.split(f"{intro}\n\n```bash\n", 1)[1].split("```", 1)[0]
+    return block.replace("\\\n", " ")
 
 
-def test_the_granian_image_runs_the_commands_the_reference_gives() -> None:
-    """``init --server granian``'s ``Dockerfile`` keeps "Server limits" too.
+def test_serve_gives_uvicorn_the_command_line_of_the_reference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``serve`` starts uvicorn as "Server limits"' command line does.
 
-    ``logconfig`` first, then Granian, from ``src``; its processes are
-    ``GRANIAN_WORKERS``, not ``--workers``. Its notes link to the section
-    (user report S1).
+    The line goes through uvicorn's own parser; each option ``serve``
+    gives must be what the line gives, with ``SERVE = {"WORKERS": 4}``.
+    The line leaves logging to the application, whose ``LOGGING`` turns
+    uvicorn's access log off; ``serve`` gives uvicorn ``LOGGING`` itself,
+    so its main process writes its lines as the application does.
     """
-    reference = (DOCS / "reference/servers.md").read_text(encoding="utf-8")
-    assert "\n## Granian\n" in reference
-    block = reference.split("written for its own process first:\n\n```bash\n", 1)[1]
-    written, served = block.split("```", 1)[0].split("\n", 1)
-    given = shlex.split(served.replace("\\\n", " "))
-    workers = given.index("--workers")
-    dockerfile = (
-        ROOT / "src/domainkit/management/templates/servers/granian/Dockerfile-tpl"
-    ).read_text(encoding="utf-8")
-    shell, run, command = json.loads(
-        dockerfile.split("CMD ", 1)[1].replace("\\\n", " ")
+    main = import_module("uvicorn.main")  # The module: uvicorn.main is the command.
+    given = shlex.split(reference_block("uvicorn, one process per core:"))
+    parsed: list[dict[str, Any]] = []
+    started: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        main, "run", lambda app, **kw: parsed.append({"app": app, **kw})
     )
-    first, then = command.split(" && ")
-    granian = shlex.split(then)
+    monkeypatch.setattr("uvicorn.run", lambda **options: started.append(options))
+    main.main(given[1:], standalone_mode=False)
+    with override_settings(
+        ASGI_APPLICATION=APPLICATION, SERVE={"SERVER": "uvicorn", "WORKERS": 4}
+    ):
+        call_command("serve", "127.0.0.1:8000")
 
-    assert (shell, run) == ("sh", "-c")
-    assert first == written
-    application = ["granian", "--interface", "asgi", "config.asgi:application"]
-    assert granian[0] == "exec"
-    assert granian[1:5] == given[:4] == application
-    assert granian[5:7] == ["--working-dir", "src"]
-    assert granian[7:] == given[4:workers] + given[workers + 2 :]
-    assert "GRANIAN_WORKERS" in dockerfile.split("FROM", 1)[0]
-    assert "{{ docs }}/reference/servers.md#granian" in dockerfile
+    assert given[:2] == ["uvicorn", APPLICATION]
+    (line,), (options,) = parsed, started
+    logging = {"log_config", "access_log"}
+    assert {name: line[name] for name in options if name not in logging} == {
+        name: value for name, value in options.items() if name not in logging
+    }
+    assert (options["log_config"]["version"], options["access_log"]) == (1, False)
+
+
+def test_serve_gives_granian_the_command_lines_of_the_reference(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``serve`` starts Granian as "Server limits"' two lines do.
+
+    ``logconfig`` writes ``LOGGING``, which Granian's own parser reads with
+    the rest of its line; each option ``serve`` gives must be what they
+    give, with ``SERVE = {"WORKERS": 4, "WEBSOCKETS": False}``, the
+    reference's API taking no WebSockets.
+    """
+    from granian import cli
+
+    written, served = reference_block(
+        "Granian, the same, with `LOGGING` written for its own process first:"
+    ).split("\n", 1)
+    given = shlex.split(served)
+    file = shlex.split(written)[-1]
+    logging_config = build_logging_config(log_format="json", level="INFO")
+    parsed: list[dict[str, Any]] = []
+    started: list[dict[str, Any]] = []
+
+    def recorder(made: list[dict[str, Any]]) -> type:
+        class Recorded:
+            def __init__(self, target: str, **options: Any) -> None:  # noqa: ANN401
+                made.append({"target": target, **options})
+
+            def serve(self) -> None:
+                pass
+
+        return Recorded
+
+    monkeypatch.setattr(cli, "Server", recorder(parsed))
+    monkeypatch.setattr("granian.Granian", recorder(started))
+    with override_settings(
+        ASGI_APPLICATION=APPLICATION,
+        LOGGING=logging_config,
+        SERVE={"SERVER": "granian", "WORKERS": 4, "WEBSOCKETS": False},
+    ):
+        call_command("logconfig", output=tmp_path / "logging.json")
+        line = [str(tmp_path / "logging.json") if arg == file else arg for arg in given]
+        cli.cli.main(line[1:], standalone_mode=False)
+        call_command("serve", "0.0.0.0:8000")
+
+    assert shlex.split(written)[:4] == ["python", "manage.py", "logconfig", "--output"]
+    assert given[:5] == ["granian", "--interface", "asgi", APPLICATION, "--host"]
+    (from_line,), (options,) = parsed, started
+    assert {name: from_line[name] for name in options} == options
 
 
 _PYTHON = re.compile(r"^```python\n(.*?)^```$", re.DOTALL | re.MULTILINE)

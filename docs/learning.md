@@ -550,6 +550,7 @@ of them.
 | To | Run |
 | --- | --- |
 | Serve the project, and restart it when the code changes | `python manage.py runserver` |
+| Serve the project in production, with the server's limits | `python manage.py serve` |
 | Run background tasks and durable handlers | `python manage.py runworker` |
 | Run the tests | `pytest` |
 | Check the settings, the routes, and the layers | `python manage.py check` |

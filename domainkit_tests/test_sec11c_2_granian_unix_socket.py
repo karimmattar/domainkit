@@ -55,7 +55,7 @@ from domainkit.http.middleware import (
     RequestContextMiddleware,
 )
 from domainkit.http.ratelimit import address_key
-from domainkit_tests.test_servers import UnixHTTPConnection
+from domainkit_tests.support.servers import UnixHTTPConnection
 
 ROOT: Final = Path(__file__).parents[1]
 SOCKET: Final = "/run/api.sock"

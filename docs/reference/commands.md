@@ -129,7 +129,7 @@ test, a `Dockerfile`, and a CI workflow (`.github/workflows/ci.yml`).
 | `name` | The project's name, as in `[project].name`. It sets the prefix of environment variables: `billingAPI` gives `BILLING_API_`. |
 | `[directory]` | Where to write the project (default: `./<name>`); `.` is the current directory. The directory may already exist and hold other files, such as a fresh clone's `.git`, `README.md`, or `.github`: `init` adds its files next to them. It refuses, and writes nothing, when a file it would write is already there, and names those files. |
 | `--profile fintech` | Writes a bank's controls on and wired: a guarded sample transfer and its tests, which also pass `mypy --strict`, and production settings that pass `check --deploy` once their secrets are set ([fintech.md](../fintech.md), ADR 0124). |
-| `--server granian` | Writes a `Dockerfile` that serves with Granian, with the options of [Granian](servers.md#granian), and `LOGGING` written for its main process as it starts. The project depends on the `granian` and `uvloop` extras too. `uvicorn` (the default) writes one that serves with uvicorn. |
+| `--server granian` | The project depends on the `granian` and `uvloop` extras too, so its image's `serve` starts Granian, with the options of [Granian](servers.md#granian), and `LOGGING` for its main process. `uvicorn` (the default) writes a project whose `serve` starts uvicorn. |
 
 What `init` writes passes the project's own `ruff check` and
 `ruff format --check`. Its development group installs ruff, which also
@@ -443,14 +443,35 @@ python manage.py runserver 0.0.0.0:8000 --server granian
 `runserver` starts a development server for `ASGI_APPLICATION`, on
 uvicorn or Granian (the `granian` extra). It restarts when your code
 changes. `RUNSERVER_SERVER = "granian"` in the development settings
-serves with Granian without `--server`. In production you run the
-server yourself ([Server limits](servers.md)).
+serves with Granian without `--server`. In production, run `serve`.
 
 | Option | What it does |
 | --- | --- |
 | `[address]` | A port, or `address:port` (default: `127.0.0.1:8000`). |
 | `--noreload` | Does not restart when the code changes. |
 | `--server` | `uvicorn` or `granian`; unless given, `RUNSERVER_SERVER` (`uvicorn` unless set) chooses. |
+
+### `serve`: serve the project in production
+
+```bash
+python manage.py serve
+python manage.py serve --uds /run/api.sock
+```
+
+`serve` starts the production server for `ASGI_APPLICATION`: Granian
+where the `granian` extra is installed, else uvicorn, with the options
+of [Server limits](servers.md). `SERVE` sets the server, its worker
+processes, and its limits; `WEB_CONCURRENCY` sets the processes unless
+`SERVE["WORKERS"]` does ([The `serve` command](servers.md#the-serve-command)).
+It never reloads, reads no proxy header, writes no access log, and
+gives the server `LOGGING` for its own lines, its main process's
+included. It loads the settings only: each worker process imports the
+application. The `Dockerfile` that `init` writes runs it.
+
+| Option | What it does |
+| --- | --- |
+| `[address]` | A port, or `address:port` (default: `0.0.0.0:8000`, every address of a container). |
+| `--uds` | Listens on this unix socket instead, for a proxy on the same host. Add `"unix"` to `TRUSTED_PROXIES` ([Unix sockets](servers.md#unix-sockets)). |
 
 ### `logconfig`: write `LOGGING` for the server
 

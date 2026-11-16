@@ -9,6 +9,7 @@ gives the server options to set, and why.
 
 On this page you find:
 
+- `manage.py serve`, which starts either server with these options;
 - the command lines for uvicorn and Granian;
 - which option limits what, on each server;
 - how the server's limits and the application's fit together;
@@ -24,20 +25,88 @@ body. With nginx, these are `large_client_header_buffers`,
 own limits, as below.
 
 Keep the proxy's idle timeout for its connections to the server below
-the time the server keeps an idle connection open (uvicorn's
-`--timeout-keep-alive`, Granian's `--http1-header-read-timeout`).
+the time the server keeps an idle connection open (`SERVE["KEEP_ALIVE"]`,
+uvicorn's `--timeout-keep-alive`, Granian's `--http1-header-read-timeout`).
 Otherwise the proxy now and then sends a request on a connection the
 server is closing, and answers it with a 502. The proxy's setting is
 nginx's `keepalive_timeout` in the `upstream` block (60 seconds unless
-set), or Traefik's `idleConnTimeout` (90 seconds unless set).
+set), an AWS Application Load Balancer's idle timeout (60 seconds unless
+set), Envoy's `idle_timeout` for a cluster (an hour unless set), or
+Traefik's `idleConnTimeout` (90 seconds unless set). Google Cloud's
+external Application Load Balancer keeps idle connections to the server
+600 seconds, which cannot be changed, and asks for 620 on the server:
+Granian keeps one 60 seconds at most, so serve with uvicorn there.
+
+Set `PROXY_IDLE_TIMEOUT` to the proxy's idle timeout, in seconds. In
+staging and production, `check` then warns (`servers.W003`) when the
+server does not keep an idle connection longer, with both numbers and
+what to change:
+
+```text
+  Warning: servers.W003: The proxy keeps an idle connection to the server open 60 seconds (PROXY_IDLE_TIMEOUT), and Granian closes it after 60: the proxy may send a request on a connection as Granian closes it, and answer that request 502.
+    Hint: Granian keeps an idle connection 60 seconds at most: lower the proxy's idle timeout below 60 seconds.
+```
+
+`check` finds the server as for [WebSocket message
+size](#websocket-message-size). A server its variables name keeps an
+idle connection `UVICORN_TIMEOUT_KEEP_ALIVE` seconds (5 unless set),
+`GRANIAN_HTTP1_HEADER_READ_TIMEOUT` milliseconds (30,000 unless set), or,
+under gunicorn's uvicorn worker, gunicorn's `--keep-alive` seconds in
+`GUNICORN_CMD_ARGS` (2 unless set). Where no variable names a server,
+`check` judges the server `serve` starts, with `SERVE["KEEP_ALIVE"]`.
 
 domainkit runs on [uvicorn](https://www.uvicorn.org/) or
 [Granian](https://github.com/emmett-framework/granian)
 (`pip install 'domainkit[granian]'`). [runtime.md](../runtime.md#servers)
 compares them.
 
+## The `serve` command
+
+`python manage.py serve` starts the production server for
+`ASGI_APPLICATION`, with the options of the command lines below:
+Granian where the `granian` extra is installed, else uvicorn. It never
+reloads; `runserver` is the development server. It listens on
+`0.0.0.0:8000` unless given an address, or a unix socket (`--uds`)
+([commands.md](commands.md#serve-serve-the-project-in-production)).
+`SERVE` sets the server and its limits:
+
+```python
+SERVE = {"WORKERS": 4, "KEEP_ALIVE": 75, "SERVER": "uvicorn"}
+PROXY_IDLE_TIMEOUT = 60  # an AWS load balancer's, unless set
+```
+
+| `SERVE` key | Default | Meaning |
+| --- | --- | --- |
+| `SERVER` | `"auto"` | `"granian"`, `"uvicorn"`, or `"auto"`: Granian where the `granian` extra is installed, else uvicorn. |
+| `WORKERS` | `None` | Worker processes, from 1 to 1024: one per core. `None` reads `WEB_CONCURRENCY`, as uvicorn does, else starts one. |
+| `MAX_CONNECTIONS` | `1200` | Connections each worker takes at once, idle ones included, at most 100,000: uvicorn's `--limit-concurrency` (past it, 503), Granian's `--backpressure` (past it, the next connection waits in the backlog). Keep it above `MAX_CONCURRENT_REQUESTS` plus `MAX_QUEUED_REQUESTS` ([How the limits fit together](#how-the-limits-fit-together)). |
+| `BACKLOG` | `2048` | Connections waiting to be accepted, for all the workers, from 128 to 65,535. |
+| `KEEP_ALIVE` | `None` | Seconds an idle connection stays open, from 1 to 3600: uvicorn's `--timeout-keep-alive`, Granian's `--http1-header-read-timeout`. `None`: 5 seconds on uvicorn; on Granian, 60, its most, past which it refuses. Keep it above the proxy's idle timeout ([The proxy in front](#the-proxy-in-front)). |
+| `GRACEFUL_TIMEOUT` | `10` | Seconds the requests in flight get to finish once the server is told to stop, from 1 to 600: uvicorn's `--timeout-graceful-shutdown`. Granian kills its workers this plus `SHUTDOWN_TIMEOUT` seconds after (`--workers-kill-timeout`, 25 by default), as their application's shutdown runs in its time. |
+| `MAX_HEADER_SIZE` | `16384` | Bytes of a request line and headers, from 8192 to 1,048,576: Granian's `--http1-buffer-size`, which answers 431 past it. uvicorn's `--h11-max-incomplete-event-size`, which its h11 parser applies to a header block still arriving only; its httptools parser, which `uvicorn[standard]` installs and uvicorn prefers, has no such limit, so let the proxy limit headers. |
+| `WEBSOCKETS` | `True` | Accept WebSockets. uvicorn reads a message up to `MAX_REQUEST_BODY_SIZE`; Granian reads it whole, at any size ([WebSocket message size](#websocket-message-size)). Set `False` when the API takes none. |
+
+What `serve` sets itself:
+
+- the loop: `EVENT_LOOP`'s, uvloop where installed unless set;
+- no proxy header read, and, under uvicorn, no `Server` header
+  ([Proxy headers](#proxy-headers), [`SERVER_HEADER`](http.md#the-server-header));
+- no access log: `domainkit.access` writes one line per request;
+- `LOGGING` for the server's own lines, in its main process too, as
+  `manage.py logconfig` writes it ([The server's own lines](../runtime.md#the-servers-own-lines));
+- under Granian, a worker that dies is started again
+  (`--respawn-failed-workers`).
+
+Only the settings are loaded: each worker imports the application, as
+under the server's own command line. A deployed application started by
+`serve` knows the server's limits from `SERVE`, and logs `servers.W001`
+and `servers.W002` as it starts, as under the server's own command line.
+`check --deploy`, in a container of its own, reads `SERVE` from the same
+settings.
+
 ## The command lines
 
+`serve` gives the server these options. To run the server yourself,
 uvicorn, one process per core:
 
 ```bash
@@ -47,10 +116,6 @@ uvicorn config.asgi:application --workers 4 --loop uvloop \
   --h11-max-incomplete-event-size 16384 --ws-max-size 1048576 \
   --no-proxy-headers --no-server-header
 ```
-
-The `Dockerfile` that `init` writes runs this command, with
-`--app-dir src`, `--host 0.0.0.0`, and `--port 8000`. It sets the number
-of processes with `WEB_CONCURRENCY`, not `--workers`.
 
 Granian, the same, with `LOGGING` written for its own process first:
 
@@ -63,23 +128,27 @@ granian --interface asgi config.asgi:application --host 0.0.0.0 --port 8000 \
   --log-config /tmp/logging.json
 ```
 
-`init --server granian` writes a `Dockerfile` that runs these two
-commands, with `--working-dir src`. It sets the number of processes with
-`GRANIAN_WORKERS`, not `--workers`. [Granian](#granian) says why each
-option is there.
+`serve` starts the first with `SERVE = {"SERVER": "uvicorn", "WORKERS":
+4}`, and the second with `SERVE = {"WORKERS": 4, "WEBSOCKETS": False}`,
+where Granian is installed. Tests hold the lines to what it starts.
+[Granian](#granian) says why each option is there.
+
+The `Dockerfile` that `init` writes runs `python manage.py serve`:
+uvicorn, or Granian with `init --server granian`, which installs it.
+`WEB_CONCURRENCY` sets the number of processes.
 
 ## What each option limits
 
-| Concern | uvicorn | Granian |
-| --- | --- | --- |
-| Requests at once, per process | `--limit-concurrency` (more get 503) | `--backpressure` connections, idle ones included (more wait, unanswered) |
-| Idle keep-alive connections | `--timeout-keep-alive` seconds | `--http1-header-read-timeout` milliseconds (30,000 unless set, 60,000 at most) |
-| Slow headers | the proxy | `--http1-header-read-timeout` milliseconds |
-| Request line and headers | `--h11-max-incomplete-event-size` (16 KiB) | `--http1-buffer-size` bytes (about half a megabyte unless set; past it, 431) |
-| WebSocket message | `--ws-max-size` bytes (16 MiB unless set) | no option: `--no-ws` if unused, else the proxy |
-| Graceful shutdown | `--timeout-graceful-shutdown` seconds, then open connections are closed, then the application shuts down | no limit unless `--workers-kill-timeout` seconds, the application's shutdown included; then workers are killed |
-| A worker that dies | `--workers` starts another | every worker stops and Granian exits 1, unless `--respawn-failed-workers` |
-| The `Server` header | `--no-server-header` leaves it out | no option: `Server: granian` unless the answer has one (`SERVER_HEADER`) |
+| Concern | `SERVE` key | uvicorn | Granian |
+| --- | --- | --- | --- |
+| Requests at once, per process | `MAX_CONNECTIONS` | `--limit-concurrency` (more get 503) | `--backpressure` connections, idle ones included (more wait, unanswered) |
+| Idle keep-alive connections | `KEEP_ALIVE` | `--timeout-keep-alive` seconds | `--http1-header-read-timeout` milliseconds (30,000 unless set, 60,000 at most) |
+| Slow headers | | the proxy | `--http1-header-read-timeout` milliseconds |
+| Request line and headers | `MAX_HEADER_SIZE` | `--h11-max-incomplete-event-size` (16 KiB), with h11 only | `--http1-buffer-size` bytes (about half a megabyte unless set; past it, 431) |
+| WebSocket message | `WEBSOCKETS` | `--ws-max-size` bytes (16 MiB unless set; `serve`: `MAX_REQUEST_BODY_SIZE`) | no option: `--no-ws` if unused, else the proxy |
+| Graceful shutdown | `GRACEFUL_TIMEOUT` | `--timeout-graceful-shutdown` seconds, then open connections are closed, then the application shuts down | no limit unless `--workers-kill-timeout` seconds, the application's shutdown included; then workers are killed |
+| A worker that dies | | `--workers` starts another | every worker stops and Granian exits 1, unless `--respawn-failed-workers` (`serve` sets it) |
+| The `Server` header | | `--no-server-header` leaves it out (`serve` sets it) | no option: `Server: granian` unless the answer has one (`SERVER_HEADER`) |
 
 ## How the limits fit together
 
@@ -151,9 +220,9 @@ option, from uvicorn's command line above:
   431 past it. Unless set (417,792), it let header blocks of over 500 KB
   through. 16384 keeps uvicorn's 16 KiB, which the application's limits
   count on.
-- **One process.** `--workers` (or `GRANIAN_WORKERS`) starts that many
-  worker processes under a main one. When a worker dies, Granian stops
-  the others, as on `SIGTERM`, and exits 1, unless
+- **One process.** `--workers` (`GRANIAN_WORKERS`, `SERVE["WORKERS"]`)
+  starts that many worker processes under a main one. When a worker
+  dies, Granian stops the others, as on `SIGTERM`, and exits 1, unless
   `--respawn-failed-workers` starts another in its place.
 - **`--no-proxy-headers`.** Nothing to set: Granian reads no proxy
   header ([Proxy headers](#proxy-headers)).
@@ -165,14 +234,15 @@ option, from uvicorn's command line above:
   `domainkit.access` writes one line per request.
 
 `check` sees Granian's options only as its variables (`GRANIAN_*`), as
-[below](#websocket-message-size).
+[below](#websocket-message-size), or as `SERVE` where `serve` starts it.
 
 It counts the worker processes the same way, for `live.W003` (live
 routes served by several processes without a fan-out,
 [live.md](../live.md#every-processs-events)): `--workers` in the
-server's own process; elsewhere `WEB_CONCURRENCY` (which uvicorn and
-gunicorn read), `UVICORN_WORKERS`, `GRANIAN_WORKERS`, or `-w` in
-`GUNICORN_CMD_ARGS`.
+server's own process, `SERVE["WORKERS"]` (else `WEB_CONCURRENCY`) in
+`serve`'s; elsewhere `WEB_CONCURRENCY` (which uvicorn and gunicorn
+read), `UVICORN_WORKERS`, `GRANIAN_WORKERS`, `-w` in
+`GUNICORN_CMD_ARGS`, or `SERVE["WORKERS"]`.
 
 ## WebSocket message size
 
@@ -189,6 +259,11 @@ reads the server's environment variables: `UVICORN_WS_MAX_SIZE` and
 `GUNICORN_CMD_ARGS`. A deployed application logs the same warning when it
 starts, from the server's own command line. A value it cannot read is
 taken as unknown, and never stops the application or `check`.
+
+Under `serve`, the server's limits are `SERVE`'s: uvicorn reads messages
+up to `MAX_REQUEST_BODY_SIZE`, and Granian, with `SERVE["WEBSOCKETS"]`
+on, any size. A deployed application with WebSocket routes that `serve`
+started logs the warning as it starts, from `SERVE`.
 
 `check` runs in a process of its own, often in another container (a
 deployment job's `check --deploy`): it sees the variables set where it
@@ -239,8 +314,8 @@ own header from choosing it. Granian reads none of these headers.
 
 ## Unix sockets
 
-Behind a proxy on a unix socket (`uvicorn --uds`, `granian --uds`,
-`gunicorn --bind unix:...`), no caller has an address. Without `"unix"`
+Behind a proxy on a unix socket (`serve --uds`, `uvicorn --uds`,
+`granian --uds`, `gunicorn --bind unix:...`), no caller has an address. Without `"unix"`
 in `TRUSTED_PROXIES`, every caller shares one rate limit and one hold on
 refused credentials, and one anonymous flood of bad tokens holds back
 every user of a token. Add it, with the proxy's networks if it has more
@@ -263,7 +338,10 @@ application logs it at start, from its own command line.
 ## See also
 
 - [HTTP settings](http.md): the application's own limits.
-- [Checks](checks.md): `servers.W001` and `servers.W002`.
+- [Checks](checks.md): `servers.W001`, `servers.W002`, and `servers.W003`.
+- [ADR 0160](../adr/0160-serve-in-production-from-the-settings.md): why
+  `serve` starts the server from the settings, and checks the proxy's
+  idle timeout.
 - [Deploying](../deploying.md) and [runtime.md](../runtime.md#servers).
 - [The server's own lines](../runtime.md#the-servers-own-lines): `LOGGING`
   for Granian's main process.

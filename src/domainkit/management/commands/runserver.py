@@ -18,9 +18,9 @@ DEFAULT_ADDRESS = "127.0.0.1"
 DEFAULT_PORT = 8000
 
 
-def parse_address(value: str) -> tuple[str, int]:
-    """Parse ``port``, ``host:port``, or ``[ipv6]:port``."""
-    host, port = DEFAULT_ADDRESS, value
+def parse_address(value: str, host: str = DEFAULT_ADDRESS) -> tuple[str, int]:
+    """Parse ``port`` (on ``host``), ``host:port``, or ``[ipv6]:port``."""
+    port = value
     if not value.isdigit():
         host, _, port = value.rpartition(":")
         host = host.removeprefix("[").removesuffix("]")
@@ -30,7 +30,7 @@ def parse_address(value: str) -> tuple[str, int]:
 
 
 class Command(BaseCommand):
-    """Run uvicorn, or Granian, with auto-reload; production runs them directly."""
+    """Run uvicorn, or Granian, with auto-reload; production runs ``serve``."""
 
     help = "Start a development server for ASGI_APPLICATION."
 

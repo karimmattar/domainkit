@@ -36,18 +36,46 @@ A server that listens on a unix socket (``uvicorn --uds``, ``granian
 
 ``server_processes`` counts the worker processes the server starts, each
 with an application and live connections of its own (``live.W003``).
+
+``manage.py serve`` starts the server from the settings (``SERVE``), in
+its own process: its command line names no server's option, and its
+limits are read from ``SERVE`` instead. Elsewhere, ``check`` cannot see
+which server runs; where no server's variable says, it judges the server
+``serve`` would start.
+
+A proxy in front keeps idle connections to the server open for the next
+requests. When the server closes one first, the proxy can send a request
+on it as it closes, and answers that request 502. ``keep_alive_warnings``
+says so when the proxy's idle timeout (``PROXY_IDLE_TIMEOUT``) is not
+shorter than the server's keep-alive (``server_keep_alive``).
 """
 
+import math
 import os
 import shlex
 import sys
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Final
 
+from domainkit.checks import CheckMessage
+from domainkit.conf import settings
+from domainkit.conf.global_settings import GRANIAN_MAX_KEEP_ALIVE
+
 UVICORN_WS_MAX_SIZE: Final = 16 * 1024 * 1024
 """uvicorn's default ``--ws-max-size``, in bytes."""
+UVICORN_KEEP_ALIVE: Final = 5
+"""uvicorn's default ``--timeout-keep-alive``, in seconds; ``serve``'s too."""
+GRANIAN_KEEP_ALIVE: Final = 30
+"""Granian's default ``--http1-header-read-timeout``, in seconds (30,000 ms)."""
+GUNICORN_KEEP_ALIVE: Final = 2
+"""gunicorn's default ``--keep-alive``, which its uvicorn worker keeps, in seconds."""
+SERVE: Final = "serve"
+"""The command that starts the server from the settings (``manage.py serve``)."""
+_SERVERS: Final = frozenset({"uvicorn", "granian", "gunicorn", "fastapi"})
+"""The programs that are servers, or start one, themselves."""
 _OFF: Final = frozenset({"0", "false", "no", "off", "f", "n"})
 """How a ``GRANIAN_*`` switch is turned off."""
 UVICORN_WORKERS: Final = frozenset(
@@ -73,7 +101,8 @@ class ServerLimits:
     """The largest WebSocket message it reads, in bytes; None: no limit to set."""
     launcher: str | None = None
     """What started the server, if not the server itself: ``gunicorn`` or
-    ``fastapi``. Neither passes uvicorn a WebSocket limit."""
+    ``fastapi``, neither of which passes uvicorn a WebSocket limit, or
+    ``serve``, which passes ``MAX_REQUEST_BODY_SIZE``."""
 
 
 def server_limits(
@@ -95,6 +124,8 @@ def server_limits(
         return _uvicorn(argv, environ)
     if program == "granian":
         return _granian(argv, environ)
+    if _serves(argv):
+        return serve_limits()
     # Not the server's own process (``check``): its variables tell. gunicorn's
     # come first, as its uvicorn worker reads none of uvicorn's.
     if (under_gunicorn := _gunicorn((), environ)) is not None:
@@ -149,17 +180,44 @@ def _granian(argv: Sequence[str], environ: Mapping[str, str]) -> ServerLimits:
     return ServerLimits("granian", websockets=not off, ws_max_size=None)
 
 
+def serve_server(choice: str) -> str:
+    """The server ``serve`` starts for ``SERVE["SERVER"]`` (``choice``).
+
+    ``auto`` is Granian where it is installed, else uvicorn.
+    """
+    if choice != "auto":
+        return choice
+    return "granian" if find_spec("granian") is not None else "uvicorn"
+
+
+def serve_limits() -> ServerLimits:
+    """The server ``serve`` starts, and its WebSocket limit, from ``SERVE``."""
+    server = serve_server(settings.SERVE.SERVER)
+    size = None if server == "granian" else settings.MAX_REQUEST_BODY_SIZE
+    return ServerLimits(server, settings.SERVE.WEBSOCKETS, size, launcher=SERVE)
+
+
+def _serves(argv: Sequence[str]) -> bool:
+    """Whether ``argv`` runs ``serve``: ``manage.py serve``, ``domainkit serve``."""
+    return len(argv) > 1 and argv[1] == SERVE and _program(argv) not in _SERVERS
+
+
 def limit_warnings(max_body_size: int, limits: ServerLimits | None) -> list[str]:
     """What the server reads past ``MAX_REQUEST_BODY_SIZE``; empty if nothing."""
     if limits is None or not limits.websockets:
         return []
     if limits.ws_max_size is None:
+        off = (
+            'set SERVE["WEBSOCKETS"] = False'
+            if limits.launcher == SERVE
+            else "start it with --no-ws (GRANIAN_WEBSOCKETS=false)"
+        )
         return [
             (
                 f"{limits.server} reads each WebSocket message whole, at any "
                 f"size, before MAX_REQUEST_BODY_SIZE ({max_body_size}) refuses "
-                "it; start it with --no-ws (GRANIAN_WEBSOCKETS=false) if the "
-                "API takes no WebSockets, or limit messages in the proxy in front."
+                f"it; {off} if the API takes no WebSockets, or limit messages "
+                "in the proxy in front."
             )
         ]
     if limits.ws_max_size > max_body_size:
@@ -220,7 +278,7 @@ def listens_on_unix_socket(
     argv = sys.argv if argv is None else argv
     environ = os.environ if environ is None else environ
     program = _program(argv)
-    if program in {"uvicorn", "granian"} and _option(argv, "--uds"):
+    if (program in {"uvicorn", "granian"} or _serves(argv)) and _option(argv, "--uds"):
         return True
     if program == "gunicorn" and _binds_unix(argv[1:]):
         return True
@@ -230,6 +288,151 @@ def listens_on_unix_socket(
         return _binds_unix(shlex.split(environ.get("GUNICORN_CMD_ARGS", "")))
     except ValueError:  # Unbalanced quotes: gunicorn would refuse it too.
         return False
+
+
+@dataclass(frozen=True, slots=True)
+class KeepAlive:
+    """How long the server keeps an idle connection open, and how to change it."""
+
+    server: str
+    """``uvicorn`` or ``Granian``."""
+    seconds: float
+    """Seconds an idle connection stays open."""
+    setting: str
+    """What sets it: an option, a variable, or ``SERVE["KEEP_ALIVE"]``."""
+    per_second: int = 1
+    """The setting's units in a second: 1,000 for milliseconds."""
+    most: int | None = None
+    """The most seconds the server takes, if it has a most."""
+
+
+def serve_keep_alive() -> KeepAlive:
+    """The keep-alive ``serve`` gives the server: ``SERVE["KEEP_ALIVE"]``.
+
+    Unless set: uvicorn's own, 5 seconds, and Granian's most, 60.
+    """
+    server = serve_server(settings.SERVE.SERVER)
+    granian = server == "granian"
+    configured = settings.SERVE.KEEP_ALIVE
+    default = GRANIAN_MAX_KEEP_ALIVE if granian else UVICORN_KEEP_ALIVE
+    return KeepAlive(
+        "Granian" if granian else "uvicorn",
+        configured or default,
+        'SERVE["KEEP_ALIVE"]',
+        most=GRANIAN_MAX_KEEP_ALIVE if granian else None,
+    )
+
+
+def server_keep_alive(
+    argv: Sequence[str] | None = None, environ: Mapping[str, str] | None = None
+) -> KeepAlive | None:
+    """The server's keep-alive, from ``argv`` and ``environ``; None if unknown.
+
+    They default to this process's. The server is found as
+    ``server_limits`` finds it; where nothing names one, it is the server
+    ``serve`` starts. Granian with keep-alive off keeps no idle
+    connection: None.
+    """
+    argv = sys.argv if argv is None else argv
+    environ = os.environ if environ is None else environ
+    limits = server_limits(argv, environ)
+    if limits is None or limits.launcher == SERVE:
+        return serve_keep_alive()
+    if limits.launcher == "gunicorn":
+        given = (
+            _option(argv[1:], "--keep-alive") if _program(argv) == "gunicorn" else None
+        )
+        if given is None:
+            try:
+                args = shlex.split(environ.get("GUNICORN_CMD_ARGS", ""))
+            except ValueError:  # Unbalanced quotes: gunicorn would refuse it too.
+                return None
+            given = _option(args, "--keep-alive")
+        return _keep_alive(
+            "uvicorn", given, GUNICORN_KEEP_ALIVE, "gunicorn's --keep-alive"
+        )
+    if limits.launcher == "fastapi":
+        return KeepAlive(
+            "uvicorn",
+            UVICORN_KEEP_ALIVE,
+            "uvicorn's --timeout-keep-alive, which fastapi run cannot set",
+        )
+    if limits.server == "uvicorn":
+        given = _option(argv, "--timeout-keep-alive") or environ.get(
+            "UVICORN_TIMEOUT_KEEP_ALIVE"
+        )
+        return _keep_alive(
+            "uvicorn",
+            given,
+            UVICORN_KEEP_ALIVE,
+            "--timeout-keep-alive (UVICORN_TIMEOUT_KEEP_ALIVE)",
+        )
+    switch = environ.get("GRANIAN_HTTP1_KEEP_ALIVE", "").lower()
+    if "--no-http1-keep-alive" in argv or switch in _OFF:
+        return None
+    given = _option(argv, "--http1-header-read-timeout") or environ.get(
+        "GRANIAN_HTTP1_HEADER_READ_TIMEOUT"
+    )
+    return _keep_alive(
+        "Granian",
+        given,
+        GRANIAN_KEEP_ALIVE,
+        "--http1-header-read-timeout (GRANIAN_HTTP1_HEADER_READ_TIMEOUT), in "
+        "milliseconds,",
+        per_second=1000,
+        most=GRANIAN_MAX_KEEP_ALIVE,
+    )
+
+
+def _keep_alive(
+    server: str,
+    given: str | None,
+    default: int,
+    setting: str,
+    *,
+    per_second: int = 1,
+    most: int | None = None,
+) -> KeepAlive | None:
+    """A keep-alive of ``given`` units (``default`` seconds if not); None if unread."""
+    if given is None:
+        return KeepAlive(server, default, setting, per_second, most)
+    if (units := _whole(given)) is None:
+        return None
+    return KeepAlive(server, units / per_second, setting, per_second, most)
+
+
+def keep_alive_warnings(
+    proxy_idle_timeout: float | None, keep_alive: KeepAlive | None
+) -> list[CheckMessage]:
+    """``servers.W003`` when the proxy keeps idle connections as long as the server.
+
+    ``proxy_idle_timeout`` is ``PROXY_IDLE_TIMEOUT``: None, or a server
+    whose keep-alive is unknown, says nothing.
+    """
+    if (
+        proxy_idle_timeout is None
+        or keep_alive is None
+        or keep_alive.seconds > proxy_idle_timeout
+    ):
+        return []
+    server, seconds = keep_alive.server, f"{keep_alive.seconds:g}"
+    wanted = math.floor(proxy_idle_timeout * keep_alive.per_second) + 1
+    lower = f"lower the proxy's idle timeout below {seconds} seconds"
+    if keep_alive.most is not None and wanted > keep_alive.most * keep_alive.per_second:
+        most = keep_alive.most
+        hint = f"{server} keeps an idle connection {most} seconds at most: {lower}."
+    else:
+        hint = f"Set {keep_alive.setting} to {wanted} or more, or {lower}."
+    return [
+        CheckMessage(
+            "servers.W003",
+            f"The proxy keeps an idle connection to the server open "
+            f"{proxy_idle_timeout:g} seconds (PROXY_IDLE_TIMEOUT), and {server} "
+            f"closes it after {seconds}: the proxy may send a request on a "
+            f"connection as {server} closes it, and answer that request 502.",
+            hint,
+        )
+    ]
 
 
 def _binds_unix(args: Sequence[str]) -> bool:
@@ -258,15 +461,19 @@ def server_processes(
     ``--workers``, ``UVICORN_WORKERS``, or ``WEB_CONCURRENCY`` (``fastapi
     run`` passes ``--workers``, and reads ``WEB_CONCURRENCY`` too);
     gunicorn's ``-w``/``--workers``, ``GUNICORN_CMD_ARGS``, or
-    ``WEB_CONCURRENCY``; Granian's ``--workers``, or ``GRANIAN_WORKERS``.
-    Elsewhere (``check``), the most any of them says. A value that is not a
-    whole number counts as unknown, and gunicorn's configuration file is
-    not read.
+    ``WEB_CONCURRENCY``; Granian's ``--workers``, or ``GRANIAN_WORKERS``;
+    ``serve``'s ``SERVE["WORKERS"]``, else ``WEB_CONCURRENCY``. Elsewhere
+    (``check``), the most any of them says. A value that is not a whole
+    number counts as unknown, and gunicorn's configuration file is not
+    read.
     """
     argv = sys.argv if argv is None else argv
     environ = os.environ if environ is None else environ
     program = _program(argv)
     concurrency = environ.get("WEB_CONCURRENCY")
+    workers = settings.SERVE.WORKERS
+    if _serves(argv):
+        return workers if workers is not None else _count(concurrency)
     try:
         gunicorn = _gunicorn_option(
             shlex.split(environ.get("GUNICORN_CMD_ARGS", "")), "-w", "--workers"
@@ -293,6 +500,8 @@ def server_processes(
         )
         if value and (count := _whole(value)) is not None
     ]
+    if workers is not None:
+        said.append(workers)
     return max(said, default=None)
 
 
@@ -310,7 +519,7 @@ def _program(argv: Sequence[str]) -> str:
 
 
 def _whole(text: str) -> int | None:
-    """``text`` as a whole number (of bytes, of processes), or None if it is not one.
+    """``text`` as a whole number (bytes, seconds, processes), or None if it is not one.
 
     ``isdigit`` takes superscripts, which ``int`` refuses, so ``isdecimal``
     decides; ``int`` also refuses more digits than Python's limit (4,300).

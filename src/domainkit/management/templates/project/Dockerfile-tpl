@@ -11,7 +11,7 @@
 # in. .dockerignore lets in only manage.py, pyproject.toml,
 # requirements.lock, src/, and migrations/, and keeps env files, keys, and
 # databases out even there. WEB_CONCURRENCY sets uvicorn's worker processes
-# (one per core; one unless set).
+# (one per core; one unless set), unless SERVE["WORKERS"] does.
 #
 # Lock what the image installs, each file by its hash, and commit the lock:
 #
@@ -23,8 +23,9 @@
 # the new digest each week, with the lock and the workflow's actions.
 
 FROM scratch AS wheels
-# Empty. `docker build --build-context wheels=<directory> .` offers the wheels
-# in <directory> (a fork, a release candidate) ahead of the package index.
+# Empty. `docker build --build-context wheels=<directory> .` installs the
+# wheels in <directory> (a fork, a release candidate) first, so they win over
+# a release of the same version on the package index.
 
 FROM python:3.13-slim@sha256:ae14d4ce8771606477a81446e7ef429edd6762305fc50c84507c1041fa8285d1 AS build
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1
@@ -40,6 +41,9 @@ RUN --mount=type=bind,from=wheels,target=/wheels \
     else \
         echo "No requirements.lock: installing the newest releases pyproject.toml allows." >&2 \
         && python -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml', 'rb'))['project']['dependencies']))" > requirements.txt \
+        && if ls /wheels/*.whl >/dev/null 2>&1; then \
+            /opt/venv/bin/pip install --no-deps /wheels/*.whl; \
+        fi \
         && /opt/venv/bin/pip install --find-links /wheels -r requirements.txt; \
     fi
 
@@ -57,11 +61,8 @@ COPY --from=build /opt/venv /opt/venv
 COPY . .
 USER 10001
 EXPOSE 8000
-# The limits of "Server limits" ({{ docs }}/reference/servers.md);
-# proxy headers are the application's (TRUSTED_PROXIES), not uvicorn's.
-CMD ["uvicorn", "config.asgi:application", "--app-dir", "src", \
-     "--host", "0.0.0.0", "--port", "8000", "--loop", "uvloop", \
-     "--limit-concurrency", "1200", "--backlog", "2048", \
-     "--timeout-keep-alive", "5", "--timeout-graceful-shutdown", "10", \
-     "--h11-max-incomplete-event-size", "16384", "--ws-max-size", "1048576", \
-     "--no-proxy-headers", "--no-server-header"]
+# python manage.py serve starts uvicorn, as Granian is not installed, with
+# the limits of "Server limits" ({{ docs }}/reference/servers.md#the-serve-command)
+# from SERVE. Proxy headers are the application's (TRUSTED_PROXIES), not
+# uvicorn's.
+CMD ["python", "manage.py", "serve"]
