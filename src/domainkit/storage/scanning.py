@@ -13,13 +13,22 @@ handed over: an infected file makes the write fail, so no storage keeps
 it (a refusal is 422 ``infected_file``). A scanner that cannot be reached
 refuses the upload too (503): an upload is never kept unscanned.
 
-``ClamAVScanner`` speaks clamd's ``INSTREAM`` command over TCP.
+``ClamAVScanner`` speaks clamd's ``INSTREAM`` command over TCP. clamd
+speaks no TLS, and asks no one who they are: on another host, every
+upload crosses the network in clear. With ``tls=True`` the scanner speaks
+TLS to a proxy that ends it in front of clamd (stunnel, say), checks its
+certificate (``tls_ca`` for a private CA), and can show one of its own
+(``tls_cert``, ``tls_key``) for the proxy to check. ``check`` warns where
+deployed (``security.W007``) when the scanner's host is not this one and
+TLS is off (ADR 0169).
 """
 
 import asyncio
+import ssl
 import struct
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import ClassVar, Final
 
 from domainkit.exceptions import UpstreamError
@@ -71,20 +80,54 @@ class ClamAVScanner(Scanner):
     """clamd's ``INSTREAM``: each chunk sent as it is stored, the verdict at the end."""
 
     def __init__(
-        self, *, host: str = "localhost", port: int = 3310, timeout: float = 30.0
+        self,
+        *,
+        host: str = "localhost",
+        port: int = 3310,
+        timeout: float = 30.0,
+        tls: bool = False,
+        tls_ca: str | Path | None = None,
+        tls_cert: str | Path | None = None,
+        tls_key: str | Path | None = None,
     ) -> None:
-        """Talk to clamd at ``host``:``port``; ``timeout`` bounds each step."""
+        """Talk to clamd at ``host``:``port``; ``timeout`` bounds each step.
+
+        ``tls`` speaks TLS 1.2 or later to a proxy in front of clamd, whose
+        certificate must name ``host``, signed by a system CA or by
+        ``tls_ca``; ``tls_cert`` and ``tls_key`` are a client certificate
+        to show it.
+
+        Raises:
+            ValueError: A TLS file without ``tls``, or a certificate without
+                its key; or a file TLS cannot read.
+        """
         self.host = host
         self.port = port
         self.timeout = timeout
+        self.tls = tls
+        self.ssl: ssl.SSLContext | None = None
+        """The TLS context of the connections; None without ``tls``."""
+        files = (tls_ca, tls_cert, tls_key)
+        if not tls and any(each is not None for each in files):
+            raise ValueError("tls_ca, tls_cert and tls_key need tls=True.")
+        if (tls_cert is None) != (tls_key is None):
+            raise ValueError("tls_cert and tls_key go together.")
+        if tls:
+            self.ssl = _client_context(*files)
 
     async def scan(self, chunks: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
         """Stream ``chunks`` to clamd while passing them on; raise on a finding."""
         try:
             reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(self.host, self.port), self.timeout
+                asyncio.open_connection(
+                    self.host,
+                    self.port,
+                    ssl=self.ssl,
+                    server_hostname=self.host if self.ssl else None,
+                ),
+                self.timeout,
             )
-        except (OSError, TimeoutError):
+        except (OSError, TimeoutError):  # A refused certificate too (SSLError).
             raise ScannerUnavailable from None
         try:
             writer.write(b"zINSTREAM\0")
@@ -132,6 +175,24 @@ class ClamAVScanner(Scanner):
         return reply[:MAX_REPLY].rstrip(b"\0")
 
 
+def _client_context(
+    ca: str | Path | None, cert: str | Path | None, key: str | Path | None
+) -> ssl.SSLContext:
+    """A verifying TLS client context: TLS 1.2 or later, ``ca`` trusted.
+
+    Raises:
+        ValueError: A file is missing, or TLS cannot read it.
+    """
+    try:
+        context = ssl.create_default_context(cafile=None if ca is None else str(ca))
+        if cert is not None and key is not None:
+            context.load_cert_chain(str(cert), str(key))
+    except OSError as exc:  # A file missing, or one TLS refuses (ssl.SSLError).
+        raise ValueError(f"The scanner's TLS files cannot be read: {exc}") from None
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
+
+
 _made: dict[str, tuple[object, Scanner]] = {}
 
 
@@ -154,7 +215,7 @@ def configured_scanner() -> Scanner | None:
         return held[1]
     try:
         scanner = import_backend(config.BACKEND)(**config.OPTIONS)
-    except (ImportError, TypeError) as exc:
+    except (ImportError, TypeError, ValueError) as exc:
         raise ImproperlyConfigured(f"UPLOAD_SCANNER: {exc}") from exc
     if not isinstance(scanner, Scanner):
         raise ImproperlyConfigured(

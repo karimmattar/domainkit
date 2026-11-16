@@ -715,15 +715,31 @@ class TenancyConfig(BaseModel):
         return self
 
 
+CLAMAV_SCANNER: Final = "domainkit.storage.scanning.ClamAVScanner"
+"""The scanner ``UPLOAD_SCANNER`` names unless told: clamd's."""
+
+
 class ScannerConfig(BaseModel):
     """``UPLOAD_SCANNER``: the virus scanner every upload streams through."""
 
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
-    BACKEND: str = "domainkit.storage.scanning.ClamAVScanner"
+    BACKEND: str = CLAMAV_SCANNER
     """Dotted path to a ``domainkit.storage.scanning.Scanner`` class."""
     OPTIONS: dict[str, Any] = Field(default_factory=dict)
     """Keyword arguments of the class, such as ``{"host": "clamav"}``."""
+
+    def sends_in_clear(self) -> str | None:
+        """The host clamd is reached at in clear, if not this one; else None.
+
+        Only ``ClamAVScanner`` is judged: clamd speaks no TLS, so uploads
+        reach another host in clear unless a TLS proxy is in front
+        (``tls``).
+        """
+        if self.BACKEND != CLAMAV_SCANNER or self.OPTIONS.get("tls"):
+            return None
+        host = str(self.OPTIONS.get("host", "localhost"))
+        return None if host in LOCAL_HOSTS else host
 
 
 GRANIAN_MAX_KEEP_ALIVE: Final = 60
@@ -1451,6 +1467,20 @@ class Settings(BaseModel):
                     "API from its visitors' browsers and read the answers.",
                     "List the origins of the sites that call the API, as "
                     "'https://app.example.com'.",
+                )
+            )
+        if self.UPLOAD_SCANNER is not None and (
+            clear := self.UPLOAD_SCANNER.sends_in_clear()
+        ):
+            warnings.append(
+                CheckMessage(
+                    "security.W007",
+                    f"UPLOAD_SCANNER sends every upload to clamd at {clear} in "
+                    "clear: clamd speaks no TLS, and asks no one who they are.",
+                    "Put a TLS proxy in front of clamd (stunnel) and set "
+                    "UPLOAD_SCANNER's OPTIONS tls=True, or run clamd on this "
+                    "host. On a network only the service reaches, silence "
+                    "security.W007 (docs/uploads.md, 'Virus scanning').",
                 )
             )
         warnings.extend(self._load_warnings())

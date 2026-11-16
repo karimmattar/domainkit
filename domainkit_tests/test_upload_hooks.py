@@ -2,14 +2,17 @@
 
 import asyncio
 import io
+import ssl
 import struct
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import pytest
 from PIL import Image
 from starlette.datastructures import UploadFile
 
-from domainkit.conf import override_settings
+from domainkit.checks import CheckMessage
+from domainkit.conf import override_settings, settings
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.uploads import IMAGES, TEXT, UploadRefused, save_upload
 from domainkit.storage import FileMissing, MemoryStorage
@@ -21,6 +24,7 @@ from domainkit.storage.scanning import (
     ScannerUnavailable,
     configured_scanner,
 )
+from domainkit_tests.fake_smtp import certificate, server_context
 
 pytestmark = pytest.mark.anyio
 
@@ -28,9 +32,12 @@ EICAR = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
 
 
 async def fake_clamd(
-    reply: bytes | None = None,
+    reply: bytes | None = None, *, tls: ssl.SSLContext | None = None
 ) -> tuple[asyncio.Server, int, list[bytes]]:
-    """A clamd that reads INSTREAM, and finds EICAR (or answers ``reply``)."""
+    """A clamd that reads INSTREAM, and finds EICAR (or answers ``reply``).
+
+    With ``tls``, behind a proxy that ends TLS with that context.
+    """
     received: list[bytes] = []
 
     async def serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -50,7 +57,7 @@ async def fake_clamd(
         await writer.drain()
         writer.close()
 
-    server = await asyncio.start_server(serve, "127.0.0.1", 0)
+    server = await asyncio.start_server(serve, "127.0.0.1", 0, ssl=tls)
     port = server.sockets[0].getsockname()[1]
     return server, port, received
 
@@ -166,6 +173,125 @@ def test_the_configured_scanner_is_made_once_and_checked() -> None:
     ):
         configured_scanner()
     assert Infected("X").signature == "X"
+
+
+async def one_chunk() -> AsyncIterator[bytes]:
+    """An upload of one chunk."""
+    yield b"data"
+
+
+async def test_uploads_reach_clamd_through_its_tls_proxy(tmp_path: Path) -> None:
+    """``tls``: the proxy's certificate checked against ``tls_ca``, the client's shown.
+
+    clamd speaks no TLS: a proxy in front of it (stunnel) ends it, and may
+    ask for the client's certificate, which clamd cannot (user report U5).
+    """
+    proxy = certificate(tmp_path, "clamav-proxy")
+    client = certificate(tmp_path, "api")
+    ending = server_context(*proxy)
+    ending.verify_mode = ssl.CERT_REQUIRED
+    ending.load_verify_locations(client[0])
+    server, port, received = await fake_clamd(tls=ending)
+    scanner = ClamAVScanner(
+        host="127.0.0.1",
+        port=port,
+        tls=True,
+        tls_ca=proxy[0],
+        tls_cert=client[0],
+        tls_key=client[1],
+    )
+
+    async with server:
+        passed = [chunk async for chunk in scanner.scan(one_chunk())]
+
+    assert passed == received == [b"data"]
+    assert scanner.ssl is not None
+    assert scanner.ssl.minimum_version is ssl.TLSVersion.TLSv1_2
+    assert ClamAVScanner().ssl is None
+
+
+async def test_a_tls_proxy_that_cannot_be_trusted_or_reached_in_clear_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    """A certificate no trusted CA signed, or no client certificate: 503.
+
+    A scanner without ``tls`` gets no verdict from a proxy that wants TLS.
+    """
+    proxy = certificate(tmp_path, "clamav-proxy")
+    ending = server_context(*proxy)
+    ending.verify_mode = ssl.CERT_REQUIRED
+    ending.load_verify_locations(proxy[0])
+    server, port, received = await fake_clamd(tls=ending)
+    scanners = [
+        ClamAVScanner(host="127.0.0.1", port=port, timeout=2, tls=True),
+        ClamAVScanner(
+            host="127.0.0.1", port=port, timeout=2, tls=True, tls_ca=proxy[0]
+        ),
+        ClamAVScanner(host="127.0.0.1", port=port, timeout=2),
+    ]
+
+    async with server:
+        for scanner in scanners:
+            with pytest.raises(ScannerUnavailable):
+                async for _ in scanner.scan(one_chunk()):
+                    pass
+
+    assert received == []
+
+
+def test_a_scanners_tls_options_are_checked(tmp_path: Path) -> None:
+    """A TLS file without ``tls``, a certificate without its key, a file unread."""
+    proxy = certificate(tmp_path, "clamav-proxy")
+
+    with pytest.raises(ValueError, match="need tls=True"):
+        ClamAVScanner(host="clamav", tls_ca=proxy[0])
+    with pytest.raises(ValueError, match="tls_cert and tls_key go together"):
+        ClamAVScanner(host="clamav", tls=True, tls_cert=proxy[0])
+    with pytest.raises(ValueError, match="TLS files cannot be read"):
+        ClamAVScanner(host="clamav", tls=True, tls_ca=tmp_path / "missing.pem")
+    with pytest.raises(ValueError, match="TLS files cannot be read"):
+        ClamAVScanner(host="clamav", tls=True, tls_cert=proxy[1], tls_key=proxy[1])
+    with (
+        override_settings(
+            UPLOAD_SCANNER={"OPTIONS": {"host": "clamav", "tls_ca": str(proxy[0])}}
+        ),
+        pytest.raises(ImproperlyConfigured, match="UPLOAD_SCANNER: tls_ca"),
+    ):
+        configured_scanner()
+
+
+@pytest.mark.parametrize(
+    ("scanner", "warned"),
+    [
+        ({"OPTIONS": {"host": "clamav"}}, True),
+        ({"OPTIONS": {"host": "10.0.3.7", "port": 3310}}, True),
+        ({"OPTIONS": {"host": "clamav", "tls": True}}, False),
+        ({"OPTIONS": {}}, False),
+        ({"OPTIONS": {"host": "127.0.0.1"}}, False),
+        ({"BACKEND": "acme.scanning.CloudScanner", "OPTIONS": {"host": "x"}}, False),
+        (None, False),
+    ],
+)
+def test_check_warns_where_deployed_when_uploads_reach_clamd_in_clear(
+    scanner: dict[str, object] | None, warned: bool
+) -> None:
+    """``security.W007``: clamd on another host, without TLS (user report U5)."""
+    with override_settings(
+        ENVIRONMENT="production", API_DOCS=False, UPLOAD_SCANNER=scanner
+    ):
+        found = [
+            warning
+            for warning in settings.deployment_warnings()
+            if isinstance(warning, CheckMessage) and warning.id == "security.W007"
+        ]
+    with override_settings(UPLOAD_SCANNER=scanner):
+        assert settings.deployment_warnings() == []
+
+    assert bool(found) is warned
+    if warned:
+        assert found[0].message.startswith("UPLOAD_SCANNER sends every upload to clamd")
+        assert "in clear: clamd speaks no TLS" in found[0].message
+        assert found[0].hint.startswith("Put a TLS proxy in front of clamd")
 
 
 def png(width: int, height: int) -> bytes:

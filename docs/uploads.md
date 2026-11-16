@@ -491,9 +491,61 @@ UPLOAD_SCANNER = {
   clamd's size limit), refuses the upload with 503 `scanner_unavailable`.
   An upload is never kept unscanned.
 - `ClamAVScanner` speaks clamd's `INSTREAM`. Its options are `host`
-  (`localhost`), `port` (3310), and `timeout` (30 seconds for each step).
+  (`localhost`), `port` (3310), and `timeout` (30 seconds for each step),
+  and those of TLS, below.
 - `configured_scanner()` returns the scanner that `UPLOAD_SCANNER` names,
   made once per configuration, or `None`.
+
+### clamd on another host
+
+clamd speaks no TLS, and asks no one who they are: on another host,
+every upload crosses the network in clear, and anyone who reaches its
+port can use it. In staging and production, `check` warns
+(`security.W007`) when `UPLOAD_SCANNER` reaches clamd on a host other
+than this one (`localhost`, `127.0.0.1`, `::1`) without TLS.
+
+*New in 2.5.* Put a proxy that ends TLS in front of clamd, such as
+stunnel, and turn TLS on in the scanner. It checks the proxy's
+certificate, which must name `host`, against the system's CAs or
+`tls_ca`, and can show a certificate of its own (`tls_cert`, `tls_key`)
+for the proxy to require, which clamd itself cannot:
+
+```python
+UPLOAD_SCANNER = {
+    "BACKEND": "domainkit.storage.scanning.ClamAVScanner",
+    "OPTIONS": {
+        "host": "clamav",
+        "port": 3311,
+        "tls": True,
+        "tls_ca": "/run/secrets/clamav-ca.pem",
+        "tls_cert": "/run/secrets/api.pem",
+        "tls_key": "/run/secrets/api.key",
+    },
+}
+```
+
+And on clamd's host, stunnel in server mode, in front of clamd on
+`127.0.0.1:3310` (`TCPAddr 127.0.0.1` in `clamd.conf`):
+
+```ini
+[clamd]
+accept = 3311
+connect = 127.0.0.1:3310
+cert = /etc/stunnel/clamav.pem
+key = /etc/stunnel/clamav.key
+CAfile = /etc/stunnel/api-ca.pem
+verifyChain = yes
+```
+
+The scanner speaks TLS 1.2 or later. A certificate it cannot trust, or
+a proxy that refuses its own, makes the upload fail as an unreachable
+scanner does (503 `scanner_unavailable`). A TLS file without `tls`, a
+certificate without its key, or a file TLS cannot read is refused when
+the scanner is made (`ImproperlyConfigured`). Where clamd runs on a
+network only the service reaches, add `security.W007` to
+`SILENCED_CHECKS` instead.
+
+### A scanner of your own
 
 Another scanner subclasses `domainkit.storage.scanning.Scanner`. Its
 `scan` passes the chunks on as they come, and raises `Infected` (or

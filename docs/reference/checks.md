@@ -171,6 +171,7 @@ everywhere.
 | `security.W004` | a rate limit with no `TRUSTED_PROXIES`: behind a load balancer, every caller would share its address and its count |
 | `security.W005` | `LIVE_REAUTH_INTERVAL = None`: open WebSockets and event streams keep a revoked token |
 | `security.W006` | `*` in `CORS_ALLOWED_ORIGINS`: any web site may call the API from its visitors' browsers |
+| `security.W007` | `UPLOAD_SCANNER` reaches clamd (`ClamAVScanner`) on another host without `tls`: clamd speaks no TLS, so every upload crosses the network in clear. Put a TLS proxy in front of it, or silence the warning where the network is the service's own ([Virus scanning](../uploads.md#virus-scanning)) |
 | `deploy.W001` | no `REQUEST_TIMEOUT`, or `DeadlineMiddleware` missing from `MIDDLEWARE` |
 | `deploy.W002` | no `MAX_CONCURRENT_REQUESTS`, or `ConcurrencyLimitMiddleware` missing |
 | `deploy.W003` | a database that seems to go through PgBouncer (port 6432, or a statement cache turned off in `CONNECT_ARGS`) without `PGBOUNCER = True` |

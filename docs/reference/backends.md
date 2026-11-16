@@ -226,7 +226,7 @@ Each `STORAGES` entry:
 | `UPLOAD_SCANNER` key | Default | Meaning |
 | --- | --- | --- |
 | `BACKEND` | `domainkit.storage.scanning.ClamAVScanner` | A `domainkit.storage.scanning.Scanner` class, by dotted path or by name. |
-| `OPTIONS` | `{}` | Its keyword arguments. `ClamAVScanner` takes `host`, `port` (3310), and `timeout` (30 seconds). |
+| `OPTIONS` | `{}` | Its keyword arguments. `ClamAVScanner` takes `host`, `port` (3310), `timeout` (30 seconds), and, for a TLS proxy in front of clamd, `tls` (`False`), `tls_ca`, `tls_cert`, and `tls_key` ([uploads.md](../uploads.md#virus-scanning); *new in 2.5*). |
 
 | `SEARCH` key | Default | Meaning |
 | --- | --- | --- |
