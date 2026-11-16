@@ -2,8 +2,10 @@
 
 import email
 import email.policy
+import itertools
 import json
 import logging
+import re
 import smtplib
 import socket
 import ssl
@@ -11,12 +13,13 @@ import uuid
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Final
 
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import select
 
+import domainkit
 from domainkit import clock, setup
 from domainkit.apps import registry
 from domainkit.conf import override_settings
@@ -45,6 +48,7 @@ from domainkit.contrib.messaging.tables import BLANKED, DEAD, DONE, messages
 from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.i18n import override
+from domainkit.i18n.translation import LOCALE_DIR
 from domainkit_tests.conftest import MakePackage
 from domainkit_tests.fake_smtp import (
     SmtpServer,
@@ -1111,6 +1115,90 @@ def test_templates_are_written_in_the_active_language(
     (override_dir / "billing" / "invoice.txt").write_text("Ours.", encoding="utf-8")
     billing(TEMPLATE_DIRS=[str(override_dir)])
     assert written("ar") == ("", "Ours.", None)
+
+
+def test_a_translation_is_added_alone(billing: Install, tmp_path: Path) -> None:
+    """A directory searched first may hold only a language's files (user report I8).
+
+    That language is written from them; every other one from the first
+    directory with its own files, or the template's. A directory with the
+    template's own text body still wins over a later one's translation.
+    """
+    ours, later = tmp_path / "ours", tmp_path / "later"
+    for directory in (ours / "billing", later / "billing"):
+        directory.mkdir(parents=True)
+    (ours / "billing" / "invoice.ar.txt").write_text("لنا، {{ name }}.", "utf-8")
+    (ours / "billing" / "plain.pt.txt").write_text("Olá {{ name }}.", "utf-8")
+    (ours / "billing" / "plain.de.subject.txt").write_text("Hallo", "utf-8")
+    (later / "billing" / "plain.ar.txt").write_text("لاحقًا {{ name }}.", "utf-8")
+    billing(TEMPLATE_DIRS=[str(ours), str(later)])
+    context = {"name": "Ann", "invoice": Invoice(), "link": "x"}
+
+    def written(template: str, language: str) -> tuple[str, str]:
+        with override(language):
+            message = render_mail(template, context, to=["a@example.com"])
+        return message.subject, message.body
+
+    assert written("billing/invoice", "ar") == ("", "لنا، Ann.")
+    assert written("billing/invoice", "ar-eg") == ("", "لنا، Ann.")
+    assert written("billing/invoice", "en") == (
+        "Invoice 42 for Ann",
+        "Dear Ann,\n10.00 EUR is due.\n",
+    )
+    assert written("billing/invoice", "pt-br") == ("", "Caro Ann,")
+    assert written("billing/plain", "pt") == ("", "Olá Ann.")
+    assert written("billing/plain", "de") == ("", "Only text for Ann.")
+    assert written("billing/plain", "ar") == ("", "لاحقًا Ann.")
+    (ours / "billing" / "plain.txt").write_text("Ours, {{ name }}.", "utf-8")
+    assert written("billing/plain", "ar") == ("", "Ours, Ann.")
+
+
+MAIL_SOURCE: Final = Path(domainkit.__file__).parent
+"""Where domainkit's own mail templates are, under ``templates/mail``."""
+_FILLED: Final = re.compile(r"\{\{\s*([\w.]+)\s*\}\}")
+
+
+def filled(template: Path) -> set[str]:
+    """The names a template file takes values for."""
+    return set(_FILLED.findall(template.read_text("utf-8")))
+
+
+def test_every_shipped_template_is_written_in_each_shipped_language() -> None:
+    """Each mail domainkit ships has files in each language its catalogs translate.
+
+    Its text body, and its subject and HTML body where it has them, each
+    with the values the template's own takes (user report I7).
+    """
+    languages = sorted(
+        path.name
+        for path in LOCALE_DIR.iterdir()
+        if path.is_dir() and path.name != "en"
+    )
+    bodies = {
+        path.relative_to(directory).with_suffix("").as_posix(): path
+        for directory in MAIL_SOURCE.rglob("templates/mail")
+        for path in directory.rglob("*.txt")
+        if "." not in path.name.removesuffix(".txt")
+    }
+    missing = []
+    for name, body in sorted(bodies.items()):
+        for language, part in itertools.product(
+            languages, (".txt", ".subject.txt", ".html")
+        ):
+            own = body.with_name(f"{body.stem}{part}")
+            written = body.with_name(f"{body.stem}.{language}{part}")
+            if own.is_file() != written.is_file():
+                missing.append(f"{name}.{language}{part}")
+            elif own.is_file() and filled(own) != filled(written):
+                missing.append(f"{name}.{language}{part}: other values")
+
+    assert languages == ["ar"]
+    assert {
+        "auth/signup_code",
+        "devices/enrollment_code",
+        "devices/device_bound",
+    } <= set(bodies)
+    assert missing == []
 
 
 @pytest.mark.parametrize(

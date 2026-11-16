@@ -1,11 +1,13 @@
 """Translations: the active language, negotiation, catalogs, and the middleware."""
 
 import asyncio
+import json
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Final
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 from starlette.datastructures import MutableHeaders
@@ -14,7 +16,9 @@ from starlette.types import Message, Receive, Scope, Send
 from domainkit import setup
 from domainkit.apps import registry
 from domainkit.conf import Settings, override_settings
+from domainkit.ddd import BusinessRuleViolation, InvalidField
 from domainkit.http import get_asgi_application
+from domainkit.http.errors import error_response, install_exception_handlers
 from domainkit.http.locale import LocaleMiddleware
 from domainkit.i18n import (
     LazyString,
@@ -536,6 +540,72 @@ def test_one_language_varies_with_nothing() -> None:
     assert response.headers["Content-Language"] == "ar"
     assert "Vary" not in response.headers
     assert response.json()["detail"] == "غير موجود"
+
+
+def test_a_domain_refuses_with_a_lazy_string() -> None:
+    """Its text, translated, answers: not a 500 (review of user report I2).
+
+    ``gettext_lazy`` in a domain error (or an ``InvalidField``'s field
+    error, or an ``APIError``) is shown in the request's language, as plain
+    text is.
+    """
+    app = FastAPI()
+    install_exception_handlers(app)
+    invalid = gettext_lazy("The request is invalid.")
+
+    @app.get("/refused")
+    async def refused() -> None:
+        raise BusinessRuleViolation(invalid)  # type: ignore[arg-type]
+
+    @app.get("/field")
+    async def field() -> None:
+        raise InvalidField(invalid, field="sku")  # type: ignore[arg-type]
+
+    client = TestClient(app)
+    english = client.get("/refused")
+    with override("ar"):
+        arabic = client.get("/refused")
+        on_field = client.get("/field")
+        built = error_response(400, invalid, code="x")  # type: ignore[arg-type]
+
+    assert (english.status_code, english.json()["detail"]) == (
+        422,
+        "The request is invalid.",
+    )
+    assert arabic.json()["detail"] == "الطلب غير صالح."
+    assert on_field.json()["errors"][0]["msg"] == "الطلب غير صالح."
+    assert json.loads(bytes(built.body))["detail"] == "الطلب غير صالح."
+
+
+def test_the_settings_are_read_per_request(client: TestClient) -> None:
+    """An application built before an override serves the override (user report I5).
+
+    ``LANGUAGE_CODE`` answers a caller who asks for nothing we have, and
+    ``LANGUAGES`` decides what may be asked for, as the settings say now.
+    """
+    middleware = LocaleMiddleware(client.app)
+
+    with override_settings(LANGUAGE_CODE="ar"):
+        default = client.get("/nowhere")
+        asked = client.get("/nowhere", headers={"Accept-Language": "en"})
+        assert (middleware.languages, middleware.default) == (("en", "ar"), "ar")
+    with override_settings(LANGUAGES=[("en", "English")]):
+        alone = client.get("/nowhere", headers={"Accept-Language": "ar"})
+        assert middleware.languages == ("en",)
+    after = client.get("/nowhere")
+
+    assert (default.headers["Content-Language"], default.json()["detail"]) == (
+        "ar",
+        "غير موجود",
+    )
+    assert asked.headers["Content-Language"] == "en"
+    assert alone.headers["Content-Language"] == "en"
+    assert "Vary" not in alone.headers
+    assert alone.json()["detail"] == "Not Found"
+    assert (after.headers["Content-Language"], after.headers["Vary"]) == (
+        "en",
+        "Accept-Language",
+    )
 
 
 def test_other_scopes_and_headerless_starts_pass() -> None:
