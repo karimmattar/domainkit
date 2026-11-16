@@ -550,18 +550,18 @@ def _by_content(value: object, dumped: Any) -> Any:  # noqa: ANN401 - JSON value
     whatever they dump to: an enum's value), a model or a dataclass
     inside. A set's items come in the order of their hashes, which hold
     the storage's name: they are sorted once the names are out, so the
-    twin's and the act's agree. One without its SHA-256 has no content to
-    be bound by, and keeps its name: it matches no other request. Where
-    ``value`` and ``dumped`` do not pair up item by item (two keys dumped
-    to one), the names stay. The upload's class exists only once its
-    module is loaded: a process that never loaded it holds none, and
-    loads nothing here.
+    twin's and the act's agree. Every set is sorted, holding uploads or
+    not: its order is its items' hashes', which differ from one process
+    to the next. One upload without its SHA-256 has no content to be bound
+    by, and keeps its name: it matches no other request. Where ``value``
+    and ``dumped`` do not pair up item by item (two keys dumped to one),
+    the names stay. The upload's class exists only once its module is
+    loaded: a process that never loaded it holds none, and loads nothing
+    here.
     """
     module = sys.modules.get("domainkit.storage.base")
     upload: type | None = getattr(module, "StoredUpload", None)
-    if upload is None:
-        return dumped
-    if isinstance(value, upload) and isinstance(dumped, dict):
+    if upload is not None and isinstance(value, upload) and isinstance(dumped, dict):
         if not getattr(value, "sha256", ""):
             return dumped
         return {key: item for key, item in dumped.items() if key != "name"}

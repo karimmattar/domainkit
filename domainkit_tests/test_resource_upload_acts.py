@@ -6,6 +6,8 @@ binds it by its content, so the authorization the twin asked for is spent
 by the act on the same file, and refused for another (ADR 0167).
 """
 
+import os
+import subprocess
 import sys
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
@@ -18,6 +20,7 @@ from fastapi.testclient import TestClient
 
 from domainkit.clock import FrozenClock
 from domainkit.conf import override_settings
+from domainkit.conf.env import project_prefix
 from domainkit.contrib.auth import actions
 from domainkit.contrib.auth.actions import Action, Shown, register_action
 from domainkit.ddd import Command
@@ -244,6 +247,57 @@ def test_an_upload_under_an_enum_key_or_in_a_set_is_bound_by_content() -> None:
     kept = inside.arguments(act)["kept"]
     assert [item["size"] for item in kept] == sorted(item["size"] for item in kept)
     assert "name" not in inside.arguments(act)["by_role"]["buyer"]
+
+
+SET_DIGEST: Final = """\
+from dataclasses import dataclass
+
+from domainkit.contrib.auth.actions import Action
+
+
+@dataclass(frozen=True)
+class GrantRoles:
+    user_id: str
+    roles: frozenset[str]
+
+
+act = Action(
+    "grant_roles",
+    command=GrantRoles,
+    subject=lambda command: f"user:{command.user_id}",
+    show=lambda command: ("Grant roles", []),
+)
+roles = frozenset({"admin", "auditor", "billing", "support", "viewer"})
+print(act.digest_of(GrantRoles("u1", roles)))
+"""
+"""An act's digest of a set, in a process that never loads ``domainkit.storage``."""
+
+
+def test_a_set_is_digested_in_one_order_in_every_process() -> None:
+    """Without the storage loaded too: a set's order is its hashes', per process.
+
+    The sets were sorted only where ``domainkit.storage`` was loaded, so a
+    twin and its act in two processes disagreed (review of the release).
+    """
+    digests = set()
+    for seed in ("1", "2", "3"):
+        environment = {
+            **os.environ,
+            "PYTHONHASHSEED": seed,
+            f"{project_prefix()}SETTINGS_MODULE": "domainkit_tests.settings",
+            f"{project_prefix()}ENV_FILE": "",
+            "PYTHONPATH": os.pathsep.join(sys.path),
+        }
+        done = subprocess.run(  # noqa: S603 - this interpreter, fixed code.
+            [sys.executable, "-c", SET_DIGEST],
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        digests.add(done.stdout.strip())
+
+    assert len(digests) == 1, digests
 
 
 class AttachColliding(Command):
