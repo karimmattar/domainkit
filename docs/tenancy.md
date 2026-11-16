@@ -225,6 +225,14 @@ serves each route whose path holds `{company_id}` as that company, and
 the list as no tenant
 ([resources](resources.md#a-resource-whose-items-are-tenants)).
 
+Such a resource's `PathTenant` is strict (`PathTenant(...,
+strict=True)`): every route of the application under
+`/companies/{company_id}` must take its tenant from it. `check`, and the
+application as it starts, refuse one that does not (`tenancy.E003`),
+such as a mount or a Starlette route added to a router after the router
+was included into the resource. A `PathTenant` you put on a router is
+not strict unless you say so.
+
 **Served as no tenant.** `serve_no_tenant` is `PathTenant`'s
 counterpart: a dependency that serves the route as no tenant, whatever
 the middleware chose, and `no_tenant()` (`domainkit.ddd.tenancy`) does
@@ -663,6 +671,11 @@ None
 - **`HasPermissions` where only the role should count.** It counts what
   a member holds everywhere too: staff who are members act as staff. Use
   `HasMemberPermissions` or `MemberActions`.
+- **A mount under a tenant's path.** A Starlette route, WebSocket route,
+  mount, or host takes no dependency, so no `PathTenant`, even inside a
+  router included under `/{company_id}`. A tenants' resource refuses one
+  when the router is included, and `check` finds one added later
+  (`tenancy.E003`). Declare FastAPI's routes (`@router.get`, ...).
 - **`PathTenant` on a resource's router.** Its list has no tenant in its
   path (`tenancy.E001`). Pass `tenant=` to the `ResourceRouter`.
 - **A path tenant's prefix that is not exempt.** With `TenantMiddleware`

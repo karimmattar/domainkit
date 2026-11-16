@@ -159,7 +159,15 @@ resource under `/{company_id}` would be served as no tenant: a stranger
 would reach a company's routes. The resource adds its `PathTenant` to an
 included router whose prefix holds the parameter, and refuses one
 included elsewhere, and Starlette's routes, mounts, and hosts, which
-take no dependency.
+take no dependency. FastAPI serves those without the include's
+dependencies even inside an included router, so the resource refuses a
+router that holds one, at any depth, when it is included. As inclusion
+is lazy, a route added to the router afterwards is served all the same:
+the resource's `PathTenant` is strict, and `check` refuses any route
+under its path (`/companies/{company_id}/...`) that does not take its
+tenant from it (`tenancy.E003`). A `PathTenant` a project puts on a
+router stays as in 2.4, unless made strict, so no released project gets
+a new error.
 
 A command on the collection names its target in its body (`target`);
 the route cannot know which item that is, so the resource's scope does
@@ -262,8 +270,11 @@ For searching through a reference:
   with `domainkit.ddd.tenancy.no_tenant()` for a block of code), first
   among its dependencies, whatever `TenantMiddleware` chose. A router
   included under the tenant's parameter is served as the tenant; one
-  included elsewhere, and a Starlette route, mount, or host, are refused
-  (`TypeError`). Under a rule as `outside`, a resource whose own id is the
+  included elsewhere, and a Starlette route, mount, or host, on the
+  resource or inside a router it includes, are refused (`TypeError`).
+  Its `PathTenant` is strict (`PathTenant(..., strict=True)`): `check`
+  refuses any route under its path that does not take its tenant from it
+  (`tenancy.E003`). Under a rule as `outside`, a resource whose own id is the
   tenant needs a `scope` (`TypeError` without): no member rule narrows
   its list.
 - **`Throttle(..., per_tenant=False)`** counts the caller once across

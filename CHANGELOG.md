@@ -59,7 +59,11 @@ and a status.
   (`serve_no_tenant`, and `no_tenant()` for code), whatever
   `TenantMiddleware` named. A router included into it goes under the
   tenant's parameter (`prefix="/{company_id}/..."`); one included
-  elsewhere, and Starlette routes, mounts, and hosts, are refused. `PathTenant(..., id_type=UUID)` (or `int`) reads the id as
+  elsewhere, and Starlette routes, mounts, and hosts, on the resource or
+  inside a router it includes, are refused. Its `PathTenant` is strict
+  (`PathTenant(..., strict=True)`): `check` refuses a route under its
+  path that does not take its tenant from it (`tenancy.E003`), such as
+  one added to an included router after the include. `PathTenant(..., id_type=UUID)` (or `int`) reads the id as
   that type, so a UUID in capitals is the same tenant; a resource's
   tenant reads its id's type. On the router, `PathTenant` refused the
   list (`tenancy.E001`), and command routes take no `dependencies=`.

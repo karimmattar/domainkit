@@ -1065,7 +1065,12 @@ ids of the companies the user belongs to.
   prefix names: `companies.include_router(files,
   prefix="/{company_id}/files")`. One included under another prefix, and
   a Starlette route, WebSocket route, mount, or host, which take no
-  dependency, are refused with `TypeError`.
+  dependency, are refused with `TypeError`: on the resource, and inside
+  a router it includes, at any depth, as FastAPI serves those without the
+  include's dependencies. FastAPI includes a router as it is, so one
+  added to it after the include is served too: `check`, and the
+  application as it starts, refuse it (`tenancy.E003`). Finish a router
+  before you include it.
 - Routes of your own on the resource (`@companies.get(...)`, a
   WebSocket) are served alike, by their path.
 - The id is read as the resource's id type. A UUID is the tenant's id in
