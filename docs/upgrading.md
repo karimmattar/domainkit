@@ -42,9 +42,12 @@ never published), with each section below.
 service on domainkit. No table changes: there is no migration to make.
 Deploy the workers before the web processes: the tasks that send a
 verification code take the address or number it goes to (`value`),
-which a 2.4 worker refuses, and retries as it retries any task that
-fails. Each item of this list says what a project that relied on 2.4's
-behaviour changes.
+which a 2.4 worker refuses, retrying the message until its attempts run
+out. A code an upgraded worker sends is kept for its user (verification
+codes are each user's own, below), which a 2.4 web process does not
+read: it refuses that code until it is upgraded too, and takes it then,
+within `AUTH.CODE_TTL`. Each item
+of this list says what a project that relied on 2.4's behaviour changes.
 
 - **A number given at signup with an address is on the account only once
   its own code is proved**
@@ -118,9 +121,10 @@ behaviour changes.
 - **A route that asks `StepUp(for_=...)` warns unless its service is
   decorated** with `requires_authorization` of that act; 3.0 refuses it
   ([below](#decorate-the-service-of-a-route-that-asks-for-an-acts-authorization)).
-- **An act whose command holds a set is digested in a fixed order.** An
-  authorization asked for before the upgrade for such an act, still
-  waiting for its confirmation, no longer matches the act: ask again.
+- **An act whose command holds a set is digested with the set sorted.**
+  Its items came in their hashes' order, which differs between
+  processes. An authorization asked for before the upgrade, and not yet
+  spent, for such an act no longer matches it: ask again.
 - **`check --deploy` warns about clamd reached in clear.** Where
   `UPLOAD_SCANNER` names `ClamAVScanner` on a host other than this one,
   without `tls`, `check` warns (`security.W007`), and `check --deploy`
@@ -131,6 +135,17 @@ behaviour changes.
   run.** `FcmPushBackend.send` asks FCM about the token alone before it
   forgets it, and dead-letters the message when the token passes. A
   subclass that overrode `refusal` for this case may drop the override.
+- **A catalog that translated the password rules' filled-in text
+  translates their placeholders instead.** `MinimumLengthValidator` and
+  `UserAttributeSimilarityValidator` now translate `...at least
+  {min_length} characters.` and `The password is too similar to the
+  {label}.`, then fill the value in; a project catalog that held `...at
+  least 12 characters.` moves to the text with its placeholder.
+- **A malformed `email` is refused with `type` `value_error`.** On
+  `/signup`, `/password-reset` and `/email-verification`, an `email` not
+  shaped as an address answers `Enter a valid email address.`, and its
+  error's `type` is `value_error`, no longer `string_pattern_mismatch`.
+  A client that read the type reads the new one.
 - **`makemessages --check` can fail after upgrading.** It now extracts
   `gettext_noop`, and reads the project's own modules: the settings'
   package and `ROOT_ROUTER`'s. Run `makemessages` once and commit the
