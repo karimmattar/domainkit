@@ -74,7 +74,7 @@ from .settings import auth_settings, identifier_fields
 from .tokens import LoginMethod, logging_in
 from .uow import AuthUnitOfWork
 from .users import FieldValue, get_user_model, get_user_table, typed_fields
-from .validators import validate_password
+from .validators import avalidate_password
 
 __all__ = [
     "may_change",
@@ -380,7 +380,7 @@ async def create_user(
         raise UnknownUserField("This user model has no staff flag.")
     if body.password is not None:
         candidate = SimpleNamespace(**{**fields, model.USERNAME_FIELD: body.username})
-        validate_password(body.password, candidate)
+        await avalidate_password(body.password, candidate)
     async with AuthUnitOfWork() as uow:
         user = await uow.users.create_user(
             body.username, body.password, **fields, **flags
@@ -473,7 +473,7 @@ async def set_password(
         await may_change(actor, user)
         await _admin_change(actor, user, AdminChange("password"))
         if body.password is not None:
-            validate_password(body.password, user)
+            await avalidate_password(body.password, user)
         await uow.users.set_password(
             user, body.password, priority=True, temporary=user.id != actor.id
         )

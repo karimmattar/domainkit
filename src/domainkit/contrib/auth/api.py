@@ -78,7 +78,7 @@ from .throttling import (
 )
 from .tokens import LoginMethod
 from .uow import AuthUnitOfWork
-from .validators import validate_password
+from .validators import avalidate_password
 
 __all__ = [
     "password_holds",
@@ -303,7 +303,7 @@ async def changed_on_first_use(
         if new_password is None:
             await _audit_refusal("password_change_required")
             raise _change_required()
-        validate_password(new_password, user)
+        await avalidate_password(new_password, user)
         stored = await uow.users.get(UserId(user.id))
         await uow.users.set_password(stored, new_password, priority=True)
         await uow.tokens.revoke_user(user.id)
@@ -332,7 +332,7 @@ async def check_first_use(user: AbstractBaseUser, new_password: str | None) -> N
     if new_password is None:
         await _audit_refusal("password_change_required")
         raise _change_required()
-    validate_password(new_password, user)
+    await avalidate_password(new_password, user)
 
 
 def _change_required() -> APIError:
@@ -534,7 +534,7 @@ async def change_password(
             code="wrong_password",
         )
     await counted.succeeded()
-    validate_password(body.new_password, user)
+    await avalidate_password(body.new_password, user)
     if body.keep_device_logins is False:
         await check_manage_logins(request, user)
     credentials = credentials_of(request)

@@ -86,6 +86,12 @@ domainkit.
   two instances) shared a key, and workers ran the last one subscribed
   for the messages of both. `subscribe` now raises `ValueError` at
   startup: give each its own `name=`.
+- **An async password rule is awaited, or refused.** A rule in
+  `PASSWORD_VALIDATORS` whose `validate` is `async def` never ran before
+  2.4: the password was taken unchecked. Every route and command now
+  awaits it. Code of your own that calls `validate_password` with such a
+  rule configured gets `ImproperlyConfigured`; call
+  `await avalidate_password(...)` there instead.
 
 ### Make and apply the object permissions' migration
 

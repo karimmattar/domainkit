@@ -67,7 +67,7 @@ from .onetime import email_of
 from .settings import auth_settings
 from .throttling import address_key, audit_refusal, count_failure, email_key, throttle
 from .uow import AuthUnitOfWork
-from .validators import validate_password
+from .validators import avalidate_password
 
 __all__ = [
     "router",
@@ -214,7 +214,8 @@ async def confirm_password_reset_code(
     async with AuthUnitOfWork() as uow:
         user = await _proven_user(uow, body)
         if user is not None:
-            validate_password(body.new_password, user)  # Raises: nothing is spent.
+            # Raises: nothing is spent.
+            await avalidate_password(body.new_password, user)
             await uow.users.set_password(user, body.new_password)
             await uow.tokens.revoke_user(user.id, keep_devices=keep_devices)
             _prove_reached(user, body.identifier)

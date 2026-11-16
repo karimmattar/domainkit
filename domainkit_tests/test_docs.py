@@ -33,6 +33,7 @@ from domainkit.contrib.audit.settings import AuditSettings
 from domainkit.contrib.auth.settings import (
     AuthorizationsSettings,
     AuthSettings,
+    BreachedPasswordSettings,
     ClientCertSettings,
     CookieSettings,
     JWTSettings,
@@ -118,6 +119,7 @@ def documented(pages: str) -> set[str]:
         (ApprovalsSettings, "contrib/approvals.md"),
         (LimitsSettings, "contrib/limits.md"),
         (AuthSettings, "auth.md"),
+        (BreachedPasswordSettings, "auth.md"),
         (JWTSettings, "auth.md"),
         (PreviousJWTKey, "auth.md"),
         (CookieSettings, "auth.md"),
@@ -540,6 +542,7 @@ SETTINGS_TABLES: tuple[tuple[type[BaseModel], str, str], ...] = (
     (AwsKmsSettings, "contrib/keys.md", 'KEYS["AWS_KMS"]'),
     (VaultSettings, "contrib/keys.md", 'KEYS["VAULT"]'),
     (AuthSettings, "auth.md", "AUTH"),
+    (BreachedPasswordSettings, "auth.md", 'AUTH["BREACHED_PASSWORDS"]'),
     (CookieSettings, "auth.md", 'AUTH["COOKIE"]'),
     (MfaSettings, "auth.md", 'AUTH["MFA"]'),
     (StepUpSettings, "auth.md", 'AUTH["STEP_UP"]'),
@@ -565,7 +568,7 @@ PROSE_DEFAULTS = {
     "BrokerConfig": {"URL", "PREFIX", "TLS_CA"},
     "AuthSettings": {"USER_TABLE", "PASSWORD_HASHERS", "PASSWORD_VALIDATORS"}
     | {"JWT", "COOKIE", "MFA", "STEP_UP", "SCA", "CLIENT_CERT", "PRINCIPAL_CACHE"}
-    | {"AUTHORIZATIONS"},
+    | {"AUTHORIZATIONS", "BREACHED_PASSWORDS"},
     "CookieSettings": {"NAME", "CSRF_NAME"},
     "JWTSettings": {"SIGNING_KEY"},
     "PreviousJWTKey": {"KEY", "RETIRED_AT"},

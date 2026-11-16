@@ -1163,3 +1163,13 @@ msgstr ""
 
 msgid "This authorization was confirmed already, or ended."
 msgstr ""
+
+#. domainkit.contrib.auth: breached passwords
+msgid "This password has appeared in a data breach: choose another one."
+msgstr ""
+
+msgid "Your password can't be one that has appeared in a data breach."
+msgstr ""
+
+msgid "Passwords cannot be checked against data breaches now; try again later."
+msgstr ""

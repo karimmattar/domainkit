@@ -1173,3 +1173,14 @@ msgstr "لم يعد ممكنًا تأكيد هذا التفويض؛ اطلب ت�
 
 msgid "This authorization was confirmed already, or ended."
 msgstr "أُكِّد هذا التفويض من قبل، أو انتهى."
+
+#. domainkit.contrib.auth: breached passwords
+msgid "This password has appeared in a data breach: choose another one."
+msgstr "ظهرت كلمة المرور هذه في تسريب للبيانات: اختر كلمة مرور أخرى."
+
+msgid "Your password can't be one that has appeared in a data breach."
+msgstr "لا يمكن أن تكون كلمة مرورك قد ظهرت في تسريب للبيانات."
+
+msgid "Passwords cannot be checked against data breaches now; try again later."
+msgstr "يتعذّر الآن التحقق من كلمات المرور في تسريبات البيانات؛ أعد المحاولة لاحقًا."
+

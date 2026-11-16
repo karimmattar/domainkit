@@ -41,7 +41,7 @@ from ...exceptions import (
 from ...settings import auth_settings, identifier_fields
 from ...uow import AuthUnitOfWork
 from ...users import get_user_model
-from ...validators import validate_password
+from .. import check_password_rules
 
 
 def _may_bypass() -> bool:
@@ -212,7 +212,7 @@ class Command(BaseCommand):
                 self._error("Blank passwords aren't allowed.")
                 continue
             try:
-                validate_password(password, SimpleNamespace(**values))
+                check_password_rules(password, SimpleNamespace(**values))
             except InvalidPassword as exc:
                 self._error("\n".join(exc.errors))
                 if not _may_bypass():
@@ -229,7 +229,7 @@ class Command(BaseCommand):
         password = Env().str("SUPERUSER_PASSWORD", None)
         if password is not None:
             try:
-                validate_password(password, SimpleNamespace(**values))
+                check_password_rules(password, SimpleNamespace(**values))
             except InvalidPassword as exc:
                 raise CommandError(" ".join(exc.errors)) from None
         return password

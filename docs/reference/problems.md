@@ -95,6 +95,7 @@ unique constraint may name its own code
 | `authorization_required` | 401 | `AuthorizationRequired` (contrib.auth.actions): Authorize this act first: ask for an authorization of it, confirm it, and send it in the Action-Authorization header. |
 | `authorization_unspent` | 500 | contrib.auth.actions: A rule accepted an authorization that no service spent: decorate the act's service with requires_authorization. |
 | `bad_request` | 400 | Starlette or FastAPI. |
+| `breached_passwords_unavailable` | 503 | `BreachedPasswordsUnavailable` (contrib.auth.validators): The breached-password check could not answer, and fails closed: 503. |
 | `business_rule_violation` | 422 | `BusinessRuleViolation` (ddd.exceptions): The request is well-formed but breaks an invariant of the model. |
 | `captcha_failed` | 400 | contrib.auth.captcha: The captcha was missing or not solved. |
 | `captcha_unavailable` | 503 | `CaptchaUnavailable` (contrib.auth.captcha): The captcha provider could not check the token: 503. |

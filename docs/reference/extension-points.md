@@ -161,7 +161,7 @@ ERROR_REPORTERS = ["config.errors.report_to_tracker"]
 | Self-service webhooks owned by what the caller administers (a company) | a FastAPI dependency returning the owner, or None for one the caller may not manage | `webhooks.owned.owned_router(resolver=...)` ([Owners the caller administers](../contrib/webhooks.md#owners-the-caller-administers)) |
 | Another way to authenticate requests (OpenID Connect, a gateway's header) | an ASGI middleware that puts a `domainkit.http.access.Principal` in `scope["user"]` | `MIDDLEWARE` ([Another authentication](../auth/routes.md#another-authentication)) |
 | A password hasher | `auth.hashers.PasswordHasher` | `AUTH.PASSWORD_HASHERS` |
-| A password rule | a class with `validate(password, user)` and `help_text()` | `AUTH.PASSWORD_VALIDATORS` |
+| A password rule | a class with `validate(password, user)`, sync or `async`, and `help_text()` | `AUTH.PASSWORD_VALIDATORS` |
 
 ## Backends
 
