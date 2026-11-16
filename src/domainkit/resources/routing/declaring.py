@@ -37,6 +37,8 @@ from .context import (
 from .reach import check_parent, rules_of
 
 if TYPE_CHECKING:
+    from fastapi.routing import APIRoute
+
     from . import ResourceRouter
 
 IF_NONE_MATCH: Final = "The ETag you hold: 304 if it is current."
@@ -64,8 +66,8 @@ MAX_HEADER: Final = 4096
 """The longest ``If-Match`` or ``If-None-Match`` a route reads."""
 
 
-def add_route(router: "ResourceRouter", spec: RouteSpec, handle: Handle) -> None:
-    """Add the route ``spec`` describes to ``router``, answered by ``handle``."""
+def add_route(router: "ResourceRouter", spec: RouteSpec, handle: Handle) -> "APIRoute":
+    """Add the route ``spec`` describes to ``router``, and return it."""
     name = f"{router.name_prefix}{spec.name}"
     rules = spec.rules
     if rules is None:
@@ -85,7 +87,11 @@ def add_route(router: "ResourceRouter", spec: RouteSpec, handle: Handle) -> None
             None if spec.returns is None or spec.returns is DEFAULT else spec.returns
         ),
         responses=_responses(router, spec, rules, served=served),
-        dependencies=[Depends(Require(*rules))] if rules else None,
+        dependencies=[
+            *([Depends(Require(*rules))] if rules else []),
+            *spec.dependencies,
+        ]
+        or None,
         openapi_extra=_extra(router, spec),
     )
     router.operations.append(
@@ -101,6 +107,7 @@ def add_route(router: "ResourceRouter", spec: RouteSpec, handle: Handle) -> None
             parameters=spec.asked,
         )
     )
+    return cast("APIRoute", router.routes[-1])  # add_api_route appends it.
 
 
 def _endpoint(

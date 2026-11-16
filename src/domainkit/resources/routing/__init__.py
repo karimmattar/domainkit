@@ -99,6 +99,7 @@ from ..policies import FieldPolicy
 from ..renderers import FORMATS, JSON
 from ..schemas import PatchModel, schema_for
 from . import presenting, reach
+from .authorizing import asking_authorization as asking_authorization
 from .batching import BatchRoute
 from .commands import CommandRoute
 from .context import ALL_FIELDS as ALL_FIELDS
@@ -552,6 +553,7 @@ class ResourceRouter(APIRouter):
         provide: Mapping[str, Callable[..., object]] | None = None,
         body_limit: int | None = None,
         retry: Retry | None = None,
+        dependencies: Sequence[params.Depends] = (),
     ) -> None:
         """Add a route that runs ``command`` through ``service(command, uow)``.
 
@@ -560,7 +562,9 @@ class ResourceRouter(APIRouter):
         the id comes from the path. Others act on the collection (``path``
         after the prefix). The body's fields, the path's ids (and the
         parent's, by ``parent_field``) build the command; a ``PatchModel``
-        body gives only the fields the request set. ``provide`` maps other
+        body gives only the fields the request set, and a dataclass the
+        command declares comes as the body validated it
+        (``values.instances``). ``provide`` maps other
         fields to FastAPI dependencies that give them, such as the caller's
         id for an ``owner_id``: the path wins over them, and they over the
         body.
@@ -573,6 +577,17 @@ class ResourceRouter(APIRouter):
         or ``change``); ``rule`` adds a rule of the route's own.
         ``body_limit`` holds its bodies to that many bytes (default: the
         resource's for commands, else ``MAX_REQUEST_BODY_SIZE``).
+        ``dependencies`` are FastAPI dependencies of the route's own, such
+        as a limit, ``Depends(Throttle("50/day"))``: run after its rules
+        (a request they refuse is not counted), before the aggregate is
+        reached and the body and ``If-Match`` are checked.
+
+        A route whose rules ask for an authorization of the act gets a twin,
+        ``POST <path>/authorization`` (``/authorization/<method>`` where
+        routes of one path ask by several methods). The twin asks the
+        route's rules and builds the command with ``provide``, but runs none
+        of ``dependencies``: a limit there counts acts, not asks. So a check
+        of who may act goes in ``rule``, never in ``dependencies``.
 
         ``retry`` runs the service again, whole, when its transaction loses
         a race (``UnitOfWork.run``): the check that the caller may reach the
@@ -601,6 +616,7 @@ class ResourceRouter(APIRouter):
             provide=provide,
             body_limit=body_limit,
             retry=retry,
+            dependencies=dependencies,
         ).declare()
 
     def use_case(

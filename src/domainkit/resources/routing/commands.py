@@ -10,11 +10,11 @@ for an authorization of the act gets a twin that asks for one
 """
 
 import dataclasses
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from functools import partial
 from typing import TYPE_CHECKING, Literal
 
-from fastapi import Response, status
+from fastapi import Response, params, status
 from pydantic import BaseModel
 
 from domainkit.ddd.messages import Command
@@ -26,7 +26,7 @@ from . import presenting, reach
 from .authorizing import AuthorizationRoute
 from .context import COMMAND, DEFAULT, Returns, RouteContext, RouteSpec, Service
 from .declaring import add_route
-from .values import changes, check_given, summary_of
+from .values import changes, check_given, instances, summary_of
 
 if TYPE_CHECKING:
     from domainkit.ddd.uow import Retry, UnitOfWork
@@ -57,6 +57,7 @@ class CommandRoute:
         provide: Mapping[str, Callable[..., object]] | None,
         body_limit: int | None = None,
         retry: "Retry | None" = None,
+        dependencies: Sequence[params.Depends] = (),
     ) -> None:
         """Check the command against what gives its fields.
 
@@ -82,6 +83,8 @@ class CommandRoute:
         self.provided = dict(provide or {})
         given = set(body.model_fields) if body is not None else set()
         check_given(command, given, self.provided, self.from_path)
+        self.instances = instances(command, body)
+        """The body's fields that give the command its dataclasses as validated."""
         self.returns, self.status_code, self.action = _answers(
             method, self.detail, returns, status_code, action
         )
@@ -106,6 +109,7 @@ class CommandRoute:
             writes=True,
             provided=self.provided,
             body_limit=router.body_limit_of(COMMAND, body_limit),
+            dependencies=tuple(dependencies),
         )
         self.twin = AuthorizationRoute.of(self)
         """``POST <path>/authorization``, if a rule asks for an authorization."""
@@ -121,13 +125,14 @@ class CommandRoute:
 
         The path wins over ``provide``, and ``provide`` over the body. A
         ``PatchModel`` body gives the fields the request set, and the
-        resource's policy must let the caller change them.
+        resource's policy must let the caller change them. A dataclass the
+        command declares comes as the body validated it (``instances``).
 
         Raises:
             FieldNotEditable: The policy keeps the caller from changing a field.
         """
         router = self.router
-        given = changes(context.body)
+        given = changes(context.body, self.instances)
         if self.partial and router.policy is not None:
             await router.policy.check_changes(context.request, given)
         return self.command(

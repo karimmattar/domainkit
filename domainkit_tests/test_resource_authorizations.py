@@ -10,7 +10,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
@@ -31,7 +31,13 @@ from domainkit.http.access import (
 )
 from domainkit.http.errors import install_exception_handlers
 from domainkit.http.middleware import RequestBodyLimitMiddleware, route_body_limit
-from domainkit.resources import FieldPolicy, ModelActions, ResourceRouter
+from domainkit.http.ratelimit import MemoryBackend, Throttle
+from domainkit.resources import (
+    FieldPolicy,
+    ModelActions,
+    ResourceRouter,
+    asking_authorization,
+)
 from domainkit_tests.conftest import UseAuth
 from domainkit_tests.gadgets import (
     FakeGadgetsUnitOfWork,
@@ -696,16 +702,211 @@ def test_two_asking_rules_on_one_route_are_refused_at_declaration() -> None:
     assert route_names(resource) == before
 
 
-def test_two_routes_whose_twins_would_share_a_path_are_refused() -> None:
-    """``PATCH`` and ``DELETE`` of one item, both asking, would have one twin (A6)."""
+def test_twins_of_one_path_name_their_methods(use_auth: UseAuth) -> None:
+    """A ``PATCH`` and a ``DELETE`` of one item both get a twin (user report A17).
+
+    Each twin's path names its route's method, the first's moved there
+    when the second is declared; one alone keeps ``<path>/authorization``.
+    """
+    use_auth()
+    asks = Asks()
     store = InMemoryGadgets([make_gadget("a")])
     resource = gadgets(store)
     resource.command_route(
+        UpdateGadget, service=update, body=GadgetChanges, method="PATCH", rule=asks
+    )
+    alone = route_names(resource)[-1], resource.routes[-1].path  # type: ignore[attr-defined]
+    resource.command_route(DropGadget, service=drop, method="DELETE", rule=asks)
+    resource.command_route(MakeGadget, service=make, body=MakeIn, rule=asks)
+    resource.command_route(
+        MakeGadget, service=make, body=MakeIn, method="PUT", name="put", rule=asks
+    )
+    client = client_of(resource)
+    (gadget_id,) = store.items
+    item = f"{LOCATION}{gadget_id}/authorization"
+
+    patched = client.post(f"{item}/patch", json={"name": "z"}, headers=as_("changer"))
+    dropped = client.post(f"{item}/delete", headers=as_("deleter"))
+    bare = client.post(item, json={"name": "z"}, headers=as_("changer"))
+    made = client.post(
+        "/gadgets/authorization/post",
+        json={"name": "n", "price": "1.00"},
+        headers=as_("adder"),
+    )
+    put = client.post(
+        "/gadgets/authorization/put",
+        json={"name": "n", "price": "1.00"},
+        headers=as_("changer"),
+    )
+    refused = client.post(f"{item}/delete", headers=as_("changer"))
+
+    assert alone == (
+        "update_gadget_authorization",
+        "/gadgets/{gadget_id}/authorization",
+    )
+    assert [each.status_code for each in (patched, dropped, made, put)] == [201] * 4
+    assert bare.status_code == 404
+    assert refused.status_code == 403  # ModelActions: no delete_gadget.
+    assert asks.asked == [
+        UpdateGadget(gadget_id=gadget_id, name="z", stock=UNSET),
+        DropGadget(gadget_id=gadget_id),
+        MakeGadget(name="n", price=Decimal("1.00")),
+        MakeGadget(name="n", price=Decimal("1.00")),
+    ]
+    assert {
+        route.name: route.path
+        for route in resource.routes
+        if isinstance(route, APIRoute) and route.name.endswith("_authorization")
+    } == {
+        "update_gadget_authorization": "/gadgets/{gadget_id}/authorization/patch",
+        "drop_gadget_authorization": "/gadgets/{gadget_id}/authorization/delete",
+        "make_gadget_authorization": "/gadgets/authorization/post",
+        "put_authorization": "/gadgets/authorization/put",
+    }
+    assert {
+        each.name: each.path
+        for each in resource.operations
+        if each.name.endswith("_authorization")
+    } == {
+        "update_gadget_authorization": "/gadgets/{gadget_id}/authorization/patch",
+        "drop_gadget_authorization": "/gadgets/{gadget_id}/authorization/delete",
+        "make_gadget_authorization": "/gadgets/authorization/post",
+        "put_authorization": "/gadgets/authorization/put",
+    }
+    assert sorted(each.name for each in resource.operations) == sorted(
+        route_names(resource)
+    )
+    # The collection's twins are matched before the routes of one item.
+    assert route_names(resource).index("put_authorization") < (
+        route_names(resource).index("read_gadget")
+    )
+    assert [store.items[gadget_id].name, len(store.items)] == ["a", 1]
+
+
+def test_twins_that_would_share_a_path_are_refused() -> None:
+    """Two asking routes of one path and method, or a path taken (A6, A17)."""
+    store = InMemoryGadgets([make_gadget("a")])
+    resource = gadgets(store)
+
+    async def taken() -> None:
+        """A route of the project's own, where a twin would go."""
+
+    resource.add_api_route("/{gadget_id}/authorization/delete", taken, methods=["POST"])
+    resource.add_api_route(
+        "/{gadget_id}/rename/authorization", taken, methods=["POST"], name="r"
+    )
+    resource.command_route(
         UpdateGadget, service=update, body=GadgetChanges, method="PATCH", rule=Asks()
     )
+    before = route_names(resource)
 
-    with pytest.raises(ImproperlyConfigured, match="update_gadget_authorization"):
+    with pytest.raises(
+        ImproperlyConfigured,
+        match=r"PATCH /gadgets/\{gadget_id\} \(again\) asks for an authorization "
+        r"at POST /gadgets/\{gadget_id\}/authorization/patch, which "
+        r"update_gadget_authorization answers already",
+    ):
+        resource.command_route(
+            UpdateGadget,
+            service=update,
+            body=GadgetChanges,
+            method="PATCH",
+            name="again",
+            rule=Asks(),
+        )
+    with pytest.raises(
+        ImproperlyConfigured,
+        match=r"at POST /gadgets/\{gadget_id\}/authorization/delete, which taken",
+    ):
         resource.command_route(DropGadget, service=drop, method="DELETE", rule=Asks())
+    with pytest.raises(
+        ImproperlyConfigured, match=r"/rename/authorization, which r answers"
+    ):
+        resource.command_route(
+            RenameGadget, service=rename, body=RenameIn, path="/rename", rule=Asks()
+        )
+
+    assert route_names(resource) == before
+    assert resource.routes[-1].path == "/gadgets/{gadget_id}/authorization"  # type: ignore[attr-defined]
+
+
+def test_a_route_s_own_dependencies_run_on_the_act_not_its_twin(
+    use_auth: UseAuth,
+) -> None:
+    """A limit in ``dependencies`` counts acts, after the rules (user report A14).
+
+    The twin asks the rules and runs ``provide``, which tell its request
+    apart with ``asking_authorization``; the route's own dependencies run on
+    the act alone.
+    """
+    use_auth()
+    asks = Asks()
+    store = InMemoryGadgets([make_gadget("a")])
+    counted: list[str] = []
+    provided: list[bool] = []
+    shared: list[bool] = []
+
+    def count(request: Request) -> None:
+        counted.append(request.url.path)
+
+    def who(request: Request) -> str:
+        provided.append(asking_authorization(request))
+        return request.headers["x-user"]
+
+    def everywhere(request: Request) -> None:
+        shared.append(asking_authorization(request))
+
+    resource = gadgets(store, dependencies=[Depends(everywhere)])
+    resource.command_route(
+        Tag,
+        service=touch,
+        body=RenameIn,
+        path="/tag",
+        provide={"who": who},
+        rule=asks,
+        dependencies=[
+            Depends(count),
+            Depends(Throttle("2/minute", scope="tags", backend=MemoryBackend())),
+        ],
+    )
+    resource.use_case(
+        restock, path="/restock", rule=asks, dependencies=[Depends(count)]
+    )
+    client = client_of(resource)
+    (gadget_id,) = store.items
+    act = f"{LOCATION}{gadget_id}/tag"
+
+    def tag(*headers: str) -> int:
+        return client.post(
+            act,
+            json={"name": "n"},
+            headers=as_("changer", **dict.fromkeys(headers, "y")),
+        ).status_code
+
+    def ask() -> int:
+        return client.post(
+            f"{act}/authorization", json={"name": "n"}, headers=as_("changer")
+        ).status_code
+
+    asked = [ask(), ask(), ask()]
+    unauthorized = tag()
+    acts = [tag("X-Authorized"), tag("X-Authorized"), tag("X-Authorized")]
+    stocked = client.post(
+        f"{LOCATION}{gadget_id}/restock/authorization",
+        json={"quantity": 1},
+        headers=as_("changer"),
+    )
+    plain = client.get(f"{LOCATION}{gadget_id}", headers=as_("viewer"))
+
+    assert asked == [201, 201, 201]
+    assert unauthorized == 403  # Refused by its rules: not counted.
+    assert acts == [200, 200, 429]
+    assert (stocked.status_code, plain.status_code) == (201, 200)
+    assert counted == [act] * 3
+    assert provided == [True, True, True, False, False]
+    assert shared == [True] * 3 + [False] * 4 + [True, False]
+    assert len(asks.asked) == 4
+    assert not asking_authorization(HTTPConnection({"type": "http"}))  # Unrouted.
 
 
 def test_openapi_documents_the_twin_as_its_own_operation(use_auth: UseAuth) -> None:

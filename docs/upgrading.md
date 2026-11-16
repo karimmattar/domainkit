@@ -38,6 +38,25 @@ never published), with each section below.
 
 ## 2.4 to 2.5
 
+2.5 answers the third report of the project 2.4 answered. Each item of
+this list says what a project that relied on 2.4's behaviour changes.
+
+- **A command gets the dataclasses it declares as instances.** A command
+  field declared as a dataclass, such as a value object, or a tuple of
+  one, whose body field is typed as that same class (or a tuple of it),
+  got dicts from a command route, a batch, or a twin: a `@use_case`'s
+  `tuple[Address, ...]` came as `({"street": ..., "city": ...},)`. It
+  gets the instances the body validated, `(Address(...),)`. A service
+  that rebuilt them (`Address(**item)`) drops that step; it gets
+  pydantic's instances, built with their `__post_init__` but without
+  their markers (`MaxLength`, ...) checked, as 2.4 built them before
+  dumping them, so a service that relied on the rebuild to check the
+  markers checks them itself. A
+  `@field_serializer` on such a body field no longer applies to what the
+  command gets. A field the command declares as `dict`, `Any`, `Mapping`,
+  or anything else, a `list[...]`, and a field the body gives in a shape
+  of its own (a nested model) still get what `model_dump()` gives.
+
 2.5 answers a third report from a project. Nothing a project relies on
 changes; what follows may ask something of it.
 

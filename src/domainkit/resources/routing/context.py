@@ -9,10 +9,10 @@ key of a bag. Batches give each item a context of its own with
 """
 
 import dataclasses
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, Final
 
-from fastapi import Request, Response, status
+from fastapi import Request, Response, params, status
 from pydantic import BaseModel
 from starlette.requests import HTTPConnection
 
@@ -130,6 +130,8 @@ class RouteSpec:
     """Its body limit in bytes (``body_limit``); None: ``MAX_REQUEST_BODY_SIZE``."""
     rules: tuple[Rule, ...] | None = None
     """What it checks in place of the resource's rules and its own (a twin's)."""
+    dependencies: Sequence[params.Depends] = ()
+    """FastAPI dependencies of its own (``Depends(...)``), after its ``Require``."""
 
 
 @dataclasses.dataclass(frozen=True, slots=True)

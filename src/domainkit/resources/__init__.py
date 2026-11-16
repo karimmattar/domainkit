@@ -34,7 +34,14 @@ from .conditional import PreconditionRequired, entity_tag, expected_versions
 from .events import RecordChanged, RecordCreated, RecordDeleted
 from .policies import FieldNotEditable, FieldPolicy
 from .renderers import ExportTooLarge, NotAcceptable
-from .routing import ALL_FIELDS, MERGE_PATCH, Operation, ResourceRouter, to_domain
+from .routing import (
+    ALL_FIELDS,
+    MERGE_PATCH,
+    Operation,
+    ResourceRouter,
+    asking_authorization,
+    to_domain,
+)
 from .schemas import DomainSchema, PatchModel, schema_for
 
 __all__ = [
@@ -62,6 +69,7 @@ __all__ = [
     "RecordDeleted",
     "ResourceRouter",
     "Unset",
+    "asking_authorization",
     "entity_tag",
     "expected_versions",
     "schema_for",

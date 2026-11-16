@@ -221,8 +221,11 @@ does and answers `201` with the authorization: its `id`, `purpose`,
 `shown`, `expires_at`, and `methods`, what confirming it must prove
 (*new in 2.5*). A page reads `methods` to offer the ways that may
 confirm it, a code, the phone, or a passkey, without asking `GET
-/auth/authorizations/{id}` again. A route of your own gets a twin of
-your own, that builds the command and calls
+/auth/authorizations/{id}` again. Where routes of one path ask by
+several methods, each twin's path names its method,
+`<path>/authorization/delete`
+([resources.md](../resources.md#authorizations-for-one-act)). A route of
+your own gets a twin of your own, that builds the command and calls
 `request_action_authorization`:
 
 ```python

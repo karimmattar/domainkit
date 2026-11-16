@@ -304,6 +304,25 @@ and a status.
   its field is one of them. A resource's members can be found by
   their user's name, wherever users are kept. ADR 0170 (user report D2).
 
+- `command_route(dependencies=[...])`, and so `use_case(...,
+  dependencies=...)`: FastAPI dependencies of a command route's own, run
+  after its rules, such as `Depends(Throttle("50/day"))`. A request the
+  rules refuse is not counted; one refused after them (`404`, `412`,
+  `422`, or a rule on the aggregate) is. The route's twin (`POST
+  <path>/authorization`) runs none of them, so a limit counts acts, not
+  the asks before them. `asking_authorization(request)`, in
+  `domainkit.resources`, tells a twin's request apart for code that runs
+  on both: `provide`, rules, and the resource's dependencies. A limit had
+  to go in `provide`, which the twin runs, and counted each act twice.
+  ADR 0162 (user report A14).
+
+- Routes of one path that ask for an authorization by several methods,
+  such as a `PATCH` and a `DELETE` of one item, each get a twin, whose
+  path names its route's method: `POST <path>/authorization/patch` and
+  `POST <path>/authorization/delete`. A route alone on its path keeps
+  `<path>/authorization`. The router refused the second route. ADR 0162
+  (user report A17).
+
 ### Changed
 
 - `import domainkit.i18n` imports none of its modules. Its names, and its
@@ -335,6 +354,23 @@ and a status.
   until it expired. A hook that denies it itself keeps working, and any
   other error (a conflict to retry, a throttle, the hook's own failure)
   still leaves it waiting. ADR 0164 (user report A17).
+
+- A command field declared as a dataclass, such as a value object, or a
+  tuple of one (a `@use_case`'s `tuple[Address, ...]`), gets the
+  instances the body validated, where the body's field is typed as that
+  same class (or a tuple of it), from a command route, a batch, or a
+  twin. They came as dicts, as `model_dump()` gives them. Nothing is
+  built again: pydantic builds them as it did, running their
+  `__post_init__` and checking none of their markers (`MaxLength`, ...).
+  A field the command declares as `dict`, `Any`, `Mapping`, or anything
+  else, a `list[...]`, and every field a body gives in a shape of its own
+  (a nested model) come as before. Schemas are unchanged. A service that
+  rebuilt the instances from dicts stops
+  ([upgrading.md](docs/upgrading.md#24-to-25)) (user report U5).
+
+- A batch item whose service raises `RequestValidationError` answers that
+  item's `422 validation_error`, as a request of its own would, and no
+  longer `500` (user report U5).
 
 ### Deprecated
 
@@ -383,6 +419,15 @@ and a status.
   (`--http2-max-headers-size`), where its HTTP/2 took 16 MiB of headers
   from an h2c client ([HTTP versions](docs/reference/servers.md#http-versions))
   (user report S1).
+
+- A resource whose prefix holds a path parameter of its own, such as
+  `/companies/{company_id}/templates`, answered a create with `500`, and
+  a listing with links too: `Location` and `links` were built from the
+  resource's and its parent's ids only. They take the prefix's parameters
+  from the request, and those of a router the resource is included in
+  (`APIRouter(prefix="/orgs/{org}")`), which failed in 2.4 too, as the
+  read route of that name declares them. Each value is percent-encoded,
+  ids included (user report U5).
 
 ## [2.4.0] - 2026-11-16
 
