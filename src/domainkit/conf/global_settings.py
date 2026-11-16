@@ -716,15 +716,41 @@ class TenancyConfig(BaseModel):
         return self
 
 
+CLAMAV_SCANNER: Final = "domainkit.storage.scanning.ClamAVScanner"
+"""The scanner ``UPLOAD_SCANNER`` names unless told: clamd's."""
+
+
 class ScannerConfig(BaseModel):
     """``UPLOAD_SCANNER``: the virus scanner every upload streams through."""
 
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
-    BACKEND: str = "domainkit.storage.scanning.ClamAVScanner"
+    BACKEND: str = CLAMAV_SCANNER
     """Dotted path to a ``domainkit.storage.scanning.Scanner`` class."""
     OPTIONS: dict[str, Any] = Field(default_factory=dict)
     """Keyword arguments of the class, such as ``{"host": "clamav"}``."""
+
+    def sends_in_clear(self) -> str | None:
+        """The host clamd is reached at in clear, if not this one; else None.
+
+        Only ``ClamAVScanner`` and its subclasses are judged, however
+        ``BACKEND`` names them: clamd speaks no TLS, so uploads reach
+        another host in clear unless a TLS proxy is in front (``tls``). A
+        backend that cannot be imported is judged where it is made.
+        """
+        if self.OPTIONS.get("tls"):
+            return None
+        from domainkit.storage.scanning import ClamAVScanner
+        from domainkit.utils.module_loading import import_backend
+
+        try:
+            backend = import_backend(self.BACKEND)
+        except ImportError:
+            return None
+        if not (isinstance(backend, type) and issubclass(backend, ClamAVScanner)):
+            return None
+        host = str(self.OPTIONS.get("host", "localhost"))
+        return None if host in LOCAL_HOSTS else host
 
 
 RENDERER_SCHEMES: Final = frozenset({"http", "https"})
@@ -855,6 +881,14 @@ class ServeConfig(BaseModel):
     ``--http1-buffer-size``)."""
     WEBSOCKETS: bool = True
     """Accept WebSockets; uvicorn reads messages up to ``MAX_REQUEST_BODY_SIZE``."""
+    HTTP: Literal["auto", "1", "2"] = "auto"
+    """The HTTP versions Granian speaks (``--http``): ``auto`` takes HTTP/1.1
+    and, from a client that opens with it, HTTP/2 without TLS (h2c); ``1``
+    HTTP/1.1 only; ``2`` h2c only. uvicorn speaks HTTP/1.1 only."""
+    EXIT_ON_FAILED_START: bool = False
+    """Stop the server, exit status 3, when a worker fails as it starts (its
+    application cannot be imported, or its startup fails), instead of
+    starting it again. uvicorn stops so whatever this says."""
 
     @model_validator(mode="after")
     def _granian_keep_alive(self) -> Self:
@@ -867,6 +901,20 @@ class ServeConfig(BaseModel):
             raise ValueError(
                 f"KEEP_ALIVE is {self.KEEP_ALIVE}, but Granian keeps an idle "
                 f"connection {GRANIAN_MAX_KEEP_ALIVE} seconds at most"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _http_two(self) -> Self:
+        """HTTP/2 alone: Granian's, and with no WebSockets, which it cannot carry."""
+        if self.HTTP != "2":
+            return self
+        if self.SERVER == "uvicorn":
+            raise ValueError('HTTP is "2", but uvicorn speaks HTTP/1.1 only')
+        if self.WEBSOCKETS:
+            raise ValueError(
+                'HTTP is "2", over which Granian serves no WebSocket: set '
+                "WEBSOCKETS to False"
             )
         return self
 
@@ -1537,6 +1585,20 @@ class Settings(BaseModel):
                     "GOTENBERG_API_BASIC_AUTH_USERNAME and "
                     "GOTENBERG_API_BASIC_AUTH_PASSWORD, and set them here; or "
                     "silence documents.W001 where only this service reaches it.",
+                )
+            )
+        if self.UPLOAD_SCANNER is not None and (
+            clear := self.UPLOAD_SCANNER.sends_in_clear()
+        ):
+            warnings.append(
+                CheckMessage(
+                    "security.W007",
+                    f"UPLOAD_SCANNER sends every upload to clamd at {clear} in "
+                    "clear: clamd speaks no TLS, and asks no one who they are.",
+                    "Put a TLS proxy in front of clamd (stunnel) and set "
+                    "UPLOAD_SCANNER's OPTIONS tls=True, or run clamd on this "
+                    "host. On a network only the service reaches, silence "
+                    "security.W007 (docs/uploads.md, 'Virus scanning').",
                 )
             )
         warnings.extend(self._load_warnings())

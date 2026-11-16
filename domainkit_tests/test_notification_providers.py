@@ -446,6 +446,7 @@ async def test_fcm_sends_with_the_service_accounts_token(
         httpx2.Response(400, json=gone),
         httpx2.Response(404, json={}),
         httpx2.Response(400, json={"error": {"status": "INVALID_ARGUMENT"}}),
+        httpx2.Response(200, json={}),  # The token alone, in a dry run: taken.
     )
     backend = FcmPushBackend(
         {"PROJECT_ID": "acme", "CREDENTIALS_FILE": service_account_file(tmp_path)}
@@ -468,7 +469,7 @@ async def test_fcm_sends_with_the_service_accounts_token(
         "notification": {"title": "Shipped", "body": "On its way"},
         "data": {"order": "7"},
     }
-    assert len(calls.requests) == 5  # One token for the four sends.
+    assert len(calls.requests) == 6  # One token for the four sends and a dry run.
     push_module._google_accounts.clear()
 
 

@@ -115,6 +115,7 @@ unique constraint may name its own code
 | `device_not_found` | 404 | `DeviceNotFound` (contrib.devices.exceptions): The user has no device with that id. |
 | `device_signature_refused` | 401 | `DeviceSignatureRefused` (contrib.devices.exceptions): The request is not signed by a device of the user, now, once. |
 | `different_network` | 403 | `DifferentNetwork` (contrib.ciba.exceptions): The phone is not on the address of the page (`QR_SAME_NETWORK`). |
+| `direct_upload_unavailable` | 503 | `WriteOnceIgnored` (storage.s3): The S3 store ignores `If-None-Match: *`: presigned uploads are refused. |
 | `digest_required` | 422 | `DigestRequired` (contrib.ciba.exceptions): Approving an act needs the digest the phone was shown. |
 | `domain_error` | 400 | `DomainError` (ddd.exceptions): A business rule refused the operation; the message is safe to show. |
 | `duplicate_value` | 409 | `DuplicateValue` (ddd.exceptions): A value that must be unique is taken (a unique constraint refused it). |

@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import cache
+from importlib import import_module
 from typing import Any, Final, overload
 from weakref import WeakKeyDictionary
 
@@ -324,9 +325,34 @@ def queues() -> frozenset[str]:
     return frozenset({DEFAULT_QUEUE, *(spec.queue for spec in _tasks.values())})
 
 
+FRAMEWORK_TASKS: Final[Mapping[str, str]] = {
+    "domainkit.storage.remove_unreferenced": (
+        "domainkit.storage.cleanup:remove_unreferenced"
+    ),
+}
+"""Tasks the framework ships outside this app, by key: ``module:function``.
+
+Each is registered when first asked for, by its key when a worker runs it or
+by its function when a unit of work defers it, so a process that never uses
+one loads none of its modules (PERF-15).
+"""
+
+
+def _framework_task(key: str) -> TaskSpec | None:
+    """Register the framework's task ``key`` now, if it is one."""
+    if key in _tasks:
+        return _tasks[key]
+    target = FRAMEWORK_TASKS.get(key)
+    if target is None:
+        return None
+    module, _, name = target.partition(":")
+    task(name=key)(getattr(import_module(module), name))
+    return _tasks[key]
+
+
 def get_task(key: str) -> TaskSpec | None:
     """Return the task registered as ``key``."""
-    return _tasks.get(key)
+    return _tasks.get(key) or _framework_task(key)
 
 
 def spec_for(function: Task) -> TaskSpec:
@@ -334,6 +360,11 @@ def spec_for(function: Task) -> TaskSpec:
     for spec in _tasks.values():
         if spec.function is function:
             return spec
+    where = f"{function.__module__}:{function.__qualname__}"
+    for key, target in FRAMEWORK_TASKS.items():
+        found = _framework_task(key) if target == where else None
+        if found is not None and found.function is function:
+            return found
     raise ImproperlyConfigured(
         f"{qualified_name(function)} is not a task; decorate it with @task."
     )

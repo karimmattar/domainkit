@@ -242,8 +242,11 @@ def added(
     The messages are added at the end, with where they are used; nothing
     already in the catalog changes, and nothing becomes obsolete. A
     ``LOCALE_PATHS`` catalog also rewords the domains' and the
-    framework's messages, which no code of the project marks. Nothing is
-    written; a missing catalog starts with a header for ``language``.
+    framework's messages, which no code of the project marks. An obsolete
+    (``#~``) entry of a message found comes back with its translation, as
+    ``updated`` brings it back; the other obsolete entries then follow the
+    new ones. Nothing is written; a missing catalog starts with a header
+    for ``language``.
 
     Raises:
         CatalogError: The existing catalog cannot be read.
@@ -251,15 +254,27 @@ def added(
     if path.is_file():
         text = path.read_text(encoding="utf-8")
         existing = parse_po(text)
+        gone = {
+            (message.context, message.msgid): message for message in _obsolete(text)
+        }
     else:
         header = new_header(project, language)
         text = render([(header, [])], [])
         existing = [header]
+        gone = {}
     held = {(message.context, message.msgid): message for message in existing}
     forms = _plural_forms(held.get((None, "")))
-    blocks = [
-        _entry(
-            Message(
+    new = [message for message in found if message.key() not in held]
+    back = {
+        message.key(): kept
+        for message in new
+        if (kept := gone.get(message.key())) is not None
+        and (kept.plural is None) == (message.plural is None)
+    }
+    entries = [
+        (
+            back.get(message.key())
+            or Message(
                 message.msgid,
                 ("",) * (forms if message.plural is not None else 1),
                 message.plural,
@@ -267,16 +282,19 @@ def added(
             ),
             message.references,
         )
-        for message in found
-        if message.key() not in held
+        for message in new
     ]
-    if blocks:
-        text = text.rstrip("\n") + "\n\n" + "\n\n".join(blocks) + "\n"
-    untranslated = sum(
-        1
-        for message in found
-        if message.key() not in held or not held[message.key()].translated
-    )
+    if back:  # The obsolete entries move after the new ones, those back left out.
+        text = "\n".join(
+            line for line in text.splitlines() if not line.startswith("#~ ")
+        )
+        left = [message for key, message in gone.items() if key not in back]
+    else:
+        left = []
+    if entries:
+        text = text.rstrip("\n") + "\n\n" + render(entries, left)
+    final = held | {(entry.context, entry.msgid): entry for entry, _ in entries}
+    untranslated = sum(1 for message in found if not final[message.key()].translated)
     return text, untranslated
 
 

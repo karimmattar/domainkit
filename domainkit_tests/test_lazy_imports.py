@@ -24,7 +24,7 @@ from domainkit.conf import override_settings
 from domainkit.contrib import messaging
 from domainkit.contrib.messaging import worker
 from domainkit.http import application, health
-from domainkit.i18n import formats, lazy, timezone, translation
+from domainkit.i18n import catalogs, formats, lazy, timezone, translation
 from domainkit.ledger import MemoryLedger
 from domainkit.utils.module_loading import lazy_names
 
@@ -195,11 +195,13 @@ def test_a_domain_layer_marks_texts_without_loading_the_settings() -> None:
         """\
         import sys
 
+        before = set(sys.modules)
         from domainkit.i18n.lazy import gettext_lazy, gettext_noop
 
-        heavy = ["domainkit.conf", "domainkit.apps", "domainkit.i18n.translation"]
-        print([name for name in heavy if name in sys.modules])
-        print(len(sys.modules) < 60)
+        added = sorted(set(sys.modules) - before)
+        print([name for name in added if name.startswith("domainkit")])
+        stdlib = sys.stdlib_module_names
+        print([name for name in added if name.split(".")[0] not in stdlib])
         label = gettext_lazy("The request is invalid.")
         print(gettext_noop("Already paid."))
         from domainkit.conf import configure
@@ -212,7 +214,20 @@ def test_a_domain_layer_marks_texts_without_loading_the_settings() -> None:
         print("domainkit.i18n.translation" in sys.modules)
         """
     )
-    assert run(script) == ["[]", "True", "Already paid.", "الطلب غير صالح.", "True"]
+    loaded = [
+        "domainkit",
+        "domainkit.i18n",
+        "domainkit.i18n.lazy",
+        "domainkit.utils",
+        "domainkit.utils.module_loading",
+    ]
+    assert run(script) == [
+        str(loaded),
+        str(loaded),  # Nothing but domainkit's, and the standard library.
+        "Already paid.",
+        "الطلب غير صالح.",
+        "True",
+    ]
 
 
 def test_the_translation_names_are_the_public_ones() -> None:
@@ -226,6 +241,41 @@ def test_the_translation_names_are_the_public_ones() -> None:
     assert i18n.__getattr__("timezone") is timezone  # As a fresh process calls it.
     assert names["date_format"] is formats.date_format
     assert vars(i18n)["gettext"] is translation.gettext
+
+
+@pytest.mark.reads_own_source
+def test_the_package_reads_its_modules_as_attributes() -> None:
+    """``domainkit.i18n.translation`` works without importing it first; ``dir`` too."""
+    script = textwrap.dedent(
+        """\
+        import domainkit.i18n
+
+        print(domainkit.i18n.translation.__name__, domainkit.i18n.formats.__name__)
+        print(domainkit.i18n.validation.validation_message.__module__)
+        listed = dir(domainkit.i18n)
+        print(all(name in listed for name in domainkit.i18n.__all__))
+        print([name for name in ("lazy", "translation", "catalogs") if name in listed])
+        """
+    )
+    assert run(script) == [
+        "domainkit.i18n.translation domainkit.i18n.formats",
+        "domainkit.i18n.validation",
+        "True",
+        "['lazy', 'translation', 'catalogs']",
+    ]
+    assert {"timezone", "translation", "gettext", "__doc__"} <= set(dir(i18n))
+    assert i18n.__getattr__("catalogs") is catalogs
+
+
+def test_the_lookups_of_lazy_strings_are_imported_once() -> None:
+    """A lazy string shown calls ``translation``'s function, kept after the first."""
+    str(lazy.gettext_lazy("Orders"))
+
+    assert lazy._found == (
+        translation.gettext,
+        translation.ngettext,
+        translation.pgettext,
+    )
 
 
 @pytest.mark.parametrize("module", [domainkit, domainkit.http, messaging, i18n])

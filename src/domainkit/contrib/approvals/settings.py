@@ -45,6 +45,18 @@ class ApprovalsSettings(BaseModel):
     """Approving asks for an authorization of its own (``approvals.approve``,
     ADR 0144), bound to the request and its fingerprint, in place of a
     step-up window; needs ``domainkit.contrib.auth``."""
+    SUBMIT_ACTION: bool = False
+    """Submitting at ``POST /requests`` asks for an authorization of its own
+    (``approvals.submit``, ADR 0163), bound to the action and its
+    arguments; needs ``domainkit.contrib.auth``."""
+    REJECT_ACTION: bool = False
+    """Rejecting asks for an authorization of its own (``approvals.reject``,
+    ADR 0163), bound to the request and the reason; needs
+    ``domainkit.contrib.auth``."""
+    CANCEL_ACTION: bool = False
+    """Cancelling asks for an authorization of its own (``approvals.cancel``,
+    ADR 0163), bound to the request and the reason; needs
+    ``domainkit.contrib.auth``."""
     MAX_ARGUMENTS_BYTES: int = Field(default=65_536, ge=1024, le=1_048_576)
     """The largest command a request may hold, as JSON."""
     ENTRY_THRESHOLDS: dict[str, str] = Field(default_factory=dict)

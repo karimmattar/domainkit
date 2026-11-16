@@ -132,7 +132,7 @@ application logs them as a warning and starts.
 | `auth.E107` | auth's routes that send codes (resets, signups) to mobile numbers, where `mobile_number` is in `AUTH.IDENTIFIERS`, without `domainkit.contrib.notifications` in `INSTALLED_DOMAINS` ([Password reset](../auth/logging-in.md#password-reset)) |
 | `auth.E108` | an `Action` whose methods (or `AUTH.AUTHORIZATIONS.METHODS`) no installed way to confirm proves, such as `["phone"]` without the phone's app: nobody could confirm it ([Authorizing one act](../auth/actions.md#confirming-it)) |
 | `auth.E109` | a route that asks `StepUp(for_=...)` for a purpose no registered action has ([Authorizing one act](../auth/actions.md#the-route-asks-stepupfor_)) |
-| `auth.E110` | a route that asks for an action that no service decorated `requires_authorization` spends ([Authorizing one act](../auth/actions.md#the-act-spends-it)) |
+| `auth.E110` | a route that asks for an action that nothing spends: no service decorated `requires_authorization`, and no code that said so with `spent_in_code(action)` ([Authorizing one act](../auth/actions.md#the-act-spends-it)) |
 | `auth.E111` | `StepUp(for_=...)` on a WebSocket or an event stream, which is asked again and again and has no act to spend it on |
 | `ciba.E002` | the OpenID Provider's CIBA routes served, but `AUTH.JWT` has no `ISSUER` or signs with a shared secret, so clients could not verify ID tokens ([Sign-in approvals](../auth/ciba.md#oidc-clients)) |
 | `ciba.E003` | `CIBA.APPROVE_LOGINS` on, but the routes of `domainkit.contrib.ciba.api` or `domainkit.contrib.devices.api` not served, so users with a bound phone could not sign in on the web ([Sign-in approvals](../auth/ciba.md#the-mobile-app-as-identity)) |
@@ -172,6 +172,7 @@ everywhere.
 | `security.W004` | a rate limit with no `TRUSTED_PROXIES`: behind a load balancer, every caller would share its address and its count |
 | `security.W005` | `LIVE_REAUTH_INTERVAL = None`: open WebSockets and event streams keep a revoked token |
 | `security.W006` | `*` in `CORS_ALLOWED_ORIGINS`: any web site may call the API from its visitors' browsers |
+| `security.W007` | `UPLOAD_SCANNER` reaches clamd (`ClamAVScanner`, or a subclass) on another host without `tls`: clamd speaks no TLS, so every upload crosses the network in clear. Put a TLS proxy in front of it, or silence the warning where the network is the service's own ([Virus scanning](../uploads.md#virus-scanning)) |
 | `deploy.W001` | no `REQUEST_TIMEOUT`, or `DeadlineMiddleware` missing from `MIDDLEWARE` |
 | `deploy.W002` | no `MAX_CONCURRENT_REQUESTS`, or `ConcurrencyLimitMiddleware` missing |
 | `deploy.W003` | a database that seems to go through PgBouncer (port 6432, or a statement cache turned off in `CONNECT_ARGS`) without `PGBOUNCER = True` |

@@ -15,14 +15,15 @@ of the settings module, and that of ``ROOT_ROUTER``'s module, as Django
 reads the project's files. What they mark goes to the first directory of
 ``LOCALE_PATHS``, which is read first at run time; it is only added to
 that catalog, which also holds the project's words for others' messages.
-Without ``LOCALE_PATHS``, the messages are named, and ``--check`` fails
-(ADR 0166).
+Without ``LOCALE_PATHS``, those no catalog translates already are named,
+and ``--check`` fails (ADR 0166).
 """
 
 import os
 from argparse import ArgumentParser
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
+from gettext import NullTranslations
 from importlib.util import find_spec
 from pathlib import Path
 
@@ -30,7 +31,7 @@ from domainkit.apps import registry
 from domainkit.conf import settings
 from domainkit.i18n.catalogs import CatalogError
 from domainkit.i18n.extraction import Found, added, extract, updated
-from domainkit.i18n.translation import to_locale
+from domainkit.i18n.translation import catalog, to_locale
 from domainkit.management.base import BaseCommand, CommandError
 
 FRAMEWORK = "domainkit."
@@ -115,10 +116,11 @@ class Command(BaseCommand):
             if found and settings.LOCALE_PATHS:
                 directory = Path(settings.LOCALE_PATHS[0])
                 self._update(run, directory, found, settings.PROJECT_NAME, added)
-            elif found and check:
-                problems.append(_unkept(found))
-            elif found:
-                self.note(_unkept(found))
+            elif found and (unkept := untranslated(found)):
+                if check:
+                    problems.append(_unkept(unkept))
+                else:
+                    self.note(_unkept(unkept))
         if run.behind:
             problems.append(
                 f"Behind their code: {', '.join(run.behind)}. Run makemessages."
@@ -183,7 +185,8 @@ def project_modules(domains: Iterable[Path]) -> tuple[list[Path], Path]:
     module outside any package stands alone. domainkit's own modules,
     and those of each installed domain, are left out.
     """
-    names = [settings.SETTINGS_MODULE, (settings.ROOT_ROUTER or "").rpartition(".")[0]]
+    router = (settings.ROOT_ROUTER or "").replace(":", ".")  # "config.urls:router"
+    names = [settings.SETTINGS_MODULE, router.rpartition(".")[0]]
     places: list[Path] = []
     for name in dict.fromkeys(names):
         if not name or name == "domainkit" or name.startswith(FRAMEWORK):
@@ -206,6 +209,36 @@ def project_modules(domains: Iterable[Path]) -> tuple[list[Path], Path]:
     }
     parents = [place.parent for place in places] or [Path.cwd()]
     return sorted(files), Path(os.path.commonpath(parents))
+
+
+def untranslated(found: Sequence[Found]) -> list[Found]:
+    """The messages of ``found`` no catalog translates into a language of ``LANGUAGES``.
+
+    The catalogs gettext reads: the domains' and domainkit's, compiled.
+    A message one of them translates (``"Not Found"``) needs no catalog of
+    the project's.
+    """
+    catalogs = [catalog(code) for code, _ in settings.LANGUAGES]
+    return [
+        message
+        for message in found
+        if not any(_translates(each, message) for each in catalogs)
+    ]
+
+
+def _translates(found: NullTranslations, message: Found) -> bool:
+    """Whether ``found`` translates ``message`` (with its context and plural)."""
+    key = (
+        message.msgid
+        if message.context is None
+        else f"{message.context}\x04{message.msgid}"
+    )
+    text = (
+        found.gettext(key)
+        if message.plural is None
+        else found.ngettext(key, message.plural, 1)
+    )
+    return text != key
 
 
 def _extract(files: Iterable[Path], root: Path) -> list[Found]:
