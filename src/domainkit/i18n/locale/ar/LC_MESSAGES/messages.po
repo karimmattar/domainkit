@@ -291,6 +291,12 @@ msgstr "حدّد مستخدمًا أو مجموعة، لا كليهما ولا �
 msgid "That permission is not one of the object's model."
 msgstr "هذه الصلاحية ليست من صلاحيات نموذج الكائن."
 
+msgid "A grant's expiry needs a time zone."
+msgstr "يحتاج موعد انتهاء المنح إلى منطقة زمنية."
+
+msgid "A grant's expiry must be in the future."
+msgstr "يجب أن يكون موعد انتهاء المنح في المستقبل."
+
 msgid "This resource cannot answer in a media type the request accepts."
 msgstr "لا يستطيع هذا المورد الرد بنوع وسائط يقبله الطلب."
 

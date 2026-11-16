@@ -578,10 +578,15 @@ Permissions on single objects (django-guardian's grants), for users or groups.
 - `ObjectPermissionRepository`: Grants: find them with `about(...)`.
 - `ObjectPermissionRevoked`: A grant on one object was taken back.
 - `ObjectPermissionsUnitOfWork`: One transaction on the grants of one database (the objects').
+- `ObjectRole`: A named set of permissions on objects, granted and revoked together.
 - `VisibleTo`: Objects on which `permission` is granted to a user or their groups.
+- `clear_expired_grants`: Delete the grants past their expiry, in every database; how many.
 - `grant_permission`: Let `user` (or the members of `group`) have `permission` on `obj`.
-- `grants_on`: Every grant on `obj`; who may see them is the caller's to check.
+- `grant_role`: Grant every permission of `role` on `obj` together; the grants.
+- `grantable_on`: Let `permissions` of other models be granted on objects of `model`.
+- `grants_on`: Every grant in force on `obj`; who may see them is the caller's to check.
 - `revoke_permission`: Take back `permission` on `obj` from `user` or `group`; how many.
+- `revoke_role`: Take back what `role` granted on `obj` to `user` or `group`; how many.
 - `visible_scope`: A resource's `scope`: what the caller may see by `permission`.
 - `visible_to`: What `user` may see of `model`: None (everything), or `VisibleTo`.
 

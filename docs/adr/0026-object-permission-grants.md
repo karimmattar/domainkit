@@ -1,6 +1,6 @@
 # 0026. Grant permissions on single objects, beside the objects, within the granter's own
 
-- Status: Accepted
+- Status: Accepted; amended by [0151](0151-object-grants-that-expire-roles-and-owners-a-caller-administers.md)
 - Date: 2026-10-20
 
 ## Context

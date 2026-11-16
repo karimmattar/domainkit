@@ -11,6 +11,20 @@ and a status.
 
 ### Added
 
+- Grants on single objects may expire, come in roles, and name a
+  permission of another model. `grant_permission(..., expires_at=...)`
+  ends a grant at that moment: from then on it counts nowhere (`has_perm`,
+  `visible_scope`, the admin API's bounds, `grants_on`), each check
+  reading the clock, and `manage.py cleargrants` (`clear_expired_grants`)
+  deletes it. `ObjectRole("editor", [...])` with `grant_role` and
+  `revoke_role` grants and takes back several permissions together, one
+  grant each named after the role. `grantable_on(Company,
+  "memberships.add_membership")` in a domain's `ready()` lets that
+  permission be granted on a company; without it the grant is refused as
+  before. The grants table gains `expires_at` and `role`: run
+  `makemigrations`, then `migrate`
+  ([Grants on single objects](docs/auth/users.md#grants-on-single-objects),
+  [upgrading.md](docs/upgrading.md#23-to-24), ADR 0151) (user report D2).
 - While the broker is away, relaying workers run the outbox themselves:
   each relay has a breaker, as commits do, and while it is open the
   worker claims and runs the due messages of its queues, as a worker

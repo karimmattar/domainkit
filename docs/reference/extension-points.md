@@ -157,6 +157,7 @@ ERROR_REPORTERS = ["config.errors.report_to_tracker"]
 | An authentication or permission backend | `auth.backends.BaseBackend` | `AUTH.BACKENDS` |
 | A way requests prove who sent them | `auth.authentication.BaseAuthentication` ([recipe: API keys](../recipes/api-keys.md)) | `AUTH.AUTHENTICATION_CLASSES` |
 | A rule for who may call a route | `domainkit.http.access.BasePermission` ([recipe](../recipes/permission-rules.md)) | `Depends(Require(rule))` on the route, or `Public` for anyone |
+| A permission of another model granted on one object (`memberships.add_membership` on a company) | nothing: name the model and the permissions | `objectpermissions.grantable_on(Company, ...)` in `ready()` ([Permissions of another model](../auth/users.md#permissions-of-another-model)) |
 | Another way to authenticate requests (OpenID Connect, a gateway's header) | an ASGI middleware that puts a `domainkit.http.access.Principal` in `scope["user"]` | `MIDDLEWARE` ([Another authentication](../auth/routes.md#another-authentication)) |
 | A password hasher | `auth.hashers.PasswordHasher` | `AUTH.PASSWORD_HASHERS` |
 | A password rule | a class with `validate(password, user)` and `help_text()` | `AUTH.PASSWORD_VALIDATORS` |

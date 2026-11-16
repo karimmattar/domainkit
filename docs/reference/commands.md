@@ -953,6 +953,26 @@ Deleted 0 expired token(s).
 | `--user` | Deletes every token of this user, and the client certificates `addcertificate` gave them. Without it, only expired tokens go. |
 | `--operator` | Who runs it. |
 
+### `cleargrants`: delete expired grants on objects
+
+```bash
+python manage.py cleargrants
+```
+
+```text
+Deleted 0 expired grant(s).
+```
+
+`cleargrants` comes with `domainkit.contrib.objectpermissions`. It deletes
+the grants on single objects past their expiry, in every database that
+holds grants ([Grants that expire](../auth/users.md#grants-that-expire)).
+Expired grants never count, so it only frees their rows: run it from a
+scheduled job.
+
+| Option | What it does |
+| --- | --- |
+| `--operator` | Who runs it. |
+
 ### `resetmfa`: turn off a user's second factor
 
 ```bash
