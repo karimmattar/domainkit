@@ -470,6 +470,13 @@ and a status.
 
 ### Fixed
 
+- An act whose command holds a set, such as a `frozenset` of roles, is
+  digested with the set's items sorted, in every process. They came in
+  their hashes' order, which differs from one process to the next: a
+  twin answered by one process and the act run by another, or after a
+  restart, disagreed, and the confirmed authorization was voided as
+  changed.
+
 - A lazy string (`gettext_lazy`) given as a `DomainError`'s message, an
   `InvalidField`'s, or `error_response`'s detail is answered as its text
   in the caller's language. It made a `500`: the body refused anything
