@@ -101,7 +101,9 @@ domainkit.
   events, and audit details are unchanged. An event class that declares
   an `actor` of its own keeps it, and domainkit leaves that field alone;
   mypy reports the override, so rename it, or keep it with
-  `# type: ignore[assignment]`.
+  `# type: ignore[assignment]`. A test that lists the events `update`
+  records sees `EmailChanged` or `MobileNumberChanged` after
+  `UserUpdated` when the address or the number changed.
 
 ### Make and apply the object permissions' migration
 

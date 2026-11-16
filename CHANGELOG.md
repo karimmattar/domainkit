@@ -308,6 +308,14 @@ and a status.
   staff made from the user's own
   ([Who acted](docs/resources.md#the-domain-behind-a-resource), ADR 0147)
   (user report A11).
+- `EmailChanged` and `MobileNumberChanged`
+  (`domainkit.contrib.auth.integration`): `update` records one after
+  `UserUpdated` when the email address or the mobile number changes,
+  with the one it replaced (`previous`, marked `Personal`) and whether
+  the user had proved it, so that a handler can tell the old address.
+  `UserUpdated` still names the fields only
+  ([Telling the old address](docs/auth/users.md#telling-the-old-address),
+  ADR 0147) (user report A11).
 - A command route whose rules ask for an authorization of the act
   (`AsksAuthorization`, as `StepUp(for_=...)` does) gets a twin,
   `POST <the route's path>/authorization`. It builds the command as the

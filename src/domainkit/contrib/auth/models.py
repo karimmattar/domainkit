@@ -26,6 +26,7 @@ from domainkit.ddd import AggregateRoot, Entity, Personal, Sensitive, ValueObjec
 from domainkit.signing import derive_key
 
 from .events import (
+    EmailChanged,
     EmailReleased,
     EmailVerified,
     GroupCreated,
@@ -33,6 +34,7 @@ from .events import (
     GroupPermissionGranted,
     GroupPermissionRevoked,
     GroupRenamed,
+    MobileNumberChanged,
     MobileNumberReleased,
     MobileNumberVerified,
     PasswordChanged,
@@ -646,6 +648,11 @@ class AbstractUser(AbstractBaseUser):
     def update(self, **fields: object) -> None:
         """Change editable fields; a new email or number is not verified yet.
 
+        A new email records ``EmailChanged``, and a new mobile number
+        ``MobileNumberChanged``, after ``UserUpdated``: each names the one
+        it replaced, and whether the user had proved it, so that a handler
+        can tell the old address (ADR 0147).
+
         Raises:
             IdentifierRequired: The change would leave the user without a
                 username, an email, or a mobile number.
@@ -658,8 +665,22 @@ class AbstractUser(AbstractBaseUser):
                 "Keep a username, an email address, or a mobile number."
             )
         if self.email != email:
+            self.record(
+                EmailChanged(
+                    user_id=self.id,
+                    previous=email or None,
+                    previous_verified=self.email_verified,
+                )
+            )
             self.email_verified = False
         if self.mobile_number != mobile_number:
+            self.record(
+                MobileNumberChanged(
+                    user_id=self.id,
+                    previous=mobile_number,
+                    previous_verified=self.mobile_number_verified,
+                )
+            )
             self.mobile_number_verified = False
 
     def clean_field(self, name: str, value: object) -> object:

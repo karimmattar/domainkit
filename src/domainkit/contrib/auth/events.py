@@ -1,7 +1,9 @@
 """What happens to users and groups; the audit trail records each one.
 
 Events carry ids, names, and permission keys, never passwords or hashes.
-Usernames are personal data: the audit trail keeps them as pseudonyms.
+Usernames are personal data: the audit trail keeps them as pseudonyms, as
+it keeps the address or number a change replaced (``EmailChanged``,
+``MobileNumberChanged``). Each event names who caused it (``actor``).
 """
 
 from typing import Annotated
@@ -138,10 +140,43 @@ class UserSignedUp(DomainEvent):
 
 
 class UserUpdated(DomainEvent):
-    """Fields of a user changed (names only: values may be personal data)."""
+    """Fields of a user changed (names only: values may be personal data).
+
+    A new email address or mobile number also records ``EmailChanged`` or
+    ``MobileNumberChanged``, which name the one it replaced.
+    """
 
     user_id: UUID
     fields: tuple[str, ...]
+
+
+class EmailChanged(DomainEvent):
+    """A user's email address changed: tell the old one (ADR 0147).
+
+    ``previous`` is personal data: the audit trail keeps a pseudonym of it,
+    the outbox keeps it until its message ran, and erasure finds it there.
+    The new address is the user's own, read from them.
+    """
+
+    user_id: UUID
+    previous: Annotated[str, Personal(of="user_id")] | None
+    """The address it replaced; None when the user had none."""
+    previous_verified: bool
+    """Whether the user had proved ``previous``: only a proved address is
+    sure to be theirs (ADR 0141)."""
+
+
+class MobileNumberChanged(DomainEvent):
+    """A user's mobile number changed: tell the old one (ADR 0147).
+
+    ``previous`` is personal data, kept as ``EmailChanged`` keeps its own.
+    """
+
+    user_id: UUID
+    previous: Annotated[str, Personal(of="user_id")] | None
+    """The number it replaced (E.164); None when the user had none."""
+    previous_verified: bool
+    """Whether the user had proved ``previous`` (ADR 0141)."""
 
 
 class UserDeleted(DomainEvent):

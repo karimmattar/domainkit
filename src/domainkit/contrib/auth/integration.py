@@ -42,7 +42,14 @@ from .api import (
 )
 from .codes import target_of
 from .cookies import CsrfOut, check_origin, start_browser_session
-from .events import SteppedUp, UserDeleted, UserLoggedOut, UserSignedUp
+from .events import (
+    EmailChanged,
+    MobileNumberChanged,
+    SteppedUp,
+    UserDeleted,
+    UserLoggedOut,
+    UserSignedUp,
+)
 from .gates import (
     MANAGES_LOGINS,
     check_manage_logins,
@@ -91,8 +98,10 @@ __all__ = [
     "AuthorizationChanged",
     "AuthorizationNeedsOtherFactors",
     "CsrfOut",
+    "EmailChanged",
     "LoginMethod",
     "MfaChallengeOut",
+    "MobileNumberChanged",
     "ReauthenticationRequired",
     "RefusalHook",
     "StepUpOut",
