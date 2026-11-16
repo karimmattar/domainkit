@@ -525,6 +525,17 @@ and a status.
   timeout) is `BrokerUnavailable`, which opens the publishing breaker; it
   was `BrokerRefused`, which kept it closed through an outage (user
   report W9).
+- `live.W003` also warns, where deployed and with no `LIVE_FANOUT`, when
+  live routes (WebSockets, event streams) are served and events are
+  committed by more than one process: the server's worker processes
+  (`--workers`, `WEB_CONCURRENCY`, `UVICORN_WORKERS`, `GRANIAN_WORKERS`,
+  `GUNICORN_CMD_ARGS`), or the messaging worker. It warned only when
+  domains shared types, so a project that shared none was never told
+  that its clients miss what other processes commit. A deployed
+  application logs it when it starts, too. `fanout_warnings(routes)`
+  takes the routes to look at
+  ([Every process's events](docs/live.md#every-processs-events), ADR
+  0157) (user report L1).
 - The pages say why the outbox and the audit trail are not partitioned
   by time (`partition_by_range` refuses them), and what keeps them small
   instead: the outbox's cleanup, and `audit prune` below a checkpoint

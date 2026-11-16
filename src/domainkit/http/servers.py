@@ -33,6 +33,9 @@ A server that listens on a unix socket (``uvicorn --uds``, ``granian
 ``GRANIAN_UDS`` and ``GUNICORN_CMD_ARGS``) gives no caller an address:
 ``unix_socket_warnings`` says so unless ``TRUSTED_PROXIES`` holds
 ``"unix"``, which believes the proxy on the other end of the socket.
+
+``server_processes`` counts the worker processes the server starts, each
+with an application and live connections of its own (``live.W003``).
 """
 
 import os
@@ -107,7 +110,7 @@ def _uvicorn(argv: Sequence[str], environ: Mapping[str, str]) -> ServerLimits | 
     """Under uvicorn itself: ``--ws-max-size``, or ``UVICORN_WS_MAX_SIZE``."""
     size = _option(argv, "--ws-max-size") or environ.get("UVICORN_WS_MAX_SIZE")
     ws = _option(argv, "--ws") or environ.get("UVICORN_WS", "auto")
-    max_size = _bytes(size) if size else UVICORN_WS_MAX_SIZE
+    max_size = _whole(size) if size else UVICORN_WS_MAX_SIZE
     if max_size is None:
         return None
     return ServerLimits("uvicorn", websockets=ws != "none", ws_max_size=max_size)
@@ -245,6 +248,59 @@ def _binds_unix(args: Sequence[str]) -> bool:
     return False
 
 
+def server_processes(
+    argv: Sequence[str] | None = None, environ: Mapping[str, str] | None = None
+) -> int | None:
+    """How many worker processes the server starts; None if no server is found.
+
+    From the server's command line in its own process, else from the
+    variables each server reads in place of its option: uvicorn's
+    ``--workers``, ``UVICORN_WORKERS``, or ``WEB_CONCURRENCY`` (``fastapi
+    run`` passes ``--workers``, and reads ``WEB_CONCURRENCY`` too);
+    gunicorn's ``-w``/``--workers``, ``GUNICORN_CMD_ARGS``, or
+    ``WEB_CONCURRENCY``; Granian's ``--workers``, or ``GRANIAN_WORKERS``.
+    Elsewhere (``check``), the most any of them says. A value that is not a
+    whole number counts as unknown, and gunicorn's configuration file is
+    not read.
+    """
+    argv = sys.argv if argv is None else argv
+    environ = os.environ if environ is None else environ
+    program = _program(argv)
+    concurrency = environ.get("WEB_CONCURRENCY")
+    try:
+        gunicorn = _gunicorn_option(
+            shlex.split(environ.get("GUNICORN_CMD_ARGS", "")), "-w", "--workers"
+        )
+    except ValueError:  # Unbalanced quotes: gunicorn would refuse it too.
+        gunicorn = None
+    if program == "uvicorn":
+        given = _option(argv, "--workers") or environ.get("UVICORN_WORKERS")
+        return _count(given or concurrency)
+    if program == "fastapi":
+        return _count(_option(argv, "--workers") or concurrency)
+    if program == "gunicorn":
+        given = _gunicorn_option(argv[1:], "-w", "--workers") or gunicorn
+        return _count(given or concurrency)
+    if program == "granian":
+        return _count(_option(argv, "--workers") or environ.get("GRANIAN_WORKERS"))
+    said = [
+        count
+        for value in (
+            environ.get("UVICORN_WORKERS"),
+            environ.get("GRANIAN_WORKERS"),
+            gunicorn,
+            concurrency,
+        )
+        if value and (count := _whole(value)) is not None
+    ]
+    return max(said, default=None)
+
+
+def _count(text: str | None) -> int | None:
+    """A server's number of processes: 1 unless ``text`` says another."""
+    return 1 if not text else _whole(text)
+
+
 def _program(argv: Sequence[str]) -> str:
     """The program ``argv`` runs: ``uvicorn`` for ``python -m uvicorn`` too."""
     if not argv:
@@ -253,8 +309,8 @@ def _program(argv: Sequence[str]) -> str:
     return path.parent.name if path.name == "__main__.py" else path.name
 
 
-def _bytes(text: str) -> int | None:
-    """``text`` as a whole number of bytes, or None if it is not one.
+def _whole(text: str) -> int | None:
+    """``text`` as a whole number (of bytes, of processes), or None if it is not one.
 
     ``isdigit`` takes superscripts, which ``int`` refuses, so ``isdecimal``
     decides; ``int`` also refuses more digits than Python's limit (4,300).
@@ -283,18 +339,24 @@ def _option(argv: Sequence[str], name: str) -> str | None:
 
 
 def _worker_class(args: Sequence[str]) -> str | None:
-    """The worker class gunicorn's ``args`` name, the last if several do.
+    """The worker class gunicorn's ``args`` name, the last if several do."""
+    return _gunicorn_option(args, "-k", "--worker-class")
+
+
+def _gunicorn_option(args: Sequence[str], short: str, long: str) -> str | None:
+    """The value gunicorn's ``args`` give an option, the last if several do.
 
     ``-k NAME``, ``-kNAME``, ``--worker-class NAME`` and
-    ``--worker-class=NAME``.
+    ``--worker-class=NAME``, for ``short`` ``-k`` and ``long``
+    ``--worker-class``.
     """
     found = None
     for index, argument in enumerate(args):
-        if argument in {"-k", "--worker-class"}:
+        if argument in {short, long}:
             if index + 1 < len(args):
                 found = args[index + 1]
-        elif argument.startswith("--worker-class="):
+        elif argument.startswith(f"{long}="):
             found = argument.partition("=")[2]
-        elif argument.startswith("-k"):
-            found = argument[2:]
+        elif argument.startswith(short):
+            found = argument[len(short) :]
     return found

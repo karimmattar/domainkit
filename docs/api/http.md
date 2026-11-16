@@ -133,7 +133,7 @@ Long-lived connections: WebSockets and event streams, bounded and re-checked.
 
 Live committed events: domain events streamed to the clients that may see them.
 
-- `fanout_warnings`: `live.W003`: shared event types with no `LIVE_FANOUT`, where deployed.
+- `fanout_warnings`: `live.W003`: events that stay in process where several commit them.
 - `live_events`: The process's live events, fed by the global `event_bus`.
 
 ## `domainkit.http.live_fanout`

@@ -4,7 +4,7 @@ import dataclasses
 from collections.abc import Iterator, Mapping, Sequence
 from http.cookies import SimpleCookie
 from importlib import import_module
-from typing import Any, Final, get_type_hints
+from typing import Any, Final
 from uuid import uuid4
 
 from fastapi import FastAPI, Response
@@ -36,6 +36,7 @@ from domainkit.http.access import (
     routes_need_users,
     served_routes,
 )
+from domainkit.http.live import streams
 from domainkit.http.ratelimit import MemoryBackend
 from domainkit.utils.module_loading import import_string
 from domainkit.utils.rates import PERIODS, parse_rate
@@ -753,7 +754,7 @@ def _asking_problems(
     from .actions import registered_actions, spent_by_a_service
 
     problems = []
-    if route.startswith("WEBSOCKET ") or _streams(dependant):
+    if route.startswith("WEBSOCKET ") or streams(dependant):
         problems.append(
             CheckMessage(
                 "auth.E111",
@@ -780,20 +781,6 @@ def _asking_problems(
             )
         )
     return problems
-
-
-def _streams(dependant: Dependant | None) -> bool:
-    """Whether the route's endpoint answers an ``EventSourceResponse``: a stream."""
-    from domainkit.http.sse import EventSourceResponse
-
-    call = None if dependant is None else dependant.call
-    if call is None:
-        return False
-    try:
-        returned = get_type_hints(call).get("return")
-    except (NameError, TypeError):
-        return False
-    return isinstance(returned, type) and issubclass(returned, EventSourceResponse)
 
 
 def _rules_of(dependant: Dependant | None) -> Iterator[BasePermission]:

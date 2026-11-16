@@ -33,6 +33,7 @@ from domainkit.http.servers import (
     limit_warnings,
     listens_on_unix_socket,
     server_limits,
+    server_processes,
     unix_socket_warnings,
 )
 from domainkit.log import TEXT_FORMAT, build_logging_config
@@ -334,6 +335,45 @@ def test_servers_on_unix_sockets_are_found(
 ) -> None:
     """``--uds``, a ``unix:`` bind, or the variables that set them."""
     assert listens_on_unix_socket(argv, environ) is unix
+
+
+@pytest.mark.parametrize(
+    ("argv", "environ", "processes"),
+    [
+        ([UVICORN, "app:app"], {}, 1),
+        ([UVICORN, "--workers", "4"], {}, 4),
+        ([UVICORN, "--workers=3"], {"WEB_CONCURRENCY": "8"}, 3),
+        ([UVICORN], {"UVICORN_WORKERS": "2", "WEB_CONCURRENCY": "8"}, 2),
+        (["/lib/uvicorn/__main__.py"], {"WEB_CONCURRENCY": "8"}, 8),
+        ([FASTAPI, "run", "--workers", "2"], {}, 2),
+        ([FASTAPI, "run"], {"WEB_CONCURRENCY": "3"}, 3),
+        ([GUNICORN, "-w", "5", "-k", WORKER], {}, 5),
+        ([GUNICORN, "-w5"], {}, 5),
+        ([GUNICORN, "--workers=6"], {"GUNICORN_CMD_ARGS": "-w 2"}, 6),
+        ([GUNICORN], {"GUNICORN_CMD_ARGS": "--workers 2"}, 2),
+        ([GUNICORN], {"WEB_CONCURRENCY": "7"}, 7),
+        ([GRANIAN, "--workers", "4"], {}, 4),
+        ([GRANIAN], {"GRANIAN_WORKERS": "2", "WEB_CONCURRENCY": "9"}, 2),
+        (["/lib/granian/__main__.py"], {"WEB_CONCURRENCY": "9"}, 1),
+        (["manage.py", "check"], {}, None),
+        (["manage.py", "check"], {"WEB_CONCURRENCY": "4"}, 4),
+        (["manage.py", "check"], {"GRANIAN_WORKERS": "2", "UVICORN_WORKERS": "3"}, 3),
+        (["manage.py", "check"], {"GUNICORN_CMD_ARGS": f"-k {WORKER} -w 2"}, 2),
+        (["manage.py", "check"], {"GUNICORN_CMD_ARGS": "-w '2"}, None),
+        (["manage.py", "check"], {"WEB_CONCURRENCY": "many"}, None),
+        ([UVICORN, "--workers", "\u00b2"], {}, None),
+        ([], {}, None),
+    ],
+)
+def test_the_servers_worker_processes_are_counted(
+    argv: list[str], environ: dict[str, str], processes: int | None
+) -> None:
+    """Each server's option, or the variables it reads in its place (live.W003).
+
+    uvicorn and gunicorn read ``WEB_CONCURRENCY``; Granian does not. Where
+    no server runs (``check``), the most any variable says.
+    """
+    assert server_processes(argv, environ) == processes
 
 
 def test_a_unix_socket_without_unix_in_trusted_proxies_is_warned() -> None:

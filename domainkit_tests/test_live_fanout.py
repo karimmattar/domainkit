@@ -7,23 +7,35 @@ its own once, not twice.
 """
 
 import asyncio
+import io
 import json
 import logging
+import sys
 from collections.abc import Iterator, Sequence
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from fastapi import APIRouter, Request, WebSocket
+from fastapi.dependencies.models import Dependant
+from fastapi.routing import APIRoute
 from pydantic import ValidationError
 from sqlalchemy import text
+from starlette.responses import PlainTextResponse
+from starlette.routing import Route
 
 from domainkit.cache import caches
 from domainkit.conf import override_settings, settings
-from domainkit.conf.global_settings import Settings
+from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS, Settings
 from domainkit.contrib.auth.events import UserCreated, UserPermissionGranted
 from domainkit.db import connections
+from domainkit.db.uow import MESSAGING
 from domainkit.ddd import DomainEvent, EventBus
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.http import get_asgi_application
 from domainkit.http import live_events as live_events_module
+from domainkit.http.access import Public
+from domainkit.http.live import live_routes, streams
 from domainkit.http.live_events import LiveEvents, fanout_warnings, live_events
 from domainkit.http.live_fanout import (
     NOTIFY_LIMIT,
@@ -32,6 +44,8 @@ from domainkit.http.live_fanout import (
     Sender,
     backend,
 )
+from domainkit.http.sse import EventSourceResponse
+from domainkit.management import call_command
 from domainkit_tests.sample_live_routes import OwnEvents
 from domainkit_tests.test_brokers_more import redis_url
 from domainkit_tests.test_live_events import Someone, connection, granted, take
@@ -299,6 +313,146 @@ def test_check_warns_about_shared_types_without_a_fanout(
     )
     with override_settings(LIVE_FANOUT={"BACKEND": "postgres"}):
         assert fanout_warnings() == []
+
+
+live_router = APIRouter()
+"""Live routes and a plain one, as a project serves them."""
+
+
+@live_router.websocket("/live/socket", dependencies=[Public])
+async def socket(websocket: WebSocket) -> None:
+    """A WebSocket: a live route."""
+
+
+@live_router.get("/live/feed", dependencies=[Public])
+async def feed(request: Request) -> EventSourceResponse:
+    """An event stream: a live route."""
+    raise NotImplementedError
+
+
+@live_router.get("/plain", dependencies=[Public])
+async def plain() -> dict[str, str]:
+    """An answer: no live route."""
+    return {}
+
+
+SERVER_VARIABLES = ("WEB_CONCURRENCY", "UVICORN_WORKERS", "GRANIAN_WORKERS")
+
+
+@pytest.fixture
+def deployed(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
+    """A deployed process under uvicorn alone; the test's settings install no worker.
+
+    The test's environment counts as deployed, as staging and production do.
+    """
+    monkeypatch.setattr(
+        live_events_module,
+        "DEPLOYED_ENVIRONMENTS",
+        DEPLOYED_ENVIRONMENTS | {settings.ENVIRONMENT},
+    )
+    monkeypatch.setattr(sys, "argv", ["/venv/bin/uvicorn", "config.asgi:app"])
+    for name in (*SERVER_VARIABLES, "GUNICORN_CMD_ARGS"):
+        monkeypatch.delenv(name, raising=False)
+    return monkeypatch
+
+
+def test_live_routes_in_several_processes_without_a_fanout_are_warned(
+    deployed: pytest.MonkeyPatch,
+) -> None:
+    """``live.W003`` without shared types: each process sees its own commits only.
+
+    Before, nothing warned a project that shares no type (user report L1).
+    """
+    routes = live_router.routes
+    assert fanout_warnings(routes) == []  # One process.
+    deployed.setattr(sys, "argv", ["/venv/bin/uvicorn", "app", "--workers", "4"])
+
+    (warning,) = fanout_warnings(routes)
+
+    assert warning.startswith(
+        "Live routes (WEBSOCKET /live/socket, GET /live/feed) are served, events "
+        "are committed by the server's 4 worker processes, and LIVE_FANOUT names "
+        "no backend: a client sees only the events its own process committed."
+    )
+    assert "live_events.share" in warning
+    with override_settings(LIVE_FANOUT={"BACKEND": "redis"}):
+        assert fanout_warnings(routes) == []
+    plain_only = [route for route in routes if getattr(route, "path", "") == "/plain"]
+    assert fanout_warnings(plain_only) == []
+    assert fanout_warnings() == []  # The routes are the caller's to give.
+
+
+def test_the_messaging_worker_commits_in_a_process_of_its_own(
+    deployed: pytest.MonkeyPatch,
+) -> None:
+    """One web process and the worker: the worker's events reach no client."""
+    installed = SimpleNamespace(is_installed=lambda name: name == MESSAGING)
+    deployed.setattr(live_events_module, "registry", installed)
+    deployed.setenv("WEB_CONCURRENCY", "2")
+    routes = [*live_router.routes] * 2
+
+    (warning,) = fanout_warnings(routes)
+
+    assert (
+        "(WEBSOCKET /live/socket, GET /live/feed, WEBSOCKET /live/socket, and 1 "
+        "more) are served, events are committed by the server's 2 worker "
+        "processes and by the messaging worker, and LIVE_FANOUT"
+    ) in warning
+    deployed.setattr(live_events_module, "DEPLOYED_ENVIRONMENTS", frozenset())
+    assert fanout_warnings(routes) == []  # Not deployed.
+
+
+def test_a_route_is_a_stream_only_when_its_endpoint_says_so() -> None:
+    """No endpoint, or an annotation that cannot be read, is not a stream."""
+
+    async def unreadable() -> "Missing":  # type: ignore[name-defined]  # noqa: F821
+        raise NotImplementedError
+
+    routes = [route for route in live_router.routes if isinstance(route, APIRoute)]
+    (feed_route,) = [route for route in routes if route.path == "/live/feed"]
+
+    assert streams(feed_route.dependant) is True
+    assert streams(None) is False
+    assert streams(Dependant(call=None)) is False
+    assert streams(Dependant(call=unreadable)) is False
+    raw = Route("/raw", lambda request: PlainTextResponse(""))
+    assert live_routes([raw, *live_router.routes]) == [
+        "WEBSOCKET /live/socket",
+        "GET /live/feed",
+    ]
+
+
+def test_failing_to_count_the_processes_is_logged_and_unknown(
+    deployed: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A warning must not stop the application starting."""
+
+    def broken() -> int:
+        raise RuntimeError("unreadable")
+
+    deployed.setattr(live_events_module, "server_processes", broken)
+
+    assert fanout_warnings(live_router.routes) == []
+    (record,) = [r for r in caplog.records if r.name == live_events_module.__name__]
+    assert record.getMessage() == "Could not tell how many processes the server starts"
+
+
+def test_check_and_a_deployed_start_warn_about_live_routes_in_several_processes(
+    deployed: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``check`` reads the server's variables, and so does a deployed start."""
+    deployed.setattr(sys, "argv", ["manage.py", "check"])
+    deployed.setenv("GRANIAN_WORKERS", "3")
+    live = {"ENVIRONMENT": "production", "ROOT_ROUTER": f"{__name__}.live_router"}
+
+    with override_settings(**live, API_DOCS=False):
+        call_command("check", stdout=(output := io.StringIO()))
+        with caplog.at_level(logging.WARNING):
+            get_asgi_application()
+
+    expected = "Live routes (WEBSOCKET /live/socket, GET /live/feed) are served"
+    assert f"Warning: live.W003: {expected}" in output.getvalue()
+    assert any(message.startswith(expected) for message in caplog.messages)
 
 
 async def test_nothing_goes_out_without_a_backend() -> None:

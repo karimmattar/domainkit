@@ -494,8 +494,26 @@ own. The committing process's subscribers get it at once, and once.
   event is not sent, and logged: send large events through Redis.
 - **Only the named types.** A subclass is shared when it is named too.
   A subscription to a type nobody shares, while `LIVE_FANOUT` is on, is
-  logged once; `check` warns, in staging and production, about shared
-  types with no backend (`live.W003`).
+  logged once.
+
+In staging and production, `check` warns (`live.W003`) when `LIVE_FANOUT`
+names no backend and either domains share types, or the application
+serves live routes (WebSocket routes, and routes that return an
+`EventSourceResponse`) while more than one process commits events:
+
+- the server starts several worker processes: `--workers`, or the
+  variables the servers read in its place, `WEB_CONCURRENCY` (uvicorn and
+  gunicorn), `UVICORN_WORKERS`, `GRANIAN_WORKERS`, and `GUNICORN_CMD_ARGS`;
+- `domainkit.contrib.messaging` is installed: its worker commits events
+  in a process of its own.
+
+A deployed application logs the same warning when it starts, from the
+server's own command line. One process, a server `check` cannot find, or
+no live route is not warned. Replicas are not seen either: a service
+that runs one process per container on several replicas needs the
+fan-out as much, and is not warned. Silence `live.W003` if your live
+routes stream no committed events
+([ADR 0157](adr/0157-priorities-on-rabbitmq-an-unpartitioned-outbox-and-audit-trail-and-live-routes-in-several-processes.md)).
 
 A client that connects again misses what committed while it was away. A
 route that must not lose events replays them from its own records, after

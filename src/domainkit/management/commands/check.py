@@ -113,7 +113,7 @@ def _warnings(app: FastAPI) -> list[str]:
     warnings += _tagged("caches.W001", cache_deployment_warnings())
     warnings += _tagged("deploy.W006", pool_sizing_warnings())
     warnings += _tagged("live.W001", websockets.deployment_warnings(app))
-    warnings += _tagged("live.W003", fanout_warnings())
+    warnings += _tagged("live.W003", fanout_warnings(app.routes))
     warnings += [found for hook in on_deployment_warnings for found in hook.call()]
     if deployed:
         warnings += _tagged("live.W002", unchecked_routes(app.routes))
