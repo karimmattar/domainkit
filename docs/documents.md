@@ -210,7 +210,8 @@ text, and returns the filled `.docx`:
   are refused.
 
 Every part of the document but the filled ones is written back as it
-was, in its order. The XML is read as UTF-8 with lxml, without entities,
+was, in its order. The XML is read as UTF-8 with lxml (a part in UTF-16
+or UTF-32 is refused, as Word writes UTF-8), without entities,
 a DTD, or anything outside the part. A part that declares a DTD or an
 entity is refused before it is parsed, since Word writes none: a
 parser told not to load a DTD still opens an outside DTD subset or
@@ -232,8 +233,10 @@ The archive is read within `ArchiveLimits`, so a zip bomb costs nothing:
 
 Sizes are checked as the archive states them, before anything is
 inflated. Then each file is inflated no further than its stated size, so
-a file that states 10 bytes and inflates to gigabytes costs 10 bytes;
-it then fails its checksum. Files are stored or deflated, as Word writes
+a file that states 10 bytes and inflates to gigabytes costs 10 bytes: it
+fails its checksum or is cut to them. The count of files, and the size
+of the list of them (1 KiB a file at most), are read from the end of the
+archive before anything else. Files are stored or deflated, as Word writes
 them; other methods (bzip2, LZMA) are refused. Each file is named by a
 plain relative path (no `/` first, no `..`, `\`, or `:`), and no two
 names are the same once case and Unicode forms are set aside.
@@ -316,15 +319,19 @@ renderer load or run anything: scripts, style sheets, frames, objects,
 forms, SVG and MathML, event handlers, `class` and `id`, and every URL
 to fetch, in `src` or in CSS (`url()`). A `style` keeps a list of
 typographic properties (`color`, `font-weight`, `text-align`, margins,
-...) with plain values, none negative, so text cannot be moved over
-other text. Links are dropped, their text kept; `clean_html(html,
-links=True)` keeps `https:` and `mailto:` links, which a PDF shows and
-never loads. Comments are dropped. `vertical-align` keeps keywords only,
-and `line-height` is at least 1 (or 100%). nh3 writes a style back as
-its CSS parser read it (`0-500px` as `0 -500px`), so the text is cleaned
-twice, and the second pass checks what the first wrote. Text made tiny,
-or the colour of the page, is not stopped: show a preview of what is
-signed.
+...) with plain values, none negative. `vertical-align` keeps keywords
+only, `line-height` is at least 1 (or 100%), and no `width`, `height`,
+or `white-space` is kept, since a box too small for its text lets the
+text run over the next. nh3 writes a style back as its CSS parser read
+it (`0-500px` as `0 -500px`), so the text is cleaned twice, and the
+second pass checks what the first wrote. Links are dropped, their text
+kept; `clean_html(html, links=True)` keeps `https:` and `mailto:` links,
+which a PDF shows and never loads. Comments are dropped.
+
+That keeps out what most often lays text over text, not all of it. Text
+made tiny or the colour of the page, and large text (a big font, wide
+spacing) in a box your template made narrow, which runs over its
+neighbour, are not stopped: show a preview of what is signed.
 
 ### Why cleaning is not enough
 

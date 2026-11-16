@@ -107,11 +107,15 @@ called and says which extra to install when it is missing.
   placeholder. A part that declares a DTD or an entity is refused before
   it is parsed; lxml then reads UTF-8 only, without entities, DTDs, or
   the network, and resolves any outside reference to nothing. Each
-  paragraph's text is gathered in one walk, so nesting costs nothing.
-  Prefixes are kept. The archive is read within `ArchiveLimits`: its
-  stated sizes and POI's ratio are checked first, then each file is
-  inflated no further than its stated size. Files are stored or deflated,
-  and named by plain relative paths, each name once.
+  paragraph's text is gathered in one walk, so nesting costs nothing,
+  and each text that changes is built once, however many placeholders
+  it holds. Prefixes are kept. The archive is read within
+  `ArchiveLimits`: the count of files and the size of their list are
+  read from the archive's end before `zipfile` reads the list; its
+  stated sizes and POI's ratio are checked next, then each file is
+  inflated no further than its stated size. Files are stored or
+  deflated, parts in UTF-8, and named by plain relative paths, each name
+  once.
 - **`overlay_pdf(document, overlay)`** lays page *i* of a rendered PDF
   (or one page per index of a mapping) over page *i*, as shown: the
   overlay is mapped from its shown coordinates to the page's own, by the
@@ -124,9 +128,12 @@ called and says which extra to install when it is missing.
   nh3: formatting, direction, inline raster images as data; no script,
   style sheet, frame, form, SVG, handler, `class`, `id`, URL to fetch, or
   CSS `url()`; style values that are plain and not negative,
-  `vertical-align` by keyword, `line-height` at least 1. nh3 writes a
-  style back as its CSS parser read it, so the text is cleaned twice and
-  the second pass checks what the first wrote. It is the
+  `vertical-align` by keyword, `line-height` at least 1, and no `width`,
+  `height`, or `white-space`, whose small values let text run over the
+  next. nh3 writes a style back as its CSS parser read it, so the text is
+  cleaned twice and the second pass checks what the first wrote. Tiny or
+  page-coloured text, and large text in a box the template made narrow,
+  are not stopped: a preview shows what is signed. It is the
   first layer; the renderer's flags are the second, since a sanitizer
   parses HTML its own way, the template around it is the project's, and
   only the browser that would fetch can refuse for sure.

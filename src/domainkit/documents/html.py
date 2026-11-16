@@ -10,12 +10,16 @@ in ``src`` or in CSS (``url()``); no link unless ``links`` (and then
 https and mailto links only, which a PDF shows and never loads). A style
 keeps only the properties of ``STYLE_PROPERTIES``, each with a value of
 plain words, numbers, and colours, none negative; ``vertical-align``
-keeps keywords only, and ``line-height`` is at least 1 (or 100%), so
-text can neither fetch nor be moved over other text. nh3 writes a style
-back as its CSS parser read it, so the text is cleaned twice, and the
-second pass checks what the first wrote. Comments are dropped. Text made
-tiny, or the colour of the page, is not stopped: a preview shows what is
-signed.
+keeps keywords only, and ``line-height`` is at least 1 (or 100%). No
+``width``, ``height``, or ``white-space`` is kept: a box made too small
+for its text lets the text run over the next. So a style fetches
+nothing, and keeps out what most often lays text over text. nh3 writes
+a style back as its CSS parser read it, so the text is cleaned twice,
+and the second pass checks what the first wrote. Comments are dropped.
+
+Not stopped: text made tiny or the colour of the page, and large text
+(a big font, wide spacing) in a box the template made narrow, which
+runs over its neighbour. Show a preview of what is signed.
 
 It is one of two layers. The renderer is the other: Chromium, started
 by Gotenberg with JavaScript off and a deny list, refuses what gets
@@ -66,7 +70,7 @@ STYLE_PROPERTIES: Final = frozenset(
         *("color", "background-color", "font-family", "font-size", "font-style"),
         *("font-weight", "text-align", "text-decoration", "text-indent"),
         *("line-height", "letter-spacing", "direction", "unicode-bidi"),
-        *("vertical-align", "white-space", "list-style-type", "width", "height"),
+        *("vertical-align", "list-style-type"),
         *("margin", "margin-top", "margin-right", "margin-bottom", "margin-left"),
         *("padding", "padding-top", "padding-right", "padding-bottom"),
         *("padding-left", "border", "border-collapse", "border-color"),
