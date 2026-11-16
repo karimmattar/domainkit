@@ -427,6 +427,7 @@ The tenant being served, and the aggregates that belong to one.
 - `all_tenants`: Read and change every tenant's rows inside the block, on purpose.
 - `check_tenant_id`: `value` as a tenant id.
 - `current_tenant`: The tenant being served, if any.
+- `no_tenant`: Serve no tenant inside the block, whatever one is served outside it.
 - `row_tenant`: The tenant `TenantOwned` rows are scoped to; None inside `all_tenants`.
 - `scoped_key`: `key`, the current tenant's own: caches and rate limits use it.
 - `shared_keys`: Cache and rate-limit keys inside the block are every tenant's.

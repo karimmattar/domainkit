@@ -143,10 +143,28 @@ command, use case, or batch on the collection that names no action is
 refused when declared. Nothing breaks: `tenant=` is new.
 
 With `TenantMiddleware` too, the collection's routes run as the tenant a
-header or a subdomain names, so a rule that asks "is a tenant served"
-would let the caller's role there decide a change of another company.
-What decides is whether the route's own path named the tenant
-(`PathTenant`), which tenancy now records (`path_tenant()`).
+header or a subdomain names. Then every rule that reads the current
+tenant counts the caller's role there against other companies:
+`MembershipBackend` grants it to `HasPermissions` (and so to
+`ModelActions`, `outside=ModelActions(...)`, and a `FieldPolicy`), and a
+member's rule counts it. Gating the member's rules alone on whether the
+route's path named the tenant (`path_tenant()`) left the others open. So
+the resource serves every route that does not take its tenant from the
+path as no tenant (`serve_no_tenant`, `PathTenant`'s counterpart, first
+among the route's dependencies), whatever a middleware chose.
+
+FastAPI includes a router as it is, without adding its routes one by
+one through the including router, so a router included into the
+resource under `/{company_id}` would be served as no tenant: a stranger
+would reach a company's routes. The resource adds its `PathTenant` to an
+included router whose prefix holds the parameter, and refuses one
+included elsewhere, and Starlette's routes, mounts, and hosts, which
+take no dependency.
+
+A command on the collection names its target in its body (`target`);
+the route cannot know which item that is, so the resource's scope does
+not hold it. Its action's rule decides, and its service checks the item
+it loads; a command on one company goes under `/{company_id}`.
 
 The list, queries on the collection, and exports serve no tenant either,
 so no member rule narrows them: without a scope, a rule as `outside`
@@ -238,8 +256,14 @@ For searching through a reference:
   (`TypeError`), and so is a batch whose items name the resource's
   tenants. With `outside`, the member's keys count only where the route's
   path named the tenant (`domainkit.tenancy.path_tenant()`), and
-  `outside` rules wherever it did not, whatever tenant a middleware
-  serves. Under a rule as `outside`, a resource whose own id is the
+  `outside` rules wherever it did not.
+- **A resource with `tenant=` serves every route that does not take the
+  tenant from its path as no tenant** (`domainkit.tenancy.serve_no_tenant`,
+  with `domainkit.ddd.tenancy.no_tenant()` for a block of code), first
+  among its dependencies, whatever `TenantMiddleware` chose. A router
+  included under the tenant's parameter is served as the tenant; one
+  included elsewhere, and a Starlette route, mount, or host, are refused
+  (`TypeError`). Under a rule as `outside`, a resource whose own id is the
   tenant needs a `scope` (`TypeError` without): no member rule narrows
   its list.
 - **`Throttle(..., per_tenant=False)`** counts the caller once across
@@ -282,6 +306,11 @@ For searching through a reference:
 - `ResourceRouter.fetch` from a route of one's own on the collection
   serves no tenant and asks no member's key: it reaches what the scope
   allows, and asks the rules that look at objects.
+- On the collection, `ModelActions` and a `FieldPolicy` count what a
+  caller holds everywhere, and `TenantOwned` rows are refused
+  (`TenantRequired`), as with no tenant at all.
+- A command on the collection is not held to the scope; its action's
+  rule and its service decide about the item it names.
 - Batches on single companies are declared per company, as command
   routes; companies nested under companies are not offered.
 - A tenant whose id was typed in two spellings before (a UUID in

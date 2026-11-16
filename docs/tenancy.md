@@ -225,6 +225,12 @@ serves each route whose path holds `{company_id}` as that company, and
 the list as no tenant
 ([resources](resources.md#a-resource-whose-items-are-tenants)).
 
+**Served as no tenant.** `serve_no_tenant` is `PathTenant`'s
+counterpart: a dependency that serves the route as no tenant, whatever
+the middleware chose, and `no_tenant()` (`domainkit.ddd.tenancy`) does
+the same for a block of code. A resource whose items are tenants puts it
+on its collection's routes (since 2.5).
+
 **The id's type.** `PathTenant("company_id", id_type=UUID)` (or `int`)
 reads the parameter as that type (since 2.5). The tenant id is then the
 value's text, a UUID in lowercase, so one tenant has one id however the
@@ -353,9 +359,11 @@ companies = ResourceRouter(
   companies is refused when declared: its items name companies it is not
   served as. Each command on the collection names its action
   (`action="add"` to create one), or is refused when declared.
-- With `outside`, a member's keys count only where the path named the
-  tenant (`path_tenant()`): with `TenantMiddleware` too, the tenant a
-  header or a subdomain names decides nothing on the collection.
+- The resource serves its collection's routes as no tenant
+  (`serve_no_tenant`), whatever `TenantMiddleware` named: the tenant a
+  header or a subdomain names decides nothing there, through any rule.
+  With `outside`, a member's keys also count only where the path named
+  the tenant (`path_tenant()`).
 - The list serves no tenant, so no member rule narrows it: give the
   resource a `scope` that keeps each caller to the companies they belong
   to, from your `MEMBER_TENANTS` function

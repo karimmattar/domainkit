@@ -52,7 +52,12 @@ and a status.
   name tenants. Where the resource's own id is the tenant, a project
   names the action of every command, use case, and batch on the
   collection (`action="add"` to create one; `TypeError` without), and
-  keeps the resource at a prefix that names no parameter. `PathTenant(..., id_type=UUID)` (or `int`) reads the id as
+  keeps the resource at a prefix that names no parameter. Every other
+  route of the resource (its collection's) is served as no tenant
+  (`serve_no_tenant`, and `no_tenant()` for code), whatever
+  `TenantMiddleware` named. A router included into it goes under the
+  tenant's parameter (`prefix="/{company_id}/..."`); one included
+  elsewhere, and Starlette routes, mounts, and hosts, are refused. `PathTenant(..., id_type=UUID)` (or `int`) reads the id as
   that type, so a UUID in capitals is the same tenant; a resource's
   tenant reads its id's type. On the router, `PathTenant` refused the
   list (`tenancy.E001`), and command routes take no `dependencies=`.

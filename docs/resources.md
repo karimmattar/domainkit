@@ -1046,13 +1046,26 @@ ids of the companies the user belongs to.
 - A nested resource takes its parent's tenant. One of its own is refused
   with `TypeError`: the routes that name only the parent's id would
   serve no tenant.
-- With `TenantMiddleware` too, the collection's routes run as the tenant
-  the middleware names, but that tenant decides nothing there: a member's
-  keys count only where the path named the tenant (`path_tenant()`).
+- Every other route of the resource is served as no tenant
+  (`serve_no_tenant`), even with `TenantMiddleware` too: the tenant a
+  header or a subdomain names decides nothing on the collection. So no
+  member's keys count there, `ModelActions` and a `FieldPolicy` count
+  what the caller holds everywhere, and `current_tenant()` is None.
+- A command on the collection is not held to the `scope`: the item its
+  body names is the service's to load, and the route cannot know it. Its
+  action's rule decides (`outside`'s, or `Actions`'), and the service
+  checks the item it loads. To act on one company as its member, put the
+  command under `/{company_id}`, where the scope and the member's rule
+  hold.
 - `fetch(request, uow, id_)` from a route of your own on the collection
   serves no tenant and asks no member's key: it reaches the companies in
   the caller's `scope`, and asks only the rules that look at objects. To
   act as a member of one company, put the route under `/{company_id}`.
+- A router included into the resource is served as the tenant its
+  prefix names: `companies.include_router(files,
+  prefix="/{company_id}/files")`. One included under another prefix, and
+  a Starlette route, WebSocket route, mount, or host, which take no
+  dependency, are refused with `TypeError`.
 - Routes of your own on the resource (`@companies.get(...)`, a
   WebSocket) are served alike, by their path.
 - The id is read as the resource's id type. A UUID is the tenant's id in
