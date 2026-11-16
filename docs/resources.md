@@ -548,14 +548,12 @@ class AttachContract(Command):
 
     product_id: UUID
     contract: StoredUpload
-    contract_sha256: str
 
 
 products.upload_route(
     AttachContract,
     service=attach_contract,
     field="contract",
-    digest="contract_sha256",
     types=(CHECKED_PDF, *OFFICE),
     max_size=10_000_000,
     storage="documents",
@@ -583,27 +581,30 @@ Content-Type: application/pdf
   at most `max_size` bytes. A refusal is 400, 413, 415, or 422, and
   nothing is stored. The route's body limit is `max_size` and 64 KiB for
   a form, unless `body_limit` says otherwise.
-- It checks what a command route checks, from its rules (before a byte
-  is read) to the aggregate within the caller's reach (`404`), the rules
-  on the aggregate, and `If-Match`. The command is built as a command
-  route builds it: the path's ids, the parent's field, and `provide`;
-  `digest` names a field that gets the file's SHA-256, in hex.
+- It checks what a command route checks, and before it reads a byte of
+  the body: its rules (`401`, `403`), then, on one aggregate, the
+  aggregate within the caller's reach (`404`), the rules on the
+  aggregate (`403`), and `If-Match` (`412`, `428`). The command is built
+  as a command route builds it: the path's ids, the parent's field, and
+  `provide`; `digest` names a field that gets the file's SHA-256, in hex.
 - The file is stored, in `storage` under `directory`, before the service
-  runs, outside its transaction. If the request fails before the
-  service returns (out of reach, `412`, the service raises), the file is
-  deleted. Once the service returned, it is the service's: a later
-  failure keeps it.
+  runs, outside its transaction; the reach and `If-Match` are checked
+  again in it. If the request fails and its unit of work did not commit,
+  the file is deleted. Once it committed, a row may name the file, and
+  it is kept, whatever fails after.
 - The other options are `command_route`'s: `returns`, `method` (`POST`,
   `PUT`, or `PATCH`), `path`, `action`, `rule`, `status_code`, `name`,
   `summary`, `provide`, `body_limit`, `retry`. A `POST` on the
   collection answers `201` with `Location`.
 - A route whose rule asks for an authorization gets its twin,
-  `POST <path>/authorization`, which takes the same body. It receives
-  and checks the file, stores nothing, and builds the command with an
-  upload whose `name` is empty. So an `Action` for the act ignores the
-  upload's field, whose name is new on every request, and binds the file
-  by its digest: `Action(..., ignore={"contract"})` with
-  `digest="contract_sha256"`.
+  `POST <path>/authorization`, which takes the same body. It checks the
+  reach first, as the act does, then receives and checks the file,
+  stores nothing, and builds the command with an upload whose `name` is
+  empty. An `Action` binds an upload by its content (its type, size,
+  file name and SHA-256), never by the name the storage gave it, which
+  is new on every request: the authorization the twin asked for is spent
+  on the same file, and refused for another. Declare nothing about the
+  upload; an `Action` that ignores its field binds no file at all.
 - OpenAPI shows the body as `application/octet-stream` or a form, with
   the `X-Filename` header, on the route and its twin.
 

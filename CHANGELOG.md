@@ -15,16 +15,22 @@ and a status.
   an `inspect` hook, which `save_upload` runs in a worker thread on the
   upload, held in a temporary file; a file it refuses is never stored
   (422 `unsafe_file` or `unreadable_file`, the detail translated).
-  `CHECKED_PDF` refuses an encrypted PDF, scripts, actions run on opening
-  or on an event, actions that launch, open other files or send data,
-  links but `http`, `https` and `mailto`, embedded files, XFA, and more
-  than 1,000 pages. `DOCX`, `XLSX`, `PPTX` (and `OFFICE`, the three)
-  refuse macro-enabled documents, macros, OLE objects, ActiveX, outside
-  relationships but hyperlinks, fields that pull content in or run a
-  program, links to other workbooks, and DTDs, with the ZIP bounded by
-  its directory before it is inflated. The checks are `PdfCheck` and
-  `OfficeCheck` of `domainkit.storage.inspection`, and need the
-  `documents` extra. `PDF` and `ZIP` still read the first bytes only
+  `CHECKED_PDF` reads a PDF strictly, as its tables declare it, and every
+  object written in it; it refuses an encrypted PDF, scripts, actions run
+  on opening or on an event, actions that launch, open other files or
+  send data, links but `http`, `https` and `mailto`, embedded files, XFA,
+  and more than 1,000 pages. `DOCX`, `XLSX`, `PPTX` (and `OFFICE`, the
+  three) refuse macro-enabled documents, macros, OLE objects, ActiveX,
+  imported chunks, linked pictures, outside relationships but
+  hyperlinks, fields that pull content in or run a program, links to
+  other workbooks, data connections, web-service and DDE formulas, and
+  DTDs in any XML part, with the ZIP bounded by its directory and the
+  upload's size before it is inflated. Each check has a deadline and
+  budgets, and runs in a thread of the checks' own, four at a time per
+  event loop; past that an upload is 503 `service_busy`. The checks are
+  `PdfCheck` and `OfficeCheck` of `domainkit.storage.inspection`, and
+  need the `documents` extra. `PDF` and `ZIP` still read the first bytes
+  only
   ([ADR 0167](docs/adr/0167-check-an-upload-whole-and-let-a-resource-take-one.md))
   (user report U1).
 - `save_upload` takes bytes, or an async iterable of bytes such as a
@@ -34,11 +40,14 @@ and a status.
   and carries the SHA-256 of what was stored (user report U3).
 - `ResourceRouter.upload_route(...)` takes a file: the body itself, its
   name in `X-Filename`, which a phone can sign, or a form. It checks the
-  reach as a command route does, stores the file before the service runs
-  and deletes it if the request fails first, and gives a command field
-  the `StoredUpload` (and another its digest). A route whose rule asks
-  for an authorization gets its twin, which stores nothing (user report
-  U3).
+  reach and `If-Match` before it reads the body, as a command route
+  checks them, stores the file before the service runs and deletes it if
+  the request fails before its unit of work commits, and gives a command
+  field the `StoredUpload` (and another its digest). A route whose rule
+  asks for an authorization gets its twin, which stores nothing. An
+  `Action` binds an uploaded file by its content, not by the name the
+  storage gave it, so the twin and the act agree on the file (user
+  report U3).
 - `HttpClient.request(files=...)` sends a `multipart/form-data` form,
   `data=` its other fields, within the client's deadlines and retries; a
   retry sends each file whole again (user report U5).

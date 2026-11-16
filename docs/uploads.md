@@ -331,6 +331,7 @@ These are the refusals, as the client sees them:
 422 unreadable_file        The file could not be read.
 422 infected_file          The virus scan refused the file.
 503 scanner_unavailable    Uploads cannot be checked now; try again later.
+503 service_busy           Uploads cannot be checked now; try again later.
 ```
 
 - **Types come from the content.** The first bytes of the file decide its
@@ -428,9 +429,9 @@ A rule that read the body first leaves it whole for the route. A
 `receive_upload(upload, *, types, max_size, filename=None)` receives the
 file and checks it as `save_upload` does, but stores nothing. It returns
 a `ReceivedUpload`, held in a temporary file: `store(storage,
-directory=)` stores it and returns the `StoredUpload`, `unstored()` says
-what `store` would return but its name, and `close()` drops it. Close
-it, or store it.
+directory=)` stores it, drops the temporary file, and returns the
+`StoredUpload`; `unstored()` says what `store` would return but its
+name; and `close()` drops it without storing. Store it, or close it.
 
 A gateway of the infrastructure layer may call `save_upload` with the
 bytes its route hands it: the [layer rules](reference/settings.md#layer-rules)
@@ -513,37 +514,60 @@ A Word document with macros, sent as `contract.docx`:
 ```
 
 - **When.** The upload is held in a temporary file (in memory up to
-  1 MiB, then on disk), the check runs in a worker thread, and only a
-  file that passes is stored, through the virus scan if one is set. A
-  file a check refuses is never stored: 422 `unsafe_file`, or
+  1 MiB, then on disk), the check runs in a thread of the checks' own,
+  and only a file that passes is stored, through the virus scan if one
+  is set. A file a check refuses is never stored: 422 `unsafe_file`, or
   `unreadable_file` for a file its reader cannot read. The detail says
   why, in the caller's language.
-- **`CHECKED_PDF`** (`PdfCheck`) refuses an encrypted PDF (an owner
-  password alone included), one of more than 1,000 pages, JavaScript
-  anywhere, an action run on opening or on an event (`/OpenAction` with
-  an action, `/AA`; a destination is kept), an action that launches a
-  program, opens another file or sends data, a link to anything but
-  `http`, `https` or `mailto`, an embedded file, rich media, and an XFA
-  form. It reads every object the file declares, not only those its
-  pages reach, with names decoded (`/J#61vaScript` is `/JavaScript`).
+- **A few at a time.** An event loop runs at most four checks at once
+  (`CHECKS_AT_ONCE`), apart from the threads the rest of the application
+  uses. One more upload is refused at once, 503 `service_busy` ("Uploads
+  cannot be checked now; try again later."), not queued.
+- **`CHECKED_PDF`** (`PdfCheck`) reads a PDF as a strict reader does,
+  and only as its cross-reference tables say: an object they do not
+  declare, or one not at its offset, makes the file `unreadable_file`,
+  where pypdf would search the file for it. It reads every object the
+  tables declare, follows every reference from the trailer, and parses
+  every object written in the file that they do not point at (an earlier
+  revision). It refuses an encrypted PDF (an owner password alone
+  included), one of more than 1,000 pages, JavaScript anywhere (a 3D
+  annotation's included), an action run on opening or on an event
+  (`/OpenAction` with an action, `/AA`; a destination is kept), an action
+  that launches a program, opens another file or sends data, a link to
+  anything but `http`, `https` or `mailto`, media from a URL, an embedded
+  file, rich media, and an XFA form. Names are decoded (`/J#61vaScript`
+  is `/JavaScript`).
 - **`DOCX`, `XLSX`, `PPTX`** (`OfficeCheck`) refuse a document whose main
   part is macro-enabled (a `.docm` named `.docx`), macros (`vbaProject.bin`,
-  Excel 4.0 macro sheets), OLE objects, ActiveX controls, a relationship
-  to outside the package but a hyperlink to `http`, `https` or `mailto`
-  (a remote template, a linked picture), a Word field that pulls content
-  in or runs a program (`INCLUDEPICTURE`, `INCLUDETEXT`, `LINK`, `DDE`),
-  Excel's links to other workbooks, and a DTD in any XML part. An
-  embedded workbook (a chart's data) is checked the same way. A
-  template, or another kind of document, is not the type: with `OFFICE`
-  the next type is tried, else 415.
+  Excel 4.0 macro sheets), OLE objects, ActiveX controls, chunks imported
+  from another format (`altChunk`), pictures or objects linked rather
+  than held, a relationship to outside the package but a hyperlink to
+  `http`, `https` or `mailto` (a remote template, a linked picture),
+  whatever its `TargetMode` says, a Word field that pulls content in or
+  runs a program (`INCLUDEPICTURE`, `INCLUDETEXT`, `INCLUDE`, `IMPORT`,
+  `LINK`, `DATABASE`, `DDE`, `DDEAUTO`) or whose instruction starts with
+  another field, Excel's links to other workbooks, data connections, query
+  tables, formulas that call `WEBSERVICE`, `RTD` or DDE (`cmd|'...'!A0`),
+  and an XML part, whatever its name, with a DTD or an entity, or in
+  another encoding than UTF-8 and UTF-16. An embedded workbook (a
+  chart's data) is checked the same way. A template, or another kind of
+  document, is not the type: with `OFFICE` the next type is tried, else
+  415. Power Query reaches its data through a connection, which is
+  refused; a project that takes workbooks with external data writes a
+  check of its own.
 - **Bounds.** A ZIP is read from its directory before a byte is
-  inflated: at most 2,000 parts and 200 MiB inflated, and no part over
-  1 MiB inflating more than 200 times. pypdf reads streams of at most
-  32 MiB, and a PDF check reads at most a million values. XML is parsed
-  without entities, a DTD, or the network.
+  inflated: at most 2,000 parts, 50 times the upload's size inflated in
+  all and never more than 200 MiB, and no part over 1 MiB inflating more
+  than 200 times. A PDF's streams decode to 16 MiB each and its object
+  streams to 64 MiB in all; its tables declare at most 200,000 objects;
+  the check reads at most a million values. Each check stops at its
+  deadline, 10 seconds, looked at per object or part. XML is parsed
+  without entities, a DTD, or the network. These bound the work between
+  pypdf's and lxml's steps, in the process, not inside one step as a
+  separate process's resource limits would.
 - **Limits of your own.** `FileType(DOCX.content_type, ".docx",
-  DOCX.matches, OfficeCheck("docx", max_size=20_000_000))`, or
-  `PdfCheck(max_pages=50)`.
+  DOCX.matches, OfficeCheck("docx", max_expansion=100))`, or
+  `PdfCheck(max_pages=50, max_seconds=5)`.
 - `PDF` and `ZIP` read the first bytes, as before 2.5. A route that keeps
   them takes PDFs with scripts and Word documents with macros.
 - Without pypdf or lxml, a check raises `ImproperlyConfigured`, naming
@@ -731,8 +755,8 @@ The arguments of the functions on this page:
 | --- | --- |
 | `save_upload` | `upload` (an `UploadFile`, bytes, or an async iterable of bytes), `types`, `max_size`, `storage="default"`, `directory=""`, `filename=None` |
 | `receive_upload` | `upload`, `types`, `max_size`, `filename=None` |
-| `PdfCheck` | `max_pages=1000` |
-| `OfficeCheck` | `kind` (`"docx"`, `"xlsx"`, `"pptx"`), `max_parts=2000`, `max_size=200 MiB`, `max_ratio=200` |
+| `PdfCheck` | `max_pages=1000`, `max_objects=200_000`, `max_decoded=64 MiB`, `max_seconds=10.0` |
+| `OfficeCheck` | `kind` (`"docx"`, `"xlsx"`, `"pptx"`), `max_parts=2000`, `max_size=200 MiB`, `max_ratio=200`, `max_expansion=50`, `max_seconds=10.0` |
 | `serve` | `storage`, `name`, `content_type`, `filename=None`, `inline=False` |
 | `body_limit` | `size`: 1 byte to 1 GiB |
 | `thumbnail` | `storage`, `name`, `size=(256, 256)`, `format="webp"`, `directory="thumbnails"` |
@@ -748,7 +772,8 @@ The arguments of the functions on this page:
 | 413 `file_too_large` | The file is over `max_size`. | Send a smaller file. |
 | 413 `content_too_large` | The request is over the route's `body_limit`, or `MAX_REQUEST_BODY_SIZE`. | Send less, or raise the route's limit. |
 | 422 `unsafe_file` | The type's check refused what the file holds: scripts, actions, macros, objects, outside links, a DTD, a password, too many pages, or a ZIP too large to check. | Nothing is kept. Send the file without it. |
-| 422 `unreadable_file` | The type's check could not read the file. | Nothing is kept. Send a file that opens. |
+| 422 `unreadable_file` | The type's check could not read the file, or a strict reader could not: a PDF whose table needs repair. | Nothing is kept. Send a file that opens; save a PDF again from a viewer. |
+| 503 `service_busy` | As many checks run as the loop runs at once. | Try again shortly. |
 | 422 `infected_file` | The scanner found something. | Nothing is kept. |
 | `ImproperlyConfigured` | A checked type without pypdf or lxml. | Install the `documents` extra. |
 | 503 `scanner_unavailable` | The scanner could not scan the file. | Try again later; check clamd. |
