@@ -171,7 +171,7 @@ serves two probes. For `/metrics`, install `domainkit[metrics]`, list
 | Path | Answers | Use it for |
 | --- | --- | --- |
 | `/health` | `200 {"status": "ok"}` while the process serves | Liveness: restart a process that stops answering |
-| `/ready` | `200 {"status": "ready"}` when the databases, ledgers, caches marked `READINESS`, and domains answer; else `503 {"status": "unavailable"}` | Readiness: take a replica out of rotation |
+| `/ready` | `200 {"status": "ready"}` when the databases (other than read replicas with `MAX_LAG`), ledgers, caches marked `READINESS`, and domains answer; else `503 {"status": "unavailable"}` | Readiness: take a replica out of rotation |
 | `/metrics` | Prometheus text (`domainkit[metrics]`) | Scraping |
 
 - None of the three is counted against the concurrency cap
@@ -651,6 +651,7 @@ below are starting points: tune them to the service.
 | `audit_unsealed_rows` | above `AUDIT.SEAL_BACKLOG_WARNING`, or growing for an hour | [The seal backlog grows](runbook.md#the-seal-backlog-grows) |
 | `cache_errors_total` | it grows | [A cache fails](runbook.md#a-cache-fails) |
 | `db_pool_connections{state="checked_out"}` | at the pool's size for minutes | [Requests are shed](runbook.md#requests-are-shed) |
+| `db_replica_switches_total{to="primary"}` | it grows, or `db_replica_lag_seconds` nears the replica's `MAX_LAG` | [Reads leave a replica](runbook.md#reads-leave-a-replica) |
 | `tasks_restarted_total` | it grows | [A background task restarts](runbook.md#a-background-task-restarts) |
 | `messaging_outbox_messages{status="held"}` | it does not fall for an hour while pending messages run | [A key's messages stall](runbook.md#a-keys-messages-stall) |
 

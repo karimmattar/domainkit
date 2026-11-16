@@ -55,8 +55,14 @@ DATABASES["default"]["REPLICAS"] = ["replica"]
 DATABASES["replica"] = {
     "URL": env.str("DATABASE_REPLICA_URL"),
     "SSLMODE": "verify-full",
+    "MAX_LAG": 5.0,
 }
 ```
+
+`MAX_LAG` bounds how far behind the replica may be and still be read: 5
+seconds here. Past it, or while it cannot be reached, reads go to the
+primary, and come back once it catches up
+([databases.md](../databases.md#lag-and-failover)).
 
 A replica is never migrated, and never named as a domain's database:
 replication keeps it migrated. `check` reads the settings as a
@@ -116,6 +122,9 @@ pytest
 
 - A unit of work made with `readonly=True` connects to one of the
   database's `REPLICAS`, in turn. With no replica, it reads the primary.
+- With `MAX_LAG`, a replica is read only while its lag, read in the
+  background about once a second, is known to be within it. Otherwise
+  the primary is read, and `/ready` does not fail for the replica.
 - It refuses to commit: `commit()` raises `ReadOnlyError`. So no write
   can reach a replica by mistake.
 - A unit of work that always reads, such as one behind reports, says so
@@ -124,18 +133,19 @@ pytest
   with each other ([queries.md](../queries.md#read-only-work)).
 
 !!! warning
-    A replica may be behind the primary. A command answers with the
-    aggregate that its own unit of work wrote, so a client that creates
-    an order sees it at once. But a list read right after may not show it
-    yet. A read that must see a write, such as a check before a change,
-    belongs in the writable unit of work, or in a read-only one that
-    keeps to the primary: `readonly=True, replica=False`, or
+    A replica may be behind the primary, up to its `MAX_LAG`. A command
+    answers with the aggregate that its own unit of work wrote, so a
+    client that creates an order sees it at once, and so do later reads
+    in the same request. But a list read in the next request may not show
+    it yet. A read that must see a write, such as a check before a
+    change, belongs in the writable unit of work, or in a read-only one
+    that keeps to the primary: `readonly=True, replica=False`, or
     `replica = False` on its class (permission checks, for one).
 
 ## See also
 
 - [Backends](../reference/backends.md#databases-and-migrations): the
-  `REPLICAS` key.
+  `REPLICAS` and `MAX_LAG` keys.
 - [Databases](../databases.md#read-replicas): replicas and routing.
 - [Sizing pools](../reference/backends.md#sizing-pools): each replica
   has a pool of its own.

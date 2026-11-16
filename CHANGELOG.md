@@ -173,6 +173,23 @@ and a status.
   `readonly=True` also meant "read from a replica", so a project that
   marks its permission checks read-only could not add one: they would
   read stale memberships (user report D1).
+- `MAX_LAG`, on a read replica's `DATABASES` entry, bounds how many
+  seconds behind its primary it may be and still be read (1 to 86400).
+  Its lag is read in the background, at most about once a second per
+  process while it is read: on PostgreSQL from
+  `pg_last_xact_replay_timestamp()`, checked against the primary's WAL
+  while the primary commits nothing. Past the bound, or out of reach,
+  read-only work reads another replica within its own bound, or the
+  primary, and comes back once the replica catches up. Each switch is a
+  log line and counts in `db_replica_switches_total`; the last lag read is
+  `db_replica_lag_seconds`. Without `MAX_LAG`, replicas are read as
+  before ([lag and failover](docs/databases.md#lag-and-failover), ADR
+  0159, user report D1).
+- With `MAX_LAG`, a task that committed (a request) reads the primary
+  until the replica has replayed its commit, and a unit of work entered
+  again checks its replica again. `/ready` leaves out a replica with
+  `MAX_LAG`, since the primary takes its reads: a replica down took
+  every process out of rotation (ADR 0159, user report D1).
 - Action authorizations (`domainkit.contrib.auth.actions`): an approval
   worth one act, with its arguments, once. An `Action` declares the act
   (its purpose, its command, what it is on, and what the user is shown);

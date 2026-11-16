@@ -27,6 +27,7 @@ settings. Commands that change data take `--operator NAME` (or read
 | `audit verify` exits non-zero | [audit verify fails](#audit-verify-fails) |
 | `LedgerRolledBack` or `LedgerTampered` | [The ledger's state goes back](#the-ledgers-state-goes-back) |
 | `cache_errors_total` grows | [A cache fails](#a-cache-fails) |
+| `db_replica_switches_total{to="primary"}` grows | [Reads leave a replica](#reads-leave-a-replica) |
 | `503 throttle_unavailable` on logins | [Logins are refused while Redis is down](#logins-are-refused-while-redis-is-down) |
 | `tasks_restarted_total` grows | [A background task restarts](#a-background-task-restarts) |
 | A new release does not start | [A process refuses to start](#a-process-refuses-to-start) |
@@ -357,6 +358,28 @@ certificate's expiry.
 **Do** restore Redis. Nothing in the cache needs repair, because entries
 are computed again. Mark a cache `READINESS: True` only if the service
 must not run without it.
+
+## Reads leave a replica
+
+**You see** `db_replica_switches_total{to="primary"}` growing, and
+warnings from `domainkit.db.replicas`: "Read-only work on 'default'
+reads the primary, not replica 'replica'", with the reason.
+
+A replica with `MAX_LAG` is read only while it is known to be within it.
+Past it, or out of reach, read-only work reads the primary, and comes
+back once the replica catches up, with an info line
+([databases.md](databases.md#lag-and-failover)). The service answers;
+the primary carries the reads meanwhile.
+
+**Check** the reason in the warning. "Seconds behind": the replica's
+replay (a long query on it holding replay back, its disk, the network
+from the primary), and `db_replica_lag_seconds`. "Could not be read":
+the replica's server and the network to it. "Unknown": a standby that
+has replayed no transaction since it started. Check the primary's load
+and its pool (`db_pool_connections`) too, as it now serves the reads.
+
+**Do** restore the replica, or raise its `MAX_LAG` if the reads can bear
+more staleness. Nothing needs repair: reads go back on their own.
 
 ## Logins are refused while Redis is down
 

@@ -135,9 +135,11 @@ routing), [0009](adr/0009-sharding-with-hash-buckets.md) (sharding),
 [0010](adr/0010-postgresql-range-partitioning.md) (partitioning),
 [0011](adr/0011-immudb-ledger-for-evidence.md) (ledgers),
 [0024](adr/0024-replicas-and-derived-tables.md) (replicas and derived
-tables), and
+tables),
 [0092](adr/0092-retry-units-of-work-choose-isolation-and-lock-in-order.md)
-(isolation, work run again, and locks).
+(isolation, work run again, and locks), and
+[0159](adr/0159-read-a-replica-only-while-it-is-known-to-be-within-its-bound.md)
+(replicas' lag and failover).
 
 ## Units of work and their repositories
 
@@ -227,7 +229,8 @@ A `SqlAlchemyUnitOfWork` also takes these arguments:
 | --- | --- | --- |
 | `database=` | `database` | The target: a SQL alias or a shard group. Default: the domain's routing. |
 | `shard_key=` | | The key that picks a database of a shard group. |
-| `readonly=` | `readonly` | Read only, from a replica if there is one. |
+| `readonly=` | `readonly` | Read only, from a replica if there is one it may read ([read replicas](#read-replicas)). |
+| `replica=` | `replica` | `False` keeps a read-only unit of work on the primary. |
 | `reads=` | `reads` | How a read-only unit of work reads (`Reads`), and makes it read-only ([queries](queries.md#how-read-only-work-reads)). |
 | `isolation=` | `isolation` | The isolation level of its transactions (`Isolation`). |
 | `events=` | | The `EventBus` to publish to. |
@@ -1211,17 +1214,73 @@ class ReportsUnitOfWork(SqlAlchemyUnitOfWork):
 - **A replica is never a target.** Routing a domain to one, naming one as
   a unit of work's `database`, or migrating one is refused. Replication
   keeps it migrated.
-- **Lag.** A replica may be behind. A request that writes, then reads
-  what it wrote, should read in its writable unit of work.
+- **Lag.** A replica may be behind. Without `MAX_LAG` it is read however
+  far behind it is, and fails the reads sent to it while it is out of
+  reach. With it, see [lag and failover](#lag-and-failover).
 - **Settings.** A replica is another alias than `default`, of one
   primary, outside every shard group, with no replicas of its own. Each
   is a `DATABASES` entry, so the deployment checks (TLS, `ECHO`,
-  `LOG_PARAMETERS`) and `/ready` cover it, and it has its own pool.
+  `LOG_PARAMETERS`) cover it, and it has its own pool. `/ready` checks
+  a replica without `MAX_LAG`.
 - **Tests.** Point the replica at the primary's URL, or leave `REPLICAS`
   out of the test settings: two SQLite files do not replicate.
 
 [The read replica recipe](recipes/read-replica.md) sets one up step by
 step.
+
+### Lag and failover
+
+Give a replica `MAX_LAG`, in seconds, and read-only work reads it only
+while it is known to be at most that far behind its primary
+([ADR 0159](adr/0159-read-a-replica-only-while-it-is-known-to-be-within-its-bound.md)):
+
+```python
+DATABASES = {
+    "default": {"URL": env.str("DATABASE_URL"), "REPLICAS": ["replica"]},
+    "replica": {"URL": env.str("DATABASE_REPLICA_URL"), "MAX_LAG": 5.0},
+}
+```
+
+- **How far behind.** Each process keeps a reading per replica: its lag,
+  and when it was read. A replica is read while that lag plus the
+  reading's age is within `MAX_LAG`. Past it, read-only work reads
+  another replica within its own bound, or the primary, never a replica
+  past its bound. Once a reading finds the replica within it again, reads
+  go back.
+- **Probes.** Read-only work that finds a reading a second old or more
+  (half of `MAX_LAG`, if that is less) starts a probe in the background,
+  one per replica at a time, and does not wait for it. An idle process
+  sends none. The first read after a quiet spell longer than `MAX_LAG`
+  reads the primary while its probe runs.
+- **On PostgreSQL** a probe is one statement on the replica: how long ago
+  the last transaction it replayed committed
+  (`pg_last_xact_replay_timestamp()`). That grows while the primary
+  commits nothing, though the replica is up to date. So past `MAX_LAG`,
+  the probe asks the primary where its WAL ends (`pg_current_wal_lsn()`),
+  and the replica whether it replayed that far. A server not in recovery
+  is never behind: a replica pointed at the primary, as in tests, is
+  read. On SQLite the replica only has to answer.
+- **Out of reach.** A probe that fails, or takes over 5 seconds, sends
+  reads to the primary until one succeeds. Work already running on the
+  replica fails, as before.
+- **Your own writes.** After a unit of work commits, read-only work later
+  in the same task (a request, a message's handler) reads the primary
+  until a reading shows the replica replayed that commit. A later request
+  may read the replica, at most `MAX_LAG` behind. A read that must see
+  every request's latest commit, such as a permission check, keeps to the
+  primary with `replica=False`.
+- **Units of work** pick where to read when they are made, and check
+  again each time they are entered (`run` enters one for each run).
+- **Each switch** is a log line from `domainkit.db.replicas`: a warning,
+  with the reason, when reads leave a replica, and an info line when they
+  come back. `db_replica_switches_total` counts them, and
+  `db_replica_lag_seconds` holds the last lag read
+  ([metrics](reference/observability.md#metrics)).
+- **`/ready`** leaves out a replica with `MAX_LAG`: while it is away the
+  primary takes its reads, and no process leaves rotation for it. Size
+  the primary's pool and `max_connections` for those reads.
+- **Clocks.** The lag compares the primary's clock with the replica's.
+  Keep both in sync (NTP).
 
 ## Routing domains to databases
 
@@ -1742,6 +1801,7 @@ The options of each `DATABASES` entry:
 | `POOL_PRE_PING` | `True` | Test a connection as it leaves the pool. |
 | `CONNECT_ARGS` | `{}` | Extra driver arguments. |
 | `REPLICAS` | `()` | Aliases of read replicas. |
+| `MAX_LAG` | `None` | On a replica: the most seconds behind it may be and still be read ([lag and failover](#lag-and-failover)). |
 | `TEST_NAME` | `None` | The name of the test database. |
 
 [Backends](reference/backends.md#databases-and-migrations) has the full

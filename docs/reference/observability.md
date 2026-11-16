@@ -68,6 +68,8 @@ curl -H "Authorization: Bearer $METRICS_TOKEN" https://api.example.com/metrics
 | `http_request_duration_seconds` | `method`, `route` |
 | `http_requests_in_progress` | `method` |
 | `db_pool_connections` | `database`, `state` |
+| `db_replica_switches_total` | `database` (a read replica with `MAX_LAG`), `to` (`primary`: reads left it, past its bound or out of reach; `replica`: they came back) |
+| `db_replica_lag_seconds` | `database` (how far behind its primary a replica with `MAX_LAG` was when last read) |
 | `http_requests_admitted` | (requests holding a slot under `MAX_CONCURRENT_REQUESTS`) |
 | `http_requests_queued` | (requests waiting for a slot) |
 | `http_requests_shed_total` | `reason` (`queue_full`, `queue_timeout`) |
