@@ -25,6 +25,14 @@ and a status.
   `makemigrations`, then `migrate`
   ([Grants on single objects](docs/auth/users.md#grants-on-single-objects),
   [upgrading.md](docs/upgrading.md#23-to-24), ADR 0151) (user report D2).
+- The self-service webhooks can be owned by something the caller
+  administers, such as a company: `owned_router(resolver=...)` takes a
+  FastAPI dependency that names the owner from the request, or answers
+  None (403) for one the caller may not manage. Every route asks it, and
+  another owner's subscriptions stay 404. The user stays the default
+  owner
+  ([Owners the caller administers](docs/contrib/webhooks.md#owners-the-caller-administers),
+  ADR 0151) (user report D2).
 - While the broker is away, relaying workers run the outbox themselves:
   each relay has a breaker, as commits do, and while it is open the
   worker claims and runs the due messages of its queues, as a worker

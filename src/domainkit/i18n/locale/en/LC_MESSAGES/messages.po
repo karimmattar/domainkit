@@ -291,6 +291,9 @@ msgstr ""
 msgid "A grant's expiry must be in the future."
 msgstr ""
 
+msgid "You may not manage these webhooks."
+msgstr ""
+
 msgid "This resource cannot answer in a media type the request accepts."
 msgstr ""
 

@@ -8,18 +8,21 @@ Mount it where your users' API lives (it needs ``domainkit.contrib.auth``)::
 
 Each endpoint needs an authenticated user, whose subscriptions are those
 it made here: their owner is the user's id (``owned_router(owner=...)``
-names another, such as the user's tenant). Another owner's subscription
-is 404, as one that does not exist. An owned subscription receives only
-the events ``expose(..., owner=...)`` gives its owner, never another's
-and never those exposed without an owner. An owner may have
-``WEBHOOKS.MAX_SUBSCRIPTIONS_PER_OWNER``, and its deliveries share one
-quarter of the guard's lookup threads, however many it has.
+names another, such as the user's tenant). ``owned_router(resolver=...)``
+lets the request name the owner, such as a company the caller
+administers: the resolver, a FastAPI dependency, answers on every route
+with the owner, or None for one the caller may not manage (403). Another
+owner's subscription is 404, as one that does not exist. An owned
+subscription receives only the events ``expose(..., owner=...)`` gives its
+owner, never another's and never those exposed without an owner. An owner
+may have ``WEBHOOKS.MAX_SUBSCRIPTIONS_PER_OWNER``, and its deliveries
+share one quarter of the guard's lookup threads, however many it has.
 
 As in the admin API, the answers that hold a secret are marked
 ``Cache-Control: no-store``.
 """
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from typing import Annotated, Final, Literal
 from uuid import UUID
@@ -30,7 +33,8 @@ from sqlalchemy import select
 from domainkit.apps import registry
 from domainkit.contrib.auth import AbstractBaseUser, AuthenticatedUser
 from domainkit.db import connections
-from domainkit.ddd import BusinessRuleViolation
+from domainkit.ddd import BusinessRuleViolation, PermissionDenied
+from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import error_responses
 
 from .admin import (
@@ -62,6 +66,8 @@ __all__ = [
 ]
 
 type OwnerOf = Callable[[AbstractBaseUser], str]
+type OwnerResolver = Callable[..., Awaitable[str | None] | str | None]
+"""A FastAPI dependency: the owner the request acts for, or None if not the caller's."""
 type DeliveryStatus = Literal["pending", "succeeded", "failed", "cancelled"]
 
 
@@ -83,17 +89,42 @@ def _owned(subscription: Subscription, owner: str) -> Subscription:
     return subscription
 
 
-def owned_router(owner: OwnerOf = user_owner) -> APIRouter:
+def owned_router(
+    owner: OwnerOf | None = None, *, resolver: OwnerResolver | None = None
+) -> APIRouter:
     """The self-service routes, with ``owner`` naming whose subscriptions are whose.
 
     ``owner`` maps the authenticated user to an owner: its id by default,
-    or, say, its tenant (``lambda user: str(user.tenant_id)``); the
+    or, say, its tenant (``lambda user: f"tenant:{user.tenant_id}"``); the
     events ``expose(..., owner=...)`` gives must name owners the same way.
-    """
-    routes = APIRouter(tags=["webhooks"])
 
-    def owner_of(user: AuthenticatedUser) -> str:
-        found = owner(user)
+    ``resolver`` instead lets the request name the owner: a FastAPI
+    dependency (sync or async), whose parameters FastAPI fills (a path
+    parameter, the user), returning the owner, or None when the caller may
+    not manage that owner's webhooks (403). Every route asks it, after
+    authenticating the user. Prefix owners that are not users
+    (``"company:42"``), so none can equal a user's id.
+
+    Raises:
+        ImproperlyConfigured: Both ``owner`` and ``resolver`` are given.
+    """
+    if owner is not None and resolver is not None:
+        raise ImproperlyConfigured(
+            "Give owned_router an owner or a resolver, not both."
+        )
+    routes = APIRouter(tags=["webhooks"])
+    if resolver is None:
+        named = owner or user_owner
+
+        async def resolver(user: AuthenticatedUser) -> str:
+            return named(user)
+
+    Resolved = Annotated[str | None, Depends(resolver)]
+
+    async def owner_of(user: AuthenticatedUser, found: Resolved) -> str:
+        """The owner the resolver names; ``user`` is authenticated before it runs."""
+        if found is None:
+            raise PermissionDenied("You may not manage these webhooks.")
         if not 1 <= len(found) <= MAX_OWNER:
             raise BusinessRuleViolation(
                 f"A subscription's owner has 1 to {MAX_OWNER} characters."

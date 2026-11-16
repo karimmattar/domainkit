@@ -297,6 +297,9 @@ msgstr "يحتاج موعد انتهاء المنح إلى منطقة زمنية
 msgid "A grant's expiry must be in the future."
 msgstr "يجب أن يكون موعد انتهاء المنح في المستقبل."
 
+msgid "You may not manage these webhooks."
+msgstr "لا يمكنك إدارة خطافات الويب هذه."
+
 msgid "This resource cannot answer in a media type the request accepts."
 msgstr "لا يستطيع هذا المورد الرد بنوع وسائط يقبله الطلب."
 

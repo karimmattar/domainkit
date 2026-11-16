@@ -18,7 +18,7 @@ from domainkit import lifecycle, setup
 from domainkit.apps import registry
 from domainkit.conf import override_settings
 from domainkit.context import RequestContext, bind_request
-from domainkit.contrib.auth import AuthUnitOfWork
+from domainkit.contrib.auth import AuthenticatedUser, AuthUnitOfWork
 from domainkit.contrib.webhooks import delivery as delivery_module
 from domainkit.contrib.webhooks import expose, queue_deliveries
 from domainkit.contrib.webhooks.admin import router as admin_router
@@ -32,6 +32,7 @@ from domainkit.contrib.webhooks.owned import router as owned
 from domainkit.contrib.webhooks.tables import FAILED, SUCCEEDED, deliveries
 from domainkit.contrib.webhooks.uow import WebhooksUnitOfWork
 from domainkit.ddd import BusinessRuleViolation, DomainEvent
+from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application, guard
 from domainkit.http.access import open_routes
 from domainkit.lifecycle import Phase
@@ -291,6 +292,139 @@ def test_owners_named_by_a_router_are_bounded(
         assert answer.json()["detail"] == (
             "A subscription's owner has 1 to 255 characters."
         )
+
+
+ADMINISTERS: Final = {"ann": {"acme"}, "bob": {"globex"}}
+"""Who administers which company, as a project's own rule would say."""
+
+
+async def company_owner(company: str, user: AuthenticatedUser) -> str | None:
+    """The company's webhooks, for its administrators only (user report D2)."""
+    if company in ADMINISTERS.get(user.get_username(), set()):
+        return f"company:{company}"
+    return None
+
+
+def companies(client: TestClient) -> None:
+    """Mount the self-service routes per company, at ``/companies/{company}``."""
+    mounted = APIRouter()
+    mounted.include_router(
+        owned_router(resolver=company_owner), prefix="/companies/{company}/webhooks"
+    )
+    client.app.include_router(mounted)  # type: ignore[attr-defined]
+
+
+def test_an_owner_can_be_a_company_the_caller_administers(client: TestClient) -> None:
+    """``owned_router(resolver=...)``: Ann manages Acme's webhooks, not her own.
+
+    The company's subscriptions get the events whose owner is the company,
+    and its deliveries list them; a user's own routes see none of it.
+    """
+    companies(client)
+    ann = user("ann")
+    acme = "/companies/acme/webhooks"
+    created = create(client, ann, acme)
+    body = created.json()
+    one = f"{acme}/subscriptions/{body['id']}"
+    changed = client.patch(one, json={"description": "billing"}, headers=ann)
+    rotated = client.post(f"{one}/rotate-secret", headers=ann)
+    listed = client.get(f"{acme}/subscriptions", headers=ann)
+    own = client.get(f"{MINE}/subscriptions", headers=ann)
+    for owner in ("company:acme", "company:globex", user_id("ann")):
+        run_async(
+            queue_deliveries(
+                "invoice.paid",
+                {},
+                key=owner,
+                occurred_at=datetime.now(UTC),
+                owner=owner,
+            )
+        )
+    log = client.get(f"{one}/deliveries", headers=ann)
+    deleted = client.delete(one, headers=ann)
+    client.app.openapi_schema = None  # type: ignore[attr-defined]
+    schema = client.app.openapi()  # type: ignore[attr-defined]
+    listing = schema["paths"]["/companies/{company}/webhooks/subscriptions"]["get"]
+
+    assert created.status_code == 201
+    assert body["owner"] == "company:acme"
+    assert {"name": "company", "in": "path"}.items() <= listing["parameters"][0].items()
+    assert changed.json()["description"] == "billing"
+    assert rotated.json()["secret"].startswith("whsec_")
+    assert [each["id"] for each in listed.json()] == [body["id"]]
+    assert own.json() == []
+    assert [entry["event_type"] for entry in log.json()] == ["invoice.paid"]
+    assert deleted.status_code == 204
+
+
+def test_a_caller_never_reaches_another_owners_webhooks(client: TestClient) -> None:
+    """Bob, who administers Globex, gets 403 on every Acme route, 404 by id elsewhere.
+
+    The resolver answers on each route: list, create, read, change, rotate,
+    deliveries, and delete. Nothing of Acme's changes.
+    """
+    companies(client)
+    ann, bob = user("ann"), user("bob")
+    acme, globex = "/companies/acme/webhooks", "/companies/globex/webhooks"
+    theirs = create(client, ann, acme).json()["id"]
+    create(client, bob, globex)
+
+    one = f"{acme}/subscriptions/{theirs}"
+    refused = [
+        client.get(f"{acme}/subscriptions", headers=bob),
+        create(client, bob, acme),
+        client.get(one, headers=bob),
+        client.patch(one, json={"active": False}, headers=bob),
+        client.post(f"{one}/rotate-secret", headers=bob),
+        client.get(f"{one}/deliveries", headers=bob),
+        client.delete(one, headers=bob),
+    ]
+    hidden = [
+        client.get(f"{prefix}/subscriptions/{theirs}", headers=bob)
+        for prefix in (globex, MINE)
+    ]
+    moved = f"{globex}/subscriptions/{theirs}"
+    hidden += [
+        client.patch(moved, json={"active": False}, headers=bob),
+        client.post(f"{moved}/rotate-secret", headers=bob),
+        client.get(f"{moved}/deliveries", headers=bob),
+        client.delete(moved, headers=bob),
+    ]
+    anonymous = client.get(f"{acme}/subscriptions")
+
+    assert [answer.status_code for answer in refused] == [403] * 7
+    assert {answer.json()["detail"] for answer in refused} == {
+        "You may not manage these webhooks."
+    }
+    assert [answer.status_code for answer in hidden] == [404] * 6
+    assert len(client.get(f"{globex}/subscriptions", headers=bob).json()) == 1
+    assert anonymous.status_code == 401
+    kept = client.get(one, headers=ann).json()
+    assert (kept["id"], kept["active"]) == (theirs, True)
+
+
+def test_a_router_takes_an_owner_or_a_resolver(client: TestClient) -> None:
+    """Not both; a resolver may be a plain function, asked only once a user is."""
+    asked: list[str] = []
+
+    def everyone() -> str:
+        asked.append("everyone")
+        return "everyone"
+
+    with pytest.raises(ImproperlyConfigured, match="an owner or a resolver"):
+        owned_router(user_owner, resolver=company_owner)
+    shared = APIRouter()
+    shared.include_router(owned_router(resolver=everyone), prefix="/all")
+    client.app.include_router(shared)  # type: ignore[attr-defined]
+
+    anonymous = client.get("/all/subscriptions")
+    before = list(asked)
+    made = create(client, user("ann"), "/all")
+
+    assert (anonymous.status_code, before) == (401, [])
+    assert made.json()["owner"] == "everyone"
+    assert len(client.get("/all/subscriptions", headers=user("bob")).json()) == 1
+    assert asked == ["everyone", "everyone"]
 
 
 class Paid(DomainEvent):
