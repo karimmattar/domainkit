@@ -466,6 +466,7 @@ products.command_route(DeleteProduct, service=delete_product, method="DELETE")
 | `provide` | `None` | Fields given by FastAPI dependencies, such as the caller's id for an `owner_id`. The path wins over them, and they win over the body. |
 | `body_limit` | the resource's | The most bytes a body may have ([uploads](uploads.md#body-limits-per-route)). |
 | `retry` | `None` | `Retry()`: run the service again, whole, when its transaction loses a race. |
+| `dependencies` | `()` | FastAPI dependencies of the route's own, run after its rules: a limit, such as `Depends(Throttle("50/day"))`. Its [twin](#authorizations-for-one-act) runs none of them. *New in 2.5.* |
 
 **Body limits.** `body_limit=` holds the route's bodies to that many
 bytes, above or below `MAX_REQUEST_BODY_SIZE`, as they arrive.
@@ -504,6 +505,23 @@ POST   /products/42/authorization          201 (what the rule stored)
 DELETE /products/42 (with it)              204
 ```
 
+A limit of the act goes in the route's `dependencies`, so that asking
+does not count against it:
+
+```python
+from fastapi import Depends
+
+from domainkit.http.ratelimit import Throttle
+
+invitations.command_route(
+    SendInvitation,
+    service=send_invitation,
+    body=InvitationIn,
+    rule=StepUp(for_="accounts.send_invitation"),
+    dependencies=[Depends(Throttle("50/day", scope="invitations"))],
+)
+```
+
 - The twin takes the route's path and body. It builds the command as
   the route does: the path's ids, the parent's field, `provide`, and the
   fields a `PatchModel` body sets, held to the field policy. Its body
@@ -524,9 +542,22 @@ DELETE /products/42 (with it)              204
 - The asking rule may be the resource's or the route's, alone or inside
   `&` at any depth. Inside `|` or `~` it cannot be decided, and two on
   one route would ask twice for one act: either raises
-  `ImproperlyConfigured` when the route is declared. So do two routes
-  whose twins would share a path (a `PATCH` and a `DELETE` of one item
-  that both ask): give one a `path`.
+  `ImproperlyConfigured` when the route is declared.
+- Where routes of one path ask by several methods (a `PATCH` and a
+  `DELETE` of one item), each twin's path names its route's method, in
+  lower case: `POST /products/42/authorization/patch` and
+  `POST /products/42/authorization/delete`. Declaring the second moves
+  the first's twin there. A route alone on its path keeps
+  `<path>/authorization`. Two asking routes of one path and method, or a
+  route of your own where a twin goes, raise `ImproperlyConfigured`.
+  *New in 2.5* ([ADR 0162](adr/0162-twins-name-their-method-and-skip-the-acts-own-dependencies.md)).
+- The twin runs none of the route's `dependencies`: a limit there counts
+  acts, not the asks before them. It does run what builds the command,
+  `provide`, and the resource's own dependencies (`ResourceRouter(...,
+  dependencies=[...])`). Code among them that counts acts skips a twin's
+  request: `asking_authorization(request)` (from `domainkit.resources`)
+  is true there. A check of who may act belongs in a rule (`rule=`),
+  which the twin asks too, never in `dependencies`. *New in 2.5.*
 - A route whose rules ask for nothing gets no twin, and nor do batches
   and generic writes. A resource's rule holds every route of the
   resource, reads included, so put an asking rule on the route

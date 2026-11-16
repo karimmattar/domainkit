@@ -9,6 +9,24 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `command_route(dependencies=[...])`, and so `use_case(...,
+  dependencies=...)`: FastAPI dependencies of a command route's own, run
+  after its rules, such as `Depends(Throttle("50/day"))`. The route's
+  twin (`POST <path>/authorization`) runs none of them, so a limit counts
+  acts, not the asks before them. `asking_authorization(request)`, in
+  `domainkit.resources`, tells a twin's request apart for code that runs
+  on both: `provide`, rules, and the resource's dependencies. A limit had
+  to go in `provide`, which the twin runs, and counted each act twice.
+  ADR 0162 (user report A14).
+- Routes of one path that ask for an authorization by several methods,
+  such as a `PATCH` and a `DELETE` of one item, each get a twin, whose
+  path names its route's method: `POST <path>/authorization/patch` and
+  `POST <path>/authorization/delete`. A route alone on its path keeps
+  `<path>/authorization`. The router refused the second route. ADR 0162
+  (user report A17).
+
 ### Fixed
 
 - A resource whose prefix holds a path parameter of its own, such as

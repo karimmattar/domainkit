@@ -1,6 +1,6 @@
 # 0144. Authorize one act, not a window of time
 
-- Status: Accepted
+- Status: Accepted; amended by [0162](0162-twins-name-their-method-and-skip-the-acts-own-dependencies.md)
 - Date: 2026-11-15
 
 ## Context

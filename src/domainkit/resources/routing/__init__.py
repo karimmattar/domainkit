@@ -67,7 +67,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter
+from fastapi import APIRouter, params
 from fastapi.routing import APIRoute
 from pydantic import BaseModel
 from starlette.requests import HTTPConnection
@@ -91,6 +91,7 @@ from ..policies import FieldPolicy
 from ..renderers import FORMATS, JSON
 from ..schemas import PatchModel, schema_for
 from . import presenting, reach
+from .authorizing import asking_authorization as asking_authorization
 from .batching import BatchRoute
 from .commands import CommandRoute
 from .context import ALL_FIELDS as ALL_FIELDS
@@ -311,6 +312,7 @@ class ResourceRouter(APIRouter):
         provide: Mapping[str, Callable[..., object]] | None = None,
         body_limit: int | None = None,
         retry: Retry | None = None,
+        dependencies: Sequence[params.Depends] = (),
     ) -> None:
         """Add a route that runs ``command`` through ``service(command, uow)``.
 
@@ -333,6 +335,15 @@ class ResourceRouter(APIRouter):
         or ``change``); ``rule`` adds a rule of the route's own.
         ``body_limit`` holds its bodies to that many bytes (default: the
         resource's for commands, else ``MAX_REQUEST_BODY_SIZE``).
+        ``dependencies`` are FastAPI dependencies of the route's own, run
+        after its rules: a limit, such as ``Depends(Throttle("50/day"))``.
+
+        A route whose rules ask for an authorization of the act gets a twin,
+        ``POST <path>/authorization`` (``/authorization/<method>`` where
+        routes of one path ask by several methods). The twin asks the
+        route's rules and builds the command with ``provide``, but runs none
+        of ``dependencies``: a limit there counts acts, not asks. So a check
+        of who may act goes in ``rule``, never in ``dependencies``.
 
         ``retry`` runs the service again, whole, when its transaction loses
         a race (``UnitOfWork.run``): the check that the caller may reach the
@@ -361,6 +372,7 @@ class ResourceRouter(APIRouter):
             provide=provide,
             body_limit=body_limit,
             retry=retry,
+            dependencies=dependencies,
         ).declare()
 
     def use_case(

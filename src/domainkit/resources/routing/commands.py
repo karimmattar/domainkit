@@ -10,11 +10,11 @@ for an authorization of the act gets a twin that asks for one
 """
 
 import dataclasses
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from functools import partial
 from typing import TYPE_CHECKING, Literal
 
-from fastapi import Response, status
+from fastapi import Response, params, status
 from pydantic import BaseModel
 
 from domainkit.ddd.messages import Command
@@ -57,6 +57,7 @@ class CommandRoute:
         provide: Mapping[str, Callable[..., object]] | None,
         body_limit: int | None = None,
         retry: "Retry | None" = None,
+        dependencies: Sequence[params.Depends] = (),
     ) -> None:
         """Check the command against what gives its fields.
 
@@ -103,6 +104,7 @@ class CommandRoute:
             writes=True,
             provided=self.provided,
             body_limit=router.body_limit_of(COMMAND, body_limit),
+            dependencies=tuple(dependencies),
         )
         self.twin = AuthorizationRoute.of(self)
         """``POST <path>/authorization``, if a rule asks for an authorization."""

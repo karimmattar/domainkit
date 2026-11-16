@@ -144,7 +144,9 @@ Two actions of one purpose are refused.
 
 A `ResourceRouter` gives each command route that asks a twin, `POST
 <the route's path>/authorization`, which builds the command as the route
-does and answers `201`. A route of your own gets a twin of your own, that
+does and answers `201`. Where routes of one path ask by several methods,
+each twin's path names its method, `<path>/authorization/delete`
+([resources.md](../resources.md#authorizations-for-one-act)). A route of your own gets a twin of your own, that
 builds the command and calls `request_action_authorization`:
 
 ```python
