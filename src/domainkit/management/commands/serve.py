@@ -24,7 +24,8 @@ again for ever, and the container stays up, serving nothing. With
 the import or the application's startup fails; the main process then
 stops Granian, as on ``SIGTERM``, and ``serve`` exits 3, as uvicorn and
 gunicorn do when a worker cannot start. A worker that dies once it served
-is started again (ADR 0169).
+is started again (ADR 0169). With the option on, ``SIGUSR1`` to the main
+process means a failed start: send it nothing else.
 
 It never reloads. It reads no proxy header (``TRUSTED_PROXIES`` does),
 writes no access log (``domainkit.access`` does), and, under uvicorn, no
@@ -37,9 +38,11 @@ as under the server's own command line. ``check --deploy`` reads the same
 settings, so it judges the server this command starts (ADR 0160).
 """
 
+import logging
 import math
 import os
 import signal
+import sys
 from argparse import ArgumentParser
 from collections.abc import Awaitable, Callable, Iterator, Mapping, MutableMapping
 from contextlib import contextmanager
@@ -62,6 +65,10 @@ DEFAULT_HOST: Final = "0.0.0.0"  # noqa: S104 - in a container, behind its proxy
 DEFAULT_PORT: Final = 8000
 FAILED_START: Final = 3
 """``serve``'s exit status when a worker failed as it started (uvicorn's too)."""
+_UNHANDLED: Final = frozenset({signal.SIG_DFL, signal.SIG_IGN, None})
+"""What ``signal.getsignal`` answers for a signal no Python handler takes."""
+
+logger = logging.getLogger(__name__)
 
 type _Receive = Callable[[], Awaitable[MutableMapping[str, Any]]]
 type _Send = Callable[[MutableMapping[str, Any]], Awaitable[None]]
@@ -230,7 +237,10 @@ def serve_until_a_start_fails(options: dict[str, Any]) -> None:
 
     Each worker loads the application with ``load_application``, which
     signals this process (``SIGUSR1``) as its start fails; this process
-    then stops Granian as ``SIGTERM`` does.
+    then stops Granian as ``SIGTERM`` does. Granian's free-threaded server
+    loads the application once, in this process, before it handles
+    ``SIGTERM``: there the import's error comes back from ``serve``, and
+    is logged.
 
     Raises:
         CommandError: A worker failed as it started (exit status 3), or
@@ -244,6 +254,10 @@ def serve_until_a_start_fails(options: dict[str, Any]) -> None:
         except SystemExit:
             if not failed:
                 raise
+        except Exception as exc:
+            if not failed:
+                raise
+            logger.error("The application could not be loaded.", exc_info=exc)
         if failed:
             raise CommandError(
                 "A worker failed as it started, so the server stopped "
@@ -257,7 +271,10 @@ def _failed_starts() -> Iterator[list[int]]:
     """The signals of workers that failed as they started, while Granian serves.
 
     The first one stops Granian, as ``SIGTERM`` does: its own handler of
-    ``SIGTERM`` stops the workers, then returns from ``serve``.
+    ``SIGTERM`` stops the workers, then returns from ``serve``. Before
+    Granian handles ``SIGTERM`` (its free-threaded server loads the
+    application first), the failure is only noted: ``SIGTERM`` would end
+    the process at once, without a word.
 
     Raises:
         CommandError: This platform has no ``SIGUSR1`` (Windows).
@@ -271,9 +288,10 @@ def _failed_starts() -> Iterator[list[int]]:
     failed: list[int] = []
 
     def stop(signum: int, frame: FrameType | None) -> None:
-        if not failed:
-            signal.raise_signal(signal.SIGTERM)
+        first = not failed
         failed.append(signum)
+        if first and signal.getsignal(signal.SIGTERM) not in _UNHANDLED:
+            signal.raise_signal(signal.SIGTERM)
 
     previous = signal.signal(started, stop)
     try:
@@ -286,14 +304,18 @@ def load_application(main: int, target: str) -> "_Starting":
     """The application at ``target`` (``module:attribute``), for a Granian worker.
 
     It tells the main process, ``main``, when the import fails, or once
-    the application's startup fails (``serve_until_a_start_fails``).
+    the application's startup fails (``serve_until_a_start_fails``). As
+    Granian's own loader, it imports from the working directory first. An
+    interrupt (``KeyboardInterrupt``, Ctrl+C) is no failed start.
     """
+    if "" not in sys.path:
+        sys.path.insert(0, "")
     try:
         module, _, name = target.partition(":")
         found: Any = import_module(module)
         for part in (name or "app").split("."):
             found = getattr(found, part)
-    except BaseException:
+    except Exception:
         _failed(main)
         raise
     return _Starting(found, main)

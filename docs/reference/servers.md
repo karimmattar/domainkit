@@ -306,9 +306,14 @@ Error: A worker failed as it started, so the server stopped (SERVE["EXIT_ON_FAIL
 
 Each worker loads the application through `serve`, which signals the
 main process (`SIGUSR1`) when the start fails; the main process stops
-Granian as `SIGTERM` does. It needs POSIX signals: not on Windows. A
-worker killed before its startup ends (out of memory, say) sends
-nothing, and is started again as before. uvicorn already stops when a
+Granian as `SIGTERM` does. So, with the option on, `SIGUSR1` to the main
+process means a failed start: send it nothing else. It needs POSIX
+signals: not on Windows. A worker killed before its startup ends (out of
+memory, say) sends nothing, and is started again as before; so does one
+interrupted (Ctrl+C). Granian's free-threaded build loads the
+application once, in the main process, before it serves: a failed import
+is logged there, and `serve` exits 3 too. As Granian's own loader does,
+`serve` imports the application from the working directory first. uvicorn already stops when a
 worker fails before it serves: with one worker, it exits 3; with
 several, its main process stops. [ADR 0169](../adr/0169-granians-http-versions-failed-starts-fcm-dry-runs-write-once-probes-clamd-over-tls-and-dropped-files.md)
 records the choices.

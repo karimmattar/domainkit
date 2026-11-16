@@ -7,6 +7,7 @@ long as the server, or longer.
 """
 
 import asyncio
+import importlib
 import io
 import json
 import math
@@ -16,7 +17,8 @@ import signal
 import subprocess
 import sys
 import tempfile
-from collections.abc import Iterator, MutableMapping
+import uuid
+from collections.abc import Iterator, MutableMapping, Sequence
 from pathlib import Path
 from typing import Any, Final
 
@@ -488,6 +490,64 @@ def test_a_worker_that_cannot_import_the_application_tells_the_main_process(
     assert signalled == [(4321, signal.SIGUSR1)] * 2
 
 
+def test_a_failed_start_before_granian_takes_sigterm_is_only_noted() -> None:
+    """No handler of ``SIGTERM`` yet (ignored here): the failure is noted, no more.
+
+    Raising ``SIGTERM`` with no handler would end the process at once.
+    """
+    previous = signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    try:
+        with serve._failed_starts() as failed:
+            os.kill(os.getpid(), signal.SIGUSR1)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+    assert failed == [signal.SIGUSR1]
+
+
+def test_an_interrupt_while_importing_is_no_failed_start(
+    monkeypatch: pytest.MonkeyPatch, signalled: list[tuple[int, int]]
+) -> None:
+    """Ctrl+C as a worker imports the application signals nothing (user report S1)."""
+
+    def interrupted(name: str) -> object:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(serve, "import_module", interrupted)
+
+    with pytest.raises(KeyboardInterrupt):
+        serve.load_application(4321, "config.asgi:application")
+
+    assert signalled == []
+
+
+def test_the_application_is_imported_from_the_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, signalled: list[tuple[int, int]]
+) -> None:
+    """As Granian's own loader does, the working directory comes first.
+
+    A console script puts its own directory on the path, not the working
+    directory, where the project's ``config`` package is (user report S1).
+    """
+    module = f"cwd_asgi_{uuid.uuid4().hex}"
+    (tmp_path / f"{module}.py").write_text(
+        "async def application(scope, receive, send):\n    pass\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        sys, "path", [each for each in sys.path if each not in {"", str(tmp_path)}]
+    )
+    importlib.invalidate_caches()
+    try:
+        found = serve.load_application(4321, f"{module}:application")
+    finally:
+        sys.modules.pop(module, None)
+
+    assert found.application.__module__ == module
+    assert sys.path[0] == ""
+    assert signalled == []
+
+
 class Starting:
     """A stand-in for ``granian.Granian`` whose two workers fail as they start.
 
@@ -721,23 +781,30 @@ async def application(scope, receive, send):
     await receive()
     await send({"type": "lifespan.startup.failed", "message": "no database"})
 """
+FREE_THREADED: Final = """\
+import sys
+
+import granian
+import granian.server
+
+from domainkit.management import execute_from_command_line
+
+granian.Granian = granian.server.MTServer  # As a free-threaded build has it.
+sys.argv = ["domainkit", *sys.argv[1:]]
+execute_from_command_line()
+"""
+"""``serve`` run with Granian's free-threaded server, which loads the
+application in its main process before it handles ``SIGTERM``."""
 
 
-@pytest.mark.parametrize(("exits", "status"), [(True, 3), (False, 1)])
-def test_granian_under_serve_stops_at_a_failed_start_only_when_set(
-    exits: bool, status: int
-) -> None:
-    """A worker whose startup fails: with the option, ``serve`` exits 3 at once.
-
-    Without it, Granian starts the worker again, and stops only because
-    the second failure came within 5.5 seconds of the restart (its crash
-    loop). A startup that takes longer to fail is started again for
-    ever, and the container stays up, serving nothing (user report S1).
-    """
+def serve_failing(
+    exits: bool, application: str, *, command: Sequence[str] = ("-m", "domainkit")
+) -> subprocess.CompletedProcess[str]:
+    """``serve`` with Granian, ``failing_asgi.py`` holding ``application``."""
     pytest.importorskip("granian")
     directory = Path(tempfile.mkdtemp(prefix="dk-"))
     (directory / "failing_settings.py").write_text(FAILING_SETTINGS.format(exits=exits))
-    (directory / "failing_asgi.py").write_text(FAILING_MODULE)
+    (directory / "failing_asgi.py").write_text(application)
     environment = {
         **os.environ,
         f"{project_prefix()}SETTINGS_MODULE": "failing_settings",
@@ -746,11 +813,10 @@ def test_granian_under_serve_stops_at_a_failed_start_only_when_set(
     }
     environment.pop("WEB_CONCURRENCY", None)
     try:
-        finished = subprocess.run(  # noqa: S603 - this interpreter, fixed arguments.
+        return subprocess.run(  # noqa: S603 - this interpreter, fixed arguments.
             [
                 sys.executable,
-                "-m",
-                "domainkit",
+                *command,
                 "serve",
                 "--uds",
                 str(directory / "serve.sock"),
@@ -765,11 +831,47 @@ def test_granian_under_serve_stops_at_a_failed_start_only_when_set(
     finally:
         shutil.rmtree(directory, ignore_errors=True)
 
+
+@pytest.mark.parametrize(("exits", "status"), [(True, 3), (False, 1)])
+def test_granian_under_serve_stops_at_a_failed_start_only_when_set(
+    exits: bool, status: int
+) -> None:
+    """A worker whose startup fails: with the option, ``serve`` exits 3 at once.
+
+    Without it, Granian starts the worker again, and stops only because
+    the second failure came within 5.5 seconds of the restart (its crash
+    loop). A startup that takes longer to fail is started again for
+    ever, and the container stays up, serving nothing (user report S1).
+    """
+    finished = serve_failing(exits, FAILING_MODULE)
+
     output = finished.stdout + finished.stderr
     assert finished.returncode == status, output
     assert "no database" in output
     assert ("Respawning worker-1" in output) is not exits, output
     assert ('SERVE["EXIT_ON_FAILED_START"]' in output) is exits, output
+
+
+def test_a_failed_import_on_the_free_threaded_server_exits_3_with_its_error(
+    tmp_path: Path,
+) -> None:
+    """On Granian's free-threaded server, a failed import is logged; exit 3.
+
+    That server loads the application before it handles ``SIGTERM``:
+    stopping it with ``SIGTERM`` there ended the process at once, status
+    143, with no word of why (user report S1).
+    """
+    script = tmp_path / "free_threaded.py"
+    script.write_text(FREE_THREADED)
+
+    finished = serve_failing(
+        True, 'raise RuntimeError("cannot import")\n', command=(str(script),)
+    )
+
+    output = finished.stdout + finished.stderr
+    assert finished.returncode == 3, output
+    assert "The application could not be loaded." in output
+    assert "RuntimeError: cannot import" in output
 
 
 def test_serve_serves_the_application_and_writes_its_lines_through_logging(
