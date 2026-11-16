@@ -107,8 +107,8 @@ after it. These are the 11 that the project template installs:
 `DEFAULT_MIDDLEWARE`, used when a project sets no `MIDDLEWARE`, has 8 of
 them: no locale, no authentication, and no rate limit.
 [The HTTP reference](reference/http.md#middleware) explains each one, and
-the optional ones (metrics, CORS, compression, idempotency, the debug
-toolbar).
+the optional ones (tracing, metrics, CORS, compression, idempotency, the
+debug toolbar).
 
 ## 2. Route matching
 

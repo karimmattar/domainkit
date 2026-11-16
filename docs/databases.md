@@ -1174,8 +1174,11 @@ Each alias has a pool of connections per event loop (`POOL_SIZE`,
   - A process may then hold up to twice the alias's connections. Count
     them when you size the server's `max_connections`.
   - `pool_stats()` and the `db_pool_connections` metric name the pool
-    `<alias>:reads`. Readiness checks it as `database:<alias>:reads`
-    once it is open. A replica read that way gets one too.
+    `<alias>:reads`, as `db_statement_duration_seconds` names its
+    statements with `METRICS_STATEMENTS`
+    ([observability.md](reference/observability.md#rate-limits-and-statements)).
+    Readiness checks it as `database:<alias>:reads` once it is open. A
+    replica read that way gets one too.
 
 ADR [0061](adr/0061-read-without-a-transaction-and-ping-once.md) explains
 the choices. [Backends](reference/backends.md#sizing-pools) helps you

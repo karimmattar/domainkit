@@ -1522,8 +1522,10 @@ out of the application layer, which reaches the service through a port.
 - `HttpClient(...)` takes `base_url`, `headers` (sent with every call),
   `timeout` and `retries` (in place of `HTTP_CLIENT`'s), `guard`,
   `allow_http`, `allowed_networks`, `propagate`, `breaker`, `transport`,
-  `http2`, and `log_paths`. `http2=True` speaks HTTP/2 where the server
-  does (it needs `httpx2[http2]`), as Apple's push service requires.
+  `http2`, `log_paths`, and `name`. `http2=True` speaks HTTP/2 where the
+  server does (it needs `httpx2[http2]`), as Apple's push service
+  requires. `name` names the client in its metrics (`"rates"`; by
+  default the host of `base_url`, else `other`).
 - A relative URL is appended to `base_url`, and may not climb out of its
   path. A `.` or `..` segment, spelled out or percent-encoded (`%2e%2e`,
   `..%2f`), raises `UnsafeURL`. A URL that names a host must keep to the
@@ -1581,6 +1583,11 @@ Every call:
   something the logs must not keep: the
   [breached-password check](auth/users.md#breached-passwords) sends a
   hash prefix in its path.
+- is counted and timed by the client's name, its method, and how it
+  ended, with `domainkit[metrics]`: the answer's status, or a word for
+  the error it raised (`timeout`, `circuit_open`, ...). Retries, and the
+  circuits as they open and close, are counted too; never a URL
+  ([observability.md](reference/observability.md#outgoing-calls)).
 
 #### URLs someone else chose
 

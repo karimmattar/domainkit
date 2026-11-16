@@ -249,7 +249,10 @@ Two breakers protect the service from a dependency that fails:
 - **The HTTP client's** (`domainkit.http.client`): after
   `HTTP_CLIENT.BREAKER_FAILURES` failures in a row from one host, calls
   to that host fail at once with `CircuitOpen` for `BREAKER_COOLDOWN`
-  seconds. The opening is logged once.
+  seconds. The opening is logged once. `http_client_circuits_open`
+  counts each client's open circuits, by the client's name, and
+  `http_client_requests_total{outcome="circuit_open"}` the calls refused
+  meanwhile.
 
 **Check** the dependency itself: RabbitMQ's health and connections, or
 the remote host's status. A breaker that opens and closes again and
@@ -344,9 +347,10 @@ lines.
 
 The cache fails open. While it is down, reads miss and compute their
 value, and writes are skipped, so the service answers, more slowly.
-Shared rate limits in Redis let requests through meanwhile. Password and
-code checks, and requests that send mail, are the exception: staging and
-production refuse them
+Shared rate limits in Redis let requests through meanwhile, or count
+them in each process (`rate_limit_fallbacks_total` counts both).
+Password and code checks, and requests that send mail, are the
+exception: staging and production refuse them
 ([Logins are refused](#logins-are-refused-while-redis-is-down)). Redis is
 skipped for the cache's `FAILURE_COOLDOWN` (5 seconds) after a failure,
 so a dead Redis costs no timeout per request.
