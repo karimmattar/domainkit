@@ -45,6 +45,8 @@ DECIDES: Final = {
     "POST /logout": "only everywhere and others end logins that are not its own",
     "DELETE /tokens/{token_id}": "only a token that is not the request's own",
     "POST /password": "only when asked to end the devices' logins",
+    "POST /email-verification": "only when it holds a new address (ADR 0153)",
+    "POST /mobile-verification": "only when it holds a new number (ADR 0153)",
 }
 """Routes that run the check in their body, for some requests only."""
 
@@ -75,10 +77,12 @@ NO_WAY_IN: Final = {
         "a passkey confirms one act, for this session"
     ),
     "POST /sca/{challenge_id}/confirm": "confirms one transaction, with factors",
-    "POST /email-verification": "sends a code to the account's own address",
-    "POST /email-verification/code": "proves the account's own address",
-    "POST /mobile-verification": "sends a code to the account's own number",
-    "POST /mobile-verification/code": "proves the account's own number",
+    "POST /email-verification/code": (
+        "proves the account's own address, or one only the phone could hold"
+    ),
+    "POST /mobile-verification/code": (
+        "proves the account's own number, or one only the phone could hold"
+    ),
     "POST /phones/codes": "a number the project uses; nobody logs in by it",
     "POST /phones": "a number the project uses; nobody logs in by it",
     "DELETE /phones/{phone_id}": "a number the project uses; nobody logs in by it",

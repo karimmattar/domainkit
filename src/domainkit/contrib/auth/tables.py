@@ -332,6 +332,25 @@ pending_signups = Table(
 )
 """Accounts asked for at ``/signup``, made once their address is confirmed."""
 
+pending_identifiers = Table(
+    "domainkit_pending_identifiers",
+    metadata,
+    # No foreign key: the user model may be swapped. One per user and field.
+    Column("user_id", Uuid, primary_key=True),
+    # "email" or "mobile_number": the field it is to replace once proved.
+    Column("field", String(32), primary_key=True),
+    # Not unique: a held value reserves nothing; whoever proves it first
+    # gets it (ADR 0153).
+    Column("value", String(EMAIL_MAX_LENGTH), nullable=False),
+    Column("created_at", UTCDateTime, nullable=False),
+    # When its last code expires: it lasts no longer.
+    Column("expires_at", UTCDateTime, nullable=False),
+    Index("ix_domainkit_pending_identifiers_expires_at", "expires_at"),
+    # Addresses and numbers nobody proved yet: never in fixtures.
+    info={"domain": "auth", "fixtures": False},
+)
+"""A user's new address or number, held until its code proves it (ADR 0153)."""
+
 
 step_ups = Table(
     "domainkit_step_ups",

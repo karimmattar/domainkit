@@ -74,7 +74,7 @@ Each guide has the table of keys, and
 | `accounting` | `ACCOUNTING` | `domainkit_accounting_accounts`, `_periods`, `_entries`, `_postings`, `_holds`, `_statement_lines`, `_matches`, `_breaks` |
 | `approvals` | `APPROVALS` | `domainkit_approval_requests`, `domainkit_approval_decisions` |
 | `limits` | `LIMITS` | `domainkit_limits_limits`, `_subjects`, `_usage`, `_kept` |
-| `auth` | `AUTH` | `domainkit_users`, `_groups`, `_permissions`, `_users_groups`, `_users_permissions`, `_group_permissions`, `_tokens`, `_mfa_devices`, `_recovery_codes`, `_pending_signups`, `_step_ups`, `_sca_challenges`, `_authorizations`, `_password_history` |
+| `auth` | `AUTH` | `domainkit_users`, `_groups`, `_permissions`, `_users_groups`, `_users_permissions`, `_group_permissions`, `_tokens`, `_mfa_devices`, `_recovery_codes`, `_pending_signups`, `_pending_identifiers`, `_step_ups`, `_sca_challenges`, `_authorizations`, `_password_history` |
 | `contenttypes` | None | `domainkit_content_types` |
 | `objectpermissions` | None | `domainkit_object_permissions` |
 | `identity` | `IDENTITY` | `domainkit_identities`, `domainkit_identity_flows`, `domainkit_identity_tickets` |

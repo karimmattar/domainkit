@@ -163,6 +163,7 @@ statuses, and the amendments they name.
 | [0150](0150-take-the-tenant-from-the-path-and-let-members-hold-permissions.md) | Take the tenant from the path, and let members hold permissions | Accepted |
 | [0151](0151-object-grants-that-expire-roles-and-owners-a-caller-administers.md) | Object grants that expire, roles, and owners a caller administers | Accepted |
 | [0152](0152-link-the-pages-the-code-names-to-the-releases-tag.md) | Link the pages the code names to the release's tag | Accepted |
+| [0153](0153-hold-a-new-address-or-number-until-its-code-proves-it.md) | Hold a new address or number until its code proves it | Accepted |
 | [0155](0155-choose-number-matching-and-the-same-network-per-page.md) | Choose number matching and the same network per page | Accepted |
 | [0159](0159-read-a-replica-only-while-it-is-known-to-be-within-its-bound.md) | Read a replica only while it is known to be within its bound | Accepted |
 

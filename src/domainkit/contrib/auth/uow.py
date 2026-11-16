@@ -13,6 +13,7 @@ from .repositories import (
     GroupRepository,
     MfaStore,
     PasswordHistoryStore,
+    PendingIdentifierStore,
     PermissionStore,
     PrincipalStore,
     ScaStore,
@@ -44,6 +45,7 @@ class AuthUnitOfWork(SqlAlchemyUnitOfWork):
     tokens: TokenStore
     mfa: MfaStore
     signups: SignupStore
+    pending_identifiers: PendingIdentifierStore
     step_ups: StepUpStore
     sca: ScaStore
     authorizations: AuthorizationStore
@@ -58,6 +60,7 @@ class AuthUnitOfWork(SqlAlchemyUnitOfWork):
         self.tokens = TokenStore(session, self.lock)
         self.mfa = MfaStore(session)
         self.signups = SignupStore(session)
+        self.pending_identifiers = PendingIdentifierStore(session)
         self.step_ups = StepUpStore(session)
         self.sca = ScaStore(session)
         self.authorizations = AuthorizationStore(session)

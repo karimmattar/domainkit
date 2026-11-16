@@ -632,10 +632,10 @@ router.include_router(recovery_router, prefix="/auth")
 | --- | --- | --- | --- |
 | `POST /password-reset` | anyone | `{"identifier"}`, or `{"email"}` | Always `202`; `422 missing_value` without either; `429 rate_limited`. |
 | `POST /password-reset/code` | anyone | `{"identifier", "code", "new_password"}`, and `"keep_device_logins"` with `AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS = "ask"` | `204`: every login ends, the bound devices' as [the setting says](#credential-changes-and-the-phone); `400 invalid_verification_code`; `422` if a validator refuses the password. |
-| `POST /email-verification` | a user, unscoped | | `202`; `403` for credentials limited to scopes; `429 rate_limited`. |
-| `POST /email-verification/code` | the same user | `{"code"}` | `204`; `400 invalid_verification_code`. |
-| `POST /mobile-verification` | a user, unscoped | | `202`; `429 rate_limited`. |
-| `POST /mobile-verification/code` | the same user | `{"code"}` | `204`; `400 invalid_verification_code`. |
+| `POST /email-verification` | a user, unscoped | none, or `{"email"}` to change to | `202`; `403` for credentials limited to scopes; `422 validation_error` for an address that is not one plain address; `429 rate_limited`. |
+| `POST /email-verification/code` | the same user | `{"code"}` | `204`; `400 invalid_verification_code`; `409 email_taken`. |
+| `POST /mobile-verification` | a user, unscoped | none, or `{"mobile_number"}` to change to | `202`; `422 invalid_mobile_number`; `429 rate_limited`. |
+| `POST /mobile-verification/code` | the same user | `{"code"}` | `204`; `400 invalid_verification_code`; `409 mobile_number_taken`. |
 
 The person gives any identifier: an email address, a mobile number, or
 a username, by the fields of `AUTH.IDENTIFIERS`:
@@ -736,10 +736,10 @@ Authorization: Bearer dkt_...
 
 The answer is `204`, and `email_verified` is now true. Nothing is sent
 to an address that is verified already. The code holds only for the
-address it went to: changing the email clears `email_verified`, and the
-code no longer works. Staff cannot set the mark in the admin API, where
-it is read-only. `user.verify_email()` sets it in code. Verifications
-are audited as `auth.email_verified`; wrong codes as
+address it went to: when staff change the email, `email_verified` is
+cleared, and the code no longer works. Staff cannot set the mark in the
+admin API, where it is read-only. `user.verify_email()` sets it in code.
+Verifications are audited as `auth.email_verified`; wrong codes as
 `auth.email_verification`.
 
 ### Mobile number verification
@@ -749,8 +749,71 @@ asks for a code at `/mobile-verification`. The worker texts it to their
 number through `domainkit.contrib.notifications`, unless the number is
 verified already. `/mobile-verification/code` with the code sets
 `mobile_number_verified`. The code follows the same rules as an email
-code. Changing the number clears the mark. Verifications are audited as
+code. A number staff set clears the mark. Verifications are audited as
 `auth.mobile_number_verified`; refusals as `auth.mobile_verification`.
+
+### Changing your address or number
+
+The same routes change the address or the number. The new one is held
+until its code comes back, and the account keeps the one it has
+([ADR 0153](../adr/0153-hold-a-new-address-or-number-until-its-code-proves-it.md)):
+
+```http
+POST /auth/email-verification
+Authorization: Bearer dkt_...
+{"email": "nina@new.example"}
+```
+
+```json
+{"detail": "A code to verify your address is on its way."}
+```
+
+```http
+POST /auth/email-verification/code
+Authorization: Bearer dkt_...
+{"code": "482913"}
+```
+
+How a change works:
+
+1. **The new value is held, not set.** It is checked as on creation
+   (`422 validation_error` for an address, `422 invalid_mobile_number`
+   for a number), and kept in `domainkit_pending_identifiers`, one per
+   user and field; a new one replaces it. The worker mails the code to
+   the new address, or texts it to the new number. The request counts
+   against `EMAIL_RATE` per client address, per user, and per recipient.
+2. **The old one stays in force.** Until the code comes back, the
+   account's address or number is unchanged: it logs in, and reset and
+   enrollment codes go to it if it is proved. The new one opens nothing.
+3. **The code makes the swap.** `/email-verification/code` (or
+   `/mobile-verification/code`) checks the code sent to the held value.
+   The new value replaces the old one, verified, and the audit trail
+   records `auth.user_updated`, `auth.email_changed` (or
+   `auth.mobile_number_changed`, naming the one it replaced as a
+   pseudonym), and `auth.email_verified` (or
+   `auth.mobile_number_verified`). Codes sent to the old value stop
+   working. Tell the old address from `EmailChanged`
+   ([Telling the old address](users.md#telling-the-old-address)).
+4. **Whoever proves it first gets it.** A held value reserves nothing.
+   When the code comes back, another account that proved it keeps it:
+   `409 mobile_number_taken`, or `409 email_taken` where addresses
+   identify users (`AUTH.IDENTIFIERS`). An account that holds it unproved
+   gives it up, as to a [signup](#signing-up).
+5. **It lasts as long as its last code** (`AUTH.CODE_TTL`). Asking again
+   without a body sends a new code to the held value, and keeps it that
+   much longer. Once its last code expired, it is dropped, and the hourly
+   task deletes it. Giving the value the account has drops a held one.
+
+While a value is held, the code of the account's own address is refused:
+give that address again, which drops the held one and sends its code. In
+the phone modes, only a request one of the user's bound devices signed
+holds a new value (`403 phone_required` from a web session); verifying
+the value the account has needs no signature. The request does not ask
+for the password: to ask for a recent login, add `StepUp(max_age=...)` to
+the route with `select_routes`
+([Rules on the framework's routes](routes.md#rules-on-the-frameworks-routes)).
+Staff set an address or a number at once, unproved, through the admin
+API ([Changing an address or a number](users.md#changing-an-address-or-a-number)).
 
 ### Signing up
 

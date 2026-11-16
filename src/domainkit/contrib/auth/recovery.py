@@ -25,6 +25,11 @@ way: the links of 1.x are gone.
 - ``POST /mobile-verification`` (a user) texts a code to the user's
   ``mobile_number``; ``POST /mobile-verification/code`` takes it. Texts
   need ``domainkit.contrib.notifications``.
+- Given a new ``email`` or ``mobile_number``, those two hold it apart
+  (``uow.pending_identifiers``) and send the code to it; the account keeps
+  the one it has, which still logs in and receives codes, until the code
+  comes back. Then the new one replaces it, proved (ADR 0153). It lasts as
+  long as its last code.
 
 Requests that send a code count against ``AUTH.EMAIL_RATE`` per client
 address and per recipient (or user); wrong codes count against
@@ -39,12 +44,12 @@ language's templates where there are some (ADR 0149).
 
 import logging
 import math
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from datetime import timedelta
 from typing import Annotated, Final, TypedDict, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Body, Depends, Request, status
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 from domainkit.conf import settings
@@ -66,7 +71,7 @@ from .api import device_logins_kept
 from .captcha import captcha
 from .codes import EMAIL_VERIFICATION, MOBILE_VERIFICATION, PASSWORD_RESET, target_of
 from .events import PasswordReset, PasswordResetRequested
-from .exceptions import InvalidEmail
+from .exceptions import EmailTaken, InvalidEmail, MobileNumberTaken, UnknownUserField
 from .gates import check_manage_logins
 from .models import (
     EMAIL_MAX_LENGTH,
@@ -74,12 +79,16 @@ from .models import (
     AbstractUser,
     UserId,
     as_mobile_number,
+    clean_email,
+    normalize_mobile_number,
     same_email,
     validate_email,
 )
 from .onetime import email_of
-from .settings import auth_settings
+from .repositories import PendingIdentifier
+from .settings import auth_settings, identifier_fields
 from .throttling import address_key, audit_refusal, count_failure, email_key, throttle
+from .tokens import utc_now
 from .uow import AuthUnitOfWork
 from .validators import avalidate_password
 
@@ -94,6 +103,18 @@ MOBILE_VERIFICATION_TASK: Final = "domainkit.auth.send_mobile_verification"
 NOTIFICATIONS: Final = "domainkit.contrib.notifications"
 IDENTIFIER_MAX_LENGTH: Final = 255
 VERIFICATION_TASK: Final = "domainkit.auth.send_email_verification"
+EMAIL: Final = "email"
+"""What a held address replaces (``uow.pending_identifiers``)."""
+MOBILE_NUMBER: Final = "mobile_number"
+"""What a held number replaces."""
+SCOPES: Final = {EMAIL: "email-verification", MOBILE_NUMBER: "mobile-verification"}
+"""What the requests that send a code for each field are counted under."""
+UNCHANGEABLE: Final = {
+    EMAIL: "This account's email address cannot be changed here.",
+    MOBILE_NUMBER: "This account's mobile number cannot be changed here.",
+}
+"""Why a user model without ``change_email`` (or ``change_mobile_number``)
+holds nothing."""
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["auth"])
@@ -138,6 +159,24 @@ class PasswordResetCodeIn(BaseModel):
     keep_device_logins: bool | None = None
     """With ``AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS = "ask"``: keep the logins of
     the user's bound devices (true, the default), or end them too."""
+
+
+class NewEmailIn(BaseModel):
+    """The address to change to; none: verify the account's own."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    email: EmailAddress | None = None
+    """Held, and sent the code, until the code comes back (ADR 0153)."""
+
+
+class NewMobileNumberIn(BaseModel):
+    """The number to change to; none: verify the account's own."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mobile_number: str | None = Field(default=None, min_length=1, max_length=32)
+    """Held, and texted the code, until the code comes back (ADR 0153)."""
 
 
 class CodeIn(BaseModel):
@@ -284,13 +323,24 @@ async def _proven_user(
     ),
 )
 async def request_mobile_verification(
-    request: Request, user: AuthenticatedUser
+    request: Request,
+    user: AuthenticatedUser,
+    body: Annotated[NewMobileNumberIn | None, Body()] = None,
 ) -> AcceptedOut:
-    """Text a code that verifies the user's mobile number (none if verified)."""
-    await _limit_mail(
-        request, "mobile-verification", f"mobile-verification:user:{user.id}"
-    )
-    await enqueue(send_mobile_verification, user_id=user.id, **language_argument())
+    """Text a code that verifies the user's mobile number (none if verified).
+
+    With a ``mobile_number``, the code goes to it instead, held until the
+    code comes back (ADR 0153); the user's own number, given, drops what
+    was held. Holding one runs the ``on_manage_logins`` checks: it is to
+    become a way in.
+
+    Raises:
+        InvalidMobileNumber: The number is not in international form.
+        UnknownUserField: The user model cannot change its number.
+    """
+    given = None if body is None else body.mobile_number
+    number = None if given is None else normalize_mobile_number(given)
+    await _hold(request, user, MOBILE_NUMBER, number, send_mobile_verification)
     return AcceptedOut(detail="A code to verify your number is on its way.")
 
 
@@ -308,20 +358,36 @@ async def request_mobile_verification(
 async def confirm_mobile_verification_code(
     body: CodeIn, request: Request, user: AuthenticatedUser
 ) -> None:
-    """Mark the user's mobile number verified with the code texted to it."""
-    verified = False
+    """Mark the user's mobile number verified with the code texted to it.
+
+    A number held for a change (ADR 0153) takes the code instead, and
+    replaces the user's own, verified.
+
+    Raises:
+        MobileNumberTaken: Another account proved the held number first.
+    """
+    verified = taken = False
     async with AuthUnitOfWork() as uow:
         stored = await uow.users.get(UserId(user.id))
-        number = getattr(stored, "mobile_number", None)
+        held = await uow.pending_identifiers.get(stored.id, MOBILE_NUMBER)
+        number = held.value if held else getattr(stored, "mobile_number", None)
         if number:
             target = target_of(number)
             proven = await uow.verification_codes.check(
                 MOBILE_VERIFICATION, target, body.code
             )
             if proven is not None and proven.user_id == stored.id:
-                cast(AbstractUser, stored).verify_mobile_number()
-                verified = True
+                if held is None:
+                    cast(AbstractUser, stored).verify_mobile_number()
+                    verified = True
+                else:
+                    verified = await _take(uow, cast(AbstractUser, stored), held)
+                    taken = not verified
         await uow.commit()  # A wrong try stays counted.
+    if taken:
+        raise MobileNumberTaken(
+            "Another user has that mobile number.", fields=(MOBILE_NUMBER,)
+        )
     if not verified:
         await _count_failed_check(request, "mobile-verification")
         await audit_refusal("auth.mobile_verification", "invalid_verification_code")
@@ -339,16 +405,24 @@ async def confirm_mobile_verification_code(
     ),
 )
 async def request_email_verification(
-    request: Request, user: AuthenticatedUser
+    request: Request,
+    user: AuthenticatedUser,
+    body: Annotated[NewEmailIn | None, Body()] = None,
 ) -> AcceptedOut:
     """Mail a code that verifies the user's address.
 
-    Nothing goes to an address that is verified already.
+    Nothing goes to an address that is verified already. With an
+    ``email``, the code goes to it instead, held until the code comes back
+    (ADR 0153); the user's own address, given, drops what was held.
+    Holding one runs the ``on_manage_logins`` checks: it is to become a
+    way in.
+
+    Raises:
+        UnknownUserField: The user model cannot change its address.
     """
-    await _limit_mail(
-        request, "email-verification", f"email-verification:user:{user.id}"
-    )
-    await enqueue(send_email_verification, user_id=user.id, **language_argument())
+    given = None if body is None else body.email
+    address = None if given is None else clean_email(given)
+    await _hold(request, user, EMAIL, address, send_email_verification)
     return AcceptedOut(detail="A code to verify your address is on its way.")
 
 
@@ -369,27 +443,157 @@ async def confirm_email_verification_code(
     """Mark the user's address verified with the code mailed to it.
 
     The code holds for the address it went to: once the address changes,
-    it no longer works.
+    it no longer works. An address held for a change (ADR 0153) takes the
+    code instead, and replaces the user's own, verified.
+
+    Raises:
+        EmailTaken: Another account proved the held address first, where
+            addresses identify users.
     """
+    verified = taken = False
     async with AuthUnitOfWork() as uow:
         stored = await uow.users.get(UserId(user.id))
-        address = email_of(stored)
-        proven = None
+        held = await uow.pending_identifiers.get(stored.id, EMAIL)
+        address = held.value if held else email_of(stored)
         if address is not None:
             target = target_of(address)
             proven = await uow.verification_codes.check(
                 EMAIL_VERIFICATION, target, body.code
             )
-        if proven is not None and proven.user_id == stored.id:
-            # Startup checks that the user model can (AbstractUser can).
-            cast(AbstractUser, stored).verify_email()
-        else:
-            proven = None
+            if proven is not None and proven.user_id == stored.id:
+                if held is None:
+                    # Startup checks that the user model can (AbstractUser can).
+                    cast(AbstractUser, stored).verify_email()
+                    verified = True
+                else:
+                    verified = await _take(uow, cast(AbstractUser, stored), held)
+                    taken = not verified
         await uow.commit()  # A wrong try stays counted.
-    if proven is None:
+    if taken:
+        raise EmailTaken("Another user has that email address.", fields=(EMAIL,))
+    if not verified:
         await _count_failed_check(request, "email-verification")
         await audit_refusal("auth.email_verification", "invalid_verification_code")
         raise InvalidCode
+
+
+async def _hold(
+    request: Request,
+    user: AbstractBaseUser,
+    field: str,
+    value: str | None,
+    send: Callable[..., Awaitable[None]],
+) -> None:
+    """Hold ``value`` for ``user``'s ``field``, if given; queue ``send``.
+
+    The code goes to what is held, or to the user's own while nothing is
+    (``send``). Counted per client address and per user, and, for a value
+    held, per recipient too. The user's own value, given, drops what was
+    held: nothing is to change.
+
+    Raises:
+        UnknownUserField: The user model cannot change ``field``.
+    """
+    scope = SCOPES[field]
+    if value is None:
+        await _limit_mail(request, scope, f"{scope}:user:{user.id}")
+        await enqueue(send, user_id=user.id, **language_argument())
+        return
+    if not hasattr(user, f"change_{field}"):
+        raise UnknownUserField(UNCHANGEABLE[field])
+    await check_manage_logins(request, user)
+    recipient = email_key(scope, target_of(value))
+    await _limit_mail(request, scope, f"{scope}:user:{user.id}", recipient)
+    async with AuthUnitOfWork() as uow:
+        stored = await uow.users.get(UserId(user.id))
+        own = getattr(stored, field, None) or ""
+        if own == value or (field == EMAIL and same_email(own, value)):
+            await uow.pending_identifiers.drop(stored.id, field)
+        else:
+            ttl = auth_settings().CODE_TTL
+            await uow.pending_identifiers.hold(stored.id, field, value, ttl=ttl)
+        uow.defer(send, user_id=stored.id, **language_argument())
+        await uow.commit()
+
+
+async def _take(
+    uow: AuthUnitOfWork, user: AbstractUser, held: PendingIdentifier
+) -> bool:
+    """Give ``user`` the address or number its code just proved; False if taken.
+
+    Another account that proved it keeps it, where it must be unique: a
+    number always, an address where addresses identify users. One that
+    holds it unproved gives it up, as to a signup (ADR 0133). Either way,
+    nothing stays held. Codes sent to the one replaced stop working: it
+    opens the account no more.
+    """
+    await uow.pending_identifiers.drop(user.id, held.field)
+    holders = await _holders(uow, user, held)
+    if holders is None:
+        return False
+    for holder in holders:
+        await release(uow, holder, **{held.field: held.value})
+    await uow.session.flush()  # A released number is free to take.
+    replaced = getattr(user, held.field, None)
+    if held.field == EMAIL:
+        user.change_email(held.value)
+    else:
+        user.change_mobile_number(held.value)
+    if replaced:
+        await uow.verification_codes.forget(user.id, [target_of(replaced)])
+    return True
+
+
+async def _holders(
+    uow: AuthUnitOfWork, user: AbstractUser, held: PendingIdentifier
+) -> list[AbstractBaseUser] | None:
+    """The other accounts that hold ``held``'s value unproved; None if one proved it."""
+    model = type(user)
+    if held.field == EMAIL:
+        if model.EMAIL_FIELD not in identifier_fields(model):
+            return []  # Two users may share an address.
+        found = await uow.users.find_by_email(held.value)
+        proof = "email_verified"
+    else:
+        number = await uow.users.find_by_mobile_number(held.value)
+        found = [] if number is None else [number]
+        proof = "mobile_number_verified"
+    others = [other for other in found if other.id != user.id]
+    if any(getattr(other, proof, True) for other in others):
+        return None
+    return others
+
+
+async def release(
+    uow: AuthUnitOfWork,
+    holder: AbstractBaseUser,
+    *,
+    email: str | None = None,
+    mobile_number: str | None = None,
+) -> None:
+    """Take ``email`` and ``mobile_number`` from ``holder``, who never proved them.
+
+    Someone else's code proved them (ADR 0133). The holder's codes sent
+    there stop working. A holder left with nothing that logs it in
+    (``AUTH.IDENTIFIERS``) is ended, as an erased account is: deactivated,
+    its password unusable, its tokens and second factor deleted. Its data
+    stays, for staff.
+    """
+    user = cast(AbstractUser, holder)
+    targets: list[str] = []
+    if email and same_email(user.email, email):
+        user.release_email()
+        targets.append(target_of(email))
+    if mobile_number and user.mobile_number == mobile_number:
+        user.release_mobile_number()
+        targets.append(target_of(mobile_number))
+    if any(getattr(user, name, None) for name in identifier_fields(type(user))):
+        await uow.verification_codes.forget(user.id, targets)
+        return
+    user.set_active(False)
+    if user.has_usable_password():
+        user.set_unusable_password()
+    await uow.users.forget_credentials(user.id)
 
 
 async def send_password_reset_code(
@@ -481,23 +685,44 @@ async def send_mobile_verification(user_id: UUID, language: str | None = None) -
     """Text a verification code to the user's mobile number, unless verified.
 
     The ``domainkit.auth.send_mobile_verification`` task; ``language`` is
-    the request's (``language_of``).
+    the request's (``language_of``). A number held for a change gets it
+    instead, and is held as long as the code works (ADR 0153).
     """
     async with AuthUnitOfWork() as uow:
         user = await uow.users.find(UserId(user_id))
         if user is None or not user.is_active:
             return
-        number = getattr(user, "mobile_number", None)
-        if not number or getattr(user, "mobile_number_verified", True):
+        held = await uow.pending_identifiers.get(user.id, MOBILE_NUMBER)
+        number = held.value if held else getattr(user, "mobile_number", None)
+        if held is None and (
+            not number or getattr(user, "mobile_number_verified", True)
+        ):
             return
         if not can_text(f"User {user.id}"):
             return
-        code = await uow.verification_codes.issue(
-            MOBILE_VERIFICATION, target_of(number), user_id=user.id
-        )
+        code = await _issue(uow, MOBILE_VERIFICATION, cast(str, number), user, held)
         with override(language_of(user, language)):
-            await text_code(number, code, "verify your number", uow)
+            await text_code(cast(str, number), code, "verify your number", uow)
         await uow.commit()
+
+
+async def _issue(
+    uow: AuthUnitOfWork,
+    purpose: str,
+    value: str,
+    user: AbstractBaseUser,
+    held: PendingIdentifier | None,
+) -> str:
+    """Issue a code for ``value``; what is held lasts as long as the code."""
+    moment = utc_now()
+    code = await uow.verification_codes.issue(
+        purpose, target_of(value), user_id=user.id, now=moment
+    )
+    if held is not None:
+        await uow.pending_identifiers.extend(
+            held, until=moment + auth_settings().CODE_TTL
+        )
+    return code
 
 
 def can_text(label: str) -> bool:
@@ -611,19 +836,24 @@ async def send_email_verification(user_id: UUID, language: str | None = None) ->
 
     The ``domainkit.auth.send_email_verification`` task. Nothing goes to an
     address that is verified already. A new code replaces the one before.
-    ``language`` is the request's (``language_of``).
+    ``language`` is the request's (``language_of``). An address held for a
+    change gets it instead, and is held as long as the code works
+    (ADR 0153).
     """
     async with AuthUnitOfWork() as uow:
         user = await uow.users.find(UserId(user_id))
-    if user is None or not user.is_active or getattr(user, "email_verified", True):
+        held = None
+        if user is not None:
+            held = await uow.pending_identifiers.get(user.id, EMAIL)
+    if user is None or not user.is_active:
         return
-    address = email_of(user)
+    if held is None and getattr(user, "email_verified", True):
+        return
+    address = held.value if held else email_of(user)
     if address is None or not _mailable(user, address):
         return
     async with AuthUnitOfWork() as uow:
-        code = await uow.verification_codes.issue(
-            EMAIL_VERIFICATION, target_of(address), user_id=user.id
-        )
+        code = await _issue(uow, EMAIL_VERIFICATION, address, user, held)
         await uow.commit()
     with override(language_of(user, language)):
         await _mail_code(user, address, code, "auth/email_verification_code")
@@ -672,12 +902,12 @@ def register_tasks() -> None:
     task(name=MOBILE_VERIFICATION_TASK)(send_mobile_verification)
 
 
-async def _limit_mail(request: Request, scope: str, recipient: str) -> None:
+async def _limit_mail(request: Request, scope: str, *recipients: str) -> None:
     """Count a request that sends mail, per client address and per recipient."""
     await throttle(
         request,
         auth_settings().EMAIL_RATE,
-        [address_key(request, scope), recipient],
+        [address_key(request, scope), *recipients],
         action=f"auth.{scope.replace('-', '_')}",
         detail="Too many requests for mail; try again later.",
     )

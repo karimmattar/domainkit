@@ -90,6 +90,8 @@ HIDDEN_FIELDS: Final = frozenset(
     {"id", "version", "password", "groups", "user_permissions", "last_login"}
 )
 """Fields ``/users`` never shows among ``fields`` (``last_login`` has its own key)."""
+IDENTIFIED: Final = ("email", "mobile_number")
+"""Fields a user changes by proving the new value first (ADR 0153)."""
 
 router = APIRouter(tags=["auth admin"])
 pages = Pagination(default_limit=PAGE_SIZE, max_limit=MAX_PAGE_SIZE)
@@ -430,7 +432,9 @@ async def update_user(
             user.set_active(body.is_active)
         if body.is_superuser is not None:
             user.set_superuser(body.is_superuser)
+        before = {name: getattr(user, name, None) for name in IDENTIFIED}
         user.update(**_checked(type(user), body.fields))
+        await _replaced(uow, user, before)
         await may_change(actor, user)  # Not into someone who holds more either.
         if was_active and not user.is_active:  # Their sessions end with them.
             await uow.tokens.revoke_user(user.id)
@@ -789,6 +793,27 @@ async def _may_change_member(
         raise PermissionDenied(
             f"{refusal}; you lack what they hold in {len(beyond)} of their tenants."
         )
+
+
+async def _replaced(
+    uow: AuthUnitOfWork, user: AbstractBaseUser, before: dict[str, object]
+) -> None:
+    """End what a staff change replaced: a value held, codes sent to the old one.
+
+    Staff set an address or a number at once, unproved (ADR 0153). A new
+    one the user held for that field, waiting for its code, is dropped,
+    and the codes sent to the replaced one no longer open the account.
+    """
+    from .codes import target_of  # Loaded once codes are used (AuthUnitOfWork).
+
+    replaced = {
+        name: old for name, old in before.items() if getattr(user, name, None) != old
+    }
+    if not replaced:
+        return
+    await uow.pending_identifiers.drop(user.id, *replaced)
+    if targets := [target_of(str(old)) for old in replaced.values() if old]:
+        await uow.verification_codes.forget(user.id, targets)
 
 
 async def _not_the_last_superuser(uow: AuthUnitOfWork) -> None:

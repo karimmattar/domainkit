@@ -53,6 +53,7 @@ from ..tables import (
     authorizations,
     groups,
     password_history,
+    pending_identifiers,
     permissions,
     sca_challenges,
     step_ups,
@@ -285,7 +286,8 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
         certificates, its authenticator's secret and recovery codes, its
         step-ups, its transactions' and acts' authorizations, and the hashes
         of its last passwords, and its codes: secrets of an account nobody may
-        use. Every principal of the user is read again after the commit. The
+        use. The new address or number it held unproved goes too
+        (ADR 0153). Every principal of the user is read again after the commit. The
         caller commits.
         """
         await TokenStore(self.session).revoke_user(user_id)
@@ -296,6 +298,7 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
             authorizations,
             password_history,
             auth_codes,
+            pending_identifiers,
         ):
             await self.session.execute(delete(table).where(table.c.user_id == user_id))
 

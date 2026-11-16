@@ -69,9 +69,9 @@ groups and permissions.
 | `username` | text, unique when set | Optional since 1.8. 1 to 150 letters, digits, and `@ . + - _`, NFKC-normalized. Names that start with `erased-`, in any case, are kept for erased accounts. |
 | `password` | `PasswordHash` | Never a raw password; see [Passwords](#passwords). |
 | `email`, `first_name`, `last_name` | text | The email is one plain address or empty, with its domain in lower case. |
-| `email_verified` | bool | Whether the user proved that they read mail at `email`. A new address clears it. |
+| `email_verified` | bool | Whether the user proved that they read mail at `email`. An address staff set clears it; one the user changes to is proved first ([Changing an address or a number](#changing-an-address-or-a-number)). |
 | `mobile_number` | text, unique when set | A number in international form (E.164), such as `+33612345678`. Spaces, dots, dashes, and brackets are dropped. |
-| `mobile_number_verified` | bool | Whether the user proved that they receive texts at `mobile_number`. A new number clears it. |
+| `mobile_number_verified` | bool | Whether the user proved that they receive texts at `mobile_number`. A number staff set clears it; one the user changes to is proved first. |
 | `is_active` | bool | An inactive user cannot log in and has no permissions. |
 | `is_staff` | bool | May use the [admin API](routes.md#the-admin-api), with its permissions. |
 | `is_superuser` | bool | Has every permission, without grants. |
@@ -93,7 +93,8 @@ A user changes through its methods, and each records an
 [event](../learning.md#words): `set_password(hash)`,
 `set_unusable_password()`, `set_active(value)`, `set_superuser(value)`,
 `set_staff(value)`, `join(group)`, `leave(group)`, `grant(*permissions)`,
-`revoke(*permissions)`, `verify_email()`, `verify_mobile_number()`, and
+`revoke(*permissions)`, `verify_email()`, `verify_mobile_number()`,
+`change_email(address)`, `change_mobile_number(number)`, and
 `update(**fields)`. `get_username()`, `get_full_name()`,
 `get_short_name()`, and `has_usable_password()` read it.
 
@@ -136,6 +137,7 @@ are the methods you use most:
 | `uow.groups.create(name)`, `get_by_name(name)`, `get_many_by_name(names)`, `rename(group, name)` | Groups. |
 | `uow.permissions.get(key)`, `get_many(keys)`, `all()`, `keys()` | Permissions, by key. |
 | `uow.tokens.issue(user_id, ttl=...)`, `revoke_user(user_id)` | Tokens; see [Authenticating requests](authentication.md). |
+| `uow.pending_identifiers.get(user_id, field)` | The new address (`"email"`) or number (`"mobile_number"`) the user holds until its code proves it, while it lasts ([Changing an address or a number](#changing-an-address-or-a-number)). |
 
 `uow.users.find_by_identifier(value)` finds the user that an email
 address, a mobile number, or a username names, by the fields of
@@ -240,9 +242,10 @@ address cannot take mail.
 `uow.users.remove(user)` deletes the user and, in the same transaction,
 every credential of theirs: tokens, browser sessions, refresh tokens,
 client certificates, device proofs, the second factor's secret and
-recovery codes, step-ups, transaction authorizations, and the history
-of their passwords. `uow.users.forget_credentials(user_id)` deletes the
-credentials alone; privacy erasure uses it too.
+recovery codes, step-ups, transaction authorizations, the history of
+their passwords, and a new address or number they held unproved.
+`uow.users.forget_credentials(user_id)` deletes the credentials alone;
+privacy erasure uses it too.
 
 A user model that is `SoftDeletable` keeps the row, marked deleted.
 `remove` forgets the credentials all the same and deactivates the user
@@ -258,7 +261,7 @@ Changes are recorded as events, never with passwords or hashes in them:
 | Event | When |
 | --- | --- |
 | `UserCreated`, `UserUpdated`, `UserDeleted` | A user is made, has fields changed (the event names the fields, not the values), or is deleted. |
-| `EmailChanged`, `MobileNumberChanged` | The email address or the mobile number changed, after `UserUpdated`: each names the one it replaced ([Telling the old address](#telling-the-old-address)). |
+| `EmailChanged`, `MobileNumberChanged` | The email address or the mobile number changed, after `UserUpdated`: each names the one it replaced ([Telling the old address](#telling-the-old-address)). A change the user asked for is recorded when its code comes back. |
 | `PasswordChanged`, `UserStatusChanged` | A new password; `is_active`, `is_staff`, or `is_superuser` changed. |
 | `UserJoinedGroup`, `UserLeftGroup` | Group membership. |
 | `UserPermissionGranted`, `UserPermissionRevoked` | Direct grants. |
@@ -283,12 +286,46 @@ them through the admin API, staff impersonating them
 system ([Who acted](../resources.md#the-domain-behind-a-resource)).
 `event.actor.is_self(event.user_id)` holds only for the user's own acts.
 
+### Changing an address or a number
+
+A user changes their own address or number by proving the new one first.
+`POST /auth/email-verification` with `{"email": "ann@new.example"}`, or
+`POST /auth/mobile-verification` with `{"mobile_number": "+33698765432"}`,
+holds the new value apart, and the worker sends the verification code to
+it. The account keeps the address or number it has: that one still logs
+in, and still receives reset and enrollment codes if it was proved. When
+the code comes back at `/email-verification/code` (or
+`/mobile-verification/code`), the new value replaces the old one, proved,
+and the codes sent to the old one stop working
+([Changing your address or number](logging-in.md#changing-your-address-or-number),
+[ADR 0153](../adr/0153-hold-a-new-address-or-number-until-its-code-proves-it.md)).
+
+| Who changes it | How | What happens |
+| --- | --- | --- |
+| The user | The verification routes, with the new value | Held until its code comes back, as long as its last code works (`AUTH.CODE_TTL`); then `change_email` or `change_mobile_number` records `UserUpdated`, `EmailChanged` or `MobileNumberChanged`, and `EmailVerified` or `MobileNumberVerified`. |
+| Staff | The admin API (`PATCH /users/{id}`), or `update` in code | At once, unproved: `UserUpdated` and `EmailChanged` or `MobileNumberChanged`. A value the user held for that field is dropped, and the codes sent to the old value stop working. |
+
+A held value reserves nothing: whoever proves it first gets it. When its
+code comes back, an account that proved it keeps it
+(`409 mobile_number_taken`, or `409 email_taken` where addresses
+identify users), and one that holds it unproved gives it up, as to a
+signup (`EmailReleased`, `MobileNumberReleased`). A held value is kept in
+`domainkit_pending_identifiers`, never in fixtures, and goes with the
+user's credentials when they are deleted or erased.
+
+`change_email(address)` and `change_mobile_number(number)` are for a
+value a code reached. A route of your own that changed the user's
+address with `update` replaced it at once: send the address and the
+number to the verification routes instead, and keep `update` for the
+other fields.
+
 ### Telling the old address
 
 When an email address or a mobile number changes, tell the old one: if
 someone else made the change, the owner hears of it where they still
 read (OWASP's [Authentication Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html),
-ASVS 5.0 V6.3.7). `update` records `EmailChanged` or
+ASVS 5.0 V6.3.7). `update`, and the swap of a change the user proved
+(`change_email`, `change_mobile_number`), record `EmailChanged` or
 `MobileNumberChanged` after `UserUpdated`, with:
 
 - `previous`: the address or number it replaced; `None` when the user
@@ -322,7 +359,8 @@ async def tell_the_old_address(event: EmailChanged) -> None:
 the user's own: read it from them, as it may change again before the
 handler runs. Neither event is recorded when a change is refused
 (`IdentifierRequired`), when privacy erases the user, nor when a signup
-takes an address they never proved (`EmailReleased`).
+takes an address they never proved (`EmailReleased`). Nor is either
+recorded when a user asks for a change: only once its code comes back.
 
 `previous` is marked `Personal`. The audit trail keeps a pseudonym of
 it; the outbox keeps it until the handler's message has run, and

@@ -1246,3 +1246,16 @@ msgstr "هل توافق على تسجيل الدخول؟"
 
 msgid "Open the app to approve or deny it."
 msgstr "افتح التطبيق لتوافق عليه أو ترفضه."
+
+#. domainkit.contrib.auth: new addresses and numbers, held until proved
+msgid "Another user has that email address."
+msgstr "يستخدم مستخدمٌ آخر عنوان البريد الإلكتروني هذا."
+
+msgid "Another user has that mobile number."
+msgstr "يستخدم مستخدمٌ آخر رقم الجوال هذا."
+
+msgid "This account's email address cannot be changed here."
+msgstr "لا يمكن تغيير عنوان البريد الإلكتروني لهذا الحساب هنا."
+
+msgid "This account's mobile number cannot be changed here."
+msgstr "لا يمكن تغيير رقم الجوال لهذا الحساب هنا."

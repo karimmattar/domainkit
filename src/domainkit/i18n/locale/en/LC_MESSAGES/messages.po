@@ -1222,3 +1222,16 @@ msgstr ""
 
 msgid "Open the app to approve or deny it."
 msgstr ""
+
+#. domainkit.contrib.auth: new addresses and numbers, held until proved
+msgid "Another user has that email address."
+msgstr ""
+
+msgid "Another user has that mobile number."
+msgstr ""
+
+msgid "This account's email address cannot be changed here."
+msgstr ""
+
+msgid "This account's mobile number cannot be changed here."
+msgstr ""
