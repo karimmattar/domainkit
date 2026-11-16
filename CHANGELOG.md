@@ -11,6 +11,37 @@ and a status.
 
 ### Added
 
+- A domain layer may import `domainkit.i18n.lazy`, and no other module of
+  `domainkit.i18n`: `gettext_noop` marks a refusal the boundary
+  translates, and `gettext_lazy`, `ngettext_lazy` and `pgettext_lazy`
+  make labels translated when they are shown. Importing it loads no
+  settings and no catalog: `domainkit.i18n` now imports its names on
+  first use. A project that allowed all of `domainkit.i18n` in
+  `ARCHITECTURE["DOMAIN_ALLOWED"]` may drop it
+  ([i18n.md](docs/i18n.md#messages-of-the-domain-layer), ADR 0166, user
+  report I2).
+
+- `makemessages` also reads the project's own modules: the package that
+  holds the settings module, and the one that holds `ROOT_ROUTER`'s
+  module, without the installed domains. What they mark is added to the
+  catalogs of the first `LOCALE_PATHS` directory, which keep every entry
+  they hold, the project's rewordings of others' messages too. Without
+  `LOCALE_PATHS`, a run names those messages on stderr, and `--check`
+  fails ([i18n.md](docs/i18n.md#the-projects-own-messages), ADR 0166,
+  user report I6).
+
+- Devices' mails, `devices/enrollment_code` and `devices/device_bound`,
+  ship in Arabic. A test holds every mail template domainkit ships to
+  have its files in each language its catalogs translate (user report
+  I7).
+
+- A `MAIL.TEMPLATE_DIRS` directory may hold a template's files in one
+  language alone: readers of that language get them, and every other
+  reader the template's own. A directory with the template's own text
+  body still wins over a later directory's translation
+  ([mail.md](docs/mail.md#templates-in-other-languages), ADR 0166, user
+  report I8).
+
 - `SERVE["HTTP"]` (`"auto"`, `"1"`, `"2"`): the HTTP versions Granian
   speaks under `manage.py serve`. `"1"` keeps it to HTTP/1.1, as under
   uvicorn; `"auto"`, the default as in 2.4, also takes HTTP/2 without TLS
@@ -18,6 +49,7 @@ and a status.
   under uvicorn and with `WEBSOCKETS` on
   ([HTTP versions](docs/reference/servers.md#http-versions), ADR 0169)
   (user report S1).
+
 - `SERVE["EXIT_ON_FAILED_START"]`, off unless set: under Granian, a
   worker whose application cannot be imported, or whose startup fails,
   stops the server, and `serve` exits 3, as uvicorn and gunicorn do. A
@@ -26,6 +58,7 @@ and a status.
   worker that dies once it served is still started again
   ([A worker that fails as it starts](docs/reference/servers.md#a-worker-that-fails-as-it-starts),
   ADR 0169) (user report S1).
+
 - `S3Storage.probe_write_once()` writes a probe object twice with
   `If-None-Match: *` and raises `StorageError` unless the store refuses
   the second write; `S3Storage(check_write_once=True)` runs it before
@@ -37,6 +70,7 @@ and a status.
   which is no longer maintained
   ([A store that ignores create only](docs/uploads.md#a-store-that-ignores-create-only),
   ADR 0169) (user report U4).
+
 - `ClamAVScanner` speaks TLS to a proxy in front of clamd (stunnel),
   which speaks none: `tls`, `tls_ca`, and a client certificate
   (`tls_cert`, `tls_key`, `tls_key_password`) for the proxy to require.
@@ -45,6 +79,7 @@ and a status.
   another host without TLS
   ([clamd on another host](docs/uploads.md#clamd-on-another-host),
   ADR 0169) (user report U5).
+
 - `domainkit.storage.cleanup`: a use case defers
   `remove_unreferenced(names)` to remove the stored files a change
   dropped, once it commits; the worker deletes each name that no row of
@@ -56,6 +91,13 @@ and a status.
 
 ### Fixed
 
+- `LocaleMiddleware` reads `LANGUAGE_CODE` and `LANGUAGES` per request,
+  not when the application is built: a test that overrides them is
+  served in the new ones (user report I5).
+
+- `makemessages` extracts the texts marked with `gettext_noop`, as the
+  docs said it did (user report I2).
+
 - `FcmPushBackend` no longer forgets a working token when FCM refuses a
   message as too big. FCM answers `INVALID_ARGUMENT` with no field both
   to that and to a token it never made; `send` now asks a dry run of the
@@ -64,6 +106,7 @@ and a status.
   `{"error": {"details": 5}}`, is read without raising `TypeError`
   ([Text messages and push notifications](docs/mail.md#text-messages-and-push-notifications),
   ADR 0169) (user report N1).
+
 - Under `manage.py serve`, Granian bounds a request's headers by
   `SERVE["MAX_HEADER_SIZE"]` over HTTP/2 too
   (`--http2-max-headers-size`), where its HTTP/2 took 16 MiB of headers

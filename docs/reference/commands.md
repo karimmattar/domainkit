@@ -451,13 +451,17 @@ python manage.py makemessages -l ar
 translation. It updates `<domain>/locale/<locale>/LC_MESSAGES/messages.po`:
 new messages are added empty, translations are kept, and messages no
 longer used are kept as obsolete ([i18n.md](../i18n.md#catalogs)).
+*New in 2.5:* the messages the project's settings package and
+`ROOT_ROUTER`'s package mark, outside every domain, are added to the
+catalogs of the first `LOCALE_PATHS` directory
+([i18n.md](../i18n.md#the-projects-own-messages)).
 
 | Option | What it does |
 | --- | --- |
-| `[DOMAIN ...]` | Only these domains, by label (default: every domain). |
+| `[DOMAIN ...]` | Only these domains, by label (default: every domain, and the project's own modules). |
 | `-l`, `--locale` | A locale to update or start, such as `ar` or `pt_BR`; repeat it for more. |
-| `--all` | Updates every locale a domain already has. |
-| `--check` | Writes nothing, and fails if a catalog is behind its code. |
+| `--all` | Updates every locale a domain, or the first `LOCALE_PATHS` directory, already has. |
+| `--check` | Writes nothing, and fails if a catalog is behind its code, or if the project marks messages and `LOCALE_PATHS` is empty. |
 
 ### `compilemessages`: compile translations
 

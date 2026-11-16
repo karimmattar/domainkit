@@ -169,6 +169,24 @@ def test_codes_go_in_the_language_of_the_request(app: App) -> None:
     assert "هو رمزك لتسجيل هاتفك." in text.body
 
 
+def test_the_mails_are_written_in_arabic(app: App) -> None:
+    """The enrollment code and the notice of the bound device (user report I7)."""
+    client = app(PHONE)
+    create_user("alice", email="alice@example.com", proved=True)
+    with override_settings(DEVICES=ON, LANGUAGE_CODE="ar"):
+        ask_code(client, "alice@example.com")
+        enrolled = enroll(client, Device(), code=mailed_code())
+        assert enrolled.status_code == 201, enrolled.json()
+        run_worker()
+
+    coded, bound = mail.outbox
+    assert coded.subject == "رمز تسجيل هاتفك"
+    assert coded.body.startswith("مرحبًا alice،\n\nرمز تسجيل هاتفك هو:")
+    assert "يعمل لمدة " in coded.body
+    assert bound.subject == "رُبط جهاز بحسابك"
+    assert "رُبط جهاز بحسابك: Phone." in bound.body
+
+
 def test_enrollment_codes_go_only_to_a_proved_number(app: App) -> None:
     """A number its user never proved gets no enrollment code either."""
     client = app(PHONE)

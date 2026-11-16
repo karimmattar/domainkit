@@ -10,6 +10,9 @@ language.
 
 Place it before ``RequestContextMiddleware``, so the errors that and every
 later middleware answer with are translated too.
+
+``LANGUAGES`` and ``LANGUAGE_CODE`` are read per request, so an
+application answers as the settings say now, overridden in a test too.
 """
 
 from starlette.datastructures import Headers, MutableHeaders
@@ -28,18 +31,35 @@ class LocaleMiddleware:
     """Make the language ``Accept-Language`` asks for the request's language."""
 
     def __init__(self, app: ASGIApp) -> None:
-        """Wrap ``app`` with ``LANGUAGES`` and ``LANGUAGE_CODE``."""
+        """Wrap ``app``; ``LANGUAGES`` and ``LANGUAGE_CODE`` are read per request."""
         self.app = app
-        self.languages = tuple(code for code, _ in settings.LANGUAGES)
-        self.default = settings.LANGUAGE_CODE
+        self._codes: tuple[object, tuple[str, ...]] = (None, ())
+        """The ``LANGUAGES`` last read, and their codes."""
+
+    @property
+    def languages(self) -> tuple[str, ...]:
+        """The codes of ``LANGUAGES``, as the settings say now."""
+        return tuple(code for code, _ in settings.LANGUAGES)
+
+    @property
+    def default(self) -> str:
+        """``LANGUAGE_CODE``, as the settings say now."""
+        return str(settings.LANGUAGE_CODE)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Serve the request in its language; label HTTP responses with it."""
         if scope["type"] not in {"http", "websocket"}:
             await self.app(scope, receive, send)
             return
+        # Kept settings are attributes of the proxy: two reads, no call. The
+        # codes are worked out again only when LANGUAGES is another object.
+        configured = settings.LANGUAGES
+        read, languages = self._codes
+        if read is not configured:
+            languages = tuple(code for code, _ in configured)
+            self._codes = (configured, languages)
         header = Headers(scope=scope).get("accept-language")
-        language = negotiate(header, self.languages, self.default)
+        language = negotiate(header, languages, settings.LANGUAGE_CODE)
 
         async def send_with_language(message: Message) -> None:
             if message["type"] == "http.response.start":
@@ -47,7 +67,7 @@ class LocaleMiddleware:
                 headers = MutableHeaders(scope=message)
                 if "Content-Language" not in headers:
                     headers["Content-Language"] = language
-                if len(self.languages) > 1:
+                if len(languages) > 1:
                     patch_vary(headers, ["Accept-Language"])
             await send(message)
 
