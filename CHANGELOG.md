@@ -20,7 +20,7 @@ and a status.
   10), lets the token in, with a warning: the check fails open.
   `PushBackend.check_token(token)` is the backends' part, and
   `check_push_token(token, platform, within=...)` the check. The refusal
-  is in English and Arabic (user report N2).
+  is in English and Arabic (ADR 0156, user report N2).
 - A route can take its tenant from its path, once routed:
   `Depends(PathTenant("org_id"))` on a router prefixed `/orgs/{org_id}`
   serves each of its routes as that tenant, as `TenantMiddleware` serves
@@ -586,7 +586,7 @@ and a status.
   `ActionCommand` so. The other built-in commands need nothing the
   startup gives, and still run without it; the commands reference says
   why for each ([Commands that start the domains](docs/reference/commands.md#commands-that-start-the-domains),
-  user report W1).
+  ADR 0156, user report W1).
 - A request reads a user's grants on one object once: within an HTTP
   request with credentials, `ObjectPermissionBackend` answers every
   permission of a user on an object with one query, however many rules
@@ -735,7 +735,7 @@ and a status.
   which RFC 5321 makes temporary there), or the message, and the codes
   SES, SendGrid, Mailgun, and Postmark document for a message they will
   refuse again. Each is dead-lettered after one try, not five, and keeps
-  the provider's code in `code` (user report N2).
+  the provider's code in `code` (ADR 0156, user report N2).
 - The images `init` writes install the wheels a build offers
   (`--build-context wheels=<directory>`) before reading the package
   index. A wheel of the same version as a release, a fork's or a release

@@ -212,7 +212,8 @@ MailRefused: SMTPRecipientsRefused: the server refused every recipient (550)
 A `4xx` reply is tried again, and so is a `552` to `RCPT`, which RFC 5321
 (4.5.3.1.10) says is the server's limit of recipients, not the
 recipient. Connecting, `STARTTLS`, and logging in (`535`) are tried
-again whatever the reply: an operator may fix them meanwhile.
+again whatever the reply: an operator may fix them meanwhile
+([ADR 0156](adr/0156-refusals-that-last-push-tokens-checked-and-commands-that-start-the-domains.md)).
 
 **Providers.** The provider backends call their HTTP API through
 `domainkit.http.client` (the `httpclient` extra), with no SDK. They read

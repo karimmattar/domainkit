@@ -526,7 +526,8 @@ answer within `TIMEOUT` seconds lets the token in, with a warning in the
 log that names no token: an outage at the push service never stops an
 app from registering, and the worker still forgets a token gone at its
 first notification. It costs the app one call to the service for each
-registration (an app may register on every start).
+registration (an app may register on every start)
+([ADR 0156](../adr/0156-refusals-that-last-push-tokens-checked-and-commands-that-start-the-domains.md)).
 
 `check_push_token(token, platform, *, within)`, in
 `domainkit.contrib.notifications`, is the check: `False` only when the
