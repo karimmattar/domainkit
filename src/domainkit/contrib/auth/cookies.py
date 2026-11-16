@@ -91,7 +91,6 @@ from .tokens import (
     PWD_OTP,
     LoginMethod,
     TokenKind,
-    idle_limit,
     last_used_every,
     logging_in,
     token_digest,
@@ -158,7 +157,7 @@ class CookieAuthentication(BaseAuthentication):
             forget(entry)
             return None
         every = LAST_USED_EVERY
-        if idle_limit(token.idle_timeout) is not None:
+        if config.IDLE_TIMEOUT is not None or token.idle_timeout is not None:
             every = last_used_every(token.idle_timeout)
             entry = await unless_idle(entry, SCHEME, digest, config.PRINCIPAL_CACHE)
             if entry is None:  # Ended after inactivity: as if it had expired.

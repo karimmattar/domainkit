@@ -64,7 +64,6 @@ from .tokens import (
     LAST_USED_EVERY,
     LoginOrigin,
     TokenKind,
-    idle_limit,
     idle_since,
     is_login,
     last_used_every,
@@ -289,7 +288,7 @@ class TokenAuthentication(BaseAuthentication):
             forget(entry)
             raise AuthenticationFailed("Token expired.")
         every = LAST_USED_EVERY
-        if idle_limit(token.idle_timeout) is not None:
+        if config.IDLE_TIMEOUT is not None or token.idle_timeout is not None:
             every = last_used_every(token.idle_timeout)
             entry = await unless_idle(
                 entry, TOKEN_SCHEME, digest, config.PRINCIPAL_CACHE
