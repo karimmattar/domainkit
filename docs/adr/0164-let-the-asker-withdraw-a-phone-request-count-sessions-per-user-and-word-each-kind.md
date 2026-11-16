@@ -42,7 +42,7 @@ report, against 2.4.0, lists five gaps in ciba:
 - **Rate limits.** Counting by address punishes everyone behind a NAT, a
   carrier's or an office's; once a request carries an identity, the
   common advice is to count it per user, and keep counts by address for
-  what is anonymous [1][2]. OWASP lists unbounded resource use as an API
+  what is anonymous [1], [2]. OWASP lists unbounded resource use as an API
   risk (API4:2023), and asks to limit "how often a client can interact
   with the API", without fixing what a client is [3].
   Okta's client-based limits exist for the same reason: one office, one
