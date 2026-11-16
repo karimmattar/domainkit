@@ -9,6 +9,31 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- A domain layer may import `domainkit.i18n.lazy`, and no other module of
+  `domainkit.i18n`: `gettext_noop` marks a refusal the boundary
+  translates, and `gettext_lazy`, `ngettext_lazy` and `pgettext_lazy`
+  make labels translated when they are shown. Importing it loads no
+  settings and no catalog: `domainkit.i18n` now imports its names on
+  first use. A project that allowed all of `domainkit.i18n` in
+  `ARCHITECTURE["DOMAIN_ALLOWED"]` may drop it
+  ([i18n.md](docs/i18n.md#messages-of-the-domain-layer), ADR 0166, user
+  report I2).
+- `makemessages` also reads the project's own modules: the package that
+  holds the settings module, and the one that holds `ROOT_ROUTER`'s
+  module, without the installed domains. What they mark is added to the
+  catalogs of the first `LOCALE_PATHS` directory, which keep every entry
+  they hold, the project's rewordings of others' messages too. Without
+  `LOCALE_PATHS`, a run names those messages on stderr, and `--check`
+  fails ([i18n.md](docs/i18n.md#the-projects-own-messages), ADR 0166,
+  user report I6).
+
+### Fixed
+
+- `makemessages` extracts the texts marked with `gettext_noop`, as the
+  docs said it did (user report I2).
+
 ## [2.4.0] - 2026-11-16
 
 2.4 answers a report from a project that runs an identity service on
