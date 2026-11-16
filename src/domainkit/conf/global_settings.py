@@ -1050,6 +1050,10 @@ class Settings(BaseModel):
     """Whose ``X-Request-ID`` names a request: ``TRUSTED_PROXIES``' only, any
     caller's (0.10's rule), or nobody's (always a new id). Out of format, it
     is replaced either way."""
+    ACCEPT_TRACE_CONTEXT: Literal["proxies", "anyone", "never"] = "proxies"
+    """Whose ``traceparent`` a request's span continues (``TracingMiddleware``):
+    ``TRUSTED_PROXIES``' only, any caller's, or nobody's (each request starts a
+    trace). Out of the W3C format, it is ignored either way."""
     RATE_LIMIT: str | None = None
     """Requests per caller, e.g. ``"300/minute"``; None disables the limit."""
     RATE_LIMIT_EXEMPT_PATHS: tuple[str, ...] = ("/health", "/ready", "/metrics")
@@ -1065,6 +1069,9 @@ class Settings(BaseModel):
     """IPv6 clients are counted per network of this prefix length (one customer's)."""
     METRICS_TOKEN: SecretStr | None = None
     """Bearer token for ``/metrics``; without it staging and production refuse."""
+    METRICS_STATEMENTS: bool = False
+    """Time each SQL statement of the pools (``db_statement_duration_seconds``),
+    by alias and first keyword (``domainkit[metrics]``); off, it costs nothing."""
 
     LIVE_MAX_CONNECTIONS: int = Field(default=1000, ge=1, le=1_000_000)
     """Open WebSockets and event streams per process; more are refused (503)."""

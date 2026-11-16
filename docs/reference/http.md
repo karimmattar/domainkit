@@ -116,6 +116,7 @@ setup.
 | `TRUSTED_PROXIES` | `()` | Networks (`10.0.0.0/8`) whose `X-Forwarded-For` and `X-Forwarded-Proto` are believed, and `"unix"` for the proxy on the other end of a unix socket (`uvicorn --uds`, `granian --uds`), which has no address (uvicorn reports no client, Granian an empty host). The client is found by walking `X-Forwarded-For` from the right, across every line of the header, through trusted proxies: it is the first hop that is not one, and nothing left of it is read. Hops may carry a port. A hop there that is not an address (a proxy's `unknown`) counts the client as the last proxy passed, logged on `domainkit.security`. The scheme is the `PROXY_SCHEME_HEADER` value at the client's place from the right, or the right-most one when there are fewer. Empty: the socket peer is the client. |
 | `PROXY_SCHEME_HEADER` | `"X-Forwarded-Proto"` | The header in which the trusted proxies say the client's scheme (a header name). `None`: the scheme is never taken from a header. Set it to `None` when the proxies do not set it (HAProxy's `option forwardfor` alone, an NLB); otherwise a client's own `X-Forwarded-Proto` would be read, and choose whether cookies are `Secure`. `None` holds only where the server reads no proxy header itself: uvicorn, unless run with `--no-proxy-headers`, sets the scheme from `X-Forwarded-Proto` before domainkit sees the request, for every request from `FORWARDED_ALLOW_IPS` (`127.0.0.1` by default: a proxy on the same host). Granian reads none. |
 | `ACCEPT_REQUEST_ID` | `"proxies"` | Whose `X-Request-ID` names a request (in log lines, error reports, audit rows, and outgoing calls). `"proxies"`: only a trusted proxy's (`TRUSTED_PROXIES`, or a unix socket's peer with `"unix"`), as `ProxyHeadersMiddleware` judged the connection. `"anyone"`: any caller's, as up to 0.10. `"never"`: nobody's. Of several lines, the last is read: the nearest proxy's. The proxy must set the header, over a client's (nginx: `proxy_set_header X-Request-ID $request_id;`), or add its line after it (HAProxy's `unique-id-header`); otherwise a client's own passes through it: set `"never"` if it does neither. Up to 128 letters, digits, `.`, `_`, `:`, or `-`, starting with a letter or a digit. Another value, or none, gets a new id (32 hex digits). A caller's value is dropped, not logged ([operations.md](../operations.md#request-ids)). |
+| `ACCEPT_TRACE_CONTEXT` | `"proxies"` | Whose `traceparent` (and `tracestate`) a request's span continues, with `TracingMiddleware`. `"proxies"`: only a trusted proxy's, as `ProxyHeadersMiddleware` judged the connection, so list it first. `"anyone"`: any caller's, for a service that only your own services call. `"never"`: nobody's: each request starts a trace. One `traceparent` line in the W3C format is read; several, or another format, start a trace ([observability.md](observability.md#requests)). |
 
 ### Rate limits
 
@@ -144,6 +145,7 @@ A caller over the limit gets 429 `rate_limited`, with `Retry-After`.
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `METRICS_TOKEN` | `None` | The bearer token for `/metrics`. Without it, `/metrics` answers 403 in staging and production ([observability.md](observability.md)). |
+| `METRICS_STATEMENTS` | `False` | Times each SQL statement of the pools, by alias and first keyword (`db_statement_duration_seconds`), with `domainkit[metrics]`. Off by default; on, each statement costs 13 Python calls more ([observability.md](observability.md#rate-limits-and-statements)). |
 
 ### Response headers
 
@@ -243,12 +245,13 @@ checked again while they stay open; see [live.md](../live.md).
 
 The order matters. This table is the order to keep, outermost first. The
 project template installs eleven of these, in this order (not the
-metrics, CORS, compression, idempotency, or debug toolbar middleware), and
-`DEFAULT_MIDDLEWARE` eight (below):
+tracing, metrics, CORS, compression, idempotency, or debug toolbar
+middleware), and `DEFAULT_MIDDLEWARE` eight (below):
 
 | Middleware | Why here |
 | --- | --- |
 | `domainkit.http.middleware.ProxyHeadersMiddleware` | First, so everything after it sees the real client address and scheme. It remembers the latest 4,096 addresses it parsed, and whether each is a trusted proxy's. |
+| `domainkit.http.tracing.TracingMiddleware` | Runs each HTTP request in a server span named by its route, so the work below, the access line included, is in its trace. After the proxy headers, which say whether a `traceparent` comes from a trusted proxy (`ACCEPT_TRACE_CONTEXT`) ([observability.md](observability.md#requests)). |
 | `domainkit.http.metrics.MetricsMiddleware` | Counts every response, including those refused below. |
 | `domainkit.http.locale.LocaleMiddleware` | Picks the request's language from `Accept-Language`, before anything below answers, so their errors are translated. Adds `Content-Language` and `Vary: Accept-Language` ([i18n.md](../i18n.md)). |
 | `domainkit.http.middleware.SecurityHeadersMiddleware` | Adds the `SECURE_*` headers (and `X-Frame-Options`, a Content-Security-Policy, a Permissions-Policy, and COOP) to every response that does not set them. |

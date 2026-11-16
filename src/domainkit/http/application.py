@@ -59,7 +59,8 @@ FASTAPI_TELEMETRY: Final[TelemetryConfig] = {
     "metrics": False,
     "logs": False,
 }
-"""FastAPI's native telemetry, off: domainkit traces its own work."""
+"""FastAPI's native telemetry, off: domainkit traces its own work, and each
+request with ``domainkit.http.tracing.TracingMiddleware``."""
 MEASURED: Final = "fastapi.telemetry"
 """The scope key by which FastAPI knows a request is measured already.
 
@@ -199,7 +200,8 @@ def build_application() -> FastAPI:
         # FastAPI's own OpenTelemetry (0.142+) stays off, as before: its spans
         # record query strings and its logs raw exception messages, which
         # domainkit keeps out of logs and error reports. Application turns it
-        # off for the FastAPI applications mounted below too.
+        # off for the FastAPI applications mounted below too; TracingMiddleware
+        # gives requests a span without them (ADR 0158).
         telemetry=FASTAPI_TELEMETRY,
     )
     if (server := settings.SERVER_HEADER) is not None:

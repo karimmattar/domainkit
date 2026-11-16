@@ -86,7 +86,9 @@ from domainkit.db.connections import (
     _take_open,
     create_engine,
     create_read_engine,
+    time_statements,
 )
+from domainkit.db.metrics import ended, failed, started
 from domainkit.db.models import InstalledModel
 from domainkit.db.models import model_key as content_type_key
 from domainkit.ddd import DomainEvent, EventBus
@@ -1240,6 +1242,38 @@ def test_engines_never_share_a_listener() -> None:
         assert not {id(listener) for listener in first} & {
             id(listener) for listener in second
         }
+
+
+def test_timed_engines_never_share_a_listener() -> None:
+    """``METRICS_STATEMENTS`` listens on each engine with callables of its own."""
+    timers = (started, ended, failed)
+    local = DatabaseConfig.model_validate({"URL": "sqlite+aiosqlite://"})
+    engines = [create_engine(local), create_engine(local)]
+    with override_settings(METRICS_STATEMENTS=True):
+        for engine in engines:
+            time_statements(engine, "default")
+    found = []
+    for engine in engines:
+        sync = engine.sync_engine
+        listeners = [
+            *sync.dispatch.before_cursor_execute,
+            *sync.dispatch.after_cursor_execute,
+            *sync.dialect.dispatch.handle_error,
+        ]
+        found.append(
+            [
+                listener
+                for listener in listeners
+                if isinstance(listener, partial) and listener.func in timers
+            ]
+        )
+
+    assert [[listener.func for listener in each] for each in found] == [
+        list(timers)
+    ] * 2
+    assert not {id(listener) for listener in found[0]} & {
+        id(listener) for listener in found[1]
+    }
 
 
 def test_counting_statements_never_fails_another_threads_statement() -> None:

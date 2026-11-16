@@ -563,6 +563,28 @@ by it, and leave room for the server, the database, and peaks.
   --profile-out` on the path, and on a project's own routes the debug
   toolbar's SQL and N+1 report.
 
+### What observability costs
+
+The request spans and statement metrics are off until a project turns
+them on, so the ladder's budgets hold without them. Turned on, on the
+ladder's rungs (Python 3.13, uvloop, PostgreSQL 16), per request:
+
+| What is on | `template` calls | `read` calls | `keyed-write` calls |
+| --- | ---: | ---: | ---: |
+| Neither (the budgets) | 527 | 1,662 | 3,402 |
+| `TracingMiddleware`, no SDK set | 536 | 1,674 | |
+| `TracingMiddleware`, an SDK with no processor | 787 | 1,925 | |
+| `METRICS_STATEMENTS` | 527 | 1,675 | 3,454 |
+
+- **A span costs the SDK about 250 calls**: its ids, its attributes, and
+  its context. Until an SDK is set, the middleware opens none, for 9 to
+  12 calls. An exporter's processor adds its own.
+- **A timed statement costs 13 calls** (`read` sends one, `keyed-write`
+  four), and the first one loads one module.
+- **Outgoing calls and rate limit fallbacks** are counted where they
+  happen, at a few calls each, beside a network round trip; a scrape
+  counts the open circuits ([observability.md](reference/observability.md#outgoing-calls)).
+
 ## Common mistakes
 
 - **Reading a small CPU difference as a change.** On a shared machine,

@@ -34,6 +34,10 @@ engine of its own whose connections PostgreSQL holds read-only; each
 statement is bounded by the deadline. Its connections are checked when
 made, and reset before another caller gets them (``_reset_session``).
 ``SNAPSHOT`` reads in one ``REPEATABLE READ`` transaction.
+
+With ``METRICS_STATEMENTS``, each pool's statements are timed
+(``domainkit.db.metrics``): an alias's as its name, its ``STATEMENTS``
+engine's as ``<alias>:reads``, as ``pool_stats`` names them.
 """
 
 import asyncio
@@ -393,7 +397,12 @@ def create_read_engine(config: DatabaseConfig) -> AsyncEngine:
     return _hiding_details(engine, config)
 
 
-def _listen(target: Any, name: str, listener: Callable[..., Any]) -> None:  # noqa: ANN401 - an engine or a pool.
+def _listen(
+    target: Any,  # noqa: ANN401 - an engine or a pool.
+    name: str,
+    listener: Callable[..., Any],
+    **options: bool,
+) -> None:
     """Add ``listener`` to one engine's or pool's ``name``, as a callable of its own.
 
     SQLAlchemy keys its listener registry by the ids of the target and the
@@ -402,9 +411,30 @@ def _listen(target: Any, name: str, listener: Callable[..., Any]) -> None:  # no
     freed pool's id is reused, and the registry, which is not thread-safe,
     then races between threads making and dropping engines (a ``KeyError`` in
     its weakref callback). A callable for each engine keeps the keys apart
-    while its listeners live.
+    while its listeners live. ``options`` are ``event.listen``'s (``retval``).
     """
-    event.listen(target, name, partial(listener))
+    event.listen(target, name, partial(listener), **options)
+
+
+def time_statements(engine: AsyncEngine, database: str) -> None:
+    """Time ``engine``'s statements as ``database``'s, with ``METRICS_STATEMENTS``.
+
+    Raises:
+        ImproperlyConfigured: The setting is on without ``domainkit[metrics]``.
+    """
+    if not settings.METRICS_STATEMENTS:
+        return
+    try:
+        from domainkit.db import metrics
+    except ImportError as exc:  # pragma: no cover - only without the [metrics] extra.
+        raise ImproperlyConfigured(
+            "METRICS_STATEMENTS needs prometheus_client: install domainkit[metrics]."
+        ) from exc
+    found = metrics.timers(database)
+    sync = engine.sync_engine
+    _listen(sync, "before_cursor_execute", metrics.started, retval=True)
+    _listen(sync, "after_cursor_execute", partial(metrics.ended, found))
+    _listen(sync, "handle_error", partial(metrics.failed, found))
 
 
 def reads_alone(config: DatabaseConfig) -> bool:
@@ -1281,6 +1311,7 @@ class ConnectionHandler:
         pools = self._loop_engines().pools
         if alias not in pools:
             engine = create_engine(self.config(alias))
+            time_statements(engine, alias)
             pools[alias] = (engine, async_sessionmaker(engine, expire_on_commit=False))
         return pools[alias]
 
@@ -1303,7 +1334,9 @@ class ConnectionHandler:
         """Return the ``STATEMENTS`` engine of ``alias`` for the running loop."""
         reads = self._loop_engines().reads
         if alias not in reads:
-            reads[alias] = create_read_engine(self.config(alias))
+            engine = create_read_engine(self.config(alias))
+            time_statements(engine, f"{alias}{READS_SUFFIX}")
+            reads[alias] = engine
         return reads[alias]
 
 

@@ -216,6 +216,12 @@ Server-Sent Events: a response that streams events to a browser's `EventSource`.
 - `comment`: `text` as a comment, which `EventSource` ignores.
 - `last_event_id`: The id of the last event a reconnecting client saw (`Last-Event-ID`).
 
+## `domainkit.http.tracing`
+
+A server span per HTTP request (`domainkit[tracing]`).
+
+- `TracingMiddleware`: Run each HTTP request in a server span named by its route.
+
 ## `domainkit.http.uploads`
 
 Receiving uploaded files, and serving stored ones, safely.
