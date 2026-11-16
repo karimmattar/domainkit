@@ -9,6 +9,15 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `LazyString.source()` names the lookup that makes a lazy string
+  (`"gettext"`, `"ngettext"` or `"pgettext"`) and its arguments, without
+  reading the settings ([i18n.md](docs/i18n.md#your-own-messages)); it
+  is None for a string of another function. An `APIError` takes a lazy
+  string as its detail, and a `FileRefused` as its message (follow-up of
+  2.5.0).
+
 ### Fixed
 
 - An upload check that refuses a file with a lazy string
@@ -17,17 +26,15 @@ and a status.
   in English, as a plain refusal is
   ([uploads.md](docs/uploads.md#checks-of-your-own)). It was a 500 for
   every file it refused: the check's process has no settings to make the
-  string text. The process now sends the lookup and its arguments
-  (`LazyString.source()`, new), and the application makes the string
-  again (ADR 0167). `FileRefused` takes a `LazyString` as its message
+  string text. The process now sends the lookup and its arguments, and
+  the application makes the string again, as ADR 0167 now says
   (follow-up of 2.5.0).
-- An `APIError` whose detail is a lazy string (`gettext_lazy`,
-  `ngettext_lazy`, `pgettext_lazy`), `UploadRefused` included, is
-  answered with its text in the caller's language, as a domain error's
-  lazy message is since 2.5.0
+- An `APIError` whose detail is a lazy string, `UploadRefused`
+  included, is answered with its text in the caller's language, as a
+  domain error's lazy message is since 2.5.0
   ([responses.md](docs/reference/responses.md#raising-an-error)). It was
-  answered with its code in words, in every language. `APIError` takes a
-  `LazyString` as its detail (follow-up of 2.5.0).
+  answered with its code in words, in every language (follow-up of
+  2.5.0).
 - An upload check's refusal that is not UTF-8 (the file's own text,
   decoded with `surrogateescape`) refuses the file as one that could not
   be read, 422 `unreadable_file`; it was a 500. A line break or another

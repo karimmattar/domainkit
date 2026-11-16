@@ -132,7 +132,11 @@ takes the status, the message, the code, and optional headers and field
 errors. The message is English text, translated in the caller's
 language if a catalog has it, or a lazy string (`gettext_lazy`,
 `ngettext_lazy`, `pgettext_lazy`), answered as its text in the caller's
-language (since 2.6; 2.5 answered the code in words).
+language (since 2.6; 2.5 answered the code in words). `ngettext_lazy`
+picks the plural form for its count and never fills it in:
+`ngettext_lazy("{count} day", "{count} days", 2)` is answered
+`{count} days`. Fill it with `.format(count=...)`, which makes text at
+once, in the language active then.
 
 ### Statuses and codes
 
