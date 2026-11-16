@@ -534,9 +534,9 @@ def test_the_reach_is_checked_before_a_byte_of_the_file_is_read(
     read: list[int] = []
     check = run_checks
 
-    async def counted(checks: Any, file: IO[bytes], size: int, **limits: Any) -> int:  # noqa: ANN401 - run_checks's own.
-        read.append(size)
-        return await check(checks, file, size, **limits)
+    async def counted(checks: Any, file: IO[bytes], **limits: Any) -> int:  # noqa: ANN401 - run_checks's own.
+        read.append(file.seek(0, 2))  # Its size: run_checks reads from the start.
+        return await check(checks, file, **limits)
 
     monkeypatch.setattr(uploads, "run_checks", counted)
     pdf = CHECKED_PDF

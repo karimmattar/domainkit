@@ -227,7 +227,7 @@ Each `STORAGES` entry:
 | `UPLOAD_CHECKS` key | Default | Meaning |
 | --- | --- | --- |
 | `PROCESSES` | `4` | Checks that run at once in this process, each in a child process (1 to 64). One more upload is refused at once, 503 `service_busy`. |
-| `MEMORY` | `536870912` | Bytes of address space a check's process may take, 512 MiB (64 MiB to 16 GiB), as `RLIMIT_AS`. Past it the file is refused, 422 `unreadable_file`. Not on Windows or macOS. |
+| `MEMORY` | `536870912` | Bytes of address space a check's process may take, 512 MiB (128 MiB to 16 GiB), as `RLIMIT_AS`. Past it the file is refused, 422 `unreadable_file`. Not on Windows or macOS. More than the largest upload checked, which the process holds whole; workers times `PROCESSES` times `MEMORY` must fit the host. |
 | `SECONDS` | `15.0` | Seconds a check's process may run (more than 0, at most 300): its CPU time (`RLIMIT_CPU`, not on Windows), and the wall clock, past which it is killed and the file refused, 422 `unreadable_file`. |
 
 | `UPLOAD_SCANNER` key | Default | Meaning |

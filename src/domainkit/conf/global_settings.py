@@ -737,8 +737,13 @@ class UploadChecksConfig(BaseModel):
 
     PROCESSES: int = Field(default=4, ge=1, le=64)
     """Checks that run at once in this process, each in a child process."""
-    MEMORY: int = Field(default=512 * MIB, ge=64 * MIB, le=16 * 1024 * MIB)
-    """Bytes of address space a check's process may take (``RLIMIT_AS``)."""
+    MEMORY: int = Field(default=512 * MIB, ge=128 * MIB, le=16 * 1024 * MIB)
+    """Bytes of address space a check's process may take (``RLIMIT_AS``).
+
+    More than the largest upload checked, which the process holds whole;
+    Python and pypdf or lxml take the first hundred MiB. Each worker runs
+    ``PROCESSES`` of them at once: workers times ``PROCESSES`` times
+    ``MEMORY`` must fit the host or the container."""
     SECONDS: float = Field(default=15.0, gt=0, le=300)
     """Seconds a check's process may run: its CPU, and the parent's clock."""
 

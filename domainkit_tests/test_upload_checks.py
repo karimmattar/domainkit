@@ -8,6 +8,7 @@ refuses is never stored (ADR 0167).
 
 import codecs
 import io
+import logging
 import struct
 import sys
 import time
@@ -101,6 +102,7 @@ DRAWING: Final = (
 """A picture held in the package, by its relationship's id."""
 UTF16_DECLARED: Final = '<?xml version="1.0" encoding="UTF-16"?><x/>'
 SHEETML: Final = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+CHART: Final = "http://schemas.openxmlformats.org/drawingml/2006/chart"
 X14: Final = "http://schemas.microsoft.com/office/spreadsheetml/2009/9/main"
 XM: Final = "http://schemas.microsoft.com/office/excel/2006/main"
 LATE_UTF7: Final = (
@@ -858,6 +860,34 @@ def test_a_word_document_is_refused_for_macros_objects_and_outside_links(
         ),
         ("xlsx", sheet("<c r=\"A1\"><f>cmd|' /C calc'!A0</f></c>"), ACTIONS),
         ("xlsx", sheet('<c r="A1"><f>CONCAT("a|b", B1)</f></c>'), "ok"),
+        ("xlsx", sheet("<c r=\"A1\"><f>SUM('Q1|Q2'!B1, 'it''s|x'!C2)</f></c>"), "ok"),
+        (
+            "xlsx",
+            sheet("<c r=\"A1\"><f>'Q1|Q2'!B1&amp;cmd|'/c calc'!A0</f></c>"),
+            ACTIONS,
+        ),
+        ("xlsx", sheet('<c r="A1"><f>\'Q1|Q2!B1</f></c>'), ACTIONS),
+        (
+            "xlsx",
+            office(
+                "xlsx",
+                parts={
+                    "xl/charts/chart1.xml": f'<c:chartSpace xmlns:c="{CHART}">'
+                    "<c:f>'Q1|Q2'!$B$1:$B$4</c:f></c:chartSpace>"
+                },
+            ),
+            "ok",
+        ),
+        (
+            "xlsx",
+            office(
+                "xlsx",
+                main=f'<workbook xmlns="{SHEETML}"><definedNames>'
+                "<definedName name=\"x\">'Q1|Q2'!$A$1</definedName>"
+                "</definedNames></workbook>",
+            ),
+            "ok",
+        ),
         ("xlsx", sheet('<c r="A1"><f>SUM(B1:B9)</f></c>'), "ok"),
         (
             "xlsx",
@@ -1125,6 +1155,34 @@ async def test_a_hook_of_ones_own_reads_the_whole_file() -> None:
         FileType("text/plain", ".txt", lambda head: True, lambda file: None)
 
 
+def test_a_hook_defined_in_main_is_refused_when_the_type_is_made(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """It pickled here, and its process, which runs no script, could not load it.
+
+    Every upload was a 500 (third review).
+    """
+    main = sys.modules["__main__"]
+
+    def scripted(file: IO[bytes]) -> None:
+        """A check a script defined."""
+
+    class Scripted:
+        """A check of a class a script defined."""
+
+        def __call__(self, file: IO[bytes]) -> None:
+            """Take any file."""
+
+    for each in (scripted, Scripted):
+        each.__module__ = "__main__"
+        each.__qualname__ = each.__name__
+        monkeypatch.setattr(main, each.__name__, each, raising=False)
+
+    for check in (scripted, Scripted()):
+        with pytest.raises(TypeError, match="cannot import __main__"):
+            FileType("text/plain", ".txt", lambda head: True, check)
+
+
 # What a check costs, whatever the file ------------------------------------------
 
 
@@ -1287,6 +1345,70 @@ def test_an_object_the_table_does_not_declare_is_never_searched_for(
     """
     assert verdict(PdfCheck(), listed_pdf(objects, listed)) == "unreadable_file"
     assert searches == []
+
+
+@pytest.mark.parametrize(
+    "silenced",
+    ["level", "disabled", "disable", "child", "child level"],
+)
+def test_what_pypdf_skipped_is_refused_however_logging_is_set(silenced: str) -> None:
+    """A /Prev pypdf cannot read: it says so in a warning, which logging may drop.
+
+    With the pypdf logger at ERROR, or logging disabled, it passed (third
+    review). Logging is as it was afterwards.
+    """
+    data = one_page().replace(b"/Root 1 0 R ", b"/Root 1 0 R /Prev 3 ")
+    top, child = logging.getLogger("pypdf"), logging.getLogger("pypdf._reader")
+    saved = (top.level, child.disabled, child.level, child.propagate)
+    try:
+        if silenced == "level":
+            top.setLevel(logging.ERROR)
+        elif silenced == "disabled":
+            child.disabled = True
+        elif silenced == "disable":
+            logging.disable(logging.WARNING)
+        elif silenced == "child":
+            child.propagate = False
+        else:
+            child.setLevel(logging.ERROR)
+        before = (
+            top.level,
+            child.disabled,
+            child.level,
+            child.propagate,
+            logging.root.manager.disable,
+        )
+
+        assert verdict(PdfCheck(), data) == "unreadable_file"
+        assert verdict(PdfCheck(), one_page()) == "ok"
+        assert before == (
+            top.level,
+            child.disabled,
+            child.level,
+            child.propagate,
+            logging.root.manager.disable,
+        )
+    finally:
+        logging.disable(logging.NOTSET)
+        top.setLevel(saved[0])
+        child.disabled = saved[1]
+        child.setLevel(saved[2])
+        child.propagate = saved[3]
+
+
+def test_two_checks_at_once_put_logging_back_once_both_have_ended() -> None:
+    """The first to start saves how logging is set; the last to end restores it."""
+    top = logging.getLogger("pypdf")
+    saved = top.level
+    top.setLevel(logging.ERROR)
+    try:
+        with inspection_module._heard:
+            with inspection_module._heard:
+                assert top.level == logging.WARNING
+            assert top.level == logging.WARNING
+        assert top.level == logging.ERROR
+    finally:
+        top.setLevel(saved)
 
 
 def test_an_earlier_revision_is_read_too() -> None:

@@ -58,12 +58,18 @@ and a status.
   picture and DDE formulas anywhere in a sheet, and DTDs in any XML
   part, with the ZIP bounded by its directory and the upload's size
   before it is inflated. Each upload's check runs in a new process,
-  which the system holds to `UPLOAD_CHECKS.MEMORY` (512 MiB) and
-  `SECONDS` (15) of CPU, killed past `SECONDS` of wall clock: a check
-  stopped by a limit refuses the file. At most `PROCESSES` (4) run at
-  once; one more upload is 503 `service_busy`, and a slot is freed only
-  once its process has exited. A checked upload costs a process start,
-  about a tenth of a second. The checks are `PdfCheck` and `OfficeCheck`
+  which the system holds to `UPLOAD_CHECKS.MEMORY` (512 MiB, at least
+  128 MiB) and `SECONDS` (15) of CPU, killed past `SECONDS` of wall
+  clock: a check stopped by a limit, or ended by a signal (logged),
+  refuses the file. The process gets none of the application's settings
+  or environment but `PATH`, the locale and the temporary directory, and
+  a session of its own; it is not a sandbox. A check that fails, or a
+  process that ends without an answer, is a 500, logged with the end of
+  what it wrote. At most `PROCESSES` (4) run at once; one more upload is
+  503 `service_busy`, and a slot is freed only once its process has
+  exited. A checked upload costs a process start, about a tenth of a
+  second. A check must pickle, from a module other than `__main__`. The
+  checks are `PdfCheck` and `OfficeCheck`
   of `domainkit.inspection`, and need the `documents` extra. `PDF` and
   `ZIP` still read the first bytes only
   ([ADR 0167](docs/adr/0167-check-an-upload-whole-and-let-a-resource-take-one.md))
@@ -83,8 +89,9 @@ and a status.
   field the `StoredUpload` (and another its digest). A route whose rule
   asks for an authorization gets its twin, which stores nothing. An
   `Action` binds an uploaded file by its content, not by the name the
-  storage gave it, so the twin and the act agree on the file (user
-  report U3).
+  storage gave it, wherever the command holds it (a list, a set, a
+  mapping under any keys, a model), so the twin and the act agree on the
+  file; a set's items are bound in a sorted order (user report U3).
 
 - `HttpClient.request(files=...)` sends a `multipart/form-data` form,
   `data=` its other fields, within the client's deadlines and retries; a

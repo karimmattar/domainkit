@@ -70,14 +70,23 @@ users upload reported five gaps in 2.4 (user reports U1, U3, U5 and D2).
   calls reads an object stream's index again and again without
   returning (529 bytes ran past 60 s); and a thread that runs a check
   goes on after the request that started it is cancelled, freeing its
-  slot for another.
+  slot for another. A third review found that the check's process got
+  every variable of the application's environment, its secrets
+  included, and that any process that ended without an answer, an
+  import that failed too, read as a file that needed too much memory.
 - **Process isolation.** Chromium's Rule of 2: never pick more than two
   of untrustworthy input, an unsafe implementation language, and high
   privilege; parse untrusted input in a sandboxed process that returns a
-  well-formed answer, which the privileged side validates [14]. The
-  system holds a process to an address space and CPU time
-  (`setrlimit`: `RLIMIT_AS`, `RLIMIT_CPU`, which ends it with `SIGXCPU`)
-  [15], [16]; a thread has no such limits, and cannot be killed.
+  well-formed answer, which the privileged side validates [14]. A
+  sandbox also takes away the process's files, network and system
+  calls, which Python's standard library cannot do. A plain child
+  process still gives part of it: the system holds it to an address
+  space and CPU time (`setrlimit`: `RLIMIT_AS`, `RLIMIT_CPU`, which ends
+  it with `SIGXCPU`) [15], [16], it can be killed, and it holds only the
+  environment it is handed. A thread has no such limits, cannot be
+  killed, and reads every secret of its process. On Linux a process may
+  ask to be the first the out-of-memory killer ends (`oom_score_adj`
+  1000) [17].
 - **pytest.** AnyIO's runner runs async fixtures and async tests in one
   task, so they share context variables, but "these context variables are
   not carried over to synchronous tests and fixtures" [12]; pytest-asyncio
@@ -115,7 +124,8 @@ How a PDF check is bounded:
 | pypdf's own limits | Per stream only; a search of the file per misplaced object. |
 | Strict reading of the table, totals and a deadline in the process, checks in threads of their own | Taken first, and kept as a second layer; the second review showed what it cannot bound: pypdf's constructor, one call of its, and a thread a cancelled request leaves running. |
 | A pool of processes kept warm | No start per upload; a process that checked one file checks the next, with what that file left in it. |
-| **A new process per check (`python -I`), with `RLIMIT_AS` and `RLIMIT_CPU`, killed past its wall clock; a slot held until it exits; the answer read as JSON of known shapes** | A process start per checked upload: about 0.08 s for an Office document and 0.14 s for a PDF here, against 0.01 s in the process. A check must pickle. Windows has no such limits (the clock alone), and macOS does not hold a process to `RLIMIT_AS`. |
+| A sandbox (seccomp, namespaces, a container per check) | Files, network and system calls out of reach too; a dependency or privileges the application does not have, and a different one per platform. |
+| **A new process per check (`python -I`), with `RLIMIT_AS` and `RLIMIT_CPU`, killed past its wall clock, with none of the application's environment; a slot held until it exits; the answer read as JSON of known shapes** | A process start per checked upload: about 0.08 s for an Office document and 0.15 s for a PDF here, against under 0.01 s in the process. A check must pickle, from a module the process can import, and gets no settings. Windows has no such limits (the clock alone), and macOS does not hold a process to `RLIMIT_AS`. Not a sandbox: the process runs as the same user, with the same files and network. |
 
 What a resource's upload route takes, and how its twin binds the file:
 
@@ -200,18 +210,35 @@ How a fixture's stub reaches a test in another context:
     copied to a temporary file and checked the same way, one level deep,
     within the same budget. The deadline, `max_seconds` (10), is looked
     at per part and every 1,024 elements.
-  - Each upload's checks run in a new process (`sys.executable -I`),
-    handed the checks (pickled) and the file over a pipe, its own output
-    sent to standard error. It limits itself first (`RLIMIT_AS` to
-    `UPLOAD_CHECKS.MEMORY`, 512 MiB; `RLIMIT_CPU` to `SECONDS`, 15), and
-    the parent kills it past `SECONDS` of wall clock. Its answer is one
-    line of JSON of a few known shapes, read as data. A process stopped
-    by a limit refuses the file, 422 `unreadable_file` ("took too long",
-    "needed too much memory"). At most `PROCESSES` (4) run at once in a
-    process of the application, counted across its event loops; one more
-    upload is 503 `service_busy`, not queued. A slot is freed only once
-    its process has exited: a cancelled request kills it, waits for it,
-    then frees the slot. A type without a check takes no process.
+  - Each upload's checks run in a new process (`sys.executable -I -X
+    faulthandler`), handed the checks (pickled) and the whole file over a
+    pipe, its own output sent to standard error. Its environment is
+    `PATH`, the locale (`LANG`, `LANGUAGE`, `LC_*`) and the temporary
+    directory (`TMPDIR`, `TEMP`, `TMP`; `SYSTEMROOT` on Windows): none
+    of the application's settings or secrets, so a check gets what it
+    needs from its own arguments, and a message as text (`-I` ignores
+    `PYTHON*` variables, `PYTHONHASHSEED` included). It starts a session
+    of its own, out of reach of a signal sent to the application's
+    process group. It limits itself first (`RLIMIT_AS` to
+    `UPLOAD_CHECKS.MEMORY`, 512 MiB, at least 128 MiB; `RLIMIT_CPU` to
+    `SECONDS`, 15), asks to be the first the out-of-memory killer ends,
+    and the parent kills it past `SECONDS` of wall clock. Its answer is
+    one line of JSON of a few known shapes, read as data; whatever a
+    check raises, `SystemExit` too, is answered. Without an answer, how
+    it ended decides. Past the clock, or `SIGXCPU`: 422
+    `unreadable_file`, "took too long". A `MemoryError` it answered:
+    "needed too much memory". Another signal (a crash, which a failed
+    allocation under `RLIMIT_AS` may cause, as may a bug; a `SIGKILL`,
+    the out-of-memory killer's or anyone's) cannot be told apart: 422,
+    "could not be read", logged at `WARNING` with the signal's name. An
+    exit without an answer (an import that failed, a bug) is a 500
+    (`RuntimeError`), logged with the last 4 KiB the process wrote to
+    standard error, as a check that failed is. At most `PROCESSES` (4)
+    run at once in a process of the application, counted across its
+    event loops; one more upload is 503 `service_busy`, not queued. A
+    slot is freed only once its process has exited: a cancelled request
+    kills it, waits for it, then frees the slot. A type without a check
+    takes no process.
   - The checks themselves stay bounded as a second layer, and a PDF
     pypdf read only in part (it logs that it skipped a table, or found
     an object elsewhere) is refused.
@@ -233,8 +260,11 @@ How a fixture's stub reaches a test in another context:
   deletes the file. Its twin checks the reach first too, receives the
   file, and stores nothing.
 - **`Action.arguments` binds an upload by its content**: a
-  `StoredUpload`, wherever it is in the command (a list, a mapping, a
-  model), is read without the name the storage gave it. The twin's
+  `StoredUpload`, wherever it is in the command (a list, a set, a
+  mapping, a model), is read without the name the storage gave it. A
+  mapping's items are paired with their JSON in order, whatever the keys
+  dump to; a set's are sorted once the names are out, since their order
+  is their hashes', which hold the names. The twin's
   command and the act's agree on the same file, and differ for another;
   `digest=` is a convenience. One without a SHA-256 (made by hand) is
   bound by its name, so that two such uploads never agree.
@@ -271,9 +301,18 @@ How a fixture's stub reaches a test in another context:
   of its own.
 - A check holds the upload on local disk past 1 MiB, and a process of
   its own for at most `SECONDS`. Its memory and CPU are the system's to
-  bound; a request cancelled meanwhile ends it. A checked upload costs a
-  process start more. A check of a project's own runs there too: its
-  module is imported for each upload, so keep it cheap.
+  bound; a request cancelled meanwhile ends it. A client that goes away
+  does not cancel a request under Granian or uvicorn: its check runs on,
+  to `SECONDS` at most. A checked upload costs a process start more. A
+  check of a project's own runs there too: its module is imported for
+  each upload, so keep it cheap, and it gets neither the settings nor
+  the environment. The process is not a sandbox: it runs as the
+  application's user, and a parser an attacker takes over can read its
+  files and reach its network, though not its secrets in memory or the
+  environment. `MEMORY` must exceed the largest upload checked, which
+  the process holds whole; each worker runs `PROCESSES` checks at once,
+  so workers times `PROCESSES` times `MEMORY` must fit the host or the
+  container.
 - A PDF that a strict reader cannot read is refused, though a viewer
   that repairs files would show it: a cross-reference table at the
   wrong place, an object not where the table says. Saving it again from
@@ -315,3 +354,5 @@ How a fixture's stub reaches a test in another context:
 15. Python, `resource`: resource usage information:
     <https://docs.python.org/3/library/resource.html>
 16. Linux, getrlimit(2): <https://man7.org/linux/man-pages/man2/getrlimit.2.html>
+17. Linux, proc_pid_oom_score_adj(5):
+    <https://man7.org/linux/man-pages/man5/proc_pid_oom_score_adj.5.html>

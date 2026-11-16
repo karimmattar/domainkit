@@ -531,12 +531,32 @@ A Word document with macros, sent as `contract.docx`:
   a second, with pypdf or lxml loaded: that is what each checked upload
   costs more. Windows has no such limits: there, the wall clock alone
   stops a check; macOS does not hold a process to `MEMORY`.
+- **Not a sandbox.** The process bounds memory, CPU and time, and keeps
+  the application's secrets out of a parser's reach: it gets none of
+  the environment but `PATH`, the locale and the temporary directory,
+  and a session of its own. It still runs as the application's user,
+  with the same files and network. On Linux it is the first the
+  out-of-memory killer ends.
+- **When a process ends badly.** A process ended by another signal (a
+  crash, or a `SIGKILL` no one can tell from the out-of-memory killer's)
+  refuses the file, 422 `unreadable_file` ("The file could not be
+  read."), and is logged at `WARNING` (`domainkit.inspection`) with the
+  signal's name. One that exits without an answer (an import that
+  failed), or whose check raised anything else, is a 500, logged with
+  the last 4 KiB it wrote to standard error.
 - **A few at a time.** At most `PROCESSES` (4) checks run at once in a
   process of the application, on any of its event loops. One more upload
   is refused at once, 503 `service_busy` ("Uploads cannot be checked
   now; try again later."), not queued. A slot is freed only once its
-  check's process has exited: a request cancelled meanwhile (a deadline,
-  a client gone) kills it first. A type without a check takes no slot.
+  check's process has exited: a request cancelled meanwhile (by its
+  deadline, `REQUEST_TIMEOUT`) kills it first. A client that goes away
+  does not cancel its request under Granian or uvicorn: the check runs
+  on, `SECONDS` at most. A type without a check takes no slot.
+- **Memory to give.** `MEMORY` must exceed the largest `max_size` a
+  checked type takes: the process holds the file whole, and Python with
+  pypdf or lxml takes about 100 MiB of address space before it reads a
+  byte. Each worker runs up to `PROCESSES` checks: workers times
+  `PROCESSES` times `MEMORY` must fit the host or the container.
 - **`CHECKED_PDF`** (`PdfCheck`) reads a PDF as a strict reader does,
   and only as its cross-reference tables say: an object they do not
   declare, or one not at its offset, makes the file `unreadable_file`,
@@ -600,15 +620,20 @@ files with `serve`, and convert them in a sandbox.
 ### Checks of your own
 
 A `FileType`'s `inspect` reads the whole file, from its start, in a
-process of its own, which loads it by name: it must be a function at a
-module's top level, or an object of a class that is (a lambda raises
+process of its own, which loads it by name: it must be a function at
+the top level of a module the application imports, or an object of a
+class that is (a lambda, or a check defined in `__main__`, raises
 `TypeError` when the type is made). It raises `FileRefused(message,
 code="unsafe_file")` to refuse the file (422 with `message`, which is
 translated if the catalogs have it), and `NotOfType` when the file is
 not of the type after all, so that the next type that matches is tried.
-What it prints goes to the process's standard error, which is
-discarded. Keep its module cheap to import: the process imports it for
-each upload.
+The process has no settings and none of the application's environment:
+a check takes what it needs as arguments of its own (an object's
+fields), and its `message` is text (`gettext_noop` marks it for
+translators; a lazy string cannot be made text there, and is a 500).
+What it prints goes to the process's standard error, which is logged
+only when the check fails. Keep its module cheap to import: the
+process imports it for each upload.
 
 ```python
 from typing import IO
@@ -798,10 +823,11 @@ The arguments of the functions on this page:
 | 413 `file_too_large` | The file is over `max_size`. | Send a smaller file. |
 | 413 `content_too_large` | The request is over the route's `body_limit`, or `MAX_REQUEST_BODY_SIZE`. | Send less, or raise the route's limit. |
 | 422 `unsafe_file` | The type's check refused what the file holds: scripts, actions, macros, objects, outside links, a DTD, a password, too many pages, or a ZIP too large to check. | Nothing is kept. Send the file without it. |
-| 422 `unreadable_file` | The type's check could not read the file, or a strict reader could not (a PDF whose table needs repair), or its process took more time or memory than `UPLOAD_CHECKS` gives it. | Nothing is kept. Send a file that opens; save a PDF again from a viewer. |
+| 422 `unreadable_file` | The type's check could not read the file, or a strict reader could not (a PDF whose table needs repair), or its process took more time or memory than `UPLOAD_CHECKS` gives it, or a signal ended it (logged). | Nothing is kept. Send a file that opens; save a PDF again from a viewer. |
 | 503 `service_busy` | `UPLOAD_CHECKS.PROCESSES` checks run already. | Try again shortly; raise `PROCESSES` if the host has room. |
 | 422 `infected_file` | The scanner found something. | Nothing is kept. |
 | `ImproperlyConfigured` | A checked type without pypdf or lxml. | Install the `documents` extra. |
+| `RuntimeError` (500) | A check raised something else, or its process ended without an answer. | Read the log (`domainkit.inspection`): it holds the end of what the process wrote. |
 | 503 `scanner_unavailable` | The scanner could not scan the file. | Try again later; check clamd. |
 | 404 `file_not_found` (`FileMissing`) | No file has the name, or the name is malformed. | Check the name you kept. |
 | `FileTooLarge` | `save(..., max_size=...)` went over the limit. | Nothing is kept. |

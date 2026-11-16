@@ -6,13 +6,16 @@ from the file, notes its process id beside it, and waits until a file of
 that path appears, so that a test holds a check while it runs.
 """
 
+import json
 import os
 import signal
+import sys
 import time
 from pathlib import Path
 from typing import IO
 
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.i18n.lazy import gettext_lazy
 from domainkit.inspection import FileRefused
 
 
@@ -65,3 +68,46 @@ def chatty(file: IO[bytes]) -> None:
 def out_of_memory(file: IO[bytes]) -> None:
     """Fail as an allocation past the limit does."""
     raise MemoryError
+
+
+def surroundings(file: IO[bytes]) -> None:
+    """Refuse with what the process sees: its environment, session, OOM score."""
+    try:
+        with open("/proc/self/oom_score_adj") as score:  # noqa: PTH123
+            oom = score.read().strip()
+    except OSError:
+        oom = "none"
+    seen = {"session": os.getsid(0), "environment": sorted(os.environ), "oom": oom}
+    raise FileRefused(json.dumps(seen), code="seen")
+
+
+def measured(file: IO[bytes]) -> None:
+    """Refuse with the size of what it was handed."""
+    raise FileRefused(str(len(file.read())), code="measured")
+
+
+def lazy(file: IO[bytes]) -> None:
+    """Refuse with a lazy message, which needs settings to be text."""
+    raise FileRefused(gettext_lazy("Files with secrets are not accepted."))  # type: ignore[arg-type]
+
+
+def exits(file: IO[bytes]) -> None:
+    """End the process as a script does."""
+    sys.exit(3)
+
+
+def crashes(file: IO[bytes]) -> None:
+    """End as a library's crash does."""
+    os.kill(os.getpid(), signal.SIGSEGV)
+
+
+def killed(file: IO[bytes]) -> None:
+    """End as the out-of-memory killer, or anyone with SIGKILL, ends a process."""
+    os.kill(os.getpid(), signal.SIGKILL)
+
+
+def shouts(file: IO[bytes]) -> None:
+    """Write 100 KB to standard error, then leave without an answer."""
+    sys.stderr.write("noise " * 20_000 + "the end")
+    sys.stderr.flush()
+    os._exit(4)

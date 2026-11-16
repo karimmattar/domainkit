@@ -64,7 +64,9 @@ from a temporary file.
 
 ``save_upload`` runs the checks in a process of their own
 (``run_checks``): the system holds it to an address space and CPU time,
-and it is killed past its wall clock. pypdf cannot be bounded from inside
+and it is killed past its wall clock. It gets none of the application's
+settings or environment; it is not a sandbox, and runs as the same user,
+with the same files and network. pypdf cannot be bounded from inside
 the process that runs it: its constructor decodes a chain of tables
 before any check starts, and one of its calls can run a minute (ADR
 0167). The checks keep bounds of their own as a second layer: a
@@ -85,6 +87,7 @@ import io
 import json
 import logging
 import math
+import os
 import pickle
 import re
 import shutil
@@ -94,6 +97,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import zipfile
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
@@ -271,8 +275,10 @@ FIELD_NAME: Final = re.compile(r"^\s*([A-Za-z]+)")
 """A field instruction's name: the letters it starts with, whatever follows."""
 FORMULA_CALLS: Final = re.compile(r"\b(?:WEBSERVICE|RTD|IMAGE)\s*\(", re.IGNORECASE)
 """Excel functions that reach outside the workbook when the sheet calculates."""
-FORMULA_STRINGS: Final = re.compile(r'"(?:[^"]|"")*"')
-"""A formula's text literals, left out before it is read for DDE."""
+FORMULA_QUOTED: Final = re.compile(r""""(?:[^"]|"")*"|'(?:[^']|'')*'""")
+"""A formula's text literals and quoted sheet names (``'Q1|Q2'!B1``), each from
+its first quote to its last (a quote inside is doubled), left out before it is
+read for DDE."""
 WORDML: Final = (
     "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}",
     "{http://purl.oclc.org/ooxml/wordprocessingml/main}",
@@ -353,9 +359,10 @@ DECLARATIONS: Final = ("<!DOCTYPE", "<!ENTITY")
 class FileRefused(DomainkitError):
     """The file is of its type, but holds what is not accepted.
 
-    ``message`` is safe to show, in English (the HTTP layer translates
-    it); ``code`` is the problem's: ``unsafe_file`` by default, or
-    ``unreadable_file``. ``save_upload`` answers it 422.
+    ``message`` is safe to show, in English, and text (the HTTP layer
+    translates it; a check's process has no settings to make a lazy
+    string text); ``code`` is the problem's: ``unsafe_file`` by default,
+    or ``unreadable_file``. ``save_upload`` answers it 422.
     """
 
     def __init__(self, message: str, *, code: str = "unsafe_file") -> None:
@@ -469,12 +476,77 @@ class PdfCheck:
                 ) from exc
 
 
+class _Heard:
+    """pypdf's warnings let through while a PDF is checked, however logging is set.
+
+    A check reads what pypdf skipped from its warnings, which a logger set
+    above ``WARNING``, a disabled one, or ``logging.disable`` would drop.
+    The first check to start saves how pypdf's loggers and
+    ``logging.disable`` are set and lets ``WARNING`` through; the last to
+    end puts them back. Meanwhile, in this process, ``logging.disable``
+    lets every logger's warnings through, as it does in a check's process
+    of its own, where nothing else runs.
+    """
+
+    def __init__(self) -> None:
+        """Nothing saved yet."""
+        self.lock = threading.Lock()
+        self.checks = 0
+        self.disabled = logging.NOTSET
+        self.saved: list[tuple[logging.Logger, int, bool, bool]] = []
+
+    def __enter__(self) -> None:
+        """Let pypdf's warnings through, if no other check does already."""
+        with self.lock:
+            self.checks += 1
+            if self.checks > 1:
+                return
+            top = logging.getLogger("pypdf")
+            loggers = [
+                top,
+                *(
+                    each
+                    for name, each in list(logging.Logger.manager.loggerDict.items())
+                    if name.startswith("pypdf.") and isinstance(each, logging.Logger)
+                ),
+            ]
+            self.saved = [
+                (each, each.level, each.disabled, each.propagate) for each in loggers
+            ]
+            self.disabled = logging.Logger.manager.disable
+            for each in loggers:  # Below "pypdf", each passes its records up.
+                level = each.getEffectiveLevel() if each is top else each.level
+                if level > logging.WARNING:
+                    each.setLevel(logging.WARNING)
+                each.disabled = False
+                each.propagate = True if each is not top else each.propagate
+            if self.disabled >= logging.WARNING:
+                logging.disable(logging.INFO)
+
+    def __exit__(self, *exc: object) -> None:
+        """Put logging back as it was, once the last check has ended."""
+        with self.lock:
+            self.checks -= 1
+            if self.checks:
+                return
+            for each, level, disabled, propagate in self.saved:
+                each.setLevel(level)
+                each.disabled = disabled
+                each.propagate = propagate
+            if self.disabled >= logging.WARNING:
+                logging.disable(self.disabled)
+
+
+_heard = _Heard()
+
+
 class _Skipped(logging.Handler):
     """What pypdf says it skipped or repaired, in this thread, while a check runs.
 
     Even in strict mode pypdf passes over an earlier table it cannot read
     (out of memory, a loop), or finds an object elsewhere than its table
-    says, and only logs it: what it skipped, the check never read.
+    says, and only logs it: what it skipped, the check never read. Its
+    warnings are heard however logging is set (``_Heard``).
     """
 
     def __init__(self) -> None:
@@ -491,12 +563,14 @@ class _Skipped(logging.Handler):
 
     def __enter__(self) -> Self:
         """Listen to pypdf until the block ends."""
+        _heard.__enter__()
         self.logger.addHandler(self)
         return self
 
     def __exit__(self, *exc: object) -> None:
         """Stop listening."""
         self.logger.removeHandler(self)
+        _heard.__exit__()
 
     def check(self) -> None:
         """Refuse a file pypdf read only in part.
@@ -1131,7 +1205,7 @@ def _check_formula(element: Any) -> None:  # noqa: ANN401 - an lxml element.
     formula = element.text or ""
     if FORMULA_CALLS.search(formula):
         raise FileRefused(EXTERNAL)
-    if "|" in FORMULA_STRINGS.sub("", formula):
+    if "|" in FORMULA_QUOTED.sub("", formula):
         raise FileRefused(ACTIONS)
 
 
@@ -1219,15 +1293,28 @@ BOOTSTRAP: Final = (
     "from domainkit.inspection import _serve\n"
     "_serve(config,sys.stdin.buffer,answer)\n"
 )
-"""What a check's process runs (``python -I -c``): the parent's path, then the
-check. What the check prints goes to standard error, never into its answer."""
+"""What a check's process runs (``python -I -X faulthandler -c``): the parent's
+path, then the check. What the check prints goes to standard error, never
+into its answer, and so does the traceback of a crash."""
+ENVIRONMENT: Final = frozenset(
+    {"PATH", "LANG", "LANGUAGE", "TMPDIR", "TEMP", "TMP", "SYSTEMROOT"}
+)
+"""What a check's process gets of the parent's environment, with each
+``LC_*``: never the application's settings or secrets. ``-I`` ignores the
+``PYTHON*`` ones; Windows needs ``SYSTEMROOT`` to start Python."""
 MAX_ANSWER: Final = 64 * 1024
 """The most bytes of a check's answer the parent reads."""
+MAX_SAID: Final = 4 * 1024
+"""The most bytes of a check's standard error the parent keeps, its last, to log."""
+OOM_SCORE: Final = "/proc/self/oom_score_adj"
+"""Where Linux reads whom its out-of-memory killer ends first (1000: this one)."""
 CODE: Final = re.compile(r"[a-z][a-z0-9_]{0,63}")
 """A problem code a check may answer with."""
 BUSY: Final = "Uploads cannot be checked now; try again later."
 TOO_LONG: Final = "The file took too long to check."
 TOO_MUCH: Final = "The file needed too much memory to check."
+
+logger = logging.getLogger(__name__)
 
 _running = 0
 """The checks' processes running now, in this process, on any event loop."""
@@ -1237,7 +1324,6 @@ _running_lock = threading.Lock()
 async def run_checks(
     checks: Sequence[Callable[[IO[bytes]], None] | None],
     file: IO[bytes],
-    size: int,
     *,
     processes: int,
     memory: int,
@@ -1245,23 +1331,32 @@ async def run_checks(
 ) -> int:
     """Run ``checks`` on ``file`` in a process of their own; the first that took it.
 
-    The checks are tried in order, as ``save_upload`` tries the types of a
-    file: one that raises ``NotOfType`` passes it to the next, and None
-    takes it unchecked. The process gets ``memory`` bytes of address space
-    and ``seconds`` of CPU from the system (``RLIMIT_AS``, ``RLIMIT_CPU``,
-    where there are such limits; not on Windows), and is killed past
-    ``seconds`` of wall clock. At most ``processes`` run at once in this
-    process; a slot is freed only once its process has exited, a request
-    cancelled meanwhile included. Each check must pickle: a function at a
-    module's top level, or an object of a class that is.
+    The process is handed ``file`` from its start to its end, read in a
+    thread, and the checks are tried in order on all of it, as
+    ``save_upload`` tries the types of a file: one that raises
+    ``NotOfType`` passes it to the next, and None takes it unchecked.
+    The process gets ``memory`` bytes of address space and ``seconds`` of
+    CPU from the system (``RLIMIT_AS``, ``RLIMIT_CPU``, where there are
+    such limits; not on Windows), and is killed past ``seconds`` of wall
+    clock. It gets none of this process's environment but ``PATH``, the
+    locale and the temporary directory, and a session of its own. At most
+    ``processes`` run at once in this process; a slot is freed only once
+    its process has exited, a request cancelled meanwhile included. Each
+    check must pickle, and be importable by the process: a function at
+    the top level of a module that is not ``__main__``, or an object of a
+    class that is.
 
     Raises:
-        FileRefused: A check refused the file, or its process was stopped
-            by a limit (``unreadable_file``: it took too long or too much).
+        FileRefused: A check refused the file, or its process was stopped:
+            past its clock or CPU (``unreadable_file``, too long), out of
+            memory as it said (too much), or by another signal, logged
+            (the file could not be read).
         NotOfType: No check took it.
         ServiceBusy: ``processes`` checks run already (503).
         ImproperlyConfigured: A check's library is not installed.
-        RuntimeError: A check failed otherwise, as a bug does.
+        RuntimeError: A check failed otherwise, as a bug does, or its
+            process ended without an answer; logged with what it wrote to
+            standard error.
     """
     global _running  # The count every event loop of the process shares.
     with _running_lock:
@@ -1269,7 +1364,7 @@ async def run_checks(
             raise ServiceBusy(BUSY)
         _running += 1
     try:
-        return await _in_a_process(list(checks), file, size, memory, seconds)
+        return await _in_a_process(list(checks), file, memory, seconds)
     finally:
         with _running_lock:
             _running -= 1
@@ -1278,7 +1373,6 @@ async def run_checks(
 async def _in_a_process(
     checks: list[Callable[[IO[bytes]], None] | None],
     file: IO[bytes],
-    size: int,
     memory: int,
     seconds: float,
 ) -> int:
@@ -1286,17 +1380,24 @@ async def _in_a_process(
 
     The process has exited when this returns or raises, cancelled or not.
     """
-    config = {"path": sys.path, "memory": memory, "seconds": seconds}
-    request = pickle.dumps({"checks": checks, "size": size})
+    path = [os.fspath(each) for each in sys.path if isinstance(each, str | os.PathLike)]
+    config = {"path": path, "memory": memory, "seconds": seconds}
+    request = pickle.dumps(checks)
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         "-I",
+        "-X",
+        "faulthandler",
         "-c",
         BOOTSTRAP,
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+        env=_environment(),
+        start_new_session=True,  # Not the parent's group: no signal meant for it.
     )
+    said = bytearray()
+    errors = asyncio.ensure_future(_tail(process, said))
     clock = asyncio.timeout(seconds)
     answer = b""
     try:
@@ -1307,26 +1408,45 @@ async def _in_a_process(
     except TimeoutError:
         pass  # The clock's: ``expired`` says so below.
     finally:
-        await _ended(process)
-    if clock.expired() or process.returncode in _STOPPED:
+        try:
+            await _ended(process)
+            await asyncio.wait({errors}, timeout=1.0)  # Its end closes as it exits.
+        finally:
+            errors.cancel()
+    if clock.expired():
+        logger.warning(
+            "A check of an upload ran past %s seconds; it was killed.", seconds
+        )
         raise FileRefused(TOO_LONG, code=UNREADABLE)
-    return _verdict(answer, len(checks))
+    returncode = process.returncode
+    assert returncode is not None  # noqa: S101 - it has exited.
+    return _outcome(answer, returncode, bytes(said), len(checks))
+
+
+def _environment() -> dict[str, str]:
+    """What a check's process gets of this environment: no settings, no secrets."""
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if name in ENVIRONMENT or name.startswith("LC_")
+    }
 
 
 async def _hand(
     process: asyncio.subprocess.Process, config: bytes, request: bytes, file: IO[bytes]
 ) -> None:
-    """Write the configuration, the request, and the file to the process.
+    """Write the configuration, the request, and the file to its end to the process.
 
-    A process that stopped reading (it refused at once, or a limit ended
-    it) is not written to further.
+    The file is read in a thread: it may be on disk. A process that
+    stopped reading (it refused at once, or a limit ended it) is not
+    written to further.
     """
     writer = process.stdin
     assert writer is not None  # noqa: S101 - made with a pipe.
     try:
         writer.write(config + struct.pack(">Q", len(request)) + request)
-        file.seek(0)
-        while chunk := file.read(CHUNK):
+        await asyncio.to_thread(file.seek, 0)
+        while chunk := await asyncio.to_thread(file.read, CHUNK):
             writer.write(chunk)
             await writer.drain()
         writer.close()
@@ -1342,6 +1462,15 @@ async def _answer(process: asyncio.subprocess.Process) -> bytes:
     while len(answer) <= MAX_ANSWER and (chunk := await reader.read(CHUNK)):
         answer += chunk
     return answer
+
+
+async def _tail(process: asyncio.subprocess.Process, said: bytearray) -> None:
+    """Keep the last ``MAX_SAID`` bytes the process writes to standard error."""
+    reader = process.stderr
+    assert reader is not None  # noqa: S101 - made with a pipe.
+    while chunk := await reader.read(CHUNK):
+        said += chunk
+        del said[:-MAX_SAID]
 
 
 async def _ended(process: asyncio.subprocess.Process) -> None:
@@ -1364,25 +1493,61 @@ async def _ended(process: asyncio.subprocess.Process) -> None:
         raise asyncio.CancelledError
 
 
-def _verdict(answer: bytes, count: int) -> int:
+def _outcome(answer: bytes, returncode: int, said: bytes, count: int) -> int:
+    """Which check took the file, from the process's answer, or how it ended.
+
+    An answer is a JSON object, read as data (``_verdict``). A process
+    that gave none ended by a signal or on its own. The system's CPU
+    limit ends it with ``SIGXCPU``: too long. Another signal says no more
+    than that it crashed: a failed allocation under ``RLIMIT_AS`` may
+    end a library that way, and so may a bug, and the out-of-memory
+    killer's ``SIGKILL`` is no one else's to tell apart. The file could
+    not be read, then, and the signal is logged. A process that exited
+    without an answer failed: its import, or a bug.
+
+    Raises:
+        FileRefused: A check refused it, or a signal ended the process.
+        NotOfType: No check took it.
+        ImproperlyConfigured: A check's library is not installed.
+        RuntimeError: A check failed, or the process gave no answer.
+    """
+    tail = said.decode(errors="replace")
+    try:
+        found = json.loads(answer)
+    except (ValueError, RecursionError):
+        found = None
+    if isinstance(found, dict):
+        return _verdict(found, count, tail)
+    if returncode < 0:
+        try:
+            name = signal.Signals(-returncode).name
+        except ValueError:
+            name = f"signal {-returncode}"
+        logger.warning("A check of an upload was ended by %s: %s", name, tail)
+        raise FileRefused(TOO_LONG if name == "SIGXCPU" else DAMAGED, code=UNREADABLE)
+    logger.error(
+        "A check of an upload ended without an answer (exit status %s): %s",
+        returncode,
+        tail,
+    )
+    raise RuntimeError(
+        f"A check of an upload ended without an answer (exit status {returncode})."
+    )
+
+
+def _verdict(found: dict[str, Any], count: int, tail: str) -> int:
     """Which check took the file, from the process's answer; else raise.
 
     The answer is JSON of a few known shapes, read as data: the process
     read an untrusted file, and could say anything.
 
     Raises:
-        FileRefused: A check refused it, or the process ended without an
-            answer (a limit of memory ended it).
+        FileRefused: A check refused it, or the answer is of no known shape.
         NotOfType: No check took it.
         ImproperlyConfigured: A check's library is not installed.
-        RuntimeError: A check failed otherwise.
+        RuntimeError: A check failed otherwise; logged with ``tail``, the
+            end of what the process wrote to standard error.
     """
-    try:
-        found = json.loads(answer)
-    except ValueError:
-        raise FileRefused(TOO_MUCH, code=UNREADABLE) from None
-    if not isinstance(found, dict):
-        raise FileRefused(DAMAGED, code=UNREADABLE)
     took = found.get("took")
     if isinstance(took, int) and 0 <= took < count:
         return took
@@ -1396,6 +1561,7 @@ def _verdict(answer: bytes, count: int) -> int:
     if isinstance(missing := found.get("improperly"), str):
         raise ImproperlyConfigured(missing[:500])
     if isinstance(failed := found.get("failed"), str):
+        logger.error("A check of an upload failed in its process: %s", tail)
         raise RuntimeError(
             f"A check of an upload failed in its process: {failed[:100]}."
         )
@@ -1406,19 +1572,21 @@ def _serve(config: dict[str, Any], source: IO[bytes], sink: IO[bytes]) -> None:
     """The check's process: limit itself, read the request and the file, answer.
 
     The request comes from the parent, which is trusted, pickled; the
-    answer goes back as JSON.
+    file is the rest of ``source``. The answer goes back as JSON, always:
+    whatever a check raises, ``SystemExit`` too, is told to the parent,
+    and its traceback written to standard error, which the parent logs.
     """
     _limit(int(config["memory"]), float(config["seconds"]))
     try:
         (length,) = struct.unpack(">Q", source.read(8))
-        request = pickle.loads(source.read(length))  # noqa: S301 - the parent's.
-        data = source.read(int(request["size"]))
-        verdict = _checked(request["checks"], data)
+        checks = pickle.loads(source.read(length))  # noqa: S301 - the parent's.
+        answer = json.dumps(_checked(checks, source.read()), default=str)
     except MemoryError:
-        verdict = {"refused": TOO_MUCH, "code": UNREADABLE}
-    except Exception as exc:  # noqa: BLE001 - told to the parent, which raises it.
-        verdict = {"failed": type(exc).__name__}
-    sink.write(json.dumps(verdict).encode() + b"\n")
+        answer = json.dumps({"refused": TOO_MUCH, "code": UNREADABLE})
+    except BaseException as exc:  # noqa: BLE001 - told to the parent, which raises it.
+        traceback.print_exc()
+        answer = json.dumps({"failed": type(exc).__name__})
+    sink.write(answer.encode() + b"\n")
     sink.flush()
 
 
@@ -1445,10 +1613,13 @@ def _checked(
 def _limit(memory: int, seconds: float) -> None:
     """Hold this process to ``memory`` bytes and ``seconds`` of CPU, where it can be.
 
+    On Linux it also asks to be the first the out-of-memory killer ends.
     Windows has no such limits: the parent's clock alone ends a check
     there. A limit the system will not lower to (macOS keeps its own
     address space) is left as it is.
     """
+    with contextlib.suppress(OSError), open(OOM_SCORE, "w") as score:  # noqa: PTH123
+        score.write("1000")
     try:
         import resource
     except ImportError:
@@ -1460,11 +1631,3 @@ def _limit(memory: int, seconds: float) -> None:
     ):
         with contextlib.suppress(OSError, ValueError):
             resource.setrlimit(kind, (soft, hard))
-
-
-_STOPPED: Final = frozenset(
-    -number
-    for number in (getattr(signal, "SIGXCPU", None), getattr(signal, "SIGKILL", None))
-    if number is not None
-)
-"""How a process the CPU limit ended exits: a signal's negated number."""

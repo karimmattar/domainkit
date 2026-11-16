@@ -122,10 +122,21 @@ class FileType:
         """Refuse a check that cannot be handed to a process of its own.
 
         Raises:
-            TypeError: ``inspect`` does not pickle (a lambda, a nested function).
+            TypeError: ``inspect`` does not pickle (a lambda, a nested
+                function), or is defined in ``__main__``, which the process
+                cannot import: it runs no script.
         """
         if self.inspect is None:
             return
+        modules = (
+            getattr(self.inspect, "__module__", None),
+            type(self.inspect).__module__,
+        )
+        if "__main__" in modules:
+            raise TypeError(
+                "A FileType's inspect runs in a process of its own, which cannot "
+                "import __main__: define it in a module the application imports."
+            )
         try:
             pickle.dumps(self.inspect)
         except (pickle.PicklingError, AttributeError, TypeError) as exc:
@@ -516,7 +527,7 @@ async def _received(
                 await asyncio.to_thread(spool.write, chunk)  # It goes to disk.
             else:
                 spool.write(chunk)
-        kind = await _checked(spool, size, candidates)
+        kind = await _checked(spool, candidates)
     except BaseException:
         spool.close()
         raise
@@ -524,7 +535,7 @@ async def _received(
     return ReceivedUpload(kind, size, digest.hexdigest(), filename, spool)
 
 
-async def _checked(file: IO[bytes], size: int, candidates: list[FileType]) -> FileType:
+async def _checked(file: IO[bytes], candidates: list[FileType]) -> FileType:
     """The first of ``candidates`` whose check takes ``file``: in a process of its own.
 
     A type without a check takes it, and a file whose first candidate has
@@ -554,7 +565,6 @@ async def _checked(file: IO[bytes], size: int, candidates: list[FileType]) -> Fi
         index = await run_checks(
             [kind.inspect for kind in taken],
             file,
-            size,
             processes=config.PROCESSES,
             memory=config.MEMORY,
             seconds=config.SECONDS,
