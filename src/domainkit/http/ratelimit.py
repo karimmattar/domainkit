@@ -62,6 +62,14 @@ from domainkit.http.middleware import (
 from domainkit.utils.module_loading import import_string
 from domainkit.utils.rates import parse_rate
 
+try:
+    from domainkit.http.metrics import observe_rate_limit_fallback
+except ImportError:  # pragma: no cover - only without the [metrics] extra.
+
+    def observe_rate_limit_fallback(fallback: str) -> None:
+        """Record nothing: ``prometheus_client`` is not installed."""
+
+
 __all__ = [
     "FALLBACK_KEYS",
     "RATE_LIMITED",
@@ -262,6 +270,10 @@ class MemoryBackend:
 
 FALLBACK_KEYS: Final = 10_000
 """Callers the local fallback of ``RedisBackend`` counts at most (``MemoryBackend``)."""
+LET_THROUGH: Final = "let_through"
+"""``rate_limit_fallbacks_total``: a request let through, Redis being down."""
+IN_PROCESS: Final = "process"
+"""``rate_limit_fallbacks_total``: a request counted by the process's fallback."""
 
 
 class RedisBackend:
@@ -281,6 +293,10 @@ class RedisBackend:
     the limit through. Its decisions say they were not counted in Redis
     (``Decision.counted`` is False), so ``AUTH.THROTTLE_FAIL_CLOSED`` still
     refuses the attempts it lets through.
+
+    With ``domainkit[metrics]``, ``rate_limit_fallbacks_total`` counts each
+    decision made without Redis: ``let_through``, or counted in this
+    ``process`` by the fallback.
     """
 
     def __init__(
@@ -324,8 +340,10 @@ class RedisBackend:
     ) -> Decision:
         """The fallback's decision at its share of ``limit``; else ``let_through``."""
         if self.fallback is None:
+            observe_rate_limit_fallback(LET_THROUGH)
             return let_through
         decision = await self.fallback.hit(key, max(1, limit // self.replicas), period)
+        observe_rate_limit_fallback(IN_PROCESS)
         return dataclasses.replace(decision, counted=False)
 
     async def hit(self, key: str, limit: int, period: float) -> Decision:

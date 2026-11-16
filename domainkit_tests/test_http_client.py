@@ -10,6 +10,7 @@ import socket
 import ssl
 import sys
 import threading
+import uuid
 import zlib
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
@@ -20,6 +21,7 @@ from typing import Any
 import httpcore2
 import httpx2
 import pytest
+from prometheus_client import REGISTRY, generate_latest
 from pydantic import ValidationError
 
 from domainkit import deadlines, lifecycle, tracing
@@ -1449,3 +1451,217 @@ def test_failed_calls_are_answered_as_upstream_problems_not_bugs() -> None:
     assert "retry-after" not in answers["slow"].headers
     assert all("rates.example.com" not in each.text for each in answers.values())
     assert calls_reported == []
+
+
+# Metrics (user report W9) -------------------------------------------------------
+
+
+def sample(name: str, **labels: str) -> float:
+    """One metric sample (0 when absent)."""
+    return REGISTRY.get_sample_value(name, labels) or 0.0
+
+
+def calls(client: str, method: str, outcome: str) -> float:
+    """Calls of ``client`` counted so far with ``method`` and ``outcome``."""
+    return sample(
+        "http_client_requests_total", client=client, method=method, outcome=outcome
+    )
+
+
+def unique(prefix: str) -> str:
+    """A client name no other test counts under."""
+    return f"{prefix}-{uuid.uuid4().hex[:12]}"
+
+
+async def test_calls_are_counted_by_client_method_and_outcome(
+    waits: list[float],
+) -> None:
+    """By the client's name, never its URLs: the status, retries, and errors."""
+    name = unique("rates")
+    rates = HttpClient(base_url="https://rates.example.com", name=name, retries=1)
+    upstream = Upstream(
+        status(200), status(404), status(503), status(503), fail(httpx2.ConnectError)
+    )
+    with stub(upstream):
+        assert (await rates.get("/v1/rates/EUR?key=SECRET")).status_code == 200
+        assert (await rates.post("/v1/orders/41")).status_code == 404
+        assert (await rates.get("/v1/rates/USD")).status_code == 503  # Retried once.
+        with pytest.raises(httpx2.ConnectError):
+            await rates.request("PURGE", "/v1/cache")  # Retried: nothing was sent.
+
+    assert calls(name, "GET", "200") == 1
+    assert calls(name, "POST", "404") == 1
+    assert calls(name, "GET", "503") == 1
+    assert calls(name, "OTHER", "error") == 1
+    assert sample("http_client_retries_total", client=name) == 2
+    assert (
+        sample("http_client_request_duration_seconds_count", client=name, method="GET")
+        == 2
+    )
+    mine = [
+        line for line in generate_latest(REGISTRY).decode().splitlines() if name in line
+    ]
+    assert mine
+    assert not [
+        line for line in mine for part in ("https:", "/v1", "SECRET") if part in line
+    ]
+
+
+async def test_a_call_is_timed_from_start_to_answer_retries_included(
+    waits: list[float],
+) -> None:
+    """Its duration covers every attempt, by the clock the client reads."""
+    name = unique("timed")
+    with freeze_time("2026-01-01") as frozen:
+
+        def slow(code: int, seconds: float) -> Answer:
+            def answer(request: httpx2.Request) -> httpx2.Response:
+                frozen.tick(seconds)
+                return httpx2.Response(code)
+
+            return answer
+
+        with stub(Upstream(slow(503, 0.25), slow(200, 0.5))):
+            await HttpClient(name=name).get(URL)
+
+    assert (
+        sample("http_client_request_duration_seconds_sum", client=name, method="GET")
+        == 0.75
+    )
+    assert calls(name, "GET", "200") == 1
+
+
+async def test_calls_that_raise_are_counted_by_how_they_ended() -> None:
+    """A word for each way a call can fail, never the error's message."""
+    name = unique("failing")
+    api = HttpClient(name=name, retries=0)
+    guarded = HttpClient(name=name, guard=True, breaker=False, retries=0)
+    with options(BREAKER_FAILURES=1), stub(Upstream(status(500))):
+        assert (await api.get(URL)).status_code == 500
+        with pytest.raises(CircuitOpen):
+            await api.get(URL)
+    with pytest.raises(UnsafeURL):
+        await guarded.get("http://hooks.example/")
+    with stub(hang), pytest.raises(CallTimeout):
+        await guarded.get("https://hooks.example/slow", timeout=0.01)
+    with (
+        stub(lambda request: httpx2.Response(200, content=b"x" * 2048)),
+        options(MAX_RESPONSE_BYTES=1024),
+        pytest.raises(ResponseTooLarge),
+    ):
+        await guarded.get("https://hooks.example/large")
+    with freeze_time("2026-01-01") as clock, stub(hang):
+        async with deadlines.timeout(1.0):
+            clock.tick(1)
+            with pytest.raises(deadlines.DeadlineExceeded):
+                await guarded.get("https://hooks.example/late")
+    with stub(hang):
+        cancelled = asyncio.create_task(guarded.delete("https://hooks.example/gone"))
+        await asyncio.sleep(0)
+        cancelled.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await cancelled
+
+    outcomes = {
+        outcome: calls(name, method, outcome)
+        for method, outcome in [
+            ("GET", "500"),
+            ("GET", "circuit_open"),
+            ("GET", "unsafe_url"),
+            ("GET", "timeout"),
+            ("GET", "too_large"),
+            ("GET", "deadline_exceeded"),
+            ("DELETE", "cancelled"),
+        ]
+    }
+    assert outcomes == dict.fromkeys(outcomes, 1.0)
+
+
+def test_a_client_is_named_for_its_metrics() -> None:
+    """Its name, else its base URL's host, else ``other``; a URL is no name."""
+    assert HttpClient(name="rates").name == "rates"
+    assert HttpClient(base_url="https://rates.example.com:8443/v1").name == (
+        "rates.example.com"
+    )
+    assert HttpClient(base_url="https://[2001:db8::1]/").name == "2001:db8::1"
+    assert HttpClient().name == "other"
+    assert client_module.client.name == "default"
+    for wrong in (
+        "",
+        "https://rates.example.com/v1",
+        "rates example",
+        "-rates",
+        "r" * 129,
+    ):
+        with pytest.raises(ValueError, match="A client's name is 1 to 128"):
+            HttpClient(name=wrong)
+
+
+async def test_circuits_are_counted_as_they_change_and_while_open() -> None:
+    """Opened, tried, closed, and opened again after a failed trial; open now."""
+    name = unique("breaking")
+    api = HttpClient(name=name, retries=0)
+    unbroken = HttpClient(name=unique("unbroken"), breaker=False)
+
+    def changes() -> dict[str, float]:
+        return {
+            state: sample(
+                "http_client_circuit_transitions_total", client=name, state=state
+            )
+            for state in ("open", "half_open", "closed")
+        }
+
+    def open_now() -> float:
+        return sample("http_client_circuits_open", client=name)
+
+    assert open_now() == 0  # Every client with a breaker has its series.
+    with (
+        options(BREAKER_FAILURES=1, BREAKER_COOLDOWN=10.0),
+        freeze_time("2026-01-01") as clock,
+    ):
+        with stub(Upstream(status(503))):
+            await api.get(URL)
+            await api.get("https://other.example.com/")
+            assert open_now() == 2
+            assert changes() == {"open": 2, "half_open": 0, "closed": 0}
+            clock.tick(10)
+            await api.get(URL)  # The trial fails: open again.
+            assert changes() == {"open": 3, "half_open": 1, "closed": 0}
+        clock.tick(10)
+        with stub(Upstream(status(200))):
+            await api.get(URL)  # The trial succeeds.
+            await api.get(URL)  # Closed: no change.
+    assert changes() == {"open": 3, "half_open": 2, "closed": 1}
+    assert open_now() == 1
+    assert (
+        REGISTRY.get_sample_value(
+            "http_client_circuits_open", {"client": unbroken.name}
+        )
+        is None
+    )
+
+
+def test_a_circuit_forgotten_for_newer_ones_counts_as_closed() -> None:
+    """The oldest open circuit, let go past BREAKER_HOSTS, closes; others do not."""
+    name = unique("crowded")
+    breaker = CircuitBreaker(name=name)
+    breaker.failed("open", 1)
+    breaker.failed("open", 1)  # A straggler's failure: still the same opening.
+    for host in range(BREAKER_HOSTS):
+        breaker.failed(str(host), 5)
+
+    assert "open" not in breaker._circuits
+    assert breaker.open_circuits() == 0
+    assert (
+        sample("http_client_circuit_transitions_total", client=name, state="open") == 1
+    )
+    assert (
+        sample("http_client_circuit_transitions_total", client=name, state="closed")
+        == 1
+    )
+    breaker.failed("new", 5)  # Forgets "0", whose circuit never opened.
+    assert "0" not in breaker._circuits
+    assert (
+        sample("http_client_circuit_transitions_total", client=name, state="closed")
+        == 1
+    )

@@ -74,6 +74,12 @@ DEADLINES: Final = Counter(
     "http_request_deadlines_exceeded_total",
     "HTTP requests answered 503 deadline_exceeded.",
 )
+RATE_LIMIT_FALLBACKS: Final = Counter(
+    "rate_limit_fallbacks_total",
+    "Rate limit decisions while Redis was down: let through, or counted in this "
+    "process.",
+    ["fallback"],
+)
 
 MAX_SERIES: Final = 4096
 """Series of the request metrics whose handles ``MetricsMiddleware`` keeps."""
@@ -120,6 +126,11 @@ def observe_shed(reason: str) -> None:
 def observe_deadline_exceeded() -> None:
     """Count one request answered 503 because its deadline passed."""
     DEADLINES.inc()
+
+
+def observe_rate_limit_fallback(fallback: str) -> None:
+    """Count a rate limit decision made without Redis: ``let_through``, ``process``."""
+    RATE_LIMIT_FALLBACKS.labels(fallback).inc()
 
 
 type _Series = tuple[Counter, Histogram]
