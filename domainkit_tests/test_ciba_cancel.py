@@ -12,19 +12,33 @@ counted and reportable until it expires (ADR 0128's push-bombing bounds).
 from datetime import timedelta
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
-from domainkit.contrib.auth.integration import utc_now
-from domainkit.contrib.ciba import CibaUnitOfWork, Requester, approve, start_push
+from domainkit import clock
+from domainkit.contrib.auth.integration import linked_action_authorization, utc_now
+from domainkit.contrib.ciba import (
+    CibaUnitOfWork,
+    Requester,
+    SignInUnknown,
+    approve,
+    poll,
+    start_push,
+)
+from domainkit.contrib.ciba import api as ciba_api
+from domainkit.contrib.ciba import cancel as ciba_cancel
 from domainkit.contrib.ciba.services import ciba_settings
+from domainkit.contrib.ciba.stores import SignInRequestStore
 from domainkit.management.base import run_async
 from domainkit_tests.support.auth import audited
+from domainkit_tests.test_action_authorisations import rows as authorization_rows
 from domainkit_tests.test_ciba import (
     PHONE,
     App,
     Phone,
     app,
     redeem,
+    rows,
     sign_in_pushes,
 )
 from domainkit_tests.test_ciba import start_push as push_from
@@ -60,32 +74,45 @@ def scan(phone: Phone, qr: str) -> dict[str, Any]:
     return shown
 
 
-def test_a_page_withdraws_its_qr_sign_in(app: App) -> None:
-    """Scanned: gone from the phone. Not yet: its code claims nothing. No report."""
+def test_a_page_withdraws_its_unscanned_qr_sign_in(app: App) -> None:
+    """Unscanned: its code claims nothing more, and the page polls it expired."""
     web = app()
     phone = Phone(app(PHONE))
-    scanned = web.post("/auth/app-sign-in/qr").json()
-    listed = scan(phone, scanned["qr"])
-    unscanned = web.post("/auth/app-sign-in/qr").json()
+    started = web.post("/auth/app-sign-in/qr").json()
 
-    withdrawn = cancel(web, scanned["request"])
-    again = cancel(web, scanned["request"])
-    gone = phone.waiting()
-    approved = phone.approve(listed["id"])
-    polled = redeem(web, scanned["request"])
-    unused = cancel(web, unscanned["request"])
+    withdrawn = cancel(web, started["request"])
+    again = cancel(web, started["request"])
     late = phone.send(
-        "POST", "/auth/app-sign-in/requests/claim", {"code": unscanned["qr"]}
+        "POST", "/auth/app-sign-in/requests/claim", {"code": started["qr"]}
     )
+    polled = redeem(web, started["request"])
 
     assert (withdrawn.status_code, again.status_code) == (204, 204)
-    assert gone == []
-    assert code_of(approved) == (404, "sign_in_not_found")
-    assert code_of(polled) == (400, "expired_token")
-    assert unused.status_code == 204, unused.json()
     assert code_of(late) == (422, "qr_code_expired")
+    assert code_of(polled) == (400, "expired_token")
     assert audited("ciba.sign_in_denied") == []
-    assert audited("ciba.sign_in_reported") == []
+
+
+def test_a_scanned_qr_sign_in_stays_for_the_user_to_report(app: App) -> None:
+    """A relaying page cannot take back the code its victim scanned.
+
+    Once a phone claimed it, the request is that phone's to answer: the
+    page's cancel leaves it, and the user can still report it.
+    """
+    web = app()
+    phone = Phone(app(PHONE))
+    started = web.post("/auth/app-sign-in/qr").json()
+    listed = scan(phone, started["qr"])
+
+    withdrawn = cancel(web, started["request"])
+    still = phone.waiting()
+    reported = phone.deny(listed["id"], report=True)
+
+    assert withdrawn.status_code == 204, withdrawn.json()
+    assert [each["id"] for each in still] == [listed["id"]]
+    assert reported.status_code == 204, reported.json()
+    assert len(audited("ciba.sign_in_reported")) == 1
+    assert code_of(redeem(web, started["request"])) == (400, "access_denied")
 
 
 def test_a_push_sign_in_is_never_withdrawn_so_pushes_stay_bounded(app: App) -> None:
@@ -158,6 +185,40 @@ def test_an_act_the_phone_approved_is_not_withdrawn(acting: App) -> None:
     assert session.rename("Al", redeemed.json()["authorization"]).status_code == 200
 
 
+def test_a_poll_redeems_nothing_once_the_request_ended_meanwhile(app: App) -> None:
+    """The redeem reads the time when it writes, not when the poll began."""
+    app()
+    Phone(app(PHONE))
+    original = SignInRequestStore.by_handle
+
+    async def scenario() -> str:
+        async with CibaUnitOfWork() as uow:
+            user = await uow.users.find_by_identifier("alice")
+            assert user is not None
+            started = await start_push(uow, user, requester=Requester(None, None))
+            [device] = await uow.devices.of_user(user.id)
+            assert await approve(uow, user.id, started.request_id, device.id)
+            await uow.commit()
+        with clock.freeze_time() as frozen:
+
+            async def read_then_expire(self: Any, digest: str) -> Any:  # noqa: ANN401
+                found = await original(self, digest)
+                frozen.tick(timedelta(minutes=3))  # Past REQUEST_TTL, mid-poll.
+                return found
+
+            SignInRequestStore.by_handle = read_then_expire  # type: ignore[method-assign]
+            try:
+                await poll(started.handle, client_id=None)
+            except SignInUnknown as refused:
+                return refused.code
+            finally:
+                SignInRequestStore.by_handle = original  # type: ignore[method-assign]
+        return "redeemed"
+
+    assert run_async(scenario()) == "sign_in_unknown"
+    assert rows()[0]["redeemed_at"] is None
+
+
 def test_an_ended_request_is_never_redeemed(app: App) -> None:
     """A poll that read it approved redeems nothing once it has ended meanwhile."""
     app()
@@ -221,6 +282,105 @@ def test_only_the_session_that_asked_withdraws_its_act(acting: App) -> None:
     assert approved.status_code == 204, approved.json()
     assert answered.json()["authorization"].startswith(f"{asked['id']}.")
     assert audited("ciba.sign_in_reported") == []
+
+
+@pytest.mark.parametrize("rate", ["10/minute", None])
+def test_a_session_that_asks_and_withdraws_in_a_loop_is_stopped(
+    acting: App, rate: str | None
+) -> None:
+    """Twice ``MAX_PENDING`` unanswered asks in ``REQUEST_TTL``, withdrawn or not.
+
+    A plain password session could push the phone at ``START_RATE``, or
+    without end with ``None``, each push gone before it could be
+    reported. Closing a dialog or two still asks again at once.
+    """
+    Phone(acting(PHONE))
+    web = acting(START_RATE=rate)
+    session = Session(web)
+    asked = session.asked()
+
+    answers = []
+    for _ in range(8):
+        started = session.ask_phone(asked["id"])
+        answers.append(started.status_code)
+        if started.status_code == 200:
+            handle = started.json()["request"]
+            cancel(web, handle, "authorizations/cancel", session.headers)
+    stopped = session.ask_phone(asked["id"])
+    pushed = len(sign_in_pushes())
+    with later(121):  # REQUEST_TTL on: the asks of then count no more.
+        after = session.ask_phone(asked["id"])
+
+    assert answers == [200] * 6 + [409, 409]
+    assert code_of(stopped) == (409, "phone_unavailable")
+    assert pushed == 6
+    assert after.status_code == 200, after.json()
+
+
+def test_the_user_reports_an_ask_its_session_withdrew(acting: App) -> None:
+    """Not me, from the push: reported, and no push reaches them for the cooldown.
+
+    The push names the request; the phone no longer lists it once
+    withdrawn, but reports it until ``REQUEST_TTL`` after it was asked.
+    """
+    phone = Phone(acting(PHONE))
+    web = acting()
+    session = Session(web)
+    asked = session.asked()
+    started = session.ask_phone(asked["id"]).json()
+    pushed = sign_in_pushes()[-1]["data"]["request_id"]
+    cancel(web, started["request"], "authorizations/cancel", session.headers)
+    second = session.ask_phone(asked["id"]).json()
+    cancel(web, second["request"], "authorizations/cancel", session.headers)
+
+    listed = phone.waiting()
+    reported = phone.deny(pushed, report=True)
+    twice = phone.deny(pushed, report=True)
+    again = session.ask_phone(asked["id"])
+    with later(121):
+        late = phone.deny(sign_in_pushes()[-1]["data"]["request_id"], report=True)
+
+    assert listed == []
+    assert reported.status_code == 204, reported.json()
+    assert code_of(twice) == (404, "sign_in_not_found")  # Answered now.
+    assert len(audited("ciba.sign_in_reported")) == 1
+    assert code_of(again) == (409, "phone_unavailable")  # REPORT_COOLDOWN.
+    assert code_of(late) == (404, "sign_in_not_found")
+
+
+def test_an_act_withdrawn_while_the_phone_approves_it_is_not_confirmed(
+    acting: App, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Withdrawn after the phone read the act, before it approved: neither happens.
+
+    The approval and auth's confirmation are one transaction: the request
+    ended, so nothing is confirmed, and the act can be asked again.
+    """
+    phone = Phone(acting(PHONE))
+    web = acting(NUMBER_MATCHING=False)
+    session = Session(web)
+    asked, started, listed = asked_of_the_phone(session, phone)
+    original = linked_action_authorization
+
+    async def read_then_withdrawn(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        found = await original(*args, **kwargs)
+        await ciba_cancel(
+            started["request"],
+            client_id=None,
+            kind="authorization",
+            credential_digest=kwargs["login"],
+        )
+        return found
+
+    monkeypatch.setattr(ciba_api, "linked_action_authorization", read_then_withdrawn)
+    approved = phone.approve(listed["id"], digest=listed["authorization"]["digest"])
+    monkeypatch.undo()
+    again = session.ask_phone(asked["id"])
+
+    assert code_of(approved) == (404, "sign_in_not_found")
+    [row] = authorization_rows()
+    assert (row["confirmed_at"], row["signature"]) == (None, None)
+    assert again.status_code == 200, again.json()
 
 
 def test_a_session_withdraws_the_transaction_it_asked_the_phone(acting: App) -> None:

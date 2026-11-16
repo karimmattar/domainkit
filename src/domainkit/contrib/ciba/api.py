@@ -933,12 +933,14 @@ async def approve_sign_in(
         if not isinstance(refusal, HTTPException) or refusal.status_code == FORBIDDEN:
             await _deny_refused(user, asked)
         raise
-    if asked.kind == AUTHORIZATION and matches(asked, body.match_code):
-        await _confirm_act(request, user, asked, device, body.digest)
+    act = asked.kind == AUTHORIZATION and matches(asked, body.match_code)
+    authorization = await _act_of(user, asked, body.digest) if act else None
     async with CibaUnitOfWork() as uow:
         approved = await approve(
             uow, user.id, request_id, device.id, match_code=body.match_code
         )
+        if approved is not None and authorization is not None:
+            await _confirm_act(uow, request, asked, device, authorization)
         await uow.commit()  # A wrong number denies it, then is refused.
     if approved is None:
         raise WrongMatchCode()
@@ -961,26 +963,15 @@ async def _deny_refused(user: AbstractBaseUser, asked: SignInRequest) -> None:
             await uow.commit()
 
 
-async def _confirm_act(
-    request: Request,
-    user: AbstractBaseUser,
-    asked: SignInRequest,
-    device: BoundDevice,
-    digest: str | None,
-) -> None:
-    """Confirm the act's authorization, signed by ``device``; deny it if it changed.
-
-    Each step is a transaction of its own: auth's confirmation commits
-    before the request is approved. Should that approval then lose (the
-    request answered or ended meanwhile), the authorization is confirmed
-    and nobody can redeem it.
+async def _act_of(
+    user: AbstractBaseUser, asked: SignInRequest, digest: str | None
+) -> ActionAuthorization:
+    """The act's authorization the phone approves, if ``digest`` is its; else deny.
 
     Raises:
         DigestRequired: The phone sent no digest.
         AuthorizationNotFound: Auth no longer links an authorization to it.
         AuthorizationChanged: Not the act's digest: the request is denied.
-        AuthorizationNeedsOtherFactors: The act asks more than the phone proves.
-        APIError: 409 ``authorization_confirmed`` or ``authorization_expired``.
     """
     if digest is None:
         raise DigestRequired()
@@ -992,19 +983,41 @@ async def _confirm_act(
             await deny(uow, user.id, asked.id)
             await uow.commit()
         raise AuthorizationChanged
+    return authorization
+
+
+async def _confirm_act(
+    uow: CibaUnitOfWork,
+    request: Request,
+    asked: SignInRequest,
+    device: BoundDevice,
+    authorization: ActionAuthorization,
+) -> None:
+    """Confirm the act's authorization, signed by ``device``, in ``uow``.
+
+    The transaction that approves the request: both commit, or neither.
+    A request its session withdrew meanwhile is not approved, and the
+    authorization is not confirmed; one the phone approved can no longer
+    be withdrawn.
+
+    Raises:
+        AuthorizationNeedsOtherFactors: The act asks more than the phone proves.
+        APIError: 409 ``authorization_confirmed`` or ``authorization_expired``.
+    """
     signed_at, signature, signed = await _signed(request)
     await confirm_action_with(
         authorization.id,
         PHONE_CONFIRMS,
-        user_id=user.id,
+        user_id=authorization.user_id,
         login=asked.credential_digest,
-        digest=digest,
+        digest=authorization.digest,  # The phone's: _act_of compared them.
         device_id=device.id,
         algorithm=device.algorithm,
         public_key=device.public_key,
         signature=signature,
         signed=signed,
         signed_at=signed_at,
+        uow=uow,
     )
 
 

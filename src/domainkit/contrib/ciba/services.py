@@ -98,6 +98,12 @@ AGENT_LENGTH: Final = 200
 PHONE_CONFIRMS: Final = frozenset({"hwk", "phone"})
 """What the phone's approval of an act proves: a key in its hardware (RFC
 8176's ``hwk``), on the bound device's own screen (``phone``, ADR 0144)."""
+ASKS_PER_PENDING: Final = 2
+"""A user's unanswered asks within ``REQUEST_TTL``, withdrawn ones too, are
+at most this many times ``MAX_PENDING``: a session that asks and withdraws
+in a loop is stopped, however ``START_RATE`` is set."""
+SESSION_KINDS: Final = frozenset({STEP_UP, TRANSACTION, AUTHORIZATION})
+"""What a signed-in session asks the phone, which it may withdraw."""
 PUSH_DEFAULTS: Final = {
     SIGN_IN: ("Approve sign-in?", "Open the app to approve or deny it."),
     STEP_UP: (
@@ -291,12 +297,19 @@ async def ask_signed_in(
 
     Raises:
         PhoneUnavailable: No phone of the user can be asked now: none is
-            bound, ``MAX_PENDING`` requests wait, or the user reported one
+            bound, ``MAX_PENDING`` requests wait, the user's sessions
+            asked twice as many within ``REQUEST_TTL`` that the phone has
+            not answered (withdrawn ones too), or the user reported one
             within ``REPORT_COOLDOWN``.
     """
     config = ciba_settings()
     now = utc_now()
-    if not await _askable(uow, user, now):
+    if not await _askable(uow, user, now) or (
+        await uow.requests.unanswered_asks(
+            user.id, SESSION_KINDS, now - config.REQUEST_TTL
+        )
+        >= ASKS_PER_PENDING * config.MAX_PENDING
+    ):
         raise PhoneUnavailable()
     handle = secrets.token_urlsafe(SECRET_BYTES)
     match_code = _match_code(match)
@@ -568,13 +581,37 @@ async def deny(
 
     A report says the user did not start it: someone who knows them did.
     It is audited (``SignInReported``), and no push reaches the user for
-    ``REPORT_COOLDOWN``.
+    ``REPORT_COOLDOWN``. A push its session withdrew unanswered is
+    reported too, until ``REQUEST_TTL`` after it was asked: the push
+    named it, and the user may not have started it.
 
     Raises:
-        SignInNotFound: The user has no such request waiting.
+        SignInNotFound: The user has no such request waiting, nor, for a
+            report, withdrawn within ``REQUEST_TTL``.
     """
-    request = await waiting(uow, user_id, request_id)
-    await _answer_no(uow, request, user_id, utc_now(), reported=report)
+    if not report:
+        await _answer_no(
+            uow,
+            await waiting(uow, user_id, request_id),
+            user_id,
+            utc_now(),
+            reported=False,
+        )
+        return
+    now = utc_now()
+    since = now - ciba_settings().REQUEST_TTL
+    found = await uow.requests.get(request_id)
+    if (
+        found is None
+        or found.user_id != user_id
+        or found.state not in {"pending", "claimed"}
+        or not (
+            not found.expired(now)
+            or (found.channel == PUSH and found.created_at > since)
+        )
+    ):
+        raise SignInNotFound()
+    await _answer_no(uow, found, user_id, now, reported=True, since=since)
 
 
 async def _answer_no(
@@ -584,9 +621,16 @@ async def _answer_no(
     now: datetime,
     *,
     reported: bool,
+    since: datetime | None = None,
 ) -> None:
-    """Deny ``request``, and with ``reported`` the user's others; record it."""
-    if not await uow.requests.deny(request.id, user_id, now, reported=reported):
+    """Deny ``request``, and with ``reported`` the user's others; record it.
+
+    ``since``: a request created after it is denied even if it ended (a
+    withdrawn push, reported).
+    """
+    if not await uow.requests.deny(
+        request.id, user_id, now, reported=reported, since=since
+    ):
         raise SignInNotFound()
     if reported:
         await uow.requests.deny_waiting(user_id, now)
@@ -655,7 +699,7 @@ async def poll(
         if request.expired(now) or unscanned_too_long(request, now):
             raise SignInExpired()
         if request.approved_at is not None:  # Decided: answered, however early.
-            redeemed = await uow.requests.redeem(request.id, now)
+            redeemed = await uow.requests.redeem(request.id, utc_now())
             await uow.commit()
             if not redeemed:  # Another poll redeemed it first.
                 raise SignInUnknown()
