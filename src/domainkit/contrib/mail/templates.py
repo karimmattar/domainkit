@@ -3,7 +3,8 @@
 A template named ``auth/password_reset_code`` is up to three files under
 ``templates/mail/`` in a domain package, or in a ``MAIL.TEMPLATE_DIRS``
 directory, which are searched first; then the installed domains, in
-``INSTALLED_DOMAINS`` order. The first that has the text body wins::
+``INSTALLED_DOMAINS`` order. The first that has the text body, or a
+translation of it (below), wins::
 
     auth/password_reset_code.subject.txt     one line
     auth/password_reset_code.txt             the plain-text body
@@ -26,9 +27,11 @@ The active language's files are used where they are (``domainkit.i18n``:
 ``override("ar")`` around ``render_mail``), its primary subtag's next
 (``pt`` for ``pt-br``), and the template's own otherwise. A language's
 files stand for the whole template: its subject and HTML body are its own,
-or none. A directory searched first that has only the template's own files
-wins all the same, so a project that overrides a template is never
-replaced by a translation of the one it overrides.
+or none. A directory may hold a language's files alone, so a project adds
+a translation of a template it does not replace (ADR 0166). A directory
+searched first that has only the template's own files wins all the same,
+so a project that overrides a template is never replaced by a translation
+of the one it overrides.
 """
 
 import html
@@ -68,7 +71,11 @@ def template_dirs() -> Iterator[Path]:
 
 
 def find_template(name: str) -> Path:
-    """The directory that holds ``name``'s text body, joined with ``name``.
+    """The first directory that holds ``name``, joined with ``name``.
+
+    The first that has its text body, or that body in the active language
+    or its primary subtag (``localized``): a directory may hold only a
+    translation (ADR 0166).
 
     Raises:
         TemplateError: ``name`` is not lower-case words separated by ``/``.
@@ -78,8 +85,9 @@ def find_template(name: str) -> Path:
         raise TemplateError(
             f"Template names are lower-case words separated by '/': {name!r}."
         )
+    suffixes = [*(f".{code}.txt" for code in _languages()), ".txt"]
     for directory in template_dirs():
-        if (directory / f"{name}.txt").is_file():
+        if any((directory / f"{name}{suffix}").is_file() for suffix in suffixes):
             return directory / name
     raise TemplateDoesNotExist(f"No mail template {name!r} (looked for {name}.txt).")
 
@@ -90,12 +98,17 @@ def localized(base: Path) -> Path:
     The language's own files (``password_reset_code.pt-br``), its primary
     subtag's next (``password_reset_code.pt``), and ``base`` otherwise.
     """
-    language = get_language()
-    for code in dict.fromkeys((language, language.partition("-")[0])):
+    for code in _languages():
         written = base.with_name(f"{base.name}.{code}")
         if written.with_name(f"{written.name}.txt").is_file():
             return written
     return base
+
+
+def _languages() -> list[str]:
+    """The active language, then its primary subtag: ``pt-br``, ``pt``."""
+    language = get_language()
+    return list(dict.fromkeys((language, language.partition("-")[0])))
 
 
 def render_string(

@@ -11,6 +11,37 @@ and a status.
 
 ### Added
 
+- A domain layer may import `domainkit.i18n.lazy`, and no other module of
+  `domainkit.i18n`: `gettext_noop` marks a refusal the boundary
+  translates, and `gettext_lazy`, `ngettext_lazy` and `pgettext_lazy`
+  make labels translated when they are shown. Importing it loads no
+  settings and no catalog: `domainkit.i18n` now imports its names on
+  first use. A project that allowed all of `domainkit.i18n` in
+  `ARCHITECTURE["DOMAIN_ALLOWED"]` may drop it
+  ([i18n.md](docs/i18n.md#messages-of-the-domain-layer), ADR 0166, user
+  report I2).
+
+- `makemessages` also reads the project's own modules: the package that
+  holds the settings module, and the one that holds `ROOT_ROUTER`'s
+  module, without the installed domains. What they mark is added to the
+  catalogs of the first `LOCALE_PATHS` directory, which keep every entry
+  they hold, the project's rewordings of others' messages too. Without
+  `LOCALE_PATHS`, a run names those messages on stderr, and `--check`
+  fails ([i18n.md](docs/i18n.md#the-projects-own-messages), ADR 0166,
+  user report I6).
+
+- Devices' mails, `devices/enrollment_code` and `devices/device_bound`,
+  ship in Arabic. A test holds every mail template domainkit ships to
+  have its files in each language its catalogs translate (user report
+  I7).
+
+- A `MAIL.TEMPLATE_DIRS` directory may hold a template's files in one
+  language alone: readers of that language get them, and every other
+  reader the template's own. A directory with the template's own text
+  body still wins over a later directory's translation
+  ([mail.md](docs/mail.md#templates-in-other-languages), ADR 0166, user
+  report I8).
+
 - Uploads can be checked whole before they are stored. A `FileType` takes
   an `inspect` hook, which `save_upload` runs in a worker thread on the
   upload, held in a temporary file; a file it refuses is never stored
@@ -33,11 +64,13 @@ and a status.
   only
   ([ADR 0167](docs/adr/0167-check-an-upload-whole-and-let-a-resource-take-one.md))
   (user report U1).
+
 - `save_upload` takes bytes, or an async iterable of bytes such as a
   request's body, with `filename=`, as well as an `UploadFile`.
   `receive_upload` receives and checks a file without storing it
   (`ReceivedUpload`). `StoredUpload` is public, in `domainkit.storage`,
   and carries the SHA-256 of what was stored (user report U3).
+
 - `ResourceRouter.upload_route(...)` takes a file: the body itself, its
   name in `X-Filename`, which a phone can sign, or a form. It checks the
   reach and `If-Match` before it reads the body, as a command route
@@ -48,9 +81,11 @@ and a status.
   `Action` binds an uploaded file by its content, not by the name the
   storage gave it, so the twin and the act agree on the file (user
   report U3).
+
 - `HttpClient.request(files=...)` sends a `multipart/form-data` form,
   `data=` its other fields, within the client's deadlines and retries; a
   retry sends each file whole again (user report U5).
+
 - `stub(handler, everywhere=True)` stubs every call of the process until
   its block ends, for a pytest fixture whose context the test does not
   share: an async fixture of a sync test, or a sync fixture after an
@@ -63,6 +98,15 @@ and a status.
   a file gateway checks and stores the bytes its route hands it.
   Starlette and `domainkit.http.errors` stay forbidden there (user report
   D2).
+
+### Fixed
+
+- `LocaleMiddleware` reads `LANGUAGE_CODE` and `LANGUAGES` per request,
+  not when the application is built: a test that overrides them is
+  served in the new ones (user report I5).
+
+- `makemessages` extracts the texts marked with `gettext_noop`, as the
+  docs said it did (user report I2).
 
 ## [2.4.0] - 2026-11-16
 

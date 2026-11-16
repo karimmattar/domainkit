@@ -10,7 +10,8 @@ domain layer), ``controllers.py`` (application), ``models.py``
 (infrastructure), and ``routes.py`` (api). The same rules hold either way.
 
 - ``domain``: the standard library, ``domainkit.ddd``, ``domainkit.clock``,
-  ``domainkit.money``, and its own domain layer. No frameworks, no I/O, no
+  ``domainkit.money``, ``domainkit.i18n.lazy`` (to mark its texts for
+  translation), and its own domain layer. No frameworks, no I/O, no
   settings.
 - ``application``: no ``infrastructure`` or ``api`` code, and no web or
   database libraries; it reaches storage through repository ports.
@@ -66,7 +67,12 @@ LAYER_MODULES: Final = MappingProxyType(
 )
 """The simple layout's modules, and the layer each one is."""
 
-DOMAIN_ALLOWED_PREFIXES: Final = ("domainkit.ddd", "domainkit.clock", "domainkit.money")
+DOMAIN_ALLOWED_PREFIXES: Final = (
+    "domainkit.ddd",
+    "domainkit.clock",
+    "domainkit.money",
+    "domainkit.i18n.lazy",
+)
 """Non-stdlib modules a domain layer may import (besides its own layer)."""
 
 FORBIDDEN_LIBRARIES: Final = {
