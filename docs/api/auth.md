@@ -196,6 +196,7 @@ Login gates: checks every login passes before it is issued (ADR 0128).
 - `PasswordGate`: A check of a password login before the password is looked at: raise to refuse.
 - `SessionLimiter`: Shorter limits for a login being made, from its user and how it is made.
 - `SessionLimits`: Shorter limits for one login than the settings give every login.
+- `StaffCheck`: A check before the admin API creates a user who is staff: raise to refuse.
 - `SuperuserCheck`: A check before the admin API makes a user a superuser: raise to refuse.
 - `check_gates_passed`: Refuse the login of `user` if gates exist and it did not pass them.
 - `check_manage_logins`: Run every check of `on_manage_logins` on `request`.
@@ -203,6 +204,7 @@ Login gates: checks every login passes before it is issued (ADR 0128).
 - `login_origin`: How the login `request` makes is made, for its gates; None: it makes none.
 - `manages_logins`: A route's dependency: the request may manage its user's logins.
 - `on_admin_change`: Register a check of every change the admin API makes to a user.
+- `on_create_staff`: Register a check of creating a user who is staff in the admin API.
 - `on_login_gate`: Register a gate every login passes (`on_login_gate(gate)` in `ready()`).
 - `on_make_superuser`: Register a check of making a superuser in the admin API.
 - `on_manage_logins`: Register a check of requests that manage logins (ADR 0130).

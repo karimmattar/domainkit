@@ -459,7 +459,9 @@ what.
   ([approvals.md](../contrib/approvals.md#making-superusers)). An app
   of your own can hold superusers back the same way: register a check
   with `on_make_superuser` (`domainkit.contrib.auth.gates`) in its
-  `ready()`, and raise to refuse.
+  `ready()`, and raise to refuse. `on_create_staff` does the same for
+  creating a user who is staff (since 2.5); both run in the creation's
+  twin too.
 - **Every change to a user passes the project's own checks**:
   `on_admin_change(check)` (`domainkit.contrib.auth.gates`) is called
   with the staff member, the user (None when creating one), and an
@@ -528,23 +530,25 @@ AUTH = {"ADMIN_ACTION": True}
 
 Each changing route has a twin that asks for the authorization: it takes
 the same body, runs the route's own checks, and answers `201` with what
-the staff member is shown. A `DELETE`, whose path is its `PATCH`'s, has
-its twin at `<path>/delete/authorization`.
+the staff member is shown. A route alone on its path has its twin at
+`<path>/authorization`; where a `PATCH` and a `DELETE` share a path, each
+twin names its method, `<path>/authorization/patch` and
+`<path>/authorization/delete`, as a resource router's twins do.
 
 | Route | Its twin |
 | --- | --- |
 | `POST /users` | `POST /users/authorization` |
-| `PATCH /users/{id}` | `POST /users/{id}/authorization` |
-| `DELETE /users/{id}` | `POST /users/{id}/delete/authorization` |
+| `PATCH /users/{id}` | `POST /users/{id}/authorization/patch` |
+| `DELETE /users/{id}` | `POST /users/{id}/authorization/delete` |
 | `POST /users/{id}/password` | `POST /users/{id}/password/authorization` |
 | `POST /users/{id}/logout` | `POST /users/{id}/logout/authorization` |
 | `POST /users/{id}/impersonate` | `POST /users/{id}/impersonate/authorization` |
 | `PUT /users/{id}/groups` | `POST /users/{id}/groups/authorization` |
 | `PUT /users/{id}/permissions` | `POST /users/{id}/permissions/authorization` |
 | `POST /groups` | `POST /groups/authorization` |
-| `PATCH /groups/{id}` | `POST /groups/{id}/authorization` |
+| `PATCH /groups/{id}` | `POST /groups/{id}/authorization/patch` |
 | `PUT /groups/{id}/permissions` | `POST /groups/{id}/permissions/authorization` |
-| `DELETE /groups/{id}` | `POST /groups/{id}/delete/authorization` |
+| `DELETE /groups/{id}` | `POST /groups/{id}/authorization/delete` |
 
 ```http
 PUT  /admin/auth/users/6f1c.../groups {"groups": ["auditors"]}                 401 authorization_required
@@ -561,23 +565,36 @@ PUT  /admin/auth/users/6f1c.../groups {"groups": ["auditors"]}
   being created), the name it gives, the values it sets, what it adds
   and takes away, sorted, and whether it leaves a usable password. Never
   the password itself. Another change, or the same change to another
-  user, is refused (`403 action_not_authorized`), and voids it.
+  user, is refused (`403 action_not_authorized`), and voids it. A user
+  created active and one created inactive are two acts.
 - **The screen says which user and what change**: "Change a user's
   groups", then "User: alice@example.com" (the user's first identifier)
-  or the group's name, "Adds: auditors", "Takes away: clerks", the reason
-  of an impersonation, or the fields set, by name. Six values at most;
-  the last line counts those not shown. The phone shows these words, read
-  from the server's record ([Confirming one act](ciba.md#confirming-one-act)).
-- **The twin checks what the change checks first**: the staff member's
-  bounds, the fields, a password's validators, impersonation's rules, a
-  user or group that is not there. It runs no `on_admin_change` check,
-  and changes nothing.
+  or the group's name, the flags that grant or take access
+  (`is_superuser`, `is_staff`, `is_active`), "Adds: auditors", "Takes
+  away: clerks", the reason of an impersonation, then the other fields
+  set, by name. The flags and the lists always show: a list too long for
+  a line shows its first items and how many more ("auditors, clerks and 4
+  more"). Six values at most; the last line counts the fields not shown.
+  The phone shows these words, read from the server's record
+  ([Confirming one act](ciba.md#confirming-one-act)).
+- **The twin checks what the change checks**: the staff member's bounds,
+  the fields, a password's validators, impersonation's rules, a user or
+  group that is not there, the last active superuser deleted or
+  deactivated (`409 last_superuser`), and the `on_create_staff` checks (a
+  user created staff while approvals hold making staff, `403
+  approval_required`). It runs no `on_admin_change` check, and changes
+  nothing. What only the change finds is refused then, after the
+  confirmation: a username or a group name taken, a password the user
+  had before (`AUTH.PASSWORD_HISTORY`), and the project's
+  `on_admin_change` checks.
 - **Checked before the project's checks, spent with the change.** The
   authorization must bind the change before the `on_admin_change` checks
   run, so a change it does not bind is never held for approval. It is
-  spent in the change's own transaction: a change refused after that
-  (`409 last_superuser`) spends nothing, and one held for approval
-  (`403 approval_pending`) spends nothing until the call that makes it.
+  spent in the change's own transaction: a change refused after that (a
+  username taken) spends nothing. A change held for approval (`403
+  approval_pending`) spends nothing either: once the request is approved,
+  the same call makes it with an authorization, the first one while it
+  lives (`AUTH.AUTHORIZATIONS.TTL`) or a new one.
 - **Staff acting as a user** cannot ask, and their changes are refused
   (`401 authorization_required`): the act is the staff member's own.
 
@@ -586,6 +603,12 @@ from a twin as from its route. Take any `StepUp(max_age=...)` you added
 to these routes with `select_routes` away when you turn the setting on:
 it would ask for a window too. `StepUp(for_="auth.admin_change")` added
 that way passes `check`; the routes ask for it already.
+
+A twin is a route of its own to `select_routes`: leave it in or out with
+its route. `without=["DELETE /users/{user_id}"]` leaves `POST
+/users/{user_id}/authorization/delete` in, so name it too; `only=[...]`
+names the twins of the routes it keeps. While the setting is off, the
+twins answer `404`, and the admin API loads nothing of the action.
 
 ### Impersonation
 

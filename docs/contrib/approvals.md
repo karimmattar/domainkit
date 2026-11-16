@@ -620,7 +620,8 @@ PATCH /admin/auth/users/6f1c... {"is_staff": true}                       200: th
   second person.
 - **Creating a user who is staff is refused** while making staff is held
   (`403 approval_required`, "Making staff needs approval: create the
-  user, then make them staff.").
+  user, then make them staff."). Since 2.5 the refusal is auth's
+  `on_create_staff` check, which the creation's twin asks too.
 - **Superusers approve**, other than the staff member, and never the user
   the change is about (`interested_party`). With `ADMIN_APPROVERS` set,
   the holders of that permission approve instead; as with

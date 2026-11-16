@@ -104,30 +104,45 @@ and lets that code, the admin API's included, pass it.
   `logout`, `impersonate`, `groups`, `permissions`; or a group's:
   `group_create`, `group_rename`, `group_permissions`, `group_delete`),
   the user or group, the name a user or group is given, the values it
-  sets (`AdminChange.values`, as JSON), what it adds and takes away
-  (sorted), and whether it leaves a usable password. Never a password:
+  sets (`AdminChange.values`, as JSON, and whether a user created is
+  active), what it adds and takes away (sorted), and whether it leaves a
+  usable password. Never a password:
   the digest is stored, and a hash of a password is attackable offline
   (ADR 0154). The subject is `auth.user:<id>` or `auth.group:<id>`
   (`new` for one being created).
 - **What staff are shown** names the user (`get_username()`, their first
   identifier) or group, and the change: "Change a user's groups", "User:
-  alice@example.com", "Adds: auditors". Six values at most; with more,
-  the last line counts those not shown. Titles and labels are in the
-  request's language.
-- **A twin per changing route**: `POST <its path>/authorization`, and
-  `POST <its path>/delete/authorization` for a `DELETE` (whose path is
-  the `PATCH`'s). It takes the route's body, runs the route's own checks
-  (the staff member's bounds, the fields, a password's validators,
-  impersonation's rules), and answers `201`. It runs no
-  `on_admin_change` check: those may write (approvals submits). Off, it
-  answers `404`.
+  alice@example.com", "Adds: auditors". The flags that grant or take
+  access (`is_superuser`, `is_staff`, `is_active`) come first and always
+  show; a list too long for a line shows its first items and how many
+  more ("auditors, clerks and 4 more"), so no group or permission added
+  goes unsaid. Of the other fields, six lines in all at most, the last
+  counting those not shown. Titles and labels are in the request's
+  language.
+- **A twin per changing route**: `POST <its path>/authorization`; where a
+  `PATCH` and a `DELETE` share a path (`/users/{id}`, `/groups/{id}`),
+  `<path>/authorization/patch` and `<path>/authorization/delete`, as a
+  resource router names its twins of one path (user report A17). Each
+  twin's endpoint carries the twins' marker, `domainkit_twin`. A twin
+  takes the route's body, runs the route's own checks (the staff
+  member's bounds, the fields, a password's validators, impersonation's
+  rules, the last active superuser, and the new `on_create_staff` checks,
+  which approvals uses to refuse creating staff while making staff is
+  held), and answers `201`. It runs no `on_admin_change` check: those
+  may write (approvals submits). What only the change finds (a name
+  taken, a password the user had before) is refused after the
+  confirmation. Off, it answers `404`.
+- **Nothing loaded while off.** The admin API imports the action's
+  module (`admin_actions`) on first use, with the setting on: a project
+  that keeps it off loads no module more per request.
 - **Checked, then spent.** `_admin_change` checks the request's
   authorization against the change before the `on_admin_change` checks
   (another change is refused, and voided, before it is held for approval
   or spends one), and spends it after them, in the route's transaction:
   spent if and only if the change commits. A change held for approval
-  (`approval_pending`) spends nothing, and the same call, once approved,
-  spends it.
+  (`approval_pending`) spends nothing: once the request is approved, the
+  same call makes it with an authorization, the first one while it lives
+  (`AUTH.AUTHORIZATIONS.TTL`) or a new one.
 
 ### Approvals: `approvals.submit`, `approvals.reject`, `approvals.cancel`
 
@@ -163,6 +178,11 @@ and lets that code, the admin API's included, pass it.
   and no such declaration. `auth.admin_change` is declared so: a project
   that adds `StepUp(for_="auth.admin_change")` to a copy of the admin
   router passes `check`.
+- `check` takes the declaration at its word: code that declares and
+  never spends passes it. The request does not: an authorization a rule
+  accepted and nothing spent is voided when the response starts, and
+  logged; under `DEBUG` and in tests the request fails (`500
+  authorization_unspent`), as for a forgotten decorator.
 
 ## Consequences
 
@@ -175,10 +195,11 @@ and lets that code, the admin API's included, pass it.
   code, one read of the row, and one write. A bulk edit of many users is
   many confirmations; that is the point of the setting, and it is off by
   default.
-- **The screen shows what fits.** Many groups added are joined and cut to
-  64 characters; many fields changed are counted past five. The page
-  shows the whole change; the phone shows the user, the kind, and the
-  first values.
+- **The screen shows what fits, and says what it leaves out.** Many
+  groups added show as the first few and a count; many fields changed are
+  counted past what fits. The flags never are. The page shows the whole
+  change; the phone shows the user, the kind, the flags, and the first
+  values.
 - **A user's name on the phone** is personal data on the staff member's
   own device, as an approval's arguments are (ADR 0144); neither reaches
   the trail.
@@ -186,14 +207,14 @@ and lets that code, the admin API's included, pass it.
   `REJECT_ACTION` on. ADR 0154 kept a step-up off it, as stopping a
   request should not wait: the setting is separate for that reason.
 - **The twins of a `PATCH` and a `DELETE` of one path** cannot share
-  `<path>/authorization`; the admin API's `DELETE`s take
-  `<path>/delete/authorization`. A resource router's twins are another
-  matter (user report A17).
+  `<path>/authorization`: each names its method, as a resource router's
+  do (user report A17). A twin is a route of its own to `select_routes`:
+  a project leaves it in or out with its route.
 - **New names**: `AUTH.ADMIN_ACTION`; `APPROVALS.SUBMIT_ACTION`,
   `REJECT_ACTION`, `CANCEL_ACTION`; `spent_in_code` in `auth.actions`;
   `SubmitAction`, `RejectAction`, `CancelAction` in `approvals.rules`;
-  twelve twins on the admin API and three on the requests. No table
-  changes.
+  `on_create_staff` and `StaffCheck` in `auth.gates`; twelve twins on the
+  admin API and three on the requests. No table changes.
 
 ## References
 

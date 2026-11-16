@@ -289,7 +289,12 @@ Around it:
 `check` refuses a route that asks for a purpose no registered action has
 (`auth.E109`), or whose action nothing spends (`auth.E110`): no service
 decorated `requires_authorization`, and no code that said so with
-`spent_in_code(action)`.
+`spent_in_code(action)`. `check` takes the declaration at its word: code
+that declares an action and never spends it passes. The request still
+does not: an authorization a rule accepted and nothing spent is voided
+when the response starts, and logged (`auth.authorization_unspent`);
+under `DEBUG` and in tests, the request fails with `500
+authorization_unspent`, so the project's tests show it.
 
 ```python
 from domainkit.contrib.auth.actions import spend_authorization, spent_in_code
@@ -379,7 +384,7 @@ phone confirms each act as it confirms any other.
 
 | Setting | Action | The act, and what is shown | Twins |
 | --- | --- | --- | --- |
-| `AUTH["ADMIN_ACTION"]` | `auth.admin_change` | A change of the admin API: its kind, the user or group, and what it sets, adds, and takes away | `<the route's path>/authorization` on each changing route; `<path>/delete/authorization` for a `DELETE` ([the admin API](routes.md#each-change-authorized-as-one-act)) |
+| `AUTH["ADMIN_ACTION"]` | `auth.admin_change` | A change of the admin API: its kind, the user or group, and what it sets, adds, and takes away | `<the route's path>/authorization` on each changing route; `.../authorization/patch` and `.../authorization/delete` where a `PATCH` and a `DELETE` share a path ([the admin API](routes.md#each-change-authorized-as-one-act)) |
 | `APPROVALS["SUBMIT_ACTION"]` | `approvals.submit` | Submitting a command: the action, and the arguments as stored | `POST /requests/authorization` |
 | `APPROVALS["APPROVE_ACTION"]` | `approvals.approve` | Approving a request: the action, and the arguments | `POST /requests/{id}/approve/authorization` |
 | `APPROVALS["REJECT_ACTION"]` | `approvals.reject` | Rejecting a request: the action, the reason, and the arguments | `POST /requests/{id}/reject/authorization` |
