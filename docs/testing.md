@@ -1219,7 +1219,49 @@ class; `tests/payments/test_transfers.py` uses it.
 | `Authenticator.code()` | A code that never repeats a 30-second step: the service refuses a step it has seen, so a second code in one step moves a frozen clock to the next step's start. It refuses without a frozen clock. |
 | `step_up(client, app, *, prefix="/auth")` | Steps the user up with a code. |
 | `confirm_sca(client, challenge, app, *, prefix="/auth")` | Confirms an SCA challenge with a code; returns the authorization. |
+| `authorize_act(client, url, app=None, *, json=None, password=None, prefix="/auth")` | *New in 2.5.* Asks for an authorization of the act at `url` (`POST <url>/authorization`, with the act's body), confirms it, and returns `<id>.<code>` for its `Action-Authorization` header. |
+| `confirm_authorization(client, authorization_id, app=None, *, password=None, prefix="/auth")` | *New in 2.5.* Confirms an action authorization asked elsewhere; returns `<id>.<code>`. |
 | `approve_request(client, url)` | Reads the approval request's fingerprint, then approves that version; returns the answer. |
+
+An act that asks for its own authorization
+([Authorizing one act](auth/actions.md#testing)) is authorized with
+`authorize_act`. With `app`, a code confirms it (and `password` where
+the act asks it), through the routes. Without, auth confirms it in the
+test as proving the `methods` the act asks, which a code may not: the
+phone, for an act that asks it. It is refused unless `ENVIRONMENT =
+"test"`, and runs in the client's event loop, so enter the client first.
+
+Asking is the application's own step, so the user still needs a way to
+confirm what the act asks, or the twin answers `409 no_second_factor`:
+an authenticator app (`enrol_totp`) for a code, or, for an act that asks
+the phone, a bound device ([devices](auth/devices.md)).
+
+```python
+from uuid import UUID
+
+from domainkit.contrib.auth.testing import create_user
+from domainkit.testing import FreezeTime, TestClient, authorize_act, enrol_totp
+
+PASSWORD = "correct-horse-battery-42"
+
+
+def test_relabelling_is_authorized_once(
+    client: TestClient, freeze_time: FreezeTime, product_id: UUID
+) -> None:
+    """Asked at the twin, confirmed in the test, spent by the act once."""
+    freeze_time("2027-01-04T10:00:00Z")  # Codes need a clock that moves on.
+    alice = client.run(
+        create_user, "shop.view_product", "shop.change_product", password=PASSWORD
+    )
+    as_alice = client.authenticated_as(alice)
+    enrol_totp(as_alice, PASSWORD)  # A way to confirm: asking needs one.
+    act = f"/products/{product_id}/relabel"
+    authorization = authorize_act(as_alice, act, json={"name": "Desk lamp"})
+    sent = {"Action-Authorization": authorization}
+    relabelled = as_alice.post(act, json={"name": "Desk lamp"}, headers=sent)
+    again = as_alice.post(act, json={"name": "Desk lamp"}, headers=sent)
+    assert (relabelled.status_code, again.status_code) == (200, 403)
+```
 
 A refused step raises `UnexpectedResponse`, an `AssertionError` that
 names the step, the status, and the body. In a project without the MFA
@@ -1416,7 +1458,7 @@ use-case tests, and let `create` use the SQL unit of work in API tests.
 | `AssertionError: Expected at most N queries, M ran:` | The block ran more statements. | Read the listed statements; add a join or a cache. |
 | `ImproperlyConfigured: Invalid settings override` | The `settings` fixture got a value the settings refuse. | Fix the value. |
 | `TypeError: 'mappingproxy' object does not support item assignment` | You changed a setting in place. | Assign the whole setting. |
-| `UnexpectedResponse` | A step of `enrol_totp`, `step_up`, `confirm_sca`, or `approve_request` was refused. | Read the status and the body it names. |
+| `UnexpectedResponse` | A step of `enrol_totp`, `step_up`, `confirm_sca`, `authorize_act`, `confirm_authorization`, or `approve_request` was refused. | Read the status and the body it names. |
 | `ImproperlyConfigured` from `browser_session_as` | `CookieAuthentication` is not in `AUTH.AUTHENTICATION_CLASSES`. | Add it, in a fixture before `client`. |
 | "The test held its event loop" | Blocking code in an async test, with `--detect-blocking`. | Await an async call, or move the work to a thread. |
 
@@ -1458,7 +1500,7 @@ Rows marked 0.12 and 1.0 were added for the 0.9.0 audit's TEST-08.
 | DRF's `APIClient.credentials` | `client.another(headers)` |
 | Litestar's `create_test_client`, `AsyncTestClient` | `TestClient(app)`, `AsyncTestClient(app)` for any ASGI application |
 | freezegun, time-machine | `freeze_time`, which the application, tokens, and the outbox follow |
-| pyotp in tests; moto for KMS | `totp_code`, `enrol_totp`, `step_up`, `confirm_sca`, `approve_request`; `domainkit.testing.kms` (1.0) |
+| pyotp in tests; moto for KMS | `totp_code`, `enrol_totp`, `step_up`, `confirm_sca`, `authorize_act`, `approve_request`; `domainkit.testing.kms` (1.0) |
 | factory_boy's `Factory`, `Sequence`, `LazyFunction`, `LazyAttribute`, `SubFactory`, `build_batch`, `create_batch` | the same names |
 | factory_boy's `Trait`, `post_generation`, `RelatedFactory`, `SelfAttribute`, `Maybe`, `stub()` | the same names, run through the unit of work before its commit (1.0) |
 

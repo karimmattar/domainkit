@@ -14,9 +14,9 @@ and a status.
 - A domain layer may import `domainkit.i18n.lazy`, and no other module of
   `domainkit.i18n`: `gettext_noop` marks a refusal the boundary
   translates, and `gettext_lazy`, `ngettext_lazy` and `pgettext_lazy`
-  make labels translated when they are shown. Importing it loads no
-  settings and no catalog: `domainkit.i18n` now imports its names on
-  first use. A project that allowed all of `domainkit.i18n` in
+  make labels translated when they are shown; a refusal with values is
+  `gettext_lazy(...).format(...)`. Importing it loads no settings and no
+  catalog. A project that allowed all of `domainkit.i18n` in
   `ARCHITECTURE["DOMAIN_ALLOWED"]` may drop it
   ([i18n.md](docs/i18n.md#messages-of-the-domain-layer), ADR 0166, user
   report I2).
@@ -25,10 +25,12 @@ and a status.
   holds the settings module, and the one that holds `ROOT_ROUTER`'s
   module, without the installed domains. What they mark is added to the
   catalogs of the first `LOCALE_PATHS` directory, which keep every entry
-  they hold, the project's rewordings of others' messages too. Without
-  `LOCALE_PATHS`, a run names those messages on stderr, and `--check`
-  fails ([i18n.md](docs/i18n.md#the-projects-own-messages), ADR 0166,
-  user report I6).
+  they hold, the project's rewordings of others' messages too, and an
+  obsolete (`#~`) entry of a message marked again comes back. Without
+  `LOCALE_PATHS`, a run names on stderr those messages that no catalog
+  translates already, and `--check` fails on them
+  ([i18n.md](docs/i18n.md#the-projects-own-messages), ADR 0166, user
+  report I6).
 
 - Devices' mails, `devices/enrollment_code` and `devices/device_bound`,
   ship in Arabic. A test holds every mail template domainkit ships to
@@ -41,6 +43,305 @@ and a status.
   body still wins over a later directory's translation
   ([mail.md](docs/mail.md#templates-in-other-languages), ADR 0166, user
   report I8).
+
+- `requires_authorization(ACTION)` takes a `@use_case`: it returns a
+  copy whose `run`, and so its call, spends the act's authorization,
+  and leaves the use case as it was, so a route that runs it without an
+  act (the phone's) asks nothing. Give the copy to the route that asks
+  (`ResourceRouter.use_case(..., rule=StepUp(for_=...))`), which gets
+  its twin as a command route does. `Action(command=...)` takes the use
+  case, for its command. A use case of another command than the
+  action's is refused when guarded. A `ResourceRouter` route that asks
+  `StepUp(for_=...)` and runs the use case itself, or another act's
+  service, is refused when declared: it would run the act with
+  arguments nobody confirmed, and `check` could not see it. It returned
+  a plain function, which
+  no route of a use case could take
+  ([A use case as the act](docs/auth/actions.md#a-use-case-as-the-act),
+  ADR 0161) (user report A13).
+
+- An action's `show` may take the unit of work the act runs in,
+  `show(command, uow)`, and read through its port: it is given it open,
+  and left without a commit. A `ResourceRouter`'s twin lends its
+  route's, and `request_action_authorization(..., unit_of_work=<its
+  class>)` makes one. A `show` that commits is refused.
+  So an action can live beside its use case in `controllers.py`, which
+  may not import the unit of work on the database. A rule whose
+  `ask_authorization` also takes `uow` is given the route's unit of
+  work; a rule written for 2.4 is called as before (ADR 0161) (user
+  report A13).
+
+- The twin's `201` (`ActionAuthorizationOut`) carries `methods`, what
+  confirming the authorization must prove, as `GET
+  /auth/authorizations/{id}` answers it, so a page knows at once which
+  ways to offer. Approvals' approve twin and the act the phone lists
+  carry it too (user report A17).
+
+- `domainkit.testing.authorize_act(client, url, app=None, *, json=None,
+  password=None, prefix="/auth")` asks an act's twin for an
+  authorization and confirms it; `confirm_authorization(client,
+  authorization_id, app=None, ...)` confirms one asked elsewhere. Each
+  returns `<id>.<code>`. With an `Authenticator`, a code confirms it
+  through the routes, as `confirm_sca` does; without, auth confirms it
+  in the test as proving what the act asks, the phone included, refused
+  unless `ENVIRONMENT = "test"`. Asking still needs the user to have a
+  way to confirm the act: an authenticator app, or a bound device
+  ([Testing](docs/auth/actions.md#testing)) (user report A17).
+
+- `…/authorizations/cancel` and `…/transactions/cancel` (under
+  `/auth/app-sign-in`) withdraw what a signed-in session asked the
+  phone, from that session alone, and `POST /auth/app-sign-in/cancel
+  {"request"}` a page's QR sign-in no phone scanned yet. An unanswered
+  request ends now: the phone no longer lists it nor can answer it, a
+  session's ask no longer counts against `CIBA.MAX_PENDING`, nobody
+  redeems it, and nothing is reported, so the user's pushes go on. A
+  request the phone answered or scanned stays as it is; the phone
+  approves an act and auth confirms it in one transaction
+  (`confirm_action_with(..., uow=...)`). A page's push sign-in is never
+  withdrawn: anyone who knows an identifier starts one, so it stays
+  counted and reportable until it expires. A user's unanswered asks of
+  the last `REQUEST_TTL`, withdrawn ones too, are at most twice
+  `MAX_PENDING`, and the phone reports a withdrawn one from its push
+  until then. `cancel(handle, ...)` (`domainkit.contrib.ciba`) does it
+  without HTTP. A page could only let the request expire, or have the
+  user deny it as "Not me", which stopped their pushes for
+  `REPORT_COOLDOWN`. ADR 0164 (user report A16).
+
+- A login a page redeems at `/auth/app-sign-in/token` or `/session`
+  names the sign-in request in its origin, for login gates
+  (`login_origin`) and `on_session_limits`:
+  `LoginOrigin.sign_in_request_id`, and `binding_message`, what the
+  page's `on_start` hook named it ("Sign in to the dashboard"). A route
+  of your own notes them with `note_login_sign_in(request, request_id,
+  binding_message)` (`auth.integration`). The login does not keep them.
+  A gate read the redeem's `Origin` instead. ADR 0164 (user report A11).
+
+- `AUTH.ADMIN_ACTION` (off by default): each change of the admin API asks
+  for an authorization of its own, the action `auth.admin_change`, in
+  place of a step-up window, so the phone confirms making staff, giving
+  groups and permissions, setting a password, impersonating, deleting a
+  user, and each change to a group, one at a time. The act binds the
+  user or group and the change: its kind, what it sets (whether a user
+  created is active included), adds, and takes away, and whether it
+  leaves a usable password, never the password. The screen says which
+  user or group, by name, and what changes: the flags `is_superuser`,
+  `is_staff` and `is_active` first and always, and a list too long for a
+  line with its count ("auditors, clerks and 4 more"). Each changing
+  route has a twin, `POST <its path>/authorization` (where a `PATCH` and
+  a `DELETE` share a path, `<path>/authorization/patch` and `.../delete`;
+  `404` while the setting is off), that runs the route's own checks, the
+  last active superuser's included, and stores the authorization. The
+  route checks it binds the change before the `on_admin_change` checks,
+  so a change held for approval (`APPROVALS.ADMIN_APPROVALS`) is refused
+  before it waits if it does not, and spends it with the change's commit.
+  While the setting is off, the admin API loads nothing of it
+  ([Each change, authorized as one act](docs/auth/routes.md#each-change-authorized-as-one-act),
+  ADR 0163) (user report A6).
+
+- `on_create_staff` (`auth.gates`) registers a check of creating a user
+  who is staff in the admin API, run with the creation's own checks and
+  in its twin. Approvals refuses there, while `ADMIN_APPROVALS` holds
+  making staff, what it refused in its `on_admin_change` check, so asking
+  for an authorization of such a creation is refused too (ADR 0163)
+  (user report A6).
+
+- `APPROVALS.SUBMIT_ACTION`, `REJECT_ACTION`, and `CANCEL_ACTION` (each
+  off by default), as `APPROVE_ACTION`: submitting at `POST /requests`,
+  rejecting, and cancelling each ask for an authorization of their own,
+  `approvals.submit`, `approvals.reject`, and `approvals.cancel`. A
+  submission is bound to the action and its arguments, a rejection or a
+  cancellation to the request and the reason; the screen shows the
+  action, the reason, and the arguments. The twins are
+  `POST /requests/authorization`, and `.../reject/authorization` and
+  `.../cancel/authorization` under a request, `404` while off; asking is
+  refused as the act would be. `SubmitAction`, `RejectAction`, and
+  `CancelAction` are the routes' rules. With these and `ADMIN_ACTION`, a
+  project needs the phone's free-text step-up, which 3.0 removes, for
+  none of the framework's back-office acts
+  ([Submitting, rejecting, and cancelling with an authorization](docs/contrib/approvals.md#submitting-rejecting-and-cancelling-with-an-authorization),
+  ADR 0163) (user report A6).
+
+- `SERVE["HTTP"]` (`"auto"`, `"1"`, `"2"`): the HTTP versions Granian
+  speaks under `manage.py serve`. `"1"` keeps it to HTTP/1.1, as under
+  uvicorn; `"auto"`, the default as in 2.4, also takes HTTP/2 without TLS
+  (h2c) from a client that opens with it; `"2"`, h2c only, is refused
+  under uvicorn and with `WEBSOCKETS` on
+  ([HTTP versions](docs/reference/servers.md#http-versions), ADR 0169)
+  (user report S1).
+
+- `SERVE["EXIT_ON_FAILED_START"]`, off unless set: under Granian, a
+  worker whose application cannot be imported, or whose startup fails,
+  stops the server, and `serve` exits 3, as uvicorn and gunicorn do. A
+  startup that took longer than Granian's 5.5 seconds to fail was
+  started again for ever, the container up and serving nothing. A
+  worker that dies once it served is still started again
+  ([A worker that fails as it starts](docs/reference/servers.md#a-worker-that-fails-as-it-starts),
+  ADR 0169) (user report S1).
+
+- `S3Storage.probe_write_once()` writes a probe object twice with
+  `If-None-Match: *` and raises `StorageError` unless the store refuses
+  the second write; `S3Storage(check_write_once=True)` runs it before
+  the first presigned upload, once, and refuses presigned uploads where
+  the store would let their URL replace the file (`WriteOnceIgnored`,
+  `503 direct_upload_unavailable`). Garage and Scality
+  CloudServer ignore the header on `PutObject`, without an error. The
+  docs name the stores that honour it, and no longer name MinIO first,
+  which is no longer maintained
+  ([A store that ignores create only](docs/uploads.md#a-store-that-ignores-create-only),
+  ADR 0169) (user report U4).
+
+- `ClamAVScanner` speaks TLS to a proxy in front of clamd (stunnel),
+  which speaks none: `tls`, `tls_ca`, and a client certificate
+  (`tls_cert`, `tls_key`, `tls_key_password`) for the proxy to require.
+  Where deployed,
+  `check` warns (`security.W007`) when `UPLOAD_SCANNER` reaches clamd on
+  another host without TLS
+  ([clamd on another host](docs/uploads.md#clamd-on-another-host),
+  ADR 0169) (user report U5).
+
+- `domainkit.storage.cleanup`: a use case defers
+  `remove_unreferenced(names)` to remove the stored files a change
+  dropped, once it commits; the worker deletes each name that no row of
+  the columns declared with `keeps_files` holds, read on the primary,
+  and refuses where none is declared. Messaging registers it as the task
+  `domainkit.storage.remove_unreferenced`
+  ([Removing files a change dropped](docs/uploads.md#removing-files-a-change-dropped),
+  ADR 0169) (user report U5).
+
+- `domainkit.documents` renders, fills, and lays out documents. A
+  `Renderer` port turns HTML (Chromium) and Office documents
+  (LibreOffice) into PDFs; `GotenbergRenderer` is it on Gotenberg 8.40
+  or 9, through `domainkit.http.client`, with basic auth and TLS, the
+  request's id as `Gotenberg-Trace`, and retries; `renderer()` makes the
+  one `DOCUMENTS = {"RENDERER": {"URL": ...}}` names. A refusal is
+  `RenderingRefused`, a renderer that cannot render is 503
+  `renderer_unavailable`. `fill_docx(document, values)` fills `{{ name }}`
+  placeholders in a Word document wherever Word split them into runs,
+  in the body, tables, text boxes, headers, footers, and notes, each
+  value in the formatting of the run its placeholder starts in; it
+  refuses a placeholder without a value, a value without a placeholder,
+  and a malformed placeholder, all at once. It reads the archive within
+  `ArchiveLimits`, each file inflated no further than its stated size,
+  stored or deflated, under a plain relative name (a zip bomb is refused
+  uninflated), and the XML as UTF-8, refusing a DTD or an entity before
+  parsing, so nothing outside the part is opened.
+  `overlay_pdf(document, overlay)` lays rendered pages over a PDF's,
+  rotated and cropped pages too, and `page_sizes` gives each page's size
+  as shown. `clean_html` keeps rich text to an allowlist that loads and
+  runs nothing, and keeps out the styles that most often lay text over
+  text. Arabic is rendered by Chromium or LibreOffice, never drawn. They need the new `documents` extra
+  (pypdf, lxml, nh3) and say so when it is missing. Guide:
+  `docs/documents.md`; ADR 0168 (user report U2).
+
+- Staging and production refuse a `DOCUMENTS["RENDERER"]` reached by
+  plain `http://` on another host (`documents.E001`; `localhost` and
+  `ALLOW_HTTP = True` may), and warn of one without a login
+  (`documents.W001`). `check` says that Gotenberg's flags cannot be
+  checked from the service (`documents.I001`), and names those to set,
+  for Chromium and LibreOffice: `docs/documents.md`, "Hardening
+  Gotenberg". ADR 0168 (user report U2).
+
+- `ResourceRouter(tenant=PathTenant("company_id"))` serves each route
+  whose path holds the parameter as that tenant, before the route's
+  rules: a companies resource serves `/companies/{company_id}` and its
+  commands as the company, and lists `/companies` as no tenant. A nested
+  resource takes its parent's tenant, and may not name another. The
+  parameter may be the resource's id, its parent's, or one of its
+  prefix; one no route holds is refused, and so is a batch whose items
+  name tenants. Where the resource's own id is the tenant, a project
+  names the action of every command, use case, and batch on the
+  collection (`action="add"` to create one; `TypeError` without), and
+  keeps the resource at a prefix that names no parameter. Every other
+  route of the resource (its collection's) is served as no tenant
+  (`serve_no_tenant`, and `no_tenant()` for code), whatever
+  `TenantMiddleware` named. A router included into it goes under the
+  tenant's parameter (`prefix="/{company_id}/..."`); one included
+  elsewhere, and Starlette routes, mounts, and hosts, on the resource or
+  inside a router it includes, are refused. Its `PathTenant` is strict
+  (`PathTenant(..., strict=True)`): `check` refuses a route under its
+  path that does not take its tenant from it (`tenancy.E003`), such as
+  one added to an included router after the include. `PathTenant(..., id_type=UUID)` (or `int`) reads the id as
+  that type, so a UUID in capitals is the same tenant; a resource's
+  tenant reads its id's type. On the router, `PathTenant` refused the
+  list (`tenancy.E001`), and command routes take no `dependencies=`.
+  ADR 0170 (user report D3).
+
+- `HasMemberPermissions(*perms)` (`domainkit.tenancy`) and
+  `MemberActions(model, *rules, outside=None)` (`domainkit.resources`)
+  count the keys a caller holds as a member of the tenant served
+  (`MEMBER_PERMISSIONS`), and nothing else: staff who are members act in
+  a tenant with their role, not their staff permissions, which
+  `HasPermissions` and `ModelActions` add. `outside` rules the routes
+  that serve no tenant, such as a companies resource's list: a rule
+  decides their `view` and `add` routes only, `Actions` each action;
+  without it they are refused. With `outside`, a member's keys count
+  only where the path named the tenant (`path_tenant()`), whatever
+  tenant `TenantMiddleware` serves; under a rule as `outside`, the
+  resource needs a `scope` (the tenants the caller belongs to), as no
+  member rule narrows its list. `InTenant` allows requests served as a
+  tenant.
+  ADR 0170 (user report D3).
+
+- `Throttle(..., per_tenant=False)` counts a caller once across tenants:
+  a member of ten tenants gets the rate once, not ten times. The default
+  stays one count per tenant. ADR 0170 (user report D3).
+
+- The admin API's `GET /users` takes `id`, repeated, up to 200: a page of
+  rows that refer to users names them in one request. ADR 0170 (user
+  report D2).
+
+- `ResourceRouter(present_many=...)`, an async function of an answer's
+  aggregates and the request, shows them in one call, in `present`'s
+  place: a page, an export's chunk, a query's items, or one aggregate.
+  It can load what another domain holds for the whole page at once; an
+  answer not in the aggregates' order fails the request.
+  ADR 0170 (user report D2).
+
+- `FilterSet.search_through = {"user_id": users_named}` searches what a
+  field refers to: `users_named(word, limit)` returns the ids of at most
+  `max_reference_matches` (100) rows each word names, once per word in
+  any case and only for a query the set accepts, and a row matches when
+  its field is one of them. A resource's members can be found by
+  their user's name, wherever users are kept. ADR 0170 (user report D2).
+
+- `command_route(dependencies=[...])`, and so `use_case(...,
+  dependencies=...)`: FastAPI dependencies of a command route's own, run
+  after its rules, such as `Depends(Throttle("50/day"))`. A request the
+  rules refuse is not counted; one refused after them (`404`, `412`,
+  `422`, or a rule on the aggregate) is. The route's twin (`POST
+  <path>/authorization`) runs none of them, so a limit counts acts, not
+  the asks before them. `asking_authorization(request)`, in
+  `domainkit.resources`, tells a twin's request apart for code that runs
+  on both: `provide`, rules, and the resource's dependencies. A limit had
+  to go in `provide`, which the twin runs, and counted each act twice.
+  ADR 0162 (user report A14).
+
+- Routes of one path that ask for an authorization by several methods,
+  such as a `PATCH` and a `DELETE` of one item, each get a twin, whose
+  path names its route's method: `POST <path>/authorization/patch` and
+  `POST <path>/authorization/delete`. A route alone on its path keeps
+  `<path>/authorization`. The router refused the second route. ADR 0162
+  (user report A17).
+
+- `createsuperuser --verify` proves the new superuser's email address
+  and mobile number: it mails, or texts, a code to each at once, not
+  through the outbox, and asks for it at the prompt. `createsuperuser
+  --promote IDENTIFIER` makes an existing user a superuser and staff,
+  such as one that signed up in the application. It takes the user's
+  username, its id, or an address or a number the user proved: a value
+  nobody proved names no one, with or without `--verify`, so that a
+  value Mallory put on her account unproved never names hers; only a
+  superuser already is named by an unproved value, with `--verify`, to
+  prove it. An address names the user that proved it as its address,
+  never one whose username is written as it. The command shows the user
+  and asks before it changes anything (`--noinput`: only a user named by
+  its username, id, or a proved value). The change is audited with the
+  operator as its actor, who must be named in staging and production.
+  The command now says on stderr when it leaves a superuser that proved
+  neither an address nor a number, and how to prove one: since 2.4 no
+  code reaches it, so under `CIBA.APPROVE_LOGINS = "always"` it could
+  never enroll a phone, nor log in. Nothing changes for a command that
+  gives neither option. ADR 0165 (user report A12).
 
 - Uploads can be checked whole before they are stored. A `FileType` takes
   an `inspect` hook, which `save_upload` runs on the upload, held in a
@@ -104,13 +405,75 @@ and a status.
 
 ### Changed
 
+- `import domainkit.i18n` imports none of its modules. Its names, and its
+  modules (`domainkit.i18n.translation`, `formats`, ...), are imported
+  when first read as its attributes, and are the same objects; `dir()`
+  lists them all. A domain layer that imports `domainkit.i18n.lazy` so
+  loads no settings (ADR 0166, user report I2).
+
+- Each kind of request is pushed with its own words: "Approve sign-in?",
+  "Approve an action?", "Approve a transaction?", and "Confirm it's
+  you?" for a step-up, each with a body to match, in English and Arabic.
+  `CIBA["PUSH_TEXTS"] = {kind: {"TITLE": ..., "BODY": ...}}` sets a
+  kind's. `PUSH_TITLE` and `PUSH_BODY` now default to `None`; set, they
+  still stand for every kind `PUSH_TEXTS` names none for. Every kind was
+  pushed as "Approve sign-in?". ADR 0164 (user report I8).
+
+- What a signed-in session asks the phone (an act, a transaction, the
+  deprecated step-up) is counted against `CIBA.START_RATE` per user,
+  from any address, and refused with "Too many requests were sent to
+  your phone; try again later." (in Arabic too). It was counted per
+  address with the pages' sign-ins, so an office's staff shared 10 a
+  minute. `count_start(request, user=user)` counts a route of your own
+  the same way; a page's sign-ins stay counted per address. ADR 0164
+  (user report A15).
+
+- An `on_approve` hook's refusal, `PermissionDenied` or an HTTP error of
+  403, denies the request, unreported, before the phone is answered: the
+  page's poll and wait answer `access_denied` at once. The request waited
+  until it expired. A hook that denies it itself keeps working, and any
+  other error (a conflict to retry, a throttle, the hook's own failure)
+  still leaves it waiting. ADR 0164 (user report A17).
+
+- A command field declared as a dataclass, such as a value object, or a
+  tuple of one (a `@use_case`'s `tuple[Address, ...]`), gets the
+  instances the body validated, where the body's field is typed as that
+  same class (or a tuple of it), from a command route, a batch, or a
+  twin. They came as dicts, as `model_dump()` gives them. Nothing is
+  built again: pydantic builds them as it did, running their
+  `__post_init__` and checking none of their markers (`MaxLength`, ...).
+  A field the command declares as `dict`, `Any`, `Mapping`, or anything
+  else, a `list[...]`, and every field a body gives in a shape of its own
+  (a nested model) come as before. Schemas are unchanged. A service that
+  rebuilt the instances from dicts stops
+  ([upgrading.md](docs/upgrading.md#24-to-25)) (user report U5).
+
+- A batch item whose service raises `RequestValidationError` answers that
+  item's `422 validation_error`, as a request of its own would, and no
+  longer `500` (user report U5).
+
 - The layer rules let the infrastructure layer import
   `domainkit.http.uploads`, as they let it import `domainkit.http.client`:
   a file gateway checks and stores the bytes its route hands it.
   Starlette and `domainkit.http.errors` stay forbidden there (user report
   D2).
 
+### Deprecated
+
+- A `ResourceRouter` route that asks `StepUp(for_=...)` and runs a
+  service not decorated with `requires_authorization` warns when it is
+  declared (`DomainkitDeprecationWarning`); 3.0 refuses it. Such a
+  service may call a decorated one, as in 2.4, but nothing checked that
+  it spends the act's authorization, so a route could run the act with
+  arguments nobody confirmed. Decorate the route's service itself
+  ([upgrading.md](docs/upgrading.md#24-to-25)) (user report A13).
+
 ### Fixed
+
+- A lazy string (`gettext_lazy`) given as a `DomainError`'s message, an
+  `InvalidField`'s, or `error_response`'s detail is answered as its text
+  in the caller's language. It made a `500`: the body refused anything
+  but text (user report I2).
 
 - `LocaleMiddleware` reads `LANGUAGE_CODE` and `LANGUAGES` per request,
   not when the application is built: a test that overrides them is
@@ -118,6 +481,101 @@ and a status.
 
 - `makemessages` extracts the texts marked with `gettext_noop`, as the
   docs said it did (user report I2).
+
+- `check` refused a route that asks `StepUp(for_=...)` for an act that
+  code spends with `spend_authorization`, as the docs offer for code that
+  is not a service (`auth.E110`: "no service spends it"). Code says so
+  once with `spent_in_code(action)`, and the check passes it; the admin
+  API's `auth.admin_change` is declared so. A purpose nothing spends is
+  still refused; one declared and never spent still fails its requests
+  under `DEBUG` and in tests (`500 authorization_unspent`) (ADR 0163)
+  (user report A6).
+
+- `FcmPushBackend` no longer forgets a working token when FCM refuses a
+  message as too big. FCM answers `INVALID_ARGUMENT` with no field both
+  to that and to a token it never made; `send` now asks a dry run of the
+  token alone, and forgets the token only if FCM refuses it too, else
+  dead-letters the message. An answer of another shape, such as
+  `{"error": {"details": 5}}`, is read without raising `TypeError`
+  ([Text messages and push notifications](docs/mail.md#text-messages-and-push-notifications),
+  ADR 0169) (user report N1).
+
+- Under `manage.py serve`, Granian bounds a request's headers by
+  `SERVE["MAX_HEADER_SIZE"]` over HTTP/2 too
+  (`--http2-max-headers-size`), where its HTTP/2 took 16 MiB of headers
+  from an h2c client ([HTTP versions](docs/reference/servers.md#http-versions))
+  (user report S1).
+
+- A resource whose prefix holds a path parameter of its own, such as
+  `/companies/{company_id}/templates`, answered a create with `500`, and
+  a listing with links too: `Location` and `links` were built from the
+  resource's and its parent's ids only. They take the prefix's parameters
+  from the request, and those of a router the resource is included in
+  (`APIRouter(prefix="/orgs/{org}")`), which failed in 2.4 too, as the
+  read route of that name declares them. Each value is percent-encoded,
+  ids included (user report U5).
+
+- The password rules' refusals and descriptions are in the shipped
+  catalogs, in English and Arabic. `MinimumLengthValidator` and
+  `UserAttributeSimilarityValidator` filled their value in before
+  translating, so no catalog could hold their text; they translate
+  `...at least {min_length} characters.` (with its singular) and `The
+  password is too similar to the {label}.`, then fill the value in, the
+  length written as the language writes numbers and the field's name
+  translated in the `field` context. A project catalog that translated
+  the filled English text (`...at least 12 characters.`) translates the
+  text with its placeholder instead (user report I4).
+
+- A request's `email` not shaped as an address (`/signup`,
+  `/password-reset`, `/email-verification`) is refused as `Enter a
+  valid email address.`, translated, not with the pattern that checks
+  it. Its error's `type` is now `value_error`, as for an address with a
+  name, not `string_pattern_mismatch`. OpenAPI still shows the pattern
+  (user report I8).
+
+- The `auth/signup_exists` mail, and the `409 signup_taken` of
+  `/signup/code`, name what the signup gave (the username, the address,
+  the number) and suggest another username only where the signup chose
+  one, which `AUTH.IDENTIFIERS` allows; elsewhere they say to log in or
+  reset the password. The template takes the sentence as `taken`, in the
+  reader's language; a project's own template of it still works (user
+  report I8).
+
+### Security
+
+- A signup that gives an address and a number proves each by a code of
+  its own. The address's code proved the address alone, yet the signup
+  took the number from an account that held it unproved (ending that
+  account where the number was its only login: anyone with an address of
+  their own could end a superuser made with `createsuperuser
+  --mobile_number`), put it on the new account unproved, and chose the
+  mail it sent the address by whether an account used the number, which
+  told the asker. The signup's code now goes to the address, or to the
+  number where neither the address nor a username given identifies
+  users; the account is made with that value, and the other is held and
+  sent a verification code of its own, which `/auth/mobile-verification/code`
+  (or `/email-verification/code`) takes, as for a changed value. Holding
+  counts against `AUTH.EMAIL_RATE` per value among signups, and the code
+  then goes to that value only. What the signup's code proves is where
+  it went, whatever `AUTH.IDENTIFIERS` says when it comes back. A `mobile_number` that
+  `REQUIRED_FIELDS` names comes on its own, never under `fields`. A
+  signup by a number alone is unchanged. See
+  [upgrading.md](docs/upgrading.md#24-to-25). ADR 0171 (found in review
+  of user report A12).
+
+- Verification codes (`/email-verification`, `/mobile-verification`) are
+  each user's own: a code another user asked for, for the same address
+  or number, no longer replaces one's own. Asking again with no body
+  counts against `AUTH.EMAIL_RATE` per the value the code goes to, a
+  held one too, which re-asking had escaped since 2.4. Codes issued
+  before the upgrade stop working (found in review of user report A12).
+
+- `createsuperuser --promote` reads its value once NFKC folds look-alike
+  characters, reads any form of an id as an id, and refuses digits that
+  are no number in international form (`0612345678`, `0033…`): such
+  values named a username Mallory could choose. A user model with no
+  `mobile_number` refuses a number rather than crash. ADR 0165 (user
+  report A12).
 
 ## [2.4.0] - 2026-11-16
 

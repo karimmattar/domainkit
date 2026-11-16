@@ -1,5 +1,6 @@
 """``S3Storage``: SigV4 as AWS documents it, and a store that keeps files."""
 
+import asyncio
 import re
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
@@ -10,9 +11,10 @@ import pytest
 
 from domainkit.clock import freeze_time
 from domainkit.http.client import stub
+from domainkit.http.errors import upstream_refusal
 from domainkit.storage import FileMissing, StorageError
 from domainkit.storage.remote import ObjectFile, PresignedUpload
-from domainkit.storage.s3 import S3Storage
+from domainkit.storage.s3 import S3Storage, WriteOnceIgnored
 
 pytestmark = pytest.mark.anyio
 
@@ -75,11 +77,12 @@ async def test_a_presigned_url_is_signed_as_aws_documents_it(
 class FakeS3:
     """A bucket in memory that answers S3's requests, signed or not."""
 
-    def __init__(self) -> None:
-        """Start empty."""
+    def __init__(self, *, write_once: bool = True) -> None:
+        """Start empty; ``write_once``: honour ``If-None-Match: *`` on ``PUT``."""
         self.objects: dict[str, bytes] = {}
         self.uploads: dict[str, dict[int, bytes]] = {}
         self.requests: list[tuple[str, str]] = []
+        self.write_once = write_once
 
     def __call__(self, request: httpx2.Request) -> httpx2.Response:
         """Answer one request."""
@@ -110,6 +113,10 @@ class FakeS3:
             self.uploads.pop(query["uploadId"], None)
             return httpx2.Response(204)
         if request.method == "PUT":
+            created = request.headers.get("if-none-match") == "*"
+            if created and self.write_once and key in self.objects:
+                code = b"<Error><Code>PreconditionFailed</Code></Error>"
+                return httpx2.Response(412, content=code)
             self.objects[key] = request.content
             return httpx2.Response(200)
         if key not in self.objects:
@@ -363,3 +370,186 @@ async def test_temporary_credentials_send_their_session_token() -> None:
     assert dict(parse_qsl(urlsplit(url).query))["X-Amz-Security-Token"] == (
         "the-session-token"
     )
+
+
+PROBE = re.compile(r"/media/write-once-probes/[0-9a-f]{32}")
+"""Where the write-once probe writes: under the prefix, a new name each time."""
+
+
+def client_put(fake: FakeS3, name: str, body: bytes) -> httpx2.Response:
+    """What the client sends to a presigned upload's URL, as the fake reads it."""
+    headers = {"If-None-Match": "*", "Authorization": "AWS4-HMAC-SHA256 client"}
+    url = f"http://minio:9000/files/media/{name}"
+    return fake(httpx2.Request("PUT", url, headers=headers, content=body))
+
+
+@pytest.mark.parametrize("write_once", [True, False])
+async def test_presigned_uploads_take_the_stores_word_unless_told_to_check(
+    bucket: tuple[S3Storage, FakeS3], write_once: bool
+) -> None:
+    """Without ``check_write_once``, the store is not asked.
+
+    One that ignores ``If-None-Match`` lets the URL replace its file once
+    it was checked, and nothing says so (user report U4).
+    """
+    storage, fake = bucket
+    fake.write_once = write_once
+
+    upload = await storage.presigned_upload(size=1, content_type="text/plain")
+    client_put(fake, upload.name, b"checked")
+    again = client_put(fake, upload.name, b"replaced")
+
+    assert again.status_code == (412 if write_once else 200)
+    kept = fake.objects[f"/media/{upload.name}"]
+    assert kept == (b"checked" if write_once else b"replaced")
+    assert [method for method, _ in fake.requests] == ["PUT", "PUT"]
+
+
+async def test_the_probe_passes_a_store_that_refuses_a_second_create(
+    bucket: tuple[S3Storage, FakeS3],
+) -> None:
+    """``check_write_once``: one probe per storage, written twice, then deleted."""
+    storage, fake = bucket
+    storage.check_write_once = True
+
+    first = await storage.presigned_upload(size=1, content_type="text/plain")
+    second = await storage.presigned_upload(size=1, content_type="text/plain")
+
+    assert first.name != second.name
+    assert [method for method, _ in fake.requests] == ["PUT", "PUT", "DELETE"]
+    assert len({key for _, key in fake.requests}) == 1
+    assert PROBE.fullmatch(fake.requests[0][1])
+    assert fake.objects == {}
+
+
+async def test_presigned_uploads_are_refused_where_the_store_replaces_files(
+    bucket: tuple[S3Storage, FakeS3],
+) -> None:
+    """A store that took the second write: refused, the probe deleted, the verdict kept.
+
+    Garage and Scality CloudServer read no condition on ``PutObject``: a
+    presigned upload's URL could replace the file once it was checked
+    (user report U4). The refusal is 503 ``direct_upload_unavailable`` over
+    HTTP, and the store is not asked again.
+    """
+    storage, fake = bucket
+    storage.check_write_once = True
+    fake.write_once = False
+
+    for _ in range(2):
+        with pytest.raises(WriteOnceIgnored) as refused:
+            await storage.presigned_upload(size=1, content_type="text/plain")
+    with pytest.raises(WriteOnceIgnored):
+        await storage.probe_write_once()  # Asked again, as a deployment job does.
+
+    assert str(refused.value) == (
+        "Write-once probe: the S3 store at http://minio:9000 replaced an object "
+        "written with If-None-Match: *. It ignores the header, so a presigned "
+        "upload's URL could replace the file it made: use a store that honours "
+        "it, or upload through the application."
+    )
+    answer = upstream_refusal(refused.value)
+    assert (answer.status_code, answer.code) == (503, "direct_upload_unavailable")
+    assert isinstance(refused.value, StorageError)
+    assert [method for method, _ in fake.requests] == ["PUT", "PUT", "DELETE"] * 2
+    assert fake.objects == {}
+
+
+async def test_uploads_asked_at_once_wait_for_one_probe(
+    bucket: tuple[S3Storage, FakeS3], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Three first uploads at once: one probe, whose verdict the others take.
+
+    A probe that could not tell is not kept: the next upload asks again.
+    """
+    storage, _ = bucket
+    storage.check_write_once = True
+    probes = 0
+
+    async def probe() -> bool:
+        nonlocal probes
+        probes += 1
+        for _ in range(3):
+            await asyncio.sleep(0)
+        if probes == 1:
+            raise StorageError("Write-once probe: S3 answered 503 to PUT (Slow).")
+        return True
+
+    monkeypatch.setattr(storage, "_probe", probe)
+
+    with pytest.raises(StorageError, match=r"^Write-once probe: S3 answered 503"):
+        await storage.presigned_upload(size=1, content_type="text/plain")
+    uploads = await asyncio.gather(
+        *(storage.presigned_upload(size=1, content_type="text/plain") for _ in range(3))
+    )
+
+    assert probes == 2
+    assert len({upload.name for upload in uploads}) == 3
+
+
+@pytest.mark.parametrize(
+    ("answers", "outcome"),
+    [
+        ({"second": httpx2.Response(409)}, None),
+        (
+            {"first": httpx2.Response(501, content=b"<Code>NotImplemented</Code>")},
+            r"^Write-once probe: S3 answered 501 to PUT \(NotImplemented\)\.$",
+        ),
+        (
+            {"second": httpx2.Response(500, content=b"<Code>InternalError</Code>")},
+            (
+                r"^Write-once probe: S3 answered 500 to the second write "
+                r"\(InternalError\)\.$"
+            ),
+        ),
+    ],
+)
+async def test_the_probe_reads_what_else_the_store_answers(
+    bucket: tuple[S3Storage, FakeS3],
+    answers: dict[str, httpx2.Response],
+    outcome: str | None,
+) -> None:
+    """A 409 refuses the second write too.
+
+    A refused first write fails, as does an odd answer to the second.
+    """
+    storage, fake = bucket
+    puts: list[str] = []
+
+    def answering(request: httpx2.Request) -> httpx2.Response:
+        if request.method == "PUT":
+            puts.append("first" if not puts else "second")
+            if puts[-1] in answers:
+                return answers[puts[-1]]
+        return fake(request)
+
+    with stub(answering):
+        if outcome is None:
+            await storage.probe_write_once()
+        else:
+            with pytest.raises(StorageError, match=outcome):
+                await storage.probe_write_once()
+
+
+async def test_a_probe_the_store_will_not_delete_stays_and_the_answer_stands(
+    bucket: tuple[S3Storage, FakeS3], caplog: pytest.LogCaptureFixture
+) -> None:
+    """Credentials that may not delete: the probe stays, logged; the store passed."""
+    storage, fake = bucket
+
+    def keeping(request: httpx2.Request) -> httpx2.Response:
+        if request.method == "DELETE":
+            return httpx2.Response(403, content=b"<Code>AccessDenied</Code>")
+        return fake(request)
+
+    with stub(keeping):
+        await storage.probe_write_once()
+
+    (kept,) = fake.objects
+    assert PROBE.fullmatch(kept)
+    assert caplog.messages == [
+        (
+            f"The write-once probe {kept.removeprefix('/media/')} stays in the "
+            "bucket: S3 answered 403 to DELETE (AccessDenied)."
+        )
+    ]

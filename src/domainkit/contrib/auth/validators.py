@@ -15,6 +15,12 @@ A validator is any class with ``validate(password, user)``, which raises
 ``PasswordValidationError``, and ``help_text()``. ``validate`` may be
 ``async``: ``avalidate_password`` awaits it, as the routes and commands
 do, and ``validate_password`` refuses to run it (ADR 0148).
+
+Messages are translated into the active language as they are collected.
+A rule whose message holds a value (the minimum length, the detail a
+password is like) translates its text itself, then fills the value in,
+so the catalogs hold one text for every value; the shipped catalogs hold
+the rules' texts in English and Arabic.
 """
 
 import gzip
@@ -29,7 +35,7 @@ from pathlib import Path
 from typing import ClassVar, Final, Protocol
 
 from domainkit.exceptions import DomainkitError, ImproperlyConfigured, UpstreamError
-from domainkit.i18n import gettext
+from domainkit.i18n import gettext, ngettext, number_format, pgettext
 from domainkit.utils.module_loading import import_string
 from domainkit.utils.rates import parse_rate
 
@@ -66,6 +72,8 @@ BREACHED: Final = "This password has appeared in a data breach: choose another o
 """The refusal of a breached password (NIST SP 800-63B: give the reason)."""
 BREACH_LINE: Final = re.compile(r"[0-9A-Fa-f]{35}:[0-9]{1,10}")
 """A line of the range API's answer: the rest of a SHA-1, then its count."""
+FIELD_CONTEXT: Final = "field"
+"""The ``msgctxt`` of a user's field names in catalogs (``first name``)."""
 
 logger = logging.getLogger(__name__)
 
@@ -109,16 +117,25 @@ class MinimumLengthValidator:
         self.min_length = min_length
 
     def validate(self, password: str, user: object | None = None) -> None:
-        """Refuse shorter passwords."""
+        """Refuse shorter passwords, in the active language."""
         if len(password) < self.min_length:
             raise PasswordValidationError(
-                f"This password is too short. It must contain at least "
-                f"{self.min_length} characters."
+                ngettext(
+                    "This password is too short. It must contain at least "
+                    "{min_length} character.",
+                    "This password is too short. It must contain at least "
+                    "{min_length} characters.",
+                    self.min_length,
+                ).format(min_length=number_format(self.min_length))
             )
 
     def help_text(self) -> str:
-        """Name the minimum."""
-        return f"Your password must contain at least {self.min_length} characters."
+        """Name the minimum, in the active language."""
+        return ngettext(
+            "Your password must contain at least {min_length} character.",
+            "Your password must contain at least {min_length} characters.",
+            self.min_length,
+        ).format(min_length=number_format(self.min_length))
 
 
 class NumericPasswordValidator:
@@ -181,6 +198,9 @@ class UserAttributeSimilarityValidator:
 
     Each attribute is compared whole and in parts (an email's local part
     and domain), with ``difflib``; ``max_similarity`` is between 0.1 and 1.
+    The refusal names the attribute by its name, spaced (``first name``),
+    translated in the ``field`` context of the catalogs (``pgettext``): a
+    project names its own attributes in its catalog that way.
     """
 
     DEFAULT_USER_ATTRIBUTES: Final = ("username", "first_name", "last_name", "email")
@@ -204,9 +224,11 @@ class UserAttributeSimilarityValidator:
         for name in self.user_attributes:
             value = getattr(user, name, None)
             if isinstance(value, str) and value and self._similar(password, value):
-                label = name.replace("_", " ")
+                label = pgettext(FIELD_CONTEXT, name.replace("_", " "))
                 raise PasswordValidationError(
-                    f"The password is too similar to the {label}."
+                    gettext("The password is too similar to the {label}.").format(
+                        label=label
+                    )
                 )
 
     def help_text(self) -> str:

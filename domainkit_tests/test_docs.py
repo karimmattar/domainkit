@@ -21,9 +21,11 @@ from domainkit.conf.global_settings import (
     CacheConfig,
     DatabaseConfig,
     DebugToolbarConfig,
+    DocumentsConfig,
     HttpClientConfig,
     LedgerConfig,
     LiveFanoutConfig,
+    RendererConfig,
     ServeConfig,
     Settings,
     ShardConfig,
@@ -111,6 +113,8 @@ def documented(pages: str) -> set[str]:
         (DebugToolbarConfig, REFERENCE),
         (HttpClientConfig, REFERENCE),
         (ServeConfig, REFERENCE),
+        (DocumentsConfig, REFERENCE),
+        (RendererConfig, REFERENCE),
         (LiveFanoutConfig, "live.md"),
         (ArchitectureConfig, REFERENCE),
         (MessagingSettings, "contrib/messaging.md"),
@@ -537,6 +541,8 @@ SETTINGS_TABLES: tuple[tuple[type[BaseModel], str, str], ...] = (
     (HttpClientConfig, REFERENCE, "HTTP_CLIENT"),
     (UploadChecksConfig, REFERENCE, "UPLOAD_CHECKS"),
     (ServeConfig, REFERENCE, "SERVE"),
+    (DocumentsConfig, REFERENCE, "DOCUMENTS"),
+    (RendererConfig, REFERENCE, 'DOCUMENTS["RENDERER"]'),
     (LiveFanoutConfig, "live.md", "LIVE_FANOUT"),
     (DebugToolbarConfig, REFERENCE, "DEBUG_TOOLBAR"),
     (MessagingSettings, "contrib/messaging.md", "MESSAGING"),
@@ -570,10 +576,11 @@ SETTINGS_TABLES: tuple[tuple[type[BaseModel], str, str], ...] = (
 PROSE_DEFAULTS = {
     "Settings": {"SETTINGS_MODULE", "BASE_DIR", "MIDDLEWARE", "LOGGING"}
     | {"HTTP_CLIENT", "DEBUG_TOOLBAR", "ARCHITECTURE", "LIVE_FANOUT", "SERVE"}
-    | {"UPLOAD_CHECKS"},
+    | {"UPLOAD_CHECKS", "DOCUMENTS"},
     "DatabaseConfig": {"URL", "COMMAND_TIMEOUT", "POOL_SIZE", "MAX_OVERFLOW"}
     | {"POOL_TIMEOUT", "POOL_RECYCLE"},
     "LedgerConfig": {"URL"},
+    "RendererConfig": {"URL"},
     "ShardConfig": {"DATABASES", "RANGES"},
     "CacheConfig": {"KEY_PREFIX", "TLS_CA"},
     "BrokerConfig": {"URL", "PREFIX", "TLS_CA"},

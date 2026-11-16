@@ -34,6 +34,13 @@ credentials, permissions, quotas, and outages may change meanwhile.
 ``check_token`` asks a service about a token without delivering anything,
 where it can: FCM's and Push Kit's dry run (``validate_only``). APNs has
 none: only the token's form is checked.
+
+FCM answers ``INVALID_ARGUMENT``, naming no field, both to a token it
+never made and to a message it cannot take ("Android message is too
+big"); its guidance takes the token for invalid only when the message is
+valid. So ``FcmPushBackend.send`` asks a dry run of the token alone
+before it forgets one: a token the dry run refuses is gone, and the
+message refused for good otherwise (ADR 0169).
 """
 
 import json
@@ -208,7 +215,14 @@ class FcmPushBackend(ProviderPushBackend):
     options: FcmOptions
 
     async def send(self, message: PushMessage) -> None:
-        """POST the message to the project; a refusal raises (``refusal``)."""
+        """POST the message to the project; a refusal raises (``refusal``).
+
+        An ``INVALID_ARGUMENT`` that names no field may be the token or the
+        message: a dry run of the token alone (``check_token``) tells.
+        The token is gone if FCM refuses it alone; else the message is
+        refused for good, and the token kept. A dry run that cannot tell
+        raises ``NotificationFailed``: the worker tries again.
+        """
         payload: dict[str, Any] = {
             "token": message.token,
             "notification": {"title": message.title, "body": message.body},
@@ -218,20 +232,30 @@ class FcmPushBackend(ProviderPushBackend):
         response = await self.post({"message": payload})
         if response.status_code == 200:
             return
-        raise self.failure(message, self.refusal(response))
+        refusal = self.refusal(response)
+        if _either(refusal):
+            await self.check_token(message.token)
+        raise self.failure(message, refusal)
 
     async def check_token(self, token: str) -> None:
         """A dry run (``validate_only``) of a message to ``token``: nothing is sent.
 
         FCM checks the message, its token included, as it would send it,
-        and answers as ``send`` reads.
+        and answers as ``send`` reads; the message is the token alone, so
+        an ``INVALID_ARGUMENT`` naming no other field is the token.
         """
         async with reached(self.title):
             response = await self.post(
                 {"validate_only": True, "message": {"token": token}}
             )
-        if response.status_code != 200:
-            raise self.unchecked(token, self.refusal(response))
+        if response.status_code == 200:
+            return
+        refusal = self.refusal(response)
+        if refusal.code == "INVALID_ARGUMENT" and set(refusal.fields) <= {
+            FCM_TOKEN_FIELD
+        }:
+            refusal = Refusal(refusal.code, gone=True, fields=refusal.fields)
+        raise self.unchecked(token, refusal)
 
     async def post(self, body: dict[str, Any]) -> "httpx2.Response":
         """POST ``body`` to the project's ``messages:send``, as its account."""
@@ -247,35 +271,49 @@ class FcmPushBackend(ProviderPushBackend):
         """FCM's error code and the fields it named, and whether the token is gone.
 
         As FCM's guidance has it: ``UNREGISTERED`` is a token gone, and so is
-        ``INVALID_ARGUMENT`` for the token itself, which FCM answers with
-        its own error (``FcmError``) and no field, or a field violation of
-        ``message.token`` alone. ``INVALID_ARGUMENT`` naming other fields is
-        a message it cannot take, and ``SENDER_ID_MISMATCH`` a token of
-        another sender: both lasting. A ``404`` without ``UNREGISTERED`` is
-        no token gone: a wrong ``PROJECT_ID`` would forget every token.
+        ``INVALID_ARGUMENT`` with a field violation of ``message.token``
+        alone. ``INVALID_ARGUMENT`` naming other fields is a message it
+        cannot take, and ``SENDER_ID_MISMATCH`` a token of another sender:
+        both lasting. ``INVALID_ARGUMENT`` naming no field is lasting here
+        too, though it may be the token: ``send`` asks a dry run before it
+        decides. A ``404`` without ``UNREGISTERED`` is no token gone: a wrong
+        ``PROJECT_ID`` would forget every token. An answer of another shape
+        is read as far as it goes, never raising.
         """
-        error = (json_of(response) or {}).get("error") or {}
-        details = [
-            each for each in error.get("details") or [] if isinstance(each, dict)
-        ]
+        error = _object(_object(json_of(response)).get("error"))
+        details = [each for each in _items(error.get("details")) if _object(each)]
         codes = sorted(
             {str(each["errorCode"]) for each in details if each.get("errorCode")}
         )
         fields = tuple(
             str(violation["field"])
             for each in details
-            for violation in each.get("fieldViolations") or []
-            if isinstance(violation, dict) and violation.get("field")
+            for violation in _items(each.get("fieldViolations"))
+            if _object(violation).get("field")
         )
-        code = (codes or [str(error.get("status") or response.status_code)])[0]
+        status = error.get("status")
+        code = (codes or [str(status or response.status_code)])[0]
         if "UNREGISTERED" in codes:
             return Refusal("UNREGISTERED", gone=True)
-        if code == "INVALID_ARGUMENT" and (
-            fields == (FCM_TOKEN_FIELD,) or (not fields and codes)
-        ):
+        if code == "INVALID_ARGUMENT" and fields == (FCM_TOKEN_FIELD,):
             return Refusal(code, gone=True, fields=fields)
         lasting = code in FCM_LASTING or response.status_code == 400
         return Refusal(code, lasting=lasting, fields=fields)
+
+
+def _either(refusal: Refusal) -> bool:
+    """Whether FCM's ``refusal`` may be the token as well as the message."""
+    return refusal.code == "INVALID_ARGUMENT" and not (refusal.fields or refusal.gone)
+
+
+def _object(value: object) -> dict[str, Any]:
+    """``value`` if a JSON object, else an empty one."""
+    return value if isinstance(value, dict) else {}
+
+
+def _items(value: object) -> list[Any]:
+    """``value`` if a JSON array, else an empty one."""
+    return value if isinstance(value, list) else []
 
 
 def _google_account(credentials_file: str | None) -> TokenSource:

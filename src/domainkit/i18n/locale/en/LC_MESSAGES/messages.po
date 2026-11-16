@@ -1176,6 +1176,9 @@ msgstr ""
 msgid "Too many sign-ins were started; try again later."
 msgstr ""
 
+msgid "Too many requests were sent to your phone; try again later."
+msgstr ""
+
 #. domainkit.contrib.auth and domainkit.contrib.ciba: action authorizations
 msgid "A rule accepted an authorization that no service spent: decorate the act's service with requires_authorization."
 msgstr ""
@@ -1215,6 +1218,90 @@ msgid "Your password can't be one that has appeared in a data breach."
 msgstr ""
 
 msgid "Passwords cannot be checked against data breaches now; try again later."
+msgstr ""
+
+#. domainkit.contrib.auth: the password rules, an address's shape, and taken signups
+msgid ""
+"This password is too short. It must contain at least {min_length} "
+"character."
+msgid_plural ""
+"This password is too short. It must contain at least {min_length} "
+"characters."
+msgstr[0] ""
+msgstr[1] ""
+
+msgid "Your password must contain at least {min_length} character."
+msgid_plural "Your password must contain at least {min_length} characters."
+msgstr[0] ""
+msgstr[1] ""
+
+msgid "The password is too similar to the {label}."
+msgstr ""
+
+msgid "Your password can't be too similar to your other personal information."
+msgstr ""
+
+msgid "This password is too common."
+msgstr ""
+
+msgid "Your password can't be a commonly used password."
+msgstr ""
+
+msgid "This password is entirely numeric."
+msgstr ""
+
+msgid "Your password can't be entirely numeric."
+msgstr ""
+
+msgid "This password must contain both letters and digits."
+msgstr ""
+
+msgid "Your password must contain at least one letter and one digit."
+msgstr ""
+
+#. A user's field, named in a refusal: "The password is too similar to the {label}."
+msgctxt "field"
+msgid "username"
+msgstr ""
+
+msgctxt "field"
+msgid "first name"
+msgstr ""
+
+msgctxt "field"
+msgid "last name"
+msgstr ""
+
+msgctxt "field"
+msgid "email"
+msgstr ""
+
+msgctxt "field"
+msgid "mobile number"
+msgstr ""
+
+msgid "Enter a valid email address."
+msgstr ""
+
+msgid ""
+"An account already uses this address. If it was you, log in, or reset your "
+"password."
+msgstr ""
+
+msgid ""
+"An account already uses this address, or the username chosen. If it was "
+"you, log in, reset your password, or sign up again with another username."
+msgstr ""
+
+msgid "An account already uses this address; log in, or reset your password."
+msgstr ""
+
+msgid "An account already uses this number; log in, or reset your password."
+msgstr ""
+
+msgid ""
+"An account already uses this username or this number; sign up again with "
+"another username, or log in."
 msgstr ""
 
 #. domainkit.contrib.auth and domainkit.contrib.ciba: codes and pushes sent to users
@@ -1266,6 +1353,24 @@ msgstr ""
 msgid "Open the app to approve or deny it."
 msgstr ""
 
+msgid "Confirm it's you?"
+msgstr ""
+
+msgid "Open the app to see what for, and approve or deny it."
+msgstr ""
+
+msgid "Approve a transaction?"
+msgstr ""
+
+msgid "Open the app to see its amount and payee, and approve or deny it."
+msgstr ""
+
+msgid "Approve an action?"
+msgstr ""
+
+msgid "Open the app to see what it is, and approve or deny it."
+msgstr ""
+
 #. domainkit.contrib.auth: new addresses and numbers, held until proved
 msgid "Another user has that email address."
 msgstr ""
@@ -1289,3 +1394,110 @@ msgstr ""
 
 msgid "Requests are made and decided in one's own name only."
 msgstr ""
+
+#. domainkit.documents: the renderer (Gotenberg) cannot render now
+msgid "Documents cannot be rendered now; try again later."
+msgstr ""
+
+#. domainkit.contrib.auth: what a screen shows of a change of the admin API
+msgid "Create a user"
+msgstr ""
+
+msgid "Change a user"
+msgstr ""
+
+msgid "Delete a user"
+msgstr ""
+
+msgid "Set a user's password"
+msgstr ""
+
+msgid "Make a user's password unusable"
+msgstr ""
+
+msgid "End a user's sessions"
+msgstr ""
+
+msgid "Act as a user"
+msgstr ""
+
+msgid "Change a user's groups"
+msgstr ""
+
+msgid "Change a user's permissions"
+msgstr ""
+
+msgid "Create a group"
+msgstr ""
+
+msgid "Rename a group"
+msgstr ""
+
+msgid "Change a group's permissions"
+msgstr ""
+
+msgid "Delete a group"
+msgstr ""
+
+msgid "User"
+msgstr ""
+
+msgid "Group"
+msgstr ""
+
+msgid "Username"
+msgstr ""
+
+msgid "New name"
+msgstr ""
+
+msgid "Reason"
+msgstr ""
+
+msgid "Adds"
+msgstr ""
+
+msgid "Takes away"
+msgstr ""
+
+msgid "Password"
+msgstr ""
+
+msgctxt "password"
+msgid "set"
+msgstr ""
+
+msgctxt "password"
+msgid "none"
+msgstr ""
+
+msgid "{items} and {count} more"
+msgid_plural "{items} and {count} more"
+msgstr[0] ""
+msgstr[1] ""
+
+msgid "{count} more value"
+msgid_plural "{count} more values"
+msgstr[0] ""
+msgstr[1] ""
+
+#. domainkit.contrib.approvals: what a screen shows of a decision
+msgid "Approve a request"
+msgstr ""
+
+msgid "Submit a request"
+msgstr ""
+
+msgid "Reject a request"
+msgstr ""
+
+msgid "Cancel a request"
+msgstr ""
+
+msgid "Action"
+msgstr ""
+
+msgid "{count} more argument"
+msgid_plural "{count} more arguments"
+msgstr[0] ""
+msgstr[1] ""

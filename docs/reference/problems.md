@@ -115,6 +115,7 @@ unique constraint may name its own code
 | `device_not_found` | 404 | `DeviceNotFound` (contrib.devices.exceptions): The user has no device with that id. |
 | `device_signature_refused` | 401 | `DeviceSignatureRefused` (contrib.devices.exceptions): The request is not signed by a device of the user, now, once. |
 | `different_network` | 403 | `DifferentNetwork` (contrib.ciba.exceptions): The phone is not on the address of the page (`QR_SAME_NETWORK`). |
+| `direct_upload_unavailable` | 503 | `WriteOnceIgnored` (storage.s3): The S3 store ignores `If-None-Match: *`: presigned uploads are refused. |
 | `digest_required` | 422 | `DigestRequired` (contrib.ciba.exceptions): Approving an act needs the digest the phone was shown. |
 | `domain_error` | 400 | `DomainError` (ddd.exceptions): A business rule refused the operation; the message is safe to show. |
 | `duplicate_value` | 409 | `DuplicateValue` (ddd.exceptions): A value that must be unique is taken (a unique constraint refused it). |
@@ -237,6 +238,7 @@ unique constraint may name its own code
 | `reference_reused` | 409 | `ReferenceReused` (contrib.accounting.exceptions): A source and reference that name an entry or a hold made otherwise. |
 | `referenced` | 409 | http.errors: a foreign key refused the change. |
 | `refresh_not_supported` | 400 | contrib.auth.authentication: Tokens are not refreshed here; log in again. |
+| `renderer_unavailable` | 503 | `RendererUnavailable` (documents): The renderer could not render now: unreachable, failing, or refusing the login. |
 | `request_not_pending` | 409 | `RequestNotPending` (contrib.approvals.exceptions): The request was approved, rejected, cancelled, or has expired. |
 | `request_tampered` | 409 | `RequestTampered` (contrib.approvals.exceptions): The request was changed outside the application: its seal does not hold. |
 | `request_timeout` | 408 | http.middleware: The request body took too long to arrive. |
@@ -247,7 +249,7 @@ unique constraint may name its own code
 | `service_busy` | 503 | `ServiceBusy` (exceptions): Something the operation needs is busy now; trying again later may work. |
 | `sign_in_not_found` | 404 | `SignInNotFound` (contrib.ciba.exceptions): The user has no sign-in request with that id that waits for an answer. |
 | `sign_in_unknown` | 400 | `SignInUnknown` (contrib.ciba.exceptions): No request has that handle, or it was redeemed, or is another client's. |
-| `signup_taken` | 409 | contrib.auth.signup: An account already uses this username or this address; sign up again with another username, or log in. |
+| `signup_taken` | 409 | contrib.auth.signup: An account already uses this address or this number, or the username the signup chose; log in, or reset the password. Another username is suggested only to a signup that chose one (since 2.5). |
 | `slow_down` | 400 | `SlowDown` (contrib.ciba.exceptions): A poll came before the interval: wait 5 seconds more from now on. |
 | `step_up_required` | 401 | contrib.auth.access: Confirm it is you: authenticate again to do this. |
 | `step_up_unsupported` | 400 | contrib.auth.stepup: These credentials cannot step up: log in, then step up. |

@@ -53,6 +53,10 @@ narrows what a caller sees to criteria of its own (``VisibleTo``), and
 what is out of scope is ``404``, in lists and items alike. ``policy``
 (a ``FieldPolicy``) hides fields, or keeps them from being changed, by
 permission. ``parent`` nests a resource: ``/orders/{order_id}/invoices``.
+``tenant`` (a ``PathTenant``) serves each route whose path holds its
+parameter as that tenant: ``tenant=PathTenant("company_id")`` serves
+``/companies/{company_id}`` and its commands, and lists ``/companies``
+as no tenant (ADR 0170).
 
 The router is a facade over one module per kind of route (``listing``,
 ``reading``, ``commands``, ``batching``, ``queries``, ``crud``), each a
@@ -62,12 +66,14 @@ request from a typed ``RouteContext``; what they share is in ``reach``
 A new kind of route is a module of that shape and a method here (ADR 0025).
 """
 
+import dataclasses
+import re
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, params
 from fastapi.routing import APIRoute
 from pydantic import BaseModel
 from starlette.requests import HTTPConnection
@@ -83,14 +89,17 @@ from domainkit.http.access import Rule, check_object_permissions
 from domainkit.http.filters import FilterSet
 from domainkit.http.middleware import body_limit
 from domainkit.http.pagination import Pagination
+from domainkit.http.routing import plain_routes
+from domainkit.tenancy import PathTenant, serve_no_tenant
 from domainkit.utils.text import pluralize, snake_case
 
-from ..access import VIEW, Actions
+from ..access import VIEW, Actions, MemberActions
 from ..batches import MAX_ITEMS
 from ..policies import FieldPolicy
 from ..renderers import FORMATS, JSON
 from ..schemas import PatchModel, schema_for
 from . import presenting, reach
+from .authorizing import asking_authorization as asking_authorization
 from .batching import BatchRoute
 from .commands import CommandRoute
 from .context import ALL_FIELDS as ALL_FIELDS
@@ -133,6 +142,7 @@ class ResourceRouter(APIRouter):
         repository: RepositoryOf,
         schema: type[BaseModel] | None = None,
         present: Callable[[Any], BaseModel] | None = None,
+        present_many: presenting.ManyPresenter | None = None,
         rule: Rule | Actions | None = None,
         filters: type[FilterSet] | Callable[..., object] | None = None,
         pagination: Pagination | None = None,
@@ -159,6 +169,7 @@ class ResourceRouter(APIRouter):
         exports: Sequence[str] = (),
         max_export: int = 10_000,
         body_limits: Mapping[str, int] | None = None,
+        tenant: PathTenant | None = None,
         **options: Any,  # noqa: ANN401 - APIRouter's options (tags, dependencies).
     ) -> None:
         """Declare the resource and add its list and read routes.
@@ -168,7 +179,11 @@ class ResourceRouter(APIRouter):
         must be given. ``unit_of_work`` is a FastAPI dependency (a class is
         called without arguments); ``repository`` picks the repository from
         a unit of work. ``present`` turns an aggregate into ``schema``
-        (default: its ``from_domain``). ``filters`` is a ``FilterSet``, or
+        (default: its ``from_domain``). ``present_many``, async, in its
+        place, turns the aggregates of one answer (a page, a query's items,
+        an export's chunk, or one aggregate) and the request into their
+        schemas, in order: one call per answer, so it can load what another
+        domain holds for all of them at once. ``filters`` is a ``FilterSet``, or
         a dependency returning a ``Query`` or criteria. ``page_schema``
         replaces the page's schema; ``lookup`` names the id in the path
         (``<basename>_id``). ``not_found(id)`` is the error for an id that
@@ -187,6 +202,19 @@ class ResourceRouter(APIRouter):
         ``command``, ``batch``) a body limit in bytes of its own
         (``domainkit.http.middleware.body_limit``); ``command_route`` and
         ``batch_route`` take ``body_limit=`` per route.
+
+        ``tenant`` serves every route whose path holds its parameter as the
+        tenant that parameter names, before the route's rules run: the
+        resource's own id (``PathTenant("company_id")`` for a lookup of
+        ``company_id``), a parent's, or one in its prefix. A route
+        without it (the collection's, for the resource's own id) serves no
+        tenant. Routes of your own on the resource are served alike. A
+        nested resource takes its parent's ``tenant``, and names no other.
+        A resource whose own id is the tenant has a prefix of no parameters,
+        names the action of each command on its collection
+        (``reach.named_action``), and, under ``MemberActions(outside=rule)``,
+        a ``scope``: its collection serves no tenant, so no member's rule
+        narrows the list. The ``PathTenant`` reads the id as its type.
 
         Raises:
             TypeError: A declaration does not fit the model.
@@ -213,6 +241,8 @@ class ResourceRouter(APIRouter):
         """Body limits by kind of route; a kind left out has the global one."""
         if writable is not None and not crud:
             raise TypeError("writable= names what crud=True writes; crud is off.")
+        if present is not None and present_many is not None:
+            raise TypeError("Give present= or present_many=, not both.")
         self._model = model
         self.basename = basename or snake_case(model.__name__)
         self.plural = plural or pluralize(self.basename)
@@ -223,6 +253,43 @@ class ResourceRouter(APIRouter):
         self.parent = parent
         self.parent_field = parent_field
         super().__init__(prefix=self._nested(prefix), **options)
+        inherited = parent.tenant if parent is not None else None
+        if (
+            tenant is not None
+            and inherited is not None
+            and tenant.parameter != inherited.parameter
+        ):
+            raise TypeError(
+                f"A resource nested under the tenant {{{inherited.parameter}}} "
+                f"is served as it; PathTenant({tenant.parameter!r}) would leave "
+                "its routes that name no other open to the parent's strangers."
+            )
+        self.tenant: PathTenant | None = self._tenant(tenant or inherited)
+        """What serves this resource's routes as a tenant, if its path names one."""
+        if (
+            isinstance(rule, MemberActions)
+            and rule.outside is not None
+            and self.tenant is None
+        ):
+            raise TypeError(
+                "MemberActions(outside=...) rules the routes that serve no "
+                "tenant; this resource serves none, so it would rule them all. "
+                'Give the resource tenant=PathTenant("...").'
+            )
+        if (
+            isinstance(rule, MemberActions)
+            and rule.outside is not None
+            and not isinstance(rule.outside, Actions)
+            and self.tenant is not None
+            and self.tenant.parameter == self.lookup
+            and scope is None
+        ):
+            raise TypeError(
+                "The collection of a resource whose items are tenants serves "
+                "none, so no member's rule narrows its list: give scope= the "
+                "tenants the caller belongs to (a scope that returns None lists "
+                "every one, on purpose)."
+            )
         self.unit_of_work = unit_of_work_dependency(unit_of_work)
         self.repository = repository
         self.missing = not_found
@@ -250,6 +317,8 @@ class ResourceRouter(APIRouter):
         self.source_schema = given
         self.schema = presenting.documented(self, given)
         self.present = present or presenting.presenter(given)
+        self.present_many = present_many
+        """Shows the aggregates of one answer at once, in ``present``'s place."""
         self.list_fields = presenting.listed(self.schema, list_fields)
         """The fields lists show; None: all of them."""
         if unknown := sorted(set(exports) - set(FORMATS)):
@@ -290,6 +359,179 @@ class ResourceRouter(APIRouter):
             raise TypeError(f"The parent and the resource both use {self.lookup!r}.")
         return f"{parent.prefix}/{{{parent.lookup}}}{prefix}"
 
+    def _tenant(self, tenant: PathTenant | None) -> PathTenant | None:
+        """``tenant``, reading its parameter as the id it names is typed.
+
+        Raises:
+            TypeError: No route's path would hold its parameter.
+        """
+        if tenant is None:
+            return None
+        name = tenant.parameter
+        typed: dict[str, type] = {}
+        owner: ResourceRouter | None = self
+        while owner is not None:
+            typed.setdefault(owner.lookup, owner.id_type)
+            owner = owner.parent
+        if name != self.lookup and not holds(self.prefix, name):
+            raise TypeError(
+                f"No route of this resource has {{{name}}} in its path, so "
+                f"PathTenant({name!r}) would serve none; name its id "
+                f"({self.lookup!r}), a parent's, or a parameter of its prefix."
+            )
+        if name == self.lookup and "{" in self.prefix:
+            raise TypeError(
+                f"{self.prefix} names a parameter, yet PathTenant({name!r}) would "
+                "serve its collection as no tenant: take the tenant from that "
+                "parameter, or keep a resource whose items are tenants at the top."
+            )
+        kind = typed.get(name, tenant.id_type)
+        strict = tenant.strict or name == self.lookup
+        if tenant.id_type is kind and tenant.strict is strict:
+            return tenant
+        return PathTenant(name, id_type=kind, strict=strict)
+
+    def serves_tenant(self, path: str) -> bool:
+        """Whether the route at ``path`` (after the prefix) is served as a tenant."""
+        tenant: PathTenant | None = getattr(self, "tenant", None)
+        return tenant is not None and holds(f"{self.prefix}{path}", tenant.parameter)
+
+    def tenancy(self, path: str) -> list[params.Depends]:
+        """What serves the route at ``path`` (after the prefix): its tenant, or none.
+
+        On a resource with a ``tenant``, a route whose path holds its
+        parameter is served as that tenant (``PathTenant``), and every other
+        route as no tenant (``serve_no_tenant``), whatever a middleware
+        chose: the collection of a resource whose items are tenants belongs
+        to none of them (ADR 0170). Either comes first, before the route's
+        rules. Without a ``tenant``, nothing.
+        """
+        tenant: PathTenant | None = getattr(self, "tenant", None)
+        if tenant is None:
+            return []
+        return [Depends(tenant if self.serves_tenant(path) else serve_no_tenant)]
+
+    def add_api_route(
+        self,
+        path: str,
+        endpoint: Callable[..., Any],
+        **options: Any,  # noqa: ANN401 - APIRouter's options.
+    ) -> None:
+        """Add a route, served as its tenant or as none (``tenancy``).
+
+        Routes of your own on the resource are too.
+        """
+        if served := self.tenancy(path):
+            options["dependencies"] = [*served, *(options.get("dependencies") or ())]
+        super().add_api_route(path, endpoint, **options)
+
+    def add_api_websocket_route(
+        self,
+        path: str,
+        endpoint: Callable[..., Any],
+        name: str | None = None,
+        *,
+        dependencies: Sequence[params.Depends] | None = None,
+    ) -> None:
+        """Add a WebSocket route, served as its tenant or as none (``tenancy``)."""
+        if served := self.tenancy(path):
+            dependencies = [*served, *(dependencies or ())]
+        super().add_api_websocket_route(path, endpoint, name, dependencies=dependencies)
+
+    def include_router(
+        self,
+        router: APIRouter,
+        *,
+        prefix: str = "",
+        dependencies: Sequence[params.Depends] | None = None,
+        **options: Any,  # noqa: ANN401 - APIRouter's options.
+    ) -> None:
+        """Include ``router``; on a resource with a ``tenant``, under its parameter.
+
+        Its routes are then served as the tenant the prefix names, before
+        their own dependencies. A route of ``router``, or of a router it
+        includes, that takes no dependency (a Starlette route or WebSocket
+        route, a mount, a host, frontend routes) would not be: FastAPI
+        serves it without the include's. ``check`` finds one added later
+        (``tenancy.E003``).
+
+        Raises:
+            TypeError: The resource has a ``tenant`` whose parameter the
+                prefix does not hold: the included routes would be served as
+                no tenant, or name one unchecked; or ``router`` holds a route
+                that takes no dependency.
+        """
+        tenant: PathTenant | None = getattr(self, "tenant", None)
+        if tenant is not None:
+            if not holds(f"{self.prefix}{prefix}", tenant.parameter):
+                raise TypeError(
+                    f"Include routers into {self.prefix} under its tenant, "
+                    f"prefix='/{{{tenant.parameter}}}/...', or declare their "
+                    "routes on the resource: each route of it is served as the "
+                    "tenant its path names, or as none."
+                )
+            for route in plain_routes(router):
+                raise TypeError(
+                    f"The router included into {self.prefix} holds "
+                    f"{type(route).__name__} {getattr(route, 'path', '')!r}, "
+                    "which takes no dependency, so would not be served as the "
+                    "tenant its path names. Declare it with @router.get, .post, "
+                    ".websocket, ..., or serve it outside the resource."
+                )
+            dependencies = [Depends(tenant), *(dependencies or ())]
+        super().include_router(
+            router, prefix=prefix, dependencies=dependencies, **options
+        )
+
+    def add_route(self, *args: Any, **options: Any) -> None:  # noqa: ANN401 - Starlette's.
+        """Add a Starlette route: refused on a resource with a ``tenant``.
+
+        Raises:
+            TypeError: It would take no dependency, so no tenant.
+        """
+        self._refuse_plain("a Starlette route")
+        super().add_route(*args, **options)
+
+    def add_websocket_route(self, *args: Any, **options: Any) -> None:  # noqa: ANN401 - Starlette's.
+        """Add a Starlette WebSocket route: refused on a resource with a ``tenant``.
+
+        Raises:
+            TypeError: It would take no dependency, so no tenant.
+        """
+        self._refuse_plain("a Starlette WebSocket route")
+        super().add_websocket_route(*args, **options)
+
+    def mount(self, *args: Any, **options: Any) -> None:  # noqa: ANN401 - Starlette's.
+        """Mount an application: refused on a resource with a ``tenant``.
+
+        Raises:
+            TypeError: It would take no dependency, so no tenant.
+        """
+        self._refuse_plain("a mounted application")
+        super().mount(*args, **options)
+
+    def host(self, *args: Any, **options: Any) -> None:  # noqa: ANN401 - Starlette's.
+        """Route by host: refused on a resource with a ``tenant``.
+
+        Raises:
+            TypeError: It would take no dependency, so no tenant.
+        """
+        self._refuse_plain("a host's application")
+        super().host(*args, **options)
+
+    def _refuse_plain(self, what: str) -> None:
+        """Refuse ``what``, which takes no dependency, on a resource with a tenant.
+
+        Raises:
+            TypeError: The resource has a ``tenant``.
+        """
+        if getattr(self, "tenant", None) is not None:
+            raise TypeError(
+                f"{self.prefix} serves each route as its tenant or as none; "
+                f"{what} takes no dependency to do so. Declare it with "
+                "@resource.get, .post, .websocket, ..., or include a router."
+            )
+
     @property
     def model(self) -> type:
         """The aggregate class (resolved now, if it is resolved per request)."""
@@ -315,6 +557,7 @@ class ResourceRouter(APIRouter):
         provide: Mapping[str, Callable[..., object]] | None = None,
         body_limit: int | None = None,
         retry: Retry | None = None,
+        dependencies: Sequence[params.Depends] = (),
     ) -> None:
         """Add a route that runs ``command`` through ``service(command, uow)``.
 
@@ -323,7 +566,9 @@ class ResourceRouter(APIRouter):
         the id comes from the path. Others act on the collection (``path``
         after the prefix). The body's fields, the path's ids (and the
         parent's, by ``parent_field``) build the command; a ``PatchModel``
-        body gives only the fields the request set. ``provide`` maps other
+        body gives only the fields the request set, and a dataclass the
+        command declares comes as the body validated it
+        (``values.instances``). ``provide`` maps other
         fields to FastAPI dependencies that give them, such as the caller's
         id for an ``owner_id``: the path wins over them, and they over the
         body.
@@ -336,6 +581,17 @@ class ResourceRouter(APIRouter):
         or ``change``); ``rule`` adds a rule of the route's own.
         ``body_limit`` holds its bodies to that many bytes (default: the
         resource's for commands, else ``MAX_REQUEST_BODY_SIZE``).
+        ``dependencies`` are FastAPI dependencies of the route's own, such
+        as a limit, ``Depends(Throttle("50/day"))``: run after its rules
+        (a request they refuse is not counted), before the aggregate is
+        reached and the body and ``If-Match`` are checked.
+
+        A route whose rules ask for an authorization of the act gets a twin,
+        ``POST <path>/authorization`` (``/authorization/<method>`` where
+        routes of one path ask by several methods). The twin asks the
+        route's rules and builds the command with ``provide``, but runs none
+        of ``dependencies``: a limit there counts acts, not asks. So a check
+        of who may act goes in ``rule``, never in ``dependencies``.
 
         ``retry`` runs the service again, whole, when its transaction loses
         a race (``UnitOfWork.run``): the check that the caller may reach the
@@ -364,6 +620,7 @@ class ResourceRouter(APIRouter):
             provide=provide,
             body_limit=body_limit,
             retry=retry,
+            dependencies=dependencies,
         ).declare()
 
     def use_case(
@@ -440,9 +697,28 @@ class ResourceRouter(APIRouter):
         route: for services that change nothing outside their unit of
         work, on one whose isolation can fail or whose locks can deadlock.
 
+        On a resource whose items are tenants (``tenant`` names its id), a
+        batch of commands on single items is refused: each item names a
+        tenant of its own, which the batch is not served as, so no member's
+        rule could hold for it. Declare a command route on one item, which
+        is served as it.
+
         Raises:
-            TypeError: The path, the bound, or the body does not fit the command.
+            TypeError: The path, the bound, or the body does not fit the
+                command, or its items name tenants.
         """
+        tenant = self.tenant
+        if (
+            tenant is not None
+            and tenant.parameter == self.lookup
+            and self.lookup in {field.name for field in dataclasses.fields(command)}
+        ):
+            raise TypeError(
+                f"A batch of {command.__name__} names a tenant per item "
+                f"({self.lookup}), which it is not served as: no member's rule "
+                f"holds for it. Declare command_route({command.__name__}, ...), "
+                "served as the tenant its path names."
+            )
         BatchRoute(
             self,
             command,
@@ -613,6 +889,11 @@ class ResourceRouter(APIRouter):
         return aggregate
 
 
+def holds(path: str, parameter: str) -> bool:
+    """Whether ``path`` has the parameter ``parameter``: ``{name}``, ``{name:type}``."""
+    return re.search(rf"\{{{re.escape(parameter)}(:[^}}]*)?\}}", path) is not None
+
+
 def _id_type(model: type | Callable[[], type]) -> type:
     """The type of the model's ids in paths: ``UUID`` unless the hint says."""
     if not isinstance(model, type):
@@ -630,6 +911,7 @@ def _filtered(filters: object) -> set[str]:
         *filters.ordering_fields,
         *(item.removeprefix("-") for item in filters.default_ordering),
         *filters.search_fields,
+        *filters.search_through,
     }
     return {name for name in used if name}
 

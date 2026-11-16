@@ -98,6 +98,33 @@ def path_name(router: "ResourceRouter", name: str) -> str:
     return name
 
 
+def named_action(router: "ResourceRouter", path: str, action: str | None) -> None:
+    """Refuse a write on a tenants' collection that does not name its action.
+
+    On a resource whose items are tenants (its ``tenant`` names its own
+    id), a route that serves no tenant (``path``, after the prefix) is
+    ruled by what the collection allows, by action. A command there is
+    ``add`` by default, as a ``POST`` that creates: one that changes
+    another tenant's item under that name would be open to whoever may
+    create. So such a route says what it does (ADR 0170).
+
+    Raises:
+        TypeError: ``action`` is None on such a route.
+    """
+    tenant = router.tenant
+    if (
+        action is None
+        and tenant is not None
+        and tenant.parameter == router.lookup
+        and not router.serves_tenant(path)
+    ):
+        raise TypeError(
+            f"{router.prefix}{path} acts on the collection of a resource whose "
+            "items are tenants, and serves none: name its action, action='add' "
+            "to create one, or 'change', 'delete', or an action of its own."
+        )
+
+
 def rules_of(
     router: "ResourceRouter", action: str, rule: Rule | None = None
 ) -> tuple[Rule, ...]:

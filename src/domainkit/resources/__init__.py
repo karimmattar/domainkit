@@ -9,7 +9,8 @@ DRF's viewsets, routers, and serializers, for task-based commands:
   delete (``crud=True``).
 - ``schema_for``: pydantic schemas derived from domain classes;
   ``PatchModel`` for partial changes (``UNSET`` for what was left out).
-- ``ModelActions``: Django's model permissions by each route's action.
+- ``ModelActions``: Django's model permissions by each route's action;
+  ``MemberActions``, a member's in the tenant being served.
 - ``FieldPolicy``: who sees and who changes each field.
 - ``If-None-Match`` answers ``304``; ``If-Match`` makes writes conditional
   (``412``), and a resource may require it (``428``).
@@ -21,13 +22,26 @@ See ``docs/resources.md``.
 
 from domainkit.ddd.messages import UNSET, Unset
 
-from .access import Actions, HasModelPermission, ModelActions
+from .access import (
+    Actions,
+    HasMemberModelPermission,
+    HasModelPermission,
+    MemberActions,
+    ModelActions,
+)
 from .batches import BatchAnswer, BatchError, BatchResult
 from .conditional import PreconditionRequired, entity_tag, expected_versions
 from .events import RecordChanged, RecordCreated, RecordDeleted
 from .policies import FieldNotEditable, FieldPolicy
 from .renderers import ExportTooLarge, NotAcceptable
-from .routing import ALL_FIELDS, MERGE_PATCH, Operation, ResourceRouter, to_domain
+from .routing import (
+    ALL_FIELDS,
+    MERGE_PATCH,
+    Operation,
+    ResourceRouter,
+    asking_authorization,
+    to_domain,
+)
 from .schemas import DomainSchema, PatchModel, schema_for
 
 __all__ = [
@@ -42,7 +56,9 @@ __all__ = [
     "ExportTooLarge",
     "FieldNotEditable",
     "FieldPolicy",
+    "HasMemberModelPermission",
     "HasModelPermission",
+    "MemberActions",
     "ModelActions",
     "NotAcceptable",
     "Operation",
@@ -53,6 +69,7 @@ __all__ = [
     "RecordDeleted",
     "ResourceRouter",
     "Unset",
+    "asking_authorization",
     "entity_tag",
     "expected_versions",
     "schema_for",

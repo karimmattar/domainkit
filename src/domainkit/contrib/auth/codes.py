@@ -1,7 +1,8 @@
 """Codes of 6 digits that prove someone reads an address or a number.
 
 A code is for one purpose (``EMAIL_VERIFICATION``, ...) and one target: an
-email address or a mobile number, kept only as an HMAC (``target_of``). The
+email address or a mobile number, kept only as an HMAC (``target_of``;
+``user_target`` for verification codes, which are each user's own). The
 code itself is kept only as an HMAC too, keyed from ``SECRET_KEY``. It
 works for ``AUTH.CODE_TTL``, is spent after ``AUTH.CODE_ATTEMPTS`` tries,
 and is used once; a new code for the same purpose and target replaces the
@@ -9,12 +10,18 @@ one before (ADR 0126)::
 
     target = target_of(email)
     async with AuthUnitOfWork() as uow:
-        code = await uow.verification_codes.issue(EMAIL_VERIFICATION, target)
+        code = await uow.verification_codes.issue(
+            PASSWORD_RESET, target, user_id=user.id
+        )
         await uow.commit()  # then send the code
 
     async with AuthUnitOfWork() as uow:
-        proven = await uow.verification_codes.check(EMAIL_VERIFICATION, target, code)
+        proven = await uow.verification_codes.check(PASSWORD_RESET, target, code)
         await uow.commit()  # a wrong try counts even when it is refused
+
+The verification routes keep ``EMAIL_VERIFICATION`` and
+``MOBILE_VERIFICATION`` codes under ``user_target(value, user.id)``: one
+issued under ``target_of`` is one they never accept.
 """
 
 import hashlib
@@ -69,6 +76,28 @@ def target_of(identifier: str) -> str:
     canonical = as_mobile_number(identifier) or email_key(identifier)
     key = signing.derive_key(TARGET_PURPOSE)
     return hmac.new(key, canonical.encode(), hashlib.sha256).hexdigest()
+
+
+def user_target(identifier: str, user_id: UUID) -> str:
+    """The target of a code that proves ``identifier`` for one user only.
+
+    Verification codes (``EMAIL_VERIFICATION``, ``MOBILE_VERIFICATION``)
+    are kept so: two users who ask to prove one address or number each
+    get a code of their own, and neither replaces the other's (since 2.5).
+    """
+    canonical = as_mobile_number(identifier) or email_key(identifier)
+    key = signing.derive_key(TARGET_PURPOSE)
+    message = f"{user_id.hex}:{canonical}".encode()
+    return hmac.new(key, message, hashlib.sha256).hexdigest()
+
+
+def targets_of(identifier: str, user_id: UUID) -> list[str]:
+    """Every target a code for ``identifier`` may be kept under, for ``user_id``.
+
+    For ``CodeStore.forget``: the plain one (``target_of``), and the one of
+    verification codes (``user_target``).
+    """
+    return [target_of(identifier), user_target(identifier, user_id)]
 
 
 def code_digest(code_id: UUID, code: str, key: bytes) -> str:

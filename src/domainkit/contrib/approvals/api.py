@@ -23,6 +23,12 @@ Who may do what:
   ``POST /requests/{id}/approve/authorization``; off, that route answers
   ``404``.
 - Cancelling needs ``approvals.add_approvalrequest`` and to be the maker.
+- With ``APPROVALS.SUBMIT_ACTION``, ``REJECT_ACTION``, or ``CANCEL_ACTION``
+  on, submitting, rejecting, or cancelling needs an authorization of that
+  one act too, asked for at ``POST /requests/authorization``, ``POST
+  /requests/{id}/reject/authorization``, or ``POST
+  /requests/{id}/cancel/authorization`` (ADR 0163); off, those answer
+  ``404``.
 
 An approval states the ``fingerprint`` the approver was shown: a request
 that holds another command is refused (``fingerprint_mismatch``).
@@ -44,7 +50,14 @@ from domainkit.resources import HasModelPermission, ResourceRouter
 from .exceptions import UnknownAction
 from .guards import guard_for, guards
 from .models import MAX_REASON, ApprovalRequest, RequestStatus, Verdict
-from .rules import ActsForThemselves, RequestActions, names_approver, rule_instance
+from .rules import (
+    ActsForThemselves,
+    ApprovalAuthorizationOut,
+    RequestActions,
+    SubmitAction,
+    names_approver,
+    rule_instance,
+)
 from .services import (
     ApproveRequest,
     CancelRequest,
@@ -67,6 +80,9 @@ TAGS: Final = ["approvals"]
 VIEW_EVERY: Final = "approvals.view_every_approvalrequest"
 """The permission that shows every request, not only one's own and those one decides."""
 READS: Final = frozenset({"GET", "HEAD"})
+TWIN: Final = "domainkit_twin"
+"""The attribute that marks a twin's endpoint: it asks for an authorization,
+and makes no act (``domainkit.resources.asking_authorization``)."""
 
 
 class RequestFilters(FilterSet):
@@ -242,7 +258,11 @@ requests.command_route(
     provide={"maker": caller},
 )
 
-SUBMIT: Final = Depends(Require(HasModelPermission("add", ApprovalRequest)))
+MAY_SUBMIT: Final = HasModelPermission("add", ApprovalRequest)
+SUBMIT: Final = Depends(Require(MAY_SUBMIT, SubmitAction()))
+"""Who submits: ``approvals.add_approvalrequest``, and, with
+``SUBMIT_ACTION``, an authorization of the submission."""
+ASKS_TO_SUBMIT: Final = Depends(Require(MAY_SUBMIT))
 
 
 @requests.post(
@@ -262,7 +282,54 @@ async def submit(
     The maker needs the permission the guard names for its makers too, and
     to pass its ``maker_rule`` (a superuser, to make superusers). The
     guard's ``maker_fields`` are set to the maker, whatever ``arguments``
-    says; a guard with ``http=False`` is not submitted here (404).
+    says; a guard with ``http=False`` is not submitted here (404). With
+    ``APPROVALS.SUBMIT_ACTION`` on, it spends the maker's authorization of
+    this submission (``Action-Authorization``).
+    """
+    made = await submit_request(
+        await _submission(body, request, user), ApprovalsUnitOfWork()
+    )
+    response.headers["Location"] = f"{request.url.path}/{made.id}"
+    return RequestOut.of(made)
+
+
+@requests.post(
+    "/authorization",
+    name="approvals_submit_authorization",
+    status_code=status.HTTP_201_CREATED,
+    responses=error_responses(400, 401, 403, 404, 409, 422),
+)
+async def ask_to_submit(
+    body: SubmitIn,
+    request: Request,
+    response: Response,
+    user: Annotated[Principal, ASKS_TO_SUBMIT],
+) -> ApprovalAuthorizationOut:
+    """Ask for an authorization of submitting this command (``SUBMIT_ACTION``).
+
+    It checks what submitting checks, and stores nothing but the
+    authorization. Off, it answers ``404``, as a route that is not there,
+    to a caller submitting would not refuse first.
+    """
+    response.headers["Cache-Control"] = "no-store"
+    command = await _submission(body, request, user)
+    answer = await SubmitAction().ask_authorization(request, command)
+    return ApprovalAuthorizationOut.model_validate(answer.model_dump())
+
+
+setattr(ask_to_submit, TWIN, True)
+
+
+async def _submission(
+    body: SubmitIn, request: Request, user: Principal
+) -> SubmitRequest:
+    """The submission ``body`` asks for, if ``user`` may make it.
+
+    Raises:
+        UnknownAction: No guard has that name, or its commands are not
+            submitted here (``http=False``).
+        PermissionDenied: Someone acts for the user, or the user lacks the
+            guard's permission or fails its ``maker_rule``.
     """
     guard = guard_for(body.action)
     if not guard.http:  # Submitted by the project's own code alone.
@@ -275,12 +342,9 @@ async def submit(
     for rule in rules:
         if rule is not None and not await rule.has_permission(request, user):
             raise PermissionDenied("You may not submit this command.")
-    made = await submit_request(
-        SubmitRequest(action=body.action, arguments=body.arguments, maker=str(user.id)),
-        ApprovalsUnitOfWork(),
+    return SubmitRequest(
+        action=body.action, arguments=body.arguments, maker=str(user.id)
     )
-    response.headers["Location"] = f"{request.url.path}/{made.id}"
-    return RequestOut.of(made)
 
 
 router = APIRouter()

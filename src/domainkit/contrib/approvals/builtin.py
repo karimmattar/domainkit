@@ -490,6 +490,22 @@ def guard_admin_changes(config: ApprovalsSettings) -> None:
         )
 
 
+def refuse_staff_creation() -> None:
+    """Refuse creating a user who is staff while making staff is held.
+
+    Auth's ``on_create_staff`` calls it with the admin API's own checks of
+    a creation, and in its twin, so asking for an authorization of such a
+    creation is refused as the creation is.
+
+    Raises:
+        ApprovalRequired: ``ADMIN_APPROVALS`` holds ``auth.set_staff``.
+    """
+    if SET_STAFF in guards():
+        raise ApprovalRequired(
+            "Making staff needs approval: create the user, then make them staff."
+        )
+
+
 async def check_admin_change(
     actor: Any,  # noqa: ANN401 - the staff member, a user.
     target: "AbstractBaseUser | None",
@@ -509,10 +525,8 @@ async def check_admin_change(
         ApprovalPending: The change waits for its approvals.
     """
     if change.kind == "create":
-        if change.values.get("is_staff") is True and SET_STAFF in guards():
-            raise ApprovalRequired(
-                "Making staff needs approval: create the user, then make them staff."
-            )
+        if change.values.get("is_staff") is True:
+            refuse_staff_creation()  # The admin API asked it already.
         return
     held = None if target is None else _admin_command(target, change)
     if held is None or held[0] not in guards():

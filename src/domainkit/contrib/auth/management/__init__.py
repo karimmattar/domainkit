@@ -6,7 +6,7 @@ from domainkit.exceptions import UpstreamError
 from domainkit.management.base import CommandError, run_async
 
 from ..models import AbstractBaseUser
-from ..repositories import UserRepository
+from ..repositories import StaffMatch, UserRepository
 from ..validators import avalidate_password
 
 
@@ -23,11 +23,22 @@ async def user_for_staff(
     Raises:
         CommandError: No user has that identifier.
     """
+    return (await match_for_staff(users, value, write)).user
+
+
+async def match_for_staff(
+    users: UserRepository, value: str, write: Callable[[str], object]
+) -> StaffMatch:
+    """``user_for_staff``, with the field that matched.
+
+    Raises:
+        CommandError: No user has that identifier.
+    """
     match = await users.match_for_staff(value)
     if match is None:
         raise CommandError(f"User {value!r} does not exist.")
     write(f"{value!r} is user {match.user.id}, by its {match.field}.")
-    return match.user
+    return match
 
 
 def check_password_rules(password: str, user: object) -> None:

@@ -44,6 +44,7 @@ language's templates where there are some (ADR 0149).
 
 import logging
 import math
+import re
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import timedelta
 from typing import Annotated, Final, TypedDict, cast
@@ -69,7 +70,14 @@ from ._http import PASSWORD_MAX_LENGTH
 from .access import AuthenticatedUser
 from .api import device_logins_kept
 from .captcha import captcha
-from .codes import EMAIL_VERIFICATION, MOBILE_VERIFICATION, PASSWORD_RESET, target_of
+from .codes import (
+    EMAIL_VERIFICATION,
+    MOBILE_VERIFICATION,
+    PASSWORD_RESET,
+    target_of,
+    targets_of,
+    user_target,
+)
 from .events import PasswordReset, PasswordResetRequested
 from .exceptions import EmailTaken, InvalidEmail, MobileNumberTaken, UnknownUserField
 from .gates import check_manage_logins
@@ -98,6 +106,9 @@ __all__ = [
 
 EMAIL_PATTERN: Final = r"^[^@\s\x00-\x1f\x7f]{1,64}@[^@\s\x00-\x1f\x7f]{1,253}$"
 """The shape of an address, checked first; ``EmailAddress`` checks the rest."""
+EMAIL_SHAPE: Final = re.compile(EMAIL_PATTERN)
+INVALID_EMAIL: Final = "Enter a valid email address."
+"""The refusal of a value not shaped as an address, rather than the pattern."""
 RESET_CODE_TASK: Final = "domainkit.auth.send_password_reset_code"
 MOBILE_VERIFICATION_TASK: Final = "domainkit.auth.send_mobile_verification"
 NOTIFICATIONS: Final = "domainkit.contrib.notifications"
@@ -121,7 +132,13 @@ router = APIRouter(tags=["auth"])
 
 
 def _plain_address(value: str) -> str:
-    """``validate_email``, for pydantic: a refusal is a ``ValueError``."""
+    """``validate_email``, for pydantic: a refusal is a ``ValueError``.
+
+    A value not shaped as an address (``EMAIL_PATTERN``) is refused with a
+    message of its own, which the catalogs translate, not with the pattern.
+    """
+    if not EMAIL_SHAPE.fullmatch(value):
+        raise ValueError(INVALID_EMAIL)
     try:
         return validate_email(value)
     except InvalidEmail as exc:
@@ -130,10 +147,14 @@ def _plain_address(value: str) -> str:
 
 EmailAddress = Annotated[
     str,
-    Field(max_length=EMAIL_MAX_LENGTH, pattern=EMAIL_PATTERN),
+    Field(max_length=EMAIL_MAX_LENGTH, json_schema_extra={"pattern": EMAIL_PATTERN}),
     AfterValidator(_plain_address),
 ]
-"""One plain address, trimmed (``validate_email``): no display name, ASCII."""
+"""One plain address, trimmed (``validate_email``): no display name, ASCII.
+
+OpenAPI shows its pattern; a value that does not match it is refused as
+``Enter a valid email address.``, in the request's language.
+"""
 
 
 class PasswordResetIn(BaseModel):
@@ -372,7 +393,7 @@ async def confirm_mobile_verification_code(
         held = await uow.pending_identifiers.get(stored.id, MOBILE_NUMBER)
         number = held.value if held else getattr(stored, "mobile_number", None)
         if number:
-            target = target_of(number)
+            target = user_target(number, stored.id)
             proven = await uow.verification_codes.check(
                 MOBILE_VERIFICATION, target, body.code
             )
@@ -456,7 +477,7 @@ async def confirm_email_verification_code(
         held = await uow.pending_identifiers.get(stored.id, EMAIL)
         address = held.value if held else email_of(stored)
         if address is not None:
-            target = target_of(address)
+            target = user_target(address, stored.id)
             proven = await uow.verification_codes.check(
                 EMAIL_VERIFICATION, target, body.code
             )
@@ -487,17 +508,24 @@ async def _hold(
     """Hold ``value`` for ``user``'s ``field``, if given; queue ``send``.
 
     The code goes to what is held, or to the user's own while nothing is
-    (``send``). Counted per client address and per user, and, for a value
-    held, per recipient too. The user's own value, given, drops what was
-    held: nothing is to change.
+    (``send``). Counted per client address, per user, and per recipient:
+    the value given, or, without one, the one the code goes to (since 2.5,
+    so asking again cannot text a held number past the rate). The user's
+    own value, given, drops what was held: nothing is to change.
 
     Raises:
         UnknownUserField: The user model cannot change ``field``.
     """
     scope = SCOPES[field]
     if value is None:
-        await _limit_mail(request, scope, f"{scope}:user:{user.id}")
-        await enqueue(send, user_id=user.id, **language_argument())
+        async with AuthUnitOfWork() as uow:
+            held = await uow.pending_identifiers.get(user.id, field)
+        own = email_of(user) if field == EMAIL else getattr(user, field, None)
+        to = held.value if held else own
+        recipients = [email_key(scope, target_of(str(to)))] if to else []
+        await _limit_mail(request, scope, f"{scope}:user:{user.id}", *recipients)
+        # Only to the value counted: "" matches none.
+        await enqueue(send, user_id=user.id, value=to or "", **language_argument())
         return
     if not hasattr(user, f"change_{field}"):
         raise UnknownUserField(UNCHANGEABLE[field])
@@ -512,7 +540,7 @@ async def _hold(
         else:
             ttl = auth_settings().CODE_TTL
             await uow.pending_identifiers.hold(stored.id, field, value, ttl=ttl)
-        uow.defer(send, user_id=stored.id, **language_argument())
+        uow.defer(send, user_id=stored.id, value=value, **language_argument())
         await uow.commit()
 
 
@@ -540,7 +568,7 @@ async def _take(
     else:
         user.change_mobile_number(held.value)
     if replaced:
-        await uow.verification_codes.forget(user.id, [target_of(replaced)])
+        await uow.verification_codes.forget(user.id, targets_of(replaced, user.id))
     return True
 
 
@@ -583,10 +611,10 @@ async def release(
     targets: list[str] = []
     if email and same_email(user.email, email):
         user.release_email()
-        targets.append(target_of(email))
+        targets.extend(targets_of(email, user.id))
     if mobile_number and user.mobile_number == mobile_number:
         user.release_mobile_number()
-        targets.append(target_of(mobile_number))
+        targets.extend(targets_of(mobile_number, user.id))
     if any(getattr(user, name, None) for name in identifier_fields(type(user))):
         await uow.verification_codes.forget(user.id, targets)
         return
@@ -681,12 +709,16 @@ async def send_code(
     return True
 
 
-async def send_mobile_verification(user_id: UUID, language: str | None = None) -> None:
+async def send_mobile_verification(
+    user_id: UUID, language: str | None = None, value: str | None = None
+) -> None:
     """Text a verification code to the user's mobile number, unless verified.
 
     The ``domainkit.auth.send_mobile_verification`` task; ``language`` is
     the request's (``language_of``). A number held for a change gets it
-    instead, and is held as long as the code works (ADR 0153).
+    instead, and is held as long as the code works (ADR 0153). With
+    ``value``, the number the request was counted for, nothing goes to any
+    other: one held since would get a text it was never counted for.
     """
     async with AuthUnitOfWork() as uow:
         user = await uow.users.find(UserId(user_id))
@@ -697,6 +729,8 @@ async def send_mobile_verification(user_id: UUID, language: str | None = None) -
         if held is None and (
             not number or getattr(user, "mobile_number_verified", True)
         ):
+            return
+        if value is not None and number != value:
             return
         if not can_text(f"User {user.id}"):
             return
@@ -716,7 +750,7 @@ async def _issue(
     """Issue a code for ``value``; what is held lasts as long as the code."""
     moment = utc_now()
     code = await uow.verification_codes.issue(
-        purpose, target_of(value), user_id=user.id, now=moment
+        purpose, user_target(value, user.id), user_id=user.id, now=moment
     )
     if held is not None:
         await uow.pending_identifiers.extend(
@@ -743,13 +777,21 @@ def can_text(label: str) -> bool:
 async def text_code(number: str, code: str, purpose: str, uow: AuthUnitOfWork) -> None:
     """Queue a text message with ``code``; it leaves with ``uow``'s commit.
 
-    Written in the active language: ``purpose`` ("reset your password") is
-    translated in the ``code`` context (``pgettext``), so a project adds
-    its own purposes to its catalogs that way.
+    Written in the active language (``code_text``).
     """
     from domainkit.contrib.notifications import send_sms
 
-    body = gettext(
+    await send_sms(number, code_text(code, purpose), uow=uow)
+
+
+def code_text(code: str, purpose: str) -> str:
+    """The text message that carries ``code``, in the active language.
+
+    ``purpose`` ("reset your password") is translated in the ``code``
+    context (``pgettext``), so a project adds its own purposes to its
+    catalogs that way.
+    """
+    return gettext(
         "{code} is your code to {purpose}. It works for {valid_for}. "
         "Never give it to anyone."
     ).format(
@@ -757,7 +799,6 @@ async def text_code(number: str, code: str, purpose: str, uow: AuthUnitOfWork) -
         purpose=pgettext("code", purpose),
         valid_for=describe(auth_settings().CODE_TTL),
     )
-    await send_sms(number, body, uow=uow)
 
 
 async def mail_user(
@@ -831,14 +872,17 @@ async def _mail_code(
     await deliver([render_mail(template, context, to=[address])])
 
 
-async def send_email_verification(user_id: UUID, language: str | None = None) -> None:
+async def send_email_verification(
+    user_id: UUID, language: str | None = None, value: str | None = None
+) -> None:
     """Mail a verification code to the user's address.
 
     The ``domainkit.auth.send_email_verification`` task. Nothing goes to an
     address that is verified already. A new code replaces the one before.
     ``language`` is the request's (``language_of``). An address held for a
     change gets it instead, and is held as long as the code works
-    (ADR 0153).
+    (ADR 0153). With ``value``, the address the request was counted for,
+    nothing goes to any other.
     """
     async with AuthUnitOfWork() as uow:
         user = await uow.users.find(UserId(user_id))
@@ -851,6 +895,8 @@ async def send_email_verification(user_id: UUID, language: str | None = None) ->
         return
     address = held.value if held else email_of(user)
     if address is None or not _mailable(user, address):
+        return
+    if value is not None and not same_email(address, value):
         return
     async with AuthUnitOfWork() as uow:
         code = await _issue(uow, EMAIL_VERIFICATION, address, user, held)

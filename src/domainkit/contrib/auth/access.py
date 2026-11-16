@@ -46,6 +46,7 @@ from ``domainkit.contrib.auth``, in 0.11: import them from
 """
 
 import re
+import warnings
 from collections.abc import Awaitable, Callable, Collection
 from datetime import timedelta
 from typing import TYPE_CHECKING, Annotated, ClassVar, Final, cast
@@ -55,6 +56,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from starlette.requests import HTTPConnection
 
+from domainkit.ddd import UseCase
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import access
 from domainkit.http.errors import APIError
@@ -65,6 +67,8 @@ from .settings import MAX_STEP_UP_AGE, Factor, auth_settings, with_a_factor
 from .tokens import utc_now
 
 if TYPE_CHECKING:
+    from domainkit.ddd import UnitOfWork
+
     from .actions import Action
 
 PROOF: Final = "domainkit.auth.proof"
@@ -309,7 +313,9 @@ class ActionStepUp(StepUp):
     WebSocket (``auth.E111`` refuses it there, and on an event stream).
 
     It asks for authorizations too (``domainkit.http.access.AsksAuthorization``):
-    a ``ResourceRouter`` gives its route a twin, ``POST <path>/authorization``.
+    a ``ResourceRouter`` gives its route a twin, ``POST <path>/authorization``
+    (``.../authorization/<method>`` where routes of one path ask by several
+    methods).
     """
 
     def required(self) -> frozenset[str]:
@@ -343,13 +349,18 @@ class ActionStepUp(StepUp):
         return authorization_refusal(request, cast(str, self.purpose))
 
     def authorization_model(self) -> type[BaseModel]:
-        """``{"id", "purpose", "shown", "expires_at"}``: the twin's ``201`` body."""
+        """``{"id", "purpose", "shown", "expires_at", "methods"}``: the twin's body."""
         from .actions import ActionAuthorizationOut
 
         return ActionAuthorizationOut
 
-    async def ask_authorization(self, request: Request, command: object) -> BaseModel:
+    async def ask_authorization(
+        self, request: Request, command: object, uow: "UnitOfWork | None" = None
+    ) -> BaseModel:
         """Store an authorization of ``command`` for the request's user and login.
+
+        ``uow`` is the unit of work the act runs in, not yet open, which a
+        ``show(command, uow)`` reads in: the twin gives its route's.
 
         Raises:
             ImproperlyConfigured: No action is registered for the purpose.
@@ -363,8 +374,50 @@ class ActionStepUp(StepUp):
                 f"StepUp(for_={self.purpose!r}): no registered action has that "
                 "purpose; register_action(...) it in ready()."
             )
-        authorization = await request_action_authorization(request, action, command)
+        authorization = await request_action_authorization(
+            request,
+            action,
+            command,
+            unit_of_work=None if uow is None else lambda: uow,
+        )
         return ActionAuthorizationOut.of(authorization)
+
+    def service_problem(self, service: object) -> str | None:
+        """Why ``service``, the route's, would not spend what this rule asks for.
+
+        A ``ResourceRouter`` asks when the route is declared, and refuses
+        the route (ADR 0161): one that runs a use case itself, which spends
+        nothing, or a service that spends another act's authorization,
+        would run the act with arguments nobody confirmed. A service
+        without the mark of ``requires_authorization`` may call one that
+        has it, as in 2.4: it warns (``DomainkitDeprecationWarning``), and
+        3.0 refuses it. None: it spends the authorization of this purpose.
+        """
+        from .actions import SPENDS
+
+        spent = getattr(service, SPENDS, None)
+        if spent == self.purpose:
+            return None
+        owner = getattr(service, "__self__", None)
+        if isinstance(owner, UseCase):
+            return (
+                f"runs {owner} itself, which spends nothing: give use_case the "
+                f"copy requires_authorization(...) makes of it for {self.purpose!r}"
+            )
+        named = getattr(service, "__qualname__", service)
+        if spent is not None:
+            return f"runs {named}, which spends the authorization of {spent!r}"
+        # Imported here: the module is not otherwise loaded at startup.
+        from domainkit.deprecation import DomainkitDeprecationWarning
+
+        warnings.warn(
+            f"A route that asks StepUp(for_={self.purpose!r}) runs {named}, which "
+            "is not decorated with requires_authorization: decorate the route's "
+            "service itself. domainkit 3.0 refuses such a route.",
+            DomainkitDeprecationWarning,
+            stacklevel=2,
+        )
+        return None
 
     def _action(self) -> "Action | None":
         """The act's ``Action``: the one given, or the one registered."""

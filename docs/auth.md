@@ -147,6 +147,7 @@ print(config.TOKEN_TTL, config.JWT.ACCESS_TOKEN_TTL)
 | `PRINCIPAL_CACHE` | see below | Principals kept between requests ([the principal cache](auth/authentication.md#the-principal-cache)). |
 | `CAPTCHA` | `None` | A captcha on login, signup, and password reset: `{"PROVIDER": "turnstile" \| "recaptcha" \| "hcaptcha", "SECRET": ..., "ON": ["login", "signup", "password_reset"], "MIN_SCORE": 0.5}`. Each route that `ON` names asks for the widget's token in `X-Captcha-Token`, checked with the provider first: missing or refused, `400 captcha_failed`; the provider unreachable, `503 captcha_unavailable`. `MIN_SCORE` (0 to 1) is reCAPTCHA v3's lowest score let through. `HOSTNAMES` refuses a token solved on another site (empty: any, `auth.W008` where deployed), and `CHECK_ACTION` one solved for another action. Only the token and the secret are sent, never the client's address ([Captcha](auth/logging-in.md#captcha)). |
 | `IMPERSONATION_TTL` | `None` | How long a token that staff get to act as a user works, up to 8 hours; `None` turns impersonation off ([Impersonation](auth/routes.md#impersonation)). |
+| `ADMIN_ACTION` | `False` | Each change of the admin API asks for an authorization of its own (`auth.admin_change`), bound to the user or group and to what changes, in place of a step-up window; each changing route gets a twin that asks for one ([Each change, authorized as one act](auth/routes.md#each-change-authorized-as-one-act)). |
 | `CSRF_TRUSTED_ORIGINS` | `()` | Origins (`https://app.example.com`, `https://*.example.com`) whose pages may send cookie requests, besides the request's own and `ALLOWED_HOSTS`. |
 | `JWT` | see below | JSON Web Tokens, for `JWTAuthentication`. |
 
@@ -258,7 +259,7 @@ application; a warning (`W`) is reported.
 | `auth.E106` | anywhere | A `StepUp` asks for methods that no step-up proves. |
 | `auth.E108` | anywhere | An action whose methods no installed way to confirm proves. |
 | `auth.E109` | anywhere | A route asks `StepUp(for_=...)` for a purpose no registered action has. |
-| `auth.E110` | anywhere | A route asks for an action that no decorated service spends. |
+| `auth.E110` | anywhere | A route asks for an action that nothing spends: no decorated service, and no `spent_in_code(action)`. |
 | `auth.E111` | anywhere | `StepUp(for_=...)` on a WebSocket or an event stream. |
 | `auth.W001` | staging, production | `PRINCIPAL_CACHE.TTL` above 5 seconds without `STAMPS`. |
 | `auth.W002` | staging, production | `LOGIN_RATE = None`. |
@@ -276,7 +277,7 @@ application; a warning (`W`) is reported.
 
 | Command | Options | Purpose |
 | --- | --- | --- |
-| `createsuperuser` | `--<USERNAME_FIELD>`, `--<field>` per `REQUIRED_FIELDS`, `--noinput`, `--temporary`/`--no-temporary` | Create a superuser (and staff), asking for what the options leave out. With `--noinput`, values come from `<PREFIX>SUPERUSER_<FIELD>` (or a `_FILE`), and the password from `<PREFIX>SUPERUSER_PASSWORD`, which must pass the validators; without one the password is unusable. With `PASSWORD_CHANGE_ON_FIRST_USE`, a password read with `--noinput` changes at the first login, unless `--no-temporary`. A refused password is kept on request only without `PRESET` and outside staging and production. |
+| `createsuperuser` | `--<USERNAME_FIELD>`, `--<field>` per `REQUIRED_FIELDS`, `--noinput`, `--temporary`/`--no-temporary`, `--verify`, `--promote IDENTIFIER` | Create a superuser (and staff), asking for what the options leave out. With `--noinput`, values come from `<PREFIX>SUPERUSER_<FIELD>` (or a `_FILE`), and the password from `<PREFIX>SUPERUSER_PASSWORD`, which must pass the validators; without one the password is unusable. With `PASSWORD_CHANGE_ON_FIRST_USE`, a password read with `--noinput` changes at the first login, unless `--no-temporary`. A refused password is kept on request only without `PRESET` and outside staging and production. `--verify` proves the address and the number by codes typed at the prompt; `--promote` makes an existing user a superuser, named by its username, its id, or a value it proved ([commands](reference/commands.md#createsuperuser-make-a-user-who-may-do-everything)). |
 | `changepassword` | `[username]`, `--temporary`/`--no-temporary` | Ask twice for a new password that passes the validators and the history; three tries. The default user is your login name. Every token of the user ends. With `PASSWORD_CHANGE_ON_FIRST_USE`, the password of a user you name changes at the first login, unless `--no-temporary`. |
 | `createtoken` | `username`, `--name` (`cli`), `--days` (90), `--no-expiry`, `--scope` | Print a new opaque token for the user's scripts; it is shown once. Each `--scope KEY` limits it to that permission, which the user must have. `--name login` is refused. |
 | `cleartokens` | `--user` | Delete expired tokens, old step-ups, and expired transaction requests and action authorizations (hourly with `domainkit.contrib.messaging`), or every token of one user. |
