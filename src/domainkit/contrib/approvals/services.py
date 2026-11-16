@@ -231,8 +231,11 @@ async def record_submission(
     user reaches: that route would submit without the phone. It trusts its
     caller for who acts, as every service here: the guard's permission and
     its ``maker_rule``, which ``POST /requests`` asks of the maker, are
-    asked only when the command runs (``maker_not_allowed``). A guard
-    ``http=False`` is submitted too.
+    asked only when the command runs (``maker_not_allowed``), and only of
+    a maker that is a user's id, with ``domainkit.contrib.auth``
+    installed, on a connection without credentials, where a
+    ``maker_rule`` that reads them refuses. A maker that names no user is
+    never asked. A guard ``http=False`` is submitted too.
 
     Raises:
         UnknownAction: As for ``submit_request``.

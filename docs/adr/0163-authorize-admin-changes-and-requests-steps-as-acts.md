@@ -265,23 +265,30 @@ what a person must prove is the entrypoint's to ask.
   Each takes its service's command and unit of work and returns the
   request. The services run them: with a setting on, behind the spend of
   the authorization; off, as they are. So they refuse all the services
-  refuse but the missing authorization: a seal that does not hold, a
-  request no longer pending or whose time is up, the maker deciding, a
-  party to the command deciding, a second decision, another fingerprint,
-  a guard or policy gone, arguments that make no command, a reason too
-  long, and anyone but the maker withdrawing. The approval that
+  refuse but the missing authorization. A submission refuses an unknown
+  action, arguments that make no command, and a command no policy
+  holds. The other steps refuse a seal that does not hold and a request
+  no longer pending. A decision also refuses a request whose time is
+  up, the maker, a party to the command, a second decision, another
+  fingerprint (approving), and a guard or policy gone. A withdrawal
+  refuses anyone but the maker, and takes a request whose guard is gone,
+  or whose time is up before the worker marks it expired, as
+  `cancel_request` does. The approval that
   completes a request queues its command, and each step is an event the
-  trail records with the context's actor (`system` in a periodic task).
+  trail records with the context's actor (`system` in a periodic task,
+  and in a management command unless it sets `operator_actions`).
 - **Who acts is the caller's**, as for every service of approvals since
   ADR 0121: the routes take the maker and the approver from the principal
   and ask their rules (an approver of the policy, the approve rule,
   acting in one's own name, the model permissions, the guard's permission
-  and `maker_rule` at submission). The functions ask none of them; the
-  maker's are asked again when the command runs (FIN-93). With
-  `APPROVE_ACTION` off, the default, `approve_request` runs this very
-  function, so code already approved in the name it gave. The docs tell
-  code that acts for a person it did not authenticate to check them
-  first (`approvers_of`).
+  and `maker_rule` at submission). The functions ask none of them. The
+  run asks the maker's (FIN-93), but only of a maker that is a user's
+  id, with auth installed, on a connection without credentials, where a
+  `maker_rule` that reads them refuses; a maker that names no user is
+  never asked. With `APPROVE_ACTION` off, the default, `approve_request`
+  runs this very function, so code already approved in the name it
+  gave. The docs tell code that acts for a person it did not
+  authenticate to check them first (`approvers_of`).
 - **For the project's own code, never for a route a user reaches.** A
   call from a task and a call from a route look the same as they run,
   and an in-process handler of an event that a route commits runs inside

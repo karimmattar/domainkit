@@ -325,7 +325,7 @@ Six services change requests. Each takes a command and an
 | `submit_command(action, command, maker=...)` | the guard's own | Submits a command object. |
 | `submit_request` | `SubmitRequest(action, arguments, maker)` | Submits a command as JSON arguments, as the HTTP route does. |
 | `approve_request` | `ApproveRequest(request_id, approver, fingerprint)` | Approves; the approval that completes the request queues its command. |
-| `reject_request` | `RejectRequest(request_id, approver, reason)` | Rejects, with a reason of 1 to 500 characters, kept on the request. |
+| `reject_request` | `RejectRequest(request_id, approver, reason)` | Rejects, with a reason of at most 500 characters, kept on the request; the route asks for 1 at least. |
 | `cancel_request` | `CancelRequest(request_id, maker, reason="")` | Withdraws a pending request, as its maker. |
 | `expire_requests()` | none | Expires the pending requests whose time is up; returns how many. |
 
@@ -904,27 +904,44 @@ async def withdraw_stale() -> None:
             )
 ```
 
-- **They refuse what the services refuse**, but for the authorization: a
-  seal that does not hold (`request_tampered`), a request no longer
-  pending or whose time is up (`request_not_pending`), the maker deciding
-  (`maker_cannot_decide`), a party to the command deciding
-  (`interested_party`), a second decision (`already_decided`), another
-  fingerprint (`fingerprint_mismatch`), a guard or policy gone
-  (`policy_removed`), arguments that make no command and a reason too
-  long (`invalid_arguments`), and anyone but the maker withdrawing
-  (`not_the_maker`). The approval that completes a request queues its
-  command, and each step is an event, as from a route.
+- **They refuse what the services refuse**, but for the authorization.
+  Every step but a submission refuses a seal that does not hold
+  (`request_tampered`) and a request no longer pending
+  (`request_not_pending`).
+  A submission refuses an unknown action (`unknown_action`), arguments
+  that make no command or a maker of no characters, or more than 255
+  (`invalid_arguments`), and a command no policy holds
+  (`approval_not_needed`).
+  Approving and rejecting refuse a request whose time is up
+  (`request_not_pending`), the maker (`maker_cannot_decide`), a party to
+  the command (`interested_party`), a second decision
+  (`already_decided`), a guard or policy gone (`policy_removed`), and an
+  approver of no characters, or more than 255 (`invalid_arguments`);
+  approving refuses another fingerprint (`fingerprint_mismatch`), and
+  rejecting a reason over 500 characters.
+  Cancelling refuses anyone but the maker (`not_the_maker`) and a reason
+  over 500 characters. It withdraws a request whose guard or policy is
+  gone, or whose time is up before the worker marks it expired, as
+  `cancel_request` does.
+  The approval that completes a request queues its command, and each
+  step is an event, as from a route.
 - **The trail names who ran the code.** The request names the maker and
   the approvers the code gives; the audit row of each step names the
-  context's actor: `system` in a periodic task, the actor whose request
-  queued a task or committed an event, the operator of a management
-  command ([audit](audit.md)).
+  context's actor ([audit](audit.md)): `system` in a periodic task, the
+  actor whose request queued a task or committed an event. A management
+  command runs as `system` too, unless it sets `operator_actions`: then
+  it runs as the operator given with `--operator`
+  ([Operators](../reference/commands.md#operators)). Set it on a command
+  that decides or withdraws for someone, so the trail names who ran it.
 - **Who acts is the code's to answer for**, as for every service of
   approvals. The routes' rules are not asked: being an approver of the
   policy (its permission, its group, or its approver rule), the approve
   rule, acting in one's own name, the model permissions, and, at
-  submission, the guard's permission and `maker_rule`, which are asked
-  again when the command runs
+  submission, the guard's permission and `maker_rule`. The run asks
+  those of the maker only with `domainkit.contrib.auth` installed and a
+  maker that is a user's id, on a connection without credentials: a
+  `maker_rule` that reads credentials refuses there, and a maker that
+  names no user is never asked
   ([What maker-checker does not stop](#what-maker-checker-does-not-stop)).
   Code that acts for a person it did not authenticate, such as a command
   given a user's id, checks them first: `approvers_of(request)` lists who
