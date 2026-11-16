@@ -579,37 +579,57 @@ transaction may still roll back, and another row may hold the same name.
 Defer the removal, to run once the change has committed:
 
 ```python
+from datetime import timedelta
+
 from domainkit.storage.cleanup import remove_unreferenced
 
 
 async def replace_file(uow: DocumentsUnitOfWork, document_id: str, name: str) -> None:
     document = await uow.documents.get(document_id)
-    uow.defer(remove_unreferenced, names=[document.file])  # storage="default"
+    uow.defer(
+        remove_unreferenced,
+        names=[document.file],  # None, where there was none, is passed over
+        delay=timedelta(minutes=5),
+    )  # storage="default"
     document.file = name
     await uow.commit()
 ```
 
 And, beside the tables, in the infrastructure layer, declare each column
-that holds names of a storage's files, one name per row:
+that holds names of a storage's files, one name per row. In the
+framework's layout, where `table_for` makes the tables and
+`start_mappers()` maps the entities later, declare the tables' own
+columns, a link table's with no class included: the entities'
+attributes are no columns until they are mapped.
 
 ```python
+from domainkit.db import table_for
 from domainkit.storage.cleanup import keeps_files
 
-keeps_files(DocumentRow.file, TemplateRow.preview)  # storage="default"
+documents = table_for(Document, "documents", domain="documents")
+keeps_files(documents.c.file, attachments.c.file)  # storage="default"
 ```
+
+With declarative models, the mapped attributes will do:
+`keeps_files(DocumentRow.file, TemplateRow.preview)`.
 
 - The worker runs it after the commit, and again after a failure (it is
   a task of `domainkit.contrib.messaging`, registered as
   `domainkit.storage.remove_unreferenced`). A change that rolls back
   queues nothing, so its file stays.
 - Before it deletes a name, it asks each declared column whether a row
-  holds it, on the primary database of the column's model, never a
-  replica that may not have seen the commit. A name a row still holds
-  stays; one already gone is passed over.
+  holds it, on the primary database of the column's table (its domain's,
+  by `table_for(domain=...)` or `info={"domain": ...}`; untagged, its
+  mapped class's domain, else `default`), never a replica that may not
+  have seen the commit. A name a row still holds stays; one already
+  gone, and an empty one (`None`), are passed over.
 - With no column declared for the storage, it refuses
   (`ImproperlyConfigured`) and deletes nothing.
 - A transaction still open as it reads, which copies the name into a
   row, is not seen: copy the file (`save` it again) rather than its name.
+  A `delay` on the deferral, longer than any request takes, narrows the
+  window further: a request that read the old name has committed, or
+  failed, by then.
 - Without messaging, call `await remove_unreferenced([...])` yourself
   once the commit is done; nothing then runs it again after a failure.
 

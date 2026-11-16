@@ -133,12 +133,16 @@ Options considered:
   (`security.W007`) when `UPLOAD_SCANNER` reaches clamd on a host other
   than `localhost`, `127.0.0.1` or `::1` without `tls`.
 - `domainkit.storage.cleanup`: `keeps_files(*columns, storage=...)`
-  declares the mapped columns that hold a storage's names;
-  `remove_unreferenced(names, storage=...)` reads them on each model's
-  primary, and deletes the names no row holds; without a
-  declared column it refuses. `domainkit.contrib.messaging` registers it
-  as the task `domainkit.storage.remove_unreferenced`, so a use case
-  defers it with `uow.defer`.
+  declares the columns that hold a storage's names: a table's own
+  column, as the framework's layout makes tables with `table_for` and
+  maps entities later (link tables included), or a mapped attribute.
+  `remove_unreferenced(names, storage=...)` reads them on the primary of
+  each table's domain, and deletes the names no row holds, passing over
+  empty ones; without a declared column it refuses.
+  `domainkit.contrib.messaging` registers it as the task
+  `domainkit.storage.remove_unreferenced`, so a use case defers it with
+  `uow.defer`, with a `delay` to narrow the window in which a request
+  still copies the old name.
 
 ## Consequences
 

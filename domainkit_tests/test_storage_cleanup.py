@@ -9,11 +9,13 @@ on the primary, and deletes only what no row holds.
 """
 
 from collections.abc import AsyncIterator, Iterator
+from dataclasses import dataclass
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import String, insert, update
+from sqlalchemy import Column, MetaData, String, Table, insert, update
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import registry as mappers
 
 from domainkit import setup
 from domainkit.apps import registry
@@ -23,7 +25,7 @@ from domainkit.contrib.messaging.registry import get_task
 from domainkit.contrib.messaging.tables import inbox, messages, ordering_keys
 from domainkit.db import SqlAlchemyUnitOfWork, connections
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.storage import MemoryStorage, storages
+from domainkit.storage import MemoryStorage, cleanup, storages
 from domainkit.storage.cleanup import (
     REMOVE_TASK,
     forget_files,
@@ -123,21 +125,107 @@ async def test_nothing_is_removed_where_no_column_is_declared(
 
     with pytest.raises(ImproperlyConfigured, match="No column keeps names of the"):
         await remove_unreferenced([name])
-    with pytest.raises(TypeError, match="keeps_files takes mapped attributes"):
-        keeps_files(DocumentRow.__table__.c.file)
+
+    @dataclass
+    class Unmapped:
+        file: str | None = None
+
+    for wrong in (None, "file", Column("file", String(200)), Unmapped.file):
+        with pytest.raises(TypeError, match="keeps_files takes a table's column"):
+            keeps_files(wrong)
 
     assert await storage.exists(name)
 
 
 def test_a_column_is_declared_once() -> None:
-    """Declared again, by the same or another module: kept once."""
-    from domainkit.storage import cleanup
-
+    """Declared again, as its attribute or as its table's column: kept once."""
+    documents = DocumentRow.__table__.c
     keeps_files(DocumentRow.file)
+    keeps_files(documents.file, storage="media")
     keeps_files(DocumentRow.file, storage="media")
 
-    assert cleanup._kept["default"] == [DocumentRow.file, TemplateRow.preview]
-    assert cleanup._kept["media"] == [DocumentRow.file]
+    assert [column for column, _ in cleanup._kept["default"]] == [
+        documents.file,
+        TemplateRow.__table__.c.preview,
+    ]
+    assert cleanup._kept["media"] == [(documents.file, None)]
+
+
+@dataclass
+class Contract:
+    """An entity of the framework's layout, mapped onto its table imperatively."""
+
+    id: str
+    file: str | None = None
+
+
+contracts = Table(
+    "cleanup_contracts",
+    MetaData(),
+    Column("id", String(32), primary_key=True),
+    Column("file", String(200)),
+    info={"domain": "contracts"},
+)
+attachments = Table(
+    "cleanup_attachments",
+    contracts.metadata,
+    Column("contract_id", String(32)),
+    Column("file", String(200)),
+    info={"domain": "contracts"},
+)
+"""A link table: no class is mapped onto it."""
+
+
+async def test_columns_are_declared_beside_tables_as_the_framework_lays_them_out(
+    make_database: MakeDatabase,
+) -> None:
+    """``table_for`` tables, mapped in ``start_mappers()``: their columns count.
+
+    The entity's attribute is no column before it is mapped, and a link
+    table has no class: each table's column is declared beside it, and
+    read on the database its domain is routed to (user report U5).
+    """
+    keeps_files(contracts.c.file, attachments.c.file, storage="contracts")
+    mapper = mappers()
+    mapper.map_imperatively(Contract, contracts)
+    try:
+        keeps_files(Contract.file, storage="contracts")
+    finally:
+        mapper.dispose()
+    assert [column for column, _ in cleanup._kept["contracts"]] == [
+        contracts.c.file,
+        attachments.c.file,
+    ]
+    with override_settings(
+        DATABASES={
+            "default": {"URL": make_database("default")},
+            "paper": {"URL": make_database("paper")},
+        },
+        DATABASE_ROUTING={"contracts": "paper"},
+        STORAGES={"contracts": {"BACKEND": "domainkit.storage.MemoryStorage"}},
+    ):
+        storages.reset()
+        async with connections.engine("paper").begin() as connection:
+            await connection.run_sync(contracts.metadata.create_all)
+            signed, attached, dropped = [
+                await storages["contracts"].save(b"%PDF") for _ in range(3)
+            ]
+            await connection.execute(insert(contracts).values(id="c", file=signed))
+            await connection.execute(
+                insert(attachments).values(contract_id="c", file=attached)
+            )
+
+        await remove_unreferenced([signed, attached, dropped, None], "contracts")
+
+        storage = storages["contracts"]
+        assert isinstance(storage, MemoryStorage)
+        assert set(storage.files) == {signed, attached}
+        await connections.close_all()
+
+
+async def test_an_empty_name_is_passed_over(replicated: None) -> None:
+    """A nullable column's ``None``, deferred as is: nothing asked or deleted."""
+    await remove_unreferenced([None, ""])
 
 
 @pytest.fixture
