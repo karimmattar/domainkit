@@ -1264,6 +1264,53 @@ def test_a_fork_takes_loggings_lock_before_ours_as_dictconfig_does(
     assert len(made) == 1
 
 
+def test_a_fork_lets_dictconfig_replace_a_running_handler(
+    collect: Collect,
+    forks: "weakref.WeakSet[BackgroundListener]",
+    start_fork: Callable[[], Fork],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """While another thread holds ``logging``'s lock, the threads write on.
+
+    ``dictConfig`` holds it while it flushes and closes the handlers it
+    replaces, which waits for their thread: a fork that held the thread
+    while it waited for the lock made both wait ``FLUSH_TIMEOUT``. The fork
+    lets the threads go, waits for the lock, then holds them again.
+    """
+    monkeypatch.setattr(log, "FLUSH_TIMEOUT", 30.0)
+    old = BackgroundHandler.writing_to(collect)
+    old.handle(record("before"))
+    assert old.wait_written(10)
+    configuring, go_on = threading.Event(), threading.Event()
+    made: list[BackgroundHandler] = []
+
+    def configure() -> None:  # As ``dictConfig`` replacing ``old``.
+        with log._LOGGING_LOCK:
+            configuring.set()
+            go_on.wait(30)
+            old.handle(record("queued as the configuration changes"))
+            logging.shutdown([weakref.ref(old)])  # Flushes, then closes.
+            made.append(BackgroundHandler.writing_to(collect))
+
+    config = threading.Thread(target=configure, daemon=True)
+    config.start()
+    assert configuring.wait(10)
+    fork = start_fork()
+    waited = not fork.ready.wait(0.2)  # For logging's lock.
+    go_on.set()
+    config.join(10)  # A bound for a broken test, not a timing.
+    configured = not config.is_alive()
+    went_on = fork.ready.wait(10)
+    assert fork.finish()
+
+    assert waited
+    assert configured
+    assert not old._gave_up  # Its flush found the thread writing.
+    assert went_on
+    assert collect.lines == ["before", "queued as the configuration changes"]
+    made[0].close()
+
+
 def test_a_handler_that_forks_does_not_wait_for_its_own_thread(
     forks: "weakref.WeakSet[BackgroundListener]", monkeypatch: pytest.MonkeyPatch
 ) -> None:

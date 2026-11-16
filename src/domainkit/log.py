@@ -898,8 +898,12 @@ def _before_fork() -> None:
     no thread is changing the handlers then; ``logging``'s own hook takes
     its lock again, after this one. The threads' locks come first, as
     their handlers may take ``logging``'s while they write; ours last, as
-    ``dictConfig`` takes it under ``logging``'s. A thread started while
-    this waited is held too; none starts once ``_handlers_lock`` is held.
+    ``dictConfig`` takes it under ``logging``'s. While another thread holds
+    ``logging``'s lock, which may be ``dictConfig`` waiting for the threads
+    to write what an old handler queued, the fork lets them write on,
+    waits for the lock as ``logging``'s own hook would, then holds them
+    again. A thread started while this waited is held too; none starts
+    once ``_handlers_lock`` is held.
 
     Each lock is noted as it is taken. A signal handler that raises while
     this waits (Ctrl-C) leaves nothing taken.
@@ -922,8 +926,11 @@ def _hold_for_fork(held: list[_Held]) -> None:
             started = sorted(set(_listening) - paused, key=id)
         paused.update(started)
         _pause(started, held, deadline)
-        if _LOGGING_LOCK not in held:
+        if _LOGGING_LOCK not in held and not _take(_LOGGING_LOCK, held, 0):
+            _let_go(held)
+            paused.clear()
             _take(_LOGGING_LOCK, held, -1)
+            continue
         _take(_handlers_lock, held, -1)
         if paused.issuperset(_listening):
             return
