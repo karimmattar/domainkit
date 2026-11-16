@@ -64,7 +64,6 @@ from .models import (
     AbstractUser,
     PasswordHash,
     normalize_mobile_number,
-    same_email,
 )
 from .recovery import (
     IDENTIFIER_MAX_LENGTH,
@@ -74,6 +73,7 @@ from .recovery import (
     code_context,
     language_argument,
     language_of,
+    release,
     text_code,
 )
 from .repositories import PendingSignup
@@ -392,28 +392,8 @@ async def _unproved_holders(
 async def _release(
     uow: AuthUnitOfWork, holder: AbstractBaseUser, pending: PendingSignup
 ) -> None:
-    """Take the signup's address and number from ``holder``, who never proved them.
-
-    Their codes sent there stop working. A holder left with nothing that
-    logs it in (``AUTH.IDENTIFIERS``) is ended, as an erased account is:
-    deactivated, its password unusable, its tokens and second factor
-    deleted. Its data stays, for staff.
-    """
-    user = cast(AbstractUser, holder)
-    targets: list[str] = []
-    if pending.email and same_email(user.email, pending.email):
-        user.release_email()
-        targets.append(target_of(pending.email))
-    if pending.mobile_number and user.mobile_number == pending.mobile_number:
-        user.release_mobile_number()
-        targets.append(target_of(pending.mobile_number))
-    if any(getattr(user, name, None) for name in identifier_fields(type(user))):
-        await uow.verification_codes.forget(user.id, targets)
-        return
-    user.set_active(False)
-    if user.has_usable_password():
-        user.set_unusable_password()
-    await uow.users.forget_credentials(user.id)
+    """Take the signup's address and number from ``holder`` (``release``)."""
+    await release(uow, holder, email=pending.email, mobile_number=pending.mobile_number)
 
 
 def _account(

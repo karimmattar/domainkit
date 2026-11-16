@@ -22,6 +22,8 @@ from .factors import ScaChallenge as ScaChallenge
 from .factors import ScaStore as ScaStore
 from .factors import StepUpStore as StepUpStore
 from .factors import TotpDevice as TotpDevice
+from .identifiers import PendingIdentifier as PendingIdentifier
+from .identifiers import PendingIdentifierStore as PendingIdentifierStore
 from .principalstore import CREDENTIAL as CREDENTIAL
 from .principalstore import GRANT_COLUMNS as GRANT_COLUMNS
 from .principalstore import LOGIN as LOGIN

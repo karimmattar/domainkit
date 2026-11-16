@@ -245,8 +245,13 @@ def test_models_without_the_mark_get_no_verification_code(
         async def find(self, user_id: UserId) -> Any:  # noqa: ANN401 - the stand-in.
             return user
 
+    class Held:
+        async def get(self, user_id: UserId, field: str) -> None:
+            return None  # No new address held (ADR 0153).
+
     class StandIn:
         users = Users()
+        pending_identifiers = Held()
 
         async def __aenter__(self) -> "StandIn":
             return self

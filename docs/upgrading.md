@@ -62,6 +62,17 @@ domainkit.
   or staff set a password (`changepassword`). To send as 2.3 did while
   they do, set `AUTH.CODES_TO_UNPROVED = True`. A project that overrides
   `auth/signup_code_held` drops its advice to reset the password.
+- **A user's own new address or number waits for its code**
+  ([ADR 0153](adr/0153-hold-a-new-address-or-number-until-its-code-proves-it.md)).
+  `POST /auth/email-verification` takes `{"email"}`, and
+  `/mobile-verification` `{"mobile_number"}`: the new value is held, the
+  code goes to it, and the account keeps the one it has until the code
+  comes back. A route of your own that changed the user's address or
+  number with `update` replaced it at once, unproved, and since 2.4 that
+  costs the user their resets until they prove it: send the address and
+  the number to these routes instead. Staff's admin API still sets them
+  at once. These two routes refuse a body with any other key (`422`);
+  one without a body works as before. Run the migration below.
 - **Strict mode refuses unsigned password logins before the password.**
   With `CIBA.APPROVE_LOGINS = "always"`, `/login` and `/session` answer
   `403 phone_approval_required` to every request no bound device of the
@@ -152,6 +163,17 @@ Run `python manage.py makemigrations`, review the revision, then
 sign-in fails until the column exists. Requests started before have
 none, and follow `QR_SAME_NETWORK` as they did. A QR sign-in asks no
 number unless `QR_NUMBER_MATCHING`, or a page's policy, asks it.
+
+### Make and apply auth's migration for held addresses and numbers
+
+A new address or number a user asks to change to is held in a new table
+of auth's, `domainkit_pending_identifiers`, until its code comes back
+([ADR 0153](adr/0153-hold-a-new-address-or-number-until-its-code-proves-it.md)).
+Run `python manage.py makemigrations`, review the revision, then
+`migrate`, before the new code serves requests: the verification routes
+and their tasks, deleting or erasing a user, a signup that takes an
+address, a staff change of an address, and the hourly purge read or
+delete its rows, and fail until it exists.
 
 ### uvicorn becomes an extra in 3.0
 

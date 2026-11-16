@@ -632,6 +632,45 @@ class AbstractUser(AbstractBaseUser):
             self.mobile_number_verified = True
             self.record(MobileNumberVerified(user_id=self.id))
 
+    def change_email(self, address: str) -> None:
+        """Take a new address the user just proved: it replaces the current one.
+
+        For an address a code reached (ADR 0153), never for one typed in:
+        ``update`` sets an address unproved. Records ``UserUpdated``,
+        ``EmailChanged`` naming the address it replaced, and
+        ``EmailVerified``. The address the user has already is only
+        verified.
+        """
+        address = clean_email(address)
+        if address != self.email:
+            previous, proved = self.email, self.email_verified
+            self.email, self.email_verified = address, False
+            self.record(UserUpdated(user_id=self.id, fields=("email",)))
+            self.record(
+                EmailChanged(
+                    user_id=self.id, previous=previous or None, previous_verified=proved
+                )
+            )
+        self.verify_email()
+
+    def change_mobile_number(self, number: str) -> None:
+        """Take a new number the user just proved: it replaces the current one.
+
+        As ``change_email``, for a number: ``UserUpdated``,
+        ``MobileNumberChanged``, and ``MobileNumberVerified``.
+        """
+        number = normalize_mobile_number(number)
+        if number != self.mobile_number:
+            previous, proved = self.mobile_number, self.mobile_number_verified
+            self.mobile_number, self.mobile_number_verified = number, False
+            self.record(UserUpdated(user_id=self.id, fields=("mobile_number",)))
+            self.record(
+                MobileNumberChanged(
+                    user_id=self.id, previous=previous, previous_verified=proved
+                )
+            )
+        self.verify_mobile_number()
+
     def release_email(self) -> None:
         """Give up an address the user never proved: someone else proved it.
 
@@ -658,7 +697,9 @@ class AbstractUser(AbstractBaseUser):
         A new email records ``EmailChanged``, and a new mobile number
         ``MobileNumberChanged``, after ``UserUpdated``: each names the one
         it replaced, and whether the user had proved it, so that a handler
-        can tell the old address (ADR 0147).
+        can tell the old address (ADR 0147). The new one replaces it at
+        once, as staff set it; a user's own change waits for its code
+        instead (``/email-verification``, ``change_email``; ADR 0153).
 
         Raises:
             IdentifierRequired: The change would leave the user without a

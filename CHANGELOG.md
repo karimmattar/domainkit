@@ -472,6 +472,21 @@ and a status.
   names is there
   ([`docs`](docs/reference/commands.md#docs-link-a-page-of-the-documentation),
   ADR 0152) (user report D2).
+- A user changes their own email address or mobile number by proving the
+  new one first. `POST /auth/email-verification` takes `{"email"}`, and
+  `/mobile-verification` `{"mobile_number"}`: the value is held in a new
+  table, `domainkit_pending_identifiers` (`uow.pending_identifiers`), the
+  code goes to it, and the account keeps the one it has, which still logs
+  in and receives codes. The code makes the swap
+  (`AbstractUser.change_email`, `change_mobile_number`), and only then are
+  `EmailChanged` or `MobileNumberChanged` recorded. A held value lasts as
+  long as its last code (`AUTH.CODE_TTL`), reserves nothing (an account
+  that proved it first keeps it, `409`; one that never did gives it up),
+  and, in the phone modes, only a request the user's device signed holds
+  one. Staff still set a value at once, unproved, which drops the one the
+  user held. Run `makemigrations`, then `migrate`
+  ([Changing an address or a number](docs/auth/users.md#changing-an-address-or-a-number),
+  [upgrading.md](docs/upgrading.md#23-to-24), ADR 0153) (user report A2).
 
 ### Changed
 
@@ -662,6 +677,10 @@ and a status.
 
 ### Security
 
+- When staff change an address or a number through the admin API, the
+  codes sent to the old one stop working. A reset or enrollment code
+  mailed there before the change still opened the account until it
+  expired (ADR 0153) (user report A2).
 - `POST /devices/enroll/code` is counted per recipient too, against
   `AUTH.EMAIL_RATE`, as every other request that sends a code is. It was
   counted per client address only, so callers from many addresses could
