@@ -98,12 +98,13 @@ from .models import (
     UserId,
     normalize_mobile_number,
 )
-from .settings import AuthSettings, JWTSettings
+from .settings import AuthSettings, BreachedPasswordSettings, JWTSettings
 from .tokens import AuthToken, TokenKind
 from .uow import AuthUnitOfWork
 from .users import get_user_model
 from .validators import (
     PasswordValidationError,
+    avalidate_password,
     password_help_texts,
     validate_password,
 )
@@ -120,6 +121,7 @@ __all__ = [
     "AuthenticationFailed",
     "BaseAuthentication",
     "BaseBackend",
+    "BreachedPasswordSettings",
     "Credentials",
     "CurrentUser",
     "EmailTaken",
@@ -160,6 +162,7 @@ __all__ = [
     "acurrent_user",
     "amake_password",
     "authenticate",
+    "avalidate_password",
     "check_password",
     "current_user",
     "get_all_permissions",

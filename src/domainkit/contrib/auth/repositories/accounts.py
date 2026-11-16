@@ -360,7 +360,7 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
         ``username`` may be None where the user model allows it: the user
         then needs another identifier, such as an email address.
 
-        Passwords are hashed, not validated: call ``validate_password``
+        Passwords are hashed, not validated: call ``avalidate_password``
         first where people choose them.
 
         Raises:

@@ -1575,7 +1575,9 @@ Every call:
   or a body. Keep secrets out of paths, or use a guarded client, whose
   logs show only the origin. `log_paths=False` keeps the path out of the
   logs and of `CallTimeout`'s message too, for a path that carries
-  something the logs must not keep, such as a hash prefix.
+  something the logs must not keep: the
+  [breached-password check](auth/users.md#breached-passwords) sends a
+  hash prefix in its path.
 
 #### URLs someone else chose
 

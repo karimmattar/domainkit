@@ -156,6 +156,7 @@ statuses, and the amendments they name.
 | [0143](0143-fan-live-events-out-through-postgresql-or-redis.md) | Fan live events out through PostgreSQL or Redis | Accepted |
 | [0144](0144-authorize-one-act-not-a-window-of-time.md) | Authorize one act, not a window of time | Accepted |
 | [0145](0145-mount-part-of-a-router-as-a-copy.md) | Mount part of a router as a copy | Accepted |
+| [0148](0148-check-new-passwords-against-breaches-and-let-rules-be-async.md) | Check new passwords against breaches, and let password rules be async | Accepted |
 | [0152](0152-link-the-pages-the-code-names-to-the-releases-tag.md) | Link the pages the code names to the release's tag | Accepted |
 
 ### Decisions still without a record

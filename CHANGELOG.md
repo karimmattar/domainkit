@@ -11,10 +11,27 @@ and a status.
 
 ### Added
 
+- `AUTH.BREACHED_PASSWORDS = {"ENABLED": True}` checks every new password
+  (signup, change, reset, the admin API, a change at the first login or
+  at enrollment, the commands) against Have I Been Pwned's Pwned
+  Passwords range API, after `PASSWORD_VALIDATORS`, as NIST SP 800-63B
+  and ASVS 6.2.12 ask. Only five characters of the password's SHA-1 are
+  sent, padded (`Add-Padding: true`), through `domainkit.http.client`;
+  `URL` names a mirror, `TIMEOUT` (2 seconds) and `MIN_COUNT` (1) bound
+  it. An API that does not answer lets the password through with a
+  warning, or, with `FAIL_CLOSED`, refuses it with `503
+  breached_passwords_unavailable`. The refusal is in English and Arabic
+  ([Breached passwords](docs/auth/users.md#breached-passwords), ADR 0148,
+  user report A11).
+- Password rules may be `async`: `await avalidate_password(password, user)`
+  awaits them, and every route and command that sets a password calls
+  it. Refusals and help texts are translated into the request's
+  language as they are collected (ADR 0148, user report A11).
 - `HttpClient(log_paths=False)` logs each call's origin alone, and names
   no path in `CallTimeout`'s message, for paths that carry what logs must
   not keep, such as the breached-password check's hash prefix (user
   report A11).
+
 - While the broker is away, relaying workers run the outbox themselves:
   each relay has a breaker, as commits do, and while it is open the
   worker claims and runs the due messages of its queues, as a worker
@@ -417,6 +434,11 @@ and a status.
 
 ### Fixed
 
+- A password rule with `async def validate` was accepted and never ran:
+  nothing awaited it, so the password it should have refused was stored.
+  The routes and commands now await it, and `validate_password`, which
+  cannot, raises `ImproperlyConfigured` rather than skip it (ADR 0148,
+  user report A11).
 - `init`'s links to the documentation name a pre-release's tag
   (`v2.4.0rc1`), as its README's links do, not `main`. The fintech
   profile's last step prints the link of `fintech.md`, not a path the

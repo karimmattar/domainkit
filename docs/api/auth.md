@@ -22,6 +22,7 @@ Users, groups, and permissions for REST APIs (Django's `contrib.auth`).
 - `AuthenticationFailed`: Credentials were presented and do not hold (401, unless a subclass says).
 - `BaseAuthentication`: Recognizes no credentials and issues no tokens; override what you need.
 - `BaseBackend`: A backend that knows no one and grants nothing; override what you need.
+- `BreachedPasswordSettings`: `AUTH["BREACHED_PASSWORDS"]`: new passwords checked against data breaches.
 - `Credentials`: Who sent a request, and with what (`request.auth`).
 - `CurrentUser`: The request's user, or `AnonymousUser`: the core's dependency, typed so.
 - `EmailTaken`: Another user has that email address, and it identifies users.
@@ -62,6 +63,7 @@ Users, groups, and permissions for REST APIs (Django's `contrib.auth`).
 - `acurrent_user`: The core's `acurrent_user`, typed as this app's users: the same function.
 - `amake_password`: `make_password` on a hashing thread; raises `PasswordChecksBusy`.
 - `authenticate`: The user the credentials prove, by the first backend that accepts them.
+- `avalidate_password`: `validate_password` for async code: `async` validators are awaited.
 - `check_password`: Whether `password` matches `encoded`.
 - `current_user`: The core's `current_user`, typed as this app's users: the same function.
 - `get_all_permissions`: Keys of every permission any backend grants `user` (on `obj`).
@@ -300,6 +302,8 @@ Users and groups for tests, stored as the application stores them.
 
 Rules for new passwords (Django's `password_validation`).
 
+- `BreachedPasswordValidator`: Not seen in a data breach, as Have I Been Pwned's range API says.
+- `BreachedPasswordsUnavailable`: The breached-password check could not answer, and fails closed: 503.
 - `CommonPasswordValidator`: Not on a list of common passwords (default: Django's 20,000).
 - `LettersAndDigitsValidator`: At least one letter and one digit, as PCI DSS v4.0 asks (8.3.6).
 - `MinimumLengthValidator`: At least `min_length` characters (default 8).
