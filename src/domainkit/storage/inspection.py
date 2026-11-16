@@ -98,7 +98,7 @@ PDF_LIMITS: Final = {
     "dictionary_maximum_element_count": 10_000,
 }
 """pypdf's limits while a PDF is checked: a stream inflates to 32 MiB at most."""
-PDF_NODES: Final = 2_000_000
+PDF_NODES: Final = 1_000_000
 """Objects, entries and items a PDF check reads at most."""
 PDF_REFUSED_NAMES: Final = {
     "/JavaScript": SCRIPTS,

@@ -64,7 +64,7 @@ A new kind of route is a module of that shape and a method here (ADR 0025).
 
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from datetime import datetime
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter
@@ -83,8 +83,6 @@ from domainkit.http.access import Rule, check_object_permissions
 from domainkit.http.filters import FilterSet
 from domainkit.http.middleware import body_limit
 from domainkit.http.pagination import Pagination
-from domainkit.http.uploads import FileType
-from domainkit.storage.base import Storage
 from domainkit.utils.text import pluralize, snake_case
 
 from ..access import VIEW, Actions
@@ -116,8 +114,11 @@ from .listing import EXPORT_CHUNK as EXPORT_CHUNK
 from .listing import ListRoute
 from .queries import QueryRoute
 from .reading import ReadRoute
-from .uploading import UploadRoute
 from .values import to_domain as to_domain
+
+if TYPE_CHECKING:
+    from domainkit.http.uploads import FileType
+    from domainkit.storage.base import Storage
 
 
 class ResourceRouter(APIRouter):
@@ -504,9 +505,9 @@ class ResourceRouter(APIRouter):
         *,
         service: Service,
         field: str,
-        types: Iterable[FileType],
+        types: "Iterable[FileType]",
         max_size: int,
-        storage: Storage | str = "default",
+        storage: "Storage | str" = "default",
         directory: str = "",
         digest: str | None = None,
         returns: Returns = DEFAULT,
@@ -546,6 +547,8 @@ class ResourceRouter(APIRouter):
             ValueError: No type is taken, ``max_size`` is not positive, or
                 the body limit is out of bounds.
         """
+        from .uploading import UploadRoute  # Loaded by the routes that take files.
+
         UploadRoute(
             self,
             command,
