@@ -302,6 +302,15 @@ and a status.
   for an authorization, and an act may ask `["phone"]` with devices alone
   ([Confirming one act](docs/auth/devices.md#confirming-one-act), ADR
   0144) (user report A6).
+- `domainkit docs docs/live.md` (or `python manage.py docs`) prints the
+  link of a page that a docstring, a message, a `check` hint, or a
+  generated note names, for the release installed, under its tag;
+  `domainkit docs "ADR 0057"` links that release's index of decisions.
+  The wheel holds no `docs/`, so from an installed package these names
+  led nowhere. A test checks that every page and decision the code
+  names is there
+  ([`docs`](docs/reference/commands.md#docs-link-a-page-of-the-documentation),
+  ADR 0152) (user report D2).
 
 ### Changed
 
@@ -404,6 +413,10 @@ and a status.
 
 ### Fixed
 
+- `init`'s links to the documentation name a pre-release's tag
+  (`v2.4.0rc1`), as its README's links do, not `main`. The fintech
+  profile's last step prints the link of `fintech.md`, not a path the
+  project does not have (user report D2).
 - Enrolling a first device with a password staff set no longer spends the
   code before it asks for a new password: `403 password_change_required`,
   and `422 invalid_password` for a new one a rule refuses, are answered

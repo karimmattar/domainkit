@@ -34,8 +34,8 @@ python manage.py migrate --help
 python manage.py messages list --help
 ```
 
-`init` is the one command that runs before a project exists. You run it
-as `domainkit init`, or as `python -m domainkit init` where the
+`init` and `docs` are the commands that run before a project exists. You
+run them as `domainkit init`, or as `python -m domainkit init` where the
 `domainkit` script is not on the `PATH`.
 
 A command that fails prints `Error: <message>` on standard error and
@@ -134,6 +134,36 @@ test, a `Dockerfile`, and a CI workflow (`.github/workflows/ci.yml`).
 What `init` writes passes the project's own `ruff check` and
 `ruff format --check`. Its development group installs ruff, which also
 formats what the generators write.
+
+### `docs`: link a page of the documentation
+
+```bash
+domainkit docs docs/live.md
+domainkit docs "ADR 0057"
+```
+
+```text
+https://github.com/karimmattar/domainkit/blob/v2.3.0/docs/live.md
+https://github.com/karimmattar/domainkit/blob/v2.3.0/docs/adr/README.md
+```
+
+Docstrings, error messages, `check`'s hints, and the notes `init` and
+`startdomain` write name pages as `docs/<page>.md` and decisions as
+`ADR NNNN`. The installed package holds neither. `docs` prints the link
+of each one for the release installed, under its tag `vX.Y.Z`, which
+nobody moves or deletes, so the page is the text of that release
+([ADR 0152](../adr/0152-link-the-pages-the-code-names-to-the-releases-tag.md)).
+It needs no project; in one, `python manage.py docs` does the same.
+
+| Option | What it does |
+| --- | --- |
+| `[reference ...]` | The pages and decisions to link, one link per line, in order. A page is `docs/live.md` or `live.md`, with its `#anchor` if any. A decision, `ADR 0057`, gives the release's index of decisions: its row links the record and says what amended or replaced it. With none, the documentation's first page. Any other reference is refused, and nothing is printed. |
+
+The links name the release's tag for every version a release may have,
+`2.4.0rc1` included, and `main` for any other, such as a source
+checkout's `0.0.0+unknown`. Reading them needs github.com; offline, a
+clone of the repository at the tag (`git clone --branch vX.Y.Z`) holds
+the same pages.
 
 ### `startdomain`: create a domain
 

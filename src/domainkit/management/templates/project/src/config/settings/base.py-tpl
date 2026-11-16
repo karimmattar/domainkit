@@ -1,4 +1,9 @@
-"""Settings shared by every environment."""
+"""Settings shared by every environment.
+
+The pages these files name, docs/<page>.md, are domainkit's:
+``python manage.py docs docs/auth.md`` prints a page's link for the
+release installed.
+"""
 
 from pathlib import Path
 

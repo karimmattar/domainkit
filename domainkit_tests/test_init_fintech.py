@@ -29,6 +29,7 @@ from domainkit.management.commands.init import (
     EXTRAS,
     PROFILES,
     TEMPLATE_DIR,
+    docs_url,
     namespace_for,
     requirement,
 )
@@ -186,7 +187,11 @@ def test_fintech_writes_the_controls_over_the_project(tmp_path: Path) -> None:
         '  python manage.py makemigrations -m "fintech"',
         "  python manage.py migrate",
         "  python manage.py createsuperuser",
-        "  # Deploying: the controls and their settings, docs/fintech.md",
+        # A link: the project holds no docs/ (user report D2).
+        (
+            "  # Deploying: the controls and their settings, "
+            f"{docs_url(domainkit.__version__)}/fintech.md"
+        ),
         "  pytest",
     ]
     pyproject = tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))

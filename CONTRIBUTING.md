@@ -89,7 +89,11 @@ to `.ci/`. `make services-down` stops them and drops their data.
   release. Pages link to each other by relative paths; the README links to
   the files of `main` by absolute URLs, which CI's `build` points at the
   release's tag before it builds, so the PyPI page opens that release's
-  pages (INFRA-22).
+  pages (INFRA-22). Code names a page as `docs/<page>.md` (with its
+  `#anchor`, or its heading quoted) and a decision as `ADR NNNN`. The
+  wheel holds no `docs/`: `domainkit docs` links each one under the
+  release's tag (ADR 0152), and `test_docs.py` checks that each one is
+  there.
 - **Layers.** `domainkit.architecture` keeps each layer to its own imports,
   and the core never imports `domainkit.contrib`
   ([ADR 0080](docs/adr/0080-access-rules-are-core-auth-is-one-provider.md)).

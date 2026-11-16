@@ -57,6 +57,7 @@ from domainkit.contrib.messaging.settings import MessagingSettings
 from domainkit.contrib.notifications.settings import NotificationsSettings
 from domainkit.contrib.webhooks.settings import WebhooksSettings
 from domainkit.management import BUILTIN_COMMANDS, _find_commands
+from domainkit.management.commands.docs import link
 
 DOCS = Path(__file__).parents[1] / "docs"
 REFERENCE = "reference/*.md"
@@ -352,11 +353,20 @@ def cited_decisions(text: str) -> list[str]:
     ]
 
 
+def references(text: str) -> list[str]:
+    """Every page and decision a text names, as ``domainkit docs`` takes them."""
+    return [
+        f"docs/{path}#{anchor}" if anchor else f"docs/{path}"
+        for path, anchor, _ in named_pages(text)
+    ] + [f"ADR {number}" for number in cited_decisions(text)]
+
+
 def test_every_decision_the_code_cites_has_a_record() -> None:
     """``ADR 0057`` in a docstring, a message, or a template names a record.
 
     The index of decisions lists every record (the test below), so the
-    number leads to the record (user report D2).
+    link ``domainkit docs`` gives for it, the index, leads to the record
+    (user report D2).
     """
     problems = [
         f"{source.relative_to(ROOT)}: ADR {number}: no such record"
@@ -387,6 +397,40 @@ def test_the_cited_decisions_are_read_in_each_way_the_code_cites_them() -> None:
         "0042",
         "0062",
     ]
+    assert references("docs/live.md, ADR 0057, docs/databases.md#ledgers-immudb") == [
+        "docs/live.md",
+        "docs/databases.md#ledgers-immudb",
+        "ADR 0057",
+    ]
+
+
+def test_every_page_and_decision_the_code_names_links_into_its_release() -> None:
+    """From a wheel, which holds no docs/, each one links to a file of the tag.
+
+    A docstring, a message, a ``check`` hint, or a note a template writes
+    that names ``docs/live.md`` or ``ADR 0057`` reaches, through
+    ``domainkit docs``, a page of this commit, at its anchor, which the
+    release's tag keeps (ADR 0152, user report D2).
+    """
+    tag = f"{REPOSITORY}blob/v9.8.7/"
+    named = [
+        (source, reference, link(reference, "9.8.7"))
+        for source in sources()
+        for reference in references(source.read_text(encoding="utf-8"))
+    ]
+    problems = [
+        f"{source.relative_to(ROOT)}: {reference}: {problem}"
+        for source, reference, url in named
+        if (
+            problem := broken(
+                ROOT / "README.md", url.replace(tag, f"{REPOSITORY}blob/main/")
+            )
+        )
+    ]
+
+    assert len(named) > 200
+    assert all(url.startswith(f"{tag}docs/") for _, _, url in named)
+    assert problems == []
 
 
 def test_the_middleware_table_is_the_order_the_template_and_defaults_keep() -> None:
