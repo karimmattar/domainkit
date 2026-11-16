@@ -20,6 +20,13 @@ and a status.
   (`LazyString.source()`, new), and the application makes the string
   again (ADR 0167). `FileRefused`'s message is typed `str | LazyString`
   (follow-up of 2.5.0).
+- An `APIError` whose detail is a lazy string (`gettext_lazy`,
+  `ngettext_lazy`, `pgettext_lazy`), `UploadRefused` included, is
+  answered with its text in the caller's language, as a domain error's
+  lazy message is since 2.5.0
+  ([responses.md](docs/reference/responses.md#raising-an-error)). It was
+  answered with its code in words, in every language. `APIError` takes a
+  `LazyString` as its detail (follow-up of 2.5.0).
 
 ## [2.5.0] - 2026-11-16
 

@@ -18,7 +18,7 @@ from domainkit.apps import registry
 from domainkit.conf import Settings, override_settings
 from domainkit.ddd import BusinessRuleViolation, InvalidField
 from domainkit.http import get_asgi_application
-from domainkit.http.errors import error_response, install_exception_handlers
+from domainkit.http.errors import APIError, error_response, install_exception_handlers
 from domainkit.http.locale import LocaleMiddleware
 from domainkit.i18n import (
     LazyString,
@@ -591,6 +591,52 @@ def test_a_domain_refuses_with_a_lazy_string() -> None:
     assert arabic.json()["detail"] == "الطلب غير صالح."
     assert on_field.json()["errors"][0]["msg"] == "الطلب غير صالح."
     assert json.loads(bytes(built.body))["detail"] == "الطلب غير صالح."
+
+
+def test_an_api_error_is_answered_with_its_lazy_detail() -> None:
+    """In the caller's language, as a domain error's is (follow-up of 2.5.0).
+
+    The handler took only text: a lazy detail was answered with the code
+    in words, in every language, and so was an upload check's lazy
+    refusal (``UploadRefused``).
+    """
+    app = FastAPI()
+    install_exception_handlers(app)
+    details = {
+        "plain": gettext_lazy("The request is invalid."),
+        "plural": ngettext_lazy("{count} day", "{count} days", 2),
+        "context": pgettext_lazy("validation", "Field required"),
+    }
+
+    @app.get("/refused/{kind}")
+    async def refused(kind: str) -> None:
+        raise APIError(400, details[kind], code="refused")
+
+    client = TestClient(LocaleMiddleware(app))
+    answers = {
+        (kind, language): client.get(
+            f"/refused/{kind}",
+            headers={"Accept-Language": language} if language else {},
+        )
+        for kind in details
+        for language in ("ar", None)
+    }
+
+    assert {
+        key: (
+            response.status_code,
+            response.headers["Content-Language"],
+            response.json()["detail"],
+        )
+        for key, response in answers.items()
+    } == {
+        ("plain", "ar"): (400, "ar", "الطلب غير صالح."),
+        ("plain", None): (400, "en", "The request is invalid."),
+        ("plural", "ar"): (400, "ar", "يومان"),
+        ("plural", None): (400, "en", "{count} days"),
+        ("context", "ar"): (400, "ar", "هذا الحقل مطلوب"),
+        ("context", None): (400, "en", "Field required"),
+    }
 
 
 def test_the_settings_are_read_per_request(client: TestClient) -> None:

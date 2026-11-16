@@ -572,7 +572,9 @@ async def _checked(file: IO[bytes], candidates: list[FileType]) -> FileType:
     except NotOfType:
         raise _unsupported() from None
     except FileRefused as exc:
-        message = str(exc.message)  # A lazy one's text, in the request's language.
+        # Text now, in the request's language: the log line says what the
+        # answer says, wherever a handler formats it.
+        message = str(exc.message)
         logger.info("An upload was refused by its check: %s", message)
         raise UploadRefused(
             status.HTTP_422_UNPROCESSABLE_CONTENT, message, code=exc.code
