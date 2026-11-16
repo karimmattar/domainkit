@@ -8,7 +8,7 @@ by the act on the same file, and refused for another (ADR 0167).
 
 import sys
 from collections.abc import Iterator
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any, Final
 from urllib.parse import quote
 
@@ -154,3 +154,47 @@ def test_an_action_binds_uploads_by_content_never_by_their_storage_name(
     assert many.digest_of(twin) == many.digest_of(act) != many.digest_of(other)
     monkeypatch.delitem(sys.modules, "domainkit.storage.base")
     assert many.arguments(act)["files"][0]["name"] == "a/1.pdf"
+
+
+@dataclass(frozen=True)
+class Signed:
+    """A file, and who signed it: a value inside a command."""
+
+    signer: str
+    file: StoredUpload
+
+
+class AttachInside(Command):
+    """Uploads held deep in a command."""
+
+    product_id: str
+    signed: Signed
+    by_role: dict[str, StoredUpload]
+
+
+def test_an_upload_anywhere_is_bound_by_content_one_without_a_digest_by_name() -> None:
+    """In a value or a mapping too; with no SHA-256 there is no content to bind.
+
+    A file A's twin then matched a file B's act of the same type, size and
+    name (second review): such an upload keeps its storage's name.
+    """
+    inside = Action(
+        "shop.attach_inside",
+        command=AttachInside,
+        subject=lambda command: f"shop.product:{command.product_id}",
+        show=lambda command: Shown("Attach", {}),
+    )
+    stored = StoredUpload("a/1.pdf", "application/pdf", 3, "a.pdf", "1" * 64)
+    unstored = replace(stored, name="")
+
+    def command(file: StoredUpload) -> AttachInside:
+        return AttachInside(
+            product_id="p", signed=Signed("me", file), by_role={"buyer": file}
+        )
+
+    blank = replace(stored, sha256="")
+    assert inside.digest_of(command(unstored)) == inside.digest_of(command(stored))
+    assert inside.digest_of(command(replace(blank, name=""))) != inside.digest_of(
+        command(replace(blank, name="a/2.pdf"))
+    )
+    assert inside.arguments(command(blank))["signed"]["file"]["name"] == "a/1.pdf"

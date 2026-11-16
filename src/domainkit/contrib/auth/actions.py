@@ -63,7 +63,14 @@ import json
 import logging
 import re
 import sys
-from collections.abc import Awaitable, Callable, Collection, Iterable, Iterator
+from collections.abc import (
+    Awaitable,
+    Callable,
+    Collection,
+    Iterable,
+    Iterator,
+    Mapping,
+)
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import KW_ONLY, dataclass, field, replace
@@ -354,10 +361,10 @@ class Action:
     def arguments(self, command: object) -> dict[str, Any]:
         """``command`` read back as JSON, less the fields ``ignore`` names.
 
-        An uploaded file (``StoredUpload``, or a tuple or list of them) is
-        bound by its content: its type, size, file name and SHA-256, never
-        the name the storage gave it, which is new on every request (ADR
-        0167).
+        An uploaded file (``StoredUpload``), wherever it is in the command,
+        is bound by its content: its type, size, file name and SHA-256,
+        never the name the storage gave it, which is new on every request.
+        One without a SHA-256 is bound by its name (ADR 0167).
 
         Raises:
             TypeError: ``command`` is not the action's command.
@@ -421,17 +428,32 @@ class Action:
 def _by_content(value: object, dumped: Any) -> Any:  # noqa: ANN401 - JSON values.
     """``dumped``, the JSON of ``value``, without the storage's name of an upload.
 
-    The upload's class exists only once its module is loaded: a process
-    that never loaded it holds none, and loads nothing here.
+    Wherever the upload is: a field, a list, a mapping, a model or a
+    dataclass inside. One without its SHA-256 has no content to be bound
+    by, and keeps its name: it matches no other request. The upload's
+    class exists only once its module is loaded: a process that never
+    loaded it holds none, and loads nothing here.
     """
     module = sys.modules.get("domainkit.storage.base")
     upload: type | None = getattr(module, "StoredUpload", None)
     if upload is None:
         return dumped
     if isinstance(value, upload) and isinstance(dumped, dict):
+        if not getattr(value, "sha256", ""):
+            return dumped
         return {key: item for key, item in dumped.items() if key != "name"}
-    if isinstance(value, list | tuple) and isinstance(dumped, list):
+    if isinstance(dumped, list) and isinstance(value, list | tuple):
         return [_by_content(*pair) for pair in zip(value, dumped, strict=True)]
+    if isinstance(dumped, dict):
+        if isinstance(value, Mapping):
+            inside = {str(key): item for key, item in value.items()}
+            return {
+                key: _by_content(inside.get(key), item) for key, item in dumped.items()
+            }
+        return {
+            key: _by_content(getattr(value, key, None), item)
+            for key, item in dumped.items()
+        }
     return dumped
 
 
