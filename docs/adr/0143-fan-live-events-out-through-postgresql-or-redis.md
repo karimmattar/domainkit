@@ -1,6 +1,6 @@
 # 0143. Fan live events out through PostgreSQL or Redis
 
-- Status: Accepted
+- Status: Accepted; amended by [0157](0157-priorities-on-rabbitmq-an-unpartitioned-outbox-and-audit-trail-and-live-routes-in-several-processes.md)
 - Date: 2026-11-15
 
 ## Context

@@ -1536,6 +1536,14 @@ CronJob), at least once per period, so they keep coming. Run
 An existing table cannot be partitioned in place. Create the partitioned
 table, copy the rows, and swap the names in a migration.
 
+domainkit's own outbox (`domainkit_messages`) and audit trail are not
+partitioned, and `partition_by_range` refuses them: their key is `id`
+alone, and the uniqueness they rely on (one row per id, and one outbox
+row per dedupe key) would hold only within each partition. Old rows
+leave them in small batches instead: the outbox's cleanup
+(`RETENTION_SECONDS`), and `audit prune`, which keeps the audit chain
+verifiable ([ADR 0157](adr/0157-priorities-on-rabbitmq-an-unpartitioned-outbox-and-audit-trail-and-live-routes-in-several-processes.md)).
+
 ## Fixtures
 
 A fixture is a JSON file of rows. `dumpdata` writes one, and `loaddata`

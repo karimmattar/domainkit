@@ -512,6 +512,11 @@ and a status.
   timeout) is `BrokerUnavailable`, which opens the publishing breaker; it
   was `BrokerRefused`, which kept it closed through an outage (user
   report W9).
+- The pages say why the outbox and the audit trail are not partitioned
+  by time (`partition_by_range` refuses them), and what keeps them small
+  instead: the outbox's cleanup, and `audit prune` below a checkpoint
+  ([Partitioning](docs/databases.md#partitioning), ADR 0157) (user report
+  W9).
 - FCM's `404` without `UNREGISTERED` is no longer a token gone: a wrong
   `PROJECT_ID` could answer so, and every token sent to would have been
   forgotten. It is tried again (user report N2).

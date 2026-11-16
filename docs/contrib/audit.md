@@ -490,6 +490,14 @@ From code, `prune(database, before=..., ledger=...)` returns a `Pruned`
 (`database`, `checkpoint`, `rows`), or raises `PruneRefused`, having
 deleted nothing.
 
+The trail is not partitioned by time, and `partition_by_range` refuses
+it. A row that commits late is sealed later, with a higher number, so a
+month's partition can hold rows above the checkpoint: dropping it by age
+would break the chain, which `audit verify` reports as tampering. A
+`TRUNCATE` of one partition would also skip the trail's triggers, which
+guard the table it names. `audit prune` deletes by the chain instead
+([ADR 0157](../adr/0157-priorities-on-rabbitmq-an-unpartitioned-outbox-and-audit-trail-and-live-routes-in-several-processes.md)).
+
 **Exports for a third party.** `python manage.py audit verify --export
 checkpoints.json` verifies every trail. Then it writes a new file (mode
 `0600`) with each database's stored checkpoints and one of its current
