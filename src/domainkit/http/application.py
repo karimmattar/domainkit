@@ -156,10 +156,15 @@ def get_asgi_application() -> FastAPI:
     _report(problems, "The application has problems")
     setattr(app.state, BUILT_PROBLEMS, tuple(problems))
     if settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
+        # Imported where deployed only: a process imports what it uses.
+        from domainkit.http.live_events import fanout_warnings
+
         # The server's own command line, here.
         for warning in server_warnings(app):
             logger.warning(warning)
         for warning in unix_socket_warnings(settings.TRUSTED_PROXIES):
+            logger.warning(warning)
+        for warning in fanout_warnings(app.routes):
             logger.warning(warning)
     return app
 

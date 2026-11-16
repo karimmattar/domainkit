@@ -6,6 +6,14 @@ persistent and ``mandatory``, and publishing waits for the broker's
 confirmation, so a message is either safely queued or the publisher knows
 it is not. Consumers acknowledge each message after its work is recorded.
 
+Each message carries its task's priority as its AMQP priority
+(``amqp_priority``). Quorum queues hand out their waiting messages by it
+with no argument to declare: from RabbitMQ 4.3 strictly, by 32 levels
+(0 to 31, 4 for a message without one); from 4.0, two high ones (above 4)
+for each normal one. They ignore ``x-max-priority``, which only classic
+queues read, and which no declared queue could gain later: RabbitMQ
+refuses a queue declared again with other arguments (ADR 0157).
+
 Every call to the broker has a deadline: ``CONNECT_TIMEOUT`` for opening the
 connection and channels, declaring, setting the prefetch, and starting or
 stopping consumers, and ``PUBLISH_TIMEOUT`` for each confirmation. A broker
@@ -53,6 +61,27 @@ type Connect = Callable[..., Awaitable[AbstractConnection]]
 
 QUEUE_ARGUMENTS: Final = {"x-queue-type": "quorum"}
 """Replicated, durable queues; change them only with a policy (they are fixed)."""
+UNSET_PRIORITY: Final = 4
+"""The AMQP priority a quorum queue gives a message without one (RabbitMQ 4.3)."""
+TOP_PRIORITY: Final = 31
+"""A quorum queue's highest priority level; higher ones count as it."""
+
+
+def amqp_priority(priority: int) -> int:
+    """The AMQP priority of a message whose task has ``priority`` (-100 to 100).
+
+    0 is 4, what a quorum queue gives a message without one, so a task that
+    names none waits with messages that other publishers sent without one.
+    1 to 100 spread over 5 to 31, and -100 to -1 over 0 to 3, in order, so
+    a higher priority never maps lower. RabbitMQ 4.0 to 4.2 count only
+    above 4 as high: a positive priority is high there, the rest normal.
+    """
+    if priority > 0:
+        levels = TOP_PRIORITY - UNSET_PRIORITY
+        return UNSET_PRIORITY + -(-priority * levels // 100)
+    if priority < 0:
+        return UNSET_PRIORITY - -(priority // 25)
+    return UNSET_PRIORITY
 
 
 def ssl_context(config: BrokerConfig) -> ssl.SSLContext | None:
@@ -123,6 +152,8 @@ class _RabbitMQSubscription(Subscription):
 
 class RabbitMQBroker(Broker):
     """Work queues on RabbitMQ, for one ``BROKERS`` entry."""
+
+    priorities = True
 
     def __init__(
         self, config: BrokerConfig, connect: Connect = aio_pika.connect_robust
@@ -218,14 +249,21 @@ class RabbitMQBroker(Broker):
         async with _translated():
             await self._declare_on(channel, queues)
 
-    async def publish(self, queue: str, body: bytes, *, message_id: str) -> None:
-        """Publish a persistent, mandatory message and wait for its confirmation."""
+    async def publish(
+        self, queue: str, body: bytes, *, message_id: str, priority: int = 0
+    ) -> None:
+        """Publish a persistent, mandatory message and wait for its confirmation.
+
+        ``priority`` (-100 to 100) is sent as the message's AMQP priority
+        (``amqp_priority``).
+        """
         _, exchange = await self._publisher()
         message = aio_pika.Message(
             body,
             message_id=message_id,
             content_type="application/json",
             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
+            priority=amqp_priority(priority),
         )
         async with _translated():
             await exchange.publish(

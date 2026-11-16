@@ -167,6 +167,13 @@ option, from uvicorn's command line above:
 `check` sees Granian's options only as its variables (`GRANIAN_*`), as
 [below](#websocket-message-size).
 
+It counts the worker processes the same way, for `live.W003` (live
+routes served by several processes without a fan-out,
+[live.md](../live.md#every-processs-events)): `--workers` in the
+server's own process; elsewhere `WEB_CONCURRENCY` (which uvicorn and
+gunicorn read), `UVICORN_WORKERS`, `GRANIAN_WORKERS`, or `-w` in
+`GUNICORN_CMD_ARGS`.
+
 ## WebSocket message size
 
 `--ws-max-size` stops a WebSocket message before it is read whole.

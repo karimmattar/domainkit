@@ -70,6 +70,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from domainkit import clock, deadlines
 from domainkit.apps import registry
 from domainkit.broker import Broker, BrokerError
+from domainkit.broker.base import publish_with_priority
 from domainkit.conf import settings
 from domainkit.context import SYSTEM_ACTOR, RequestContext, bind_request
 from domainkit.db import connections, dbclock
@@ -787,7 +788,7 @@ class Worker:
             update(messages)
             .where(messages.c.id.in_(due))
             .values(locked_until=dbclock.at(dialect, lease), lock_id=lock_id)
-            .returning(messages.c.id, messages.c.queue)
+            .returning(messages.c.id, messages.c.queue, messages.c.priority)
         )
         try:
             async with self.engine.begin() as connection:
@@ -833,9 +834,10 @@ class Worker:
     ) -> None:
         """Declare new queues, then publish each pointer, all at once.
 
-        The broker's confirmations go to ``confirmed``, its refusals to
-        ``failures``; a queue that failed is declared again next time (it
-        may be gone: deleted, purged).
+        Each goes with its message's priority, to a broker that takes one
+        (``Broker.priorities``). The broker's confirmations go to
+        ``confirmed``, its refusals to ``failures``; a queue that failed is
+        declared again next time (it may be gone: deleted, purged).
         """
         declared = self._declared.setdefault(broker, set())
         if new := {row.queue for row in rows} - declared:
@@ -846,15 +848,19 @@ class Worker:
                 return
             declared |= new
 
-        async def publish(message_id: uuid.UUID, queue: str) -> None:
+        async def publish(message_id: uuid.UUID, queue: str, priority: int) -> None:
             pointer = {
                 "id": str(message_id),
                 "database": self.database,
                 "lock": str(lock_id),
             }
             try:
-                await broker.publish(
-                    queue, json.dumps(pointer).encode(), message_id=str(message_id)
+                await publish_with_priority(
+                    broker,
+                    queue,
+                    json.dumps(pointer).encode(),
+                    message_id=str(message_id),
+                    priority=priority,
                 )
             except BrokerError as exc:
                 logger.debug("Could not publish %s to %r: %s", message_id, queue, exc)
@@ -865,7 +871,7 @@ class Worker:
 
         async with asyncio.TaskGroup() as group:
             for row in rows:
-                group.create_task(publish(row.id, row.queue))
+                group.create_task(publish(row.id, row.queue, row.priority))
 
     async def _settle(
         self,

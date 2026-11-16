@@ -50,7 +50,7 @@ import logging
 import threading
 import uuid
 from collections import deque
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager, suppress
 from functools import cache
 from typing import Any, Final, Protocol
@@ -59,17 +59,21 @@ from weakref import WeakKeyDictionary
 import anyio
 from pydantic import TypeAdapter, ValidationError
 from starlette.requests import HTTPConnection
+from starlette.routing import BaseRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
 
+from domainkit.apps import registry
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS, LiveFanoutConfig
+from domainkit.db.uow import MESSAGING
 from domainkit.ddd import DomainEvent, EventBus, event_bus
 from domainkit.ddd.events import inherits_actor
 from domainkit.ddd.personal import personal_fields
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import check_scopes_bounded, current_user
-from domainkit.http.live import TOO_SLOW, Closed, Closure, send_queue
+from domainkit.http.live import TOO_SLOW, Closed, Closure, live_routes, send_queue
 from domainkit.http.live_fanout import Sender, backend
+from domainkit.http.servers import server_processes
 from domainkit.http.sse import EventSourceResponse, ServerSentEvent
 from domainkit.tasks import supervise
 
@@ -536,23 +540,61 @@ live_events: Final = LiveEvents()
 """The process's live events, fed by the global ``event_bus``."""
 
 
-def fanout_warnings() -> list[str]:
-    """``live.W003``: shared event types with no ``LIVE_FANOUT``, where deployed.
+def fanout_warnings(routes: Sequence[BaseRoute] = ()) -> list[str]:
+    """``live.W003``: events that stay in process where several commit them.
 
-    Domains share them so that every process's clients see them; without a
-    backend, a client sees only those its own process committed, and none
-    the worker did.
+    Where deployed, with no ``LIVE_FANOUT``: domains share event types, so
+    that every process's clients see them; or, among ``routes``, live
+    routes (WebSockets, event streams) are served while more than one
+    process commits events: the server's worker processes
+    (``servers.server_processes``), or the worker of
+    ``domainkit.contrib.messaging``. A client then sees only the events its
+    own process committed (user report L1). One process alone, the server
+    not found, or no live route is not warned. A failure to tell is logged,
+    never raised: the application logs these when it starts.
     """
     if (
         settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS
         or settings.LIVE_FANOUT.BACKEND is not None
-        or not live_events.shared
     ):
         return []
-    names = ", ".join(sorted(each.__qualname__ for each in live_events.shared))
+    if live_events.shared:
+        names = ", ".join(sorted(each.__qualname__ for each in live_events.shared))
+        warning = (
+            f"Domains share live events ({names}), and LIVE_FANOUT names no "
+            "backend: a client sees only those its own process committed, and "
+            'none the worker did. Set LIVE_FANOUT = {"BACKEND": "postgres"} (or '
+            '"redis").'
+        )
+        return [warning]
+    served = live_routes(routes)
+    committers = _committers() if served else []
+    if not committers:
+        return []
+    shown = ", ".join(served[:3])
+    if len(served) > 3:
+        shown += f", and {len(served) - 3} more"
     warning = (
-        f"Domains share live events ({names}), and LIVE_FANOUT names no backend: "
-        "a client sees only those its own process committed, and none the worker "
-        'did. Set LIVE_FANOUT = {"BACKEND": "postgres"} (or "redis").'
+        f"Live routes ({shown}) are served, events are committed by "
+        f"{' and by '.join(committers)}, and LIVE_FANOUT names no backend: a "
+        "client sees only the events its own process committed. Share the "
+        "types clients watch (live_events.share) and set LIVE_FANOUT = "
+        '{"BACKEND": "postgres"} (or "redis"); silence live.W003 if these routes '
+        "stream no committed events."
     )
     return [warning]
+
+
+def _committers() -> list[str]:
+    """What commits events in processes other than a client's, if anything."""
+    found = []
+    try:
+        processes = server_processes()
+    except Exception:
+        logger.exception("Could not tell how many processes the server starts")
+        processes = None
+    if processes is not None and processes > 1:
+        found.append(f"the server's {processes} worker processes")
+    if registry.is_installed(MESSAGING):
+        found.append("the messaging worker")
+    return found

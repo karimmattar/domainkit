@@ -104,6 +104,21 @@ domainkit.
   `@handles(Event, durable=True, name="billing.notify",
   formerly=["domains.billing.controllers.notify"])`. `check` names the
   key in its hint. Keep `formerly=` until those messages have run.
+- **Task priorities count on RabbitMQ.** Each message carries its
+  task's priority, and from RabbitMQ 4.0 a queue hands out higher ones
+  first, among the messages waiting in it. A project whose tasks name a
+  priority sees them go out in that order; one whose tasks name none
+  sees no change ([Priorities on RabbitMQ](contrib/messaging.md#priorities-on-rabbitmq)).
+  Under Redis Streams, NATS JetStream, Kafka or SQS, `check --deploy`
+  warns about tasks that name a priority (`messaging.W004`): give urgent
+  work a queue of its own, or silence it.
+- **Live routes served by several processes want a fan-out.** `check
+  --deploy` warns (`live.W003`) when the application serves WebSocket or
+  event-stream routes, `LIVE_FANOUT` names no backend, and the server
+  starts several worker processes or messaging is installed. Share the
+  event types the routes stream and set `LIVE_FANOUT`
+  ([Every process's events](live.md#every-processs-events)), or silence
+  it if they stream no committed events.
 - **Two durable handlers under one key are refused.** Two functions
   with one `module.QualName` (closures made by one factory, methods of
   two instances) shared a key, and workers ran the last one subscribed

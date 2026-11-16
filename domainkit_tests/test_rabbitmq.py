@@ -54,6 +54,7 @@ from domainkit_tests.test_messaging_inbox import (
     failing_once,
     inbox_rows,
 )
+from domainkit_tests.test_messaging_policies import high, low
 
 SERVERS: Final = {
     "fake": "amqp://domainkit:domainkit@fake-rabbitmq:5672/",
@@ -185,6 +186,31 @@ async def test_requeued_messages_come_back(server: Server) -> None:
         await broker.close()
 
     assert received == [("default", b"once", "m")]
+
+
+async def test_waiting_messages_go_out_by_priority(server: Server) -> None:
+    """A quorum queue hands out its waiting messages by priority (user report W9).
+
+    Published 0, -50, then 50, before anyone consumes: RabbitMQ 4.3 hands
+    them out by its 32 levels, and 4.0 to 4.2 the high one (above 4) first,
+    then the normal ones in order; both give 50, 0, -50. Without
+    priorities, the queue would give them in the order they came.
+    """
+    broker = server.broker()
+    try:
+        await broker.declare(["default"])
+        for priority in (0, -50, 50):
+            await broker.publish(
+                "default", b"%d" % priority, message_id="m", priority=priority
+            )
+        inbox = Inbox()
+        subscription = await broker.consume(["default"], 1, inbox)
+        received = await inbox.wait(3)
+        await subscription.cancel()
+    finally:
+        await broker.close()
+
+    assert [body for _, body, _ in received] == [b"50", b"0", b"-50"]
 
 
 async def test_answers_the_broker_cannot_take_are_broker_errors(
@@ -389,6 +415,46 @@ async def test_brokered_messaging_end_to_end(brokered: Server) -> None:
         )
         == 1
     )
+
+
+async def test_the_relay_publishes_each_message_with_its_tasks_priority(
+    brokered: Server,
+) -> None:
+    """The broker holds the messages by their tasks' priorities (user report W9).
+
+    The relay publishes a low and a plain task, then a high one in a round
+    of its own, so the queue holds them in that order. Without priorities,
+    RabbitMQ would hand the high one out last.
+    """
+    async with connections.engine().begin() as connection:
+        await connection.run_sync(messages.create)
+    with override_settings(
+        MESSAGING={**FAST, "BROKER": "work", "PUBLISH_ON_COMMIT": False}
+    ):
+        worker = Worker(registry.settings(MessagingSettings))
+        broker = brokers["work"]
+        try:
+            await enqueue(low, label="low")
+            await enqueue(remember, value=uuid.UUID(int=1))
+            assert await worker._relay(broker, 10) == 2
+            await enqueue(high, label="high")
+            assert await worker._relay(broker, 10) == 1
+            inbox = Inbox()
+            subscription = await broker.consume(["default"], 1, inbox)
+            received = await inbox.wait(3)
+            await subscription.cancel()
+        finally:
+            await brokers.close_all()
+    targets = {str(row["id"]): row["target"] for row in await outbox()}
+    await connections.close_all()
+
+    (plain,) = set(targets.values()) - {"tests.high", "tests.low"}
+    order = [targets[json.loads(body)["id"]] for _, body, _ in received]
+    assert order == ["tests.high", plain, "tests.low"]
+    if brokered.fake is not None:  # Priorities 50, 0, -10: AMQP's 18, 4, 3.
+        priorities = [message.priority for _, message, *_ in brokered.fake.published]
+        assert len(priorities) == 3
+        assert set(priorities) == {3, 4, 18}
 
 
 async def test_work_in_flight_never_exceeds_the_budget(brokered: Server) -> None:

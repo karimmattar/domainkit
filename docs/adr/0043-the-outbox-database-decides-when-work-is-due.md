@@ -1,6 +1,6 @@
 # 0043. Let the outbox's database decide when work is due, and wake workers
 
-- Status: Accepted; amended 2026-10-25 (at the end)
+- Status: Accepted; amended 2026-10-25 (at the end); amended by [0157](0157-priorities-on-rabbitmq-an-unpartitioned-outbox-and-audit-trail-and-live-routes-in-several-processes.md)
 - Date: 2026-10-20; amended 2026-10-25 (idle polls back off, the cleanup's index)
 
 ## Context

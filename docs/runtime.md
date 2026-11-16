@@ -673,7 +673,8 @@ count the outbox at most once per `METRICS_TTL` seconds (15) in each
 process. Scrapes that arrive during a count share it.
 
 The outbox is not partitioned: see
-[ADR 0043](adr/0043-the-outbox-database-decides-when-work-is-due.md).
+[ADR 0043](adr/0043-the-outbox-database-decides-when-work-is-due.md) and
+[ADR 0157](adr/0157-priorities-on-rabbitmq-an-unpartitioned-outbox-and-audit-trail-and-live-routes-in-several-processes.md).
 
 ## The event loop
 

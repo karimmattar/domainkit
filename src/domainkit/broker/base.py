@@ -10,6 +10,7 @@ away before that goes to another. Adapters translate their failures into
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
+from typing import Protocol, cast
 
 from domainkit.exceptions import DomainkitError
 
@@ -60,6 +61,15 @@ class Broker(ABC):
     a publication cut short (a crash, a stop) is retried soon after.
     """
 
+    priorities: bool = False
+    """Whether the broker hands out a queue's waiting messages by priority.
+
+    An adapter that does says so, and its ``publish`` takes ``priority``
+    too: the message's, from -100 to 100, higher first, as tasks give it
+    (``publish_with_priority``). The others are never given one, so an
+    adapter written before brokers had priorities keeps working (ADR 0157).
+    """
+
     @abstractmethod
     async def declare(self, queues: Iterable[str]) -> None:
         """Create the queues if they do not exist yet."""
@@ -79,3 +89,27 @@ class Broker(ABC):
 
     async def close(self) -> None:  # noqa: B027 - optional, for connections.
         """Release connections; the broker is not used afterwards."""
+
+
+class _Prioritized(Protocol):
+    """The ``publish`` of a broker whose ``priorities`` is true."""
+
+    async def publish(
+        self, queue: str, body: bytes, *, message_id: str, priority: int
+    ) -> None:
+        """Hand ``body`` to ``queue`` with ``priority``."""
+
+
+async def publish_with_priority(
+    broker: Broker, queue: str, body: bytes, *, message_id: str, priority: int
+) -> None:
+    """Publish through ``broker``, with ``priority`` if it takes one.
+
+    Only a broker whose ``priorities`` is true is given it; the others
+    hand out messages in the order they came.
+    """
+    if broker.priorities:
+        prioritized = cast(_Prioritized, broker)
+        await prioritized.publish(queue, body, message_id=message_id, priority=priority)
+    else:
+        await broker.publish(queue, body, message_id=message_id)

@@ -30,7 +30,7 @@ import random
 import threading
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from dataclasses import dataclass
-from typing import Any, Final, TypedDict, Unpack
+from typing import Any, Final, TypedDict, Unpack, get_type_hints
 
 import anyio
 from fastapi import status
@@ -264,6 +264,37 @@ def unchecked_routes(routes: Sequence[BaseRoute]) -> list[str]:
                 "permission until they close. Give it an interval."
             )
     return found
+
+
+def live_routes(routes: Sequence[BaseRoute]) -> list[str]:
+    """The routes that keep live connections open: WebSockets and event streams.
+
+    An event stream is a route whose endpoint says it returns an
+    ``EventSourceResponse``, as a route that returns ``live_events.stream``
+    does. The framework's own routes are left out, as ``open_routes``
+    leaves them.
+    """
+    from domainkit.http.access import served_routes  # It imports this module.
+
+    return [
+        name
+        for name, dependant in served_routes(routes)
+        if name.startswith("WEBSOCKET ") or streams(dependant)
+    ]
+
+
+def streams(dependant: Dependant | None) -> bool:
+    """Whether the route's endpoint answers an ``EventSourceResponse``: a stream."""
+    from domainkit.http.sse import EventSourceResponse  # It imports this module.
+
+    call = None if dependant is None else dependant.call
+    if call is None:
+        return False
+    try:
+        returned = get_type_hints(call).get("return")
+    except (NameError, TypeError):
+        return False
+    return isinstance(returned, type) and issubclass(returned, EventSourceResponse)
 
 
 def _calls(dependant: Dependant) -> Iterator[object]:

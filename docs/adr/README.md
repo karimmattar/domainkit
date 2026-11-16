@@ -64,7 +64,7 @@ statuses, and the amendments they name.
 | [0040](0040-store-files-under-random-names.md) | Store files under random names; trust only their content | Accepted |
 | [0041](0041-privacy-through-personal-markers.md) | Answer privacy requests from Personal markers, through units of work | Accepted |
 | [0042](0042-lease-publications-and-break-the-circuit.md) | Lease publications, and stop publishing on commit while the broker fails | Accepted |
-| [0043](0043-the-outbox-database-decides-when-work-is-due.md) | Let the outbox's database decide when work is due, and wake workers | Accepted; amended 2026-10-25 (at the end) |
+| [0043](0043-the-outbox-database-decides-when-work-is-due.md) | Let the outbox's database decide when work is due, and wake workers | Accepted; amended 2026-10-25 (at the end); amended by [0157](0157-priorities-on-rabbitmq-an-unpartitioned-outbox-and-audit-trail-and-live-routes-in-several-processes.md) |
 | [0044](0044-one-concurrency-budget-per-worker-process.md) | Run one concurrency budget per worker process | Accepted |
 | [0045](0045-own-background-tasks-per-loop.md) | Own background tasks per event loop, started in clean contexts | Accepted; amended 2026-10-25 (at the end) |
 | [0046](0046-one-shutdown-budget-in-phases.md) | Shut down in phases within one budget | Accepted; amended 2026-10-25 and 2026-10-26 (at the end) |
@@ -153,7 +153,7 @@ statuses, and the amendments they name.
 | [0140](0140-auth-asks-other-apps-through-hooks.md) | Auth asks other apps through hooks | Accepted |
 | [0141](0141-codes-that-open-an-account-go-only-where-it-was-proved.md) | Codes that open an account go only where it was proved | Accepted |
 | [0142](0142-while-the-broker-is-away-relaying-workers-run-the-outbox.md) | While the broker is away, relaying workers run the outbox | Accepted |
-| [0143](0143-fan-live-events-out-through-postgresql-or-redis.md) | Fan live events out through PostgreSQL or Redis | Accepted |
+| [0143](0143-fan-live-events-out-through-postgresql-or-redis.md) | Fan live events out through PostgreSQL or Redis | Accepted; amended by [0157](0157-priorities-on-rabbitmq-an-unpartitioned-outbox-and-audit-trail-and-live-routes-in-several-processes.md) |
 | [0144](0144-authorize-one-act-not-a-window-of-time.md) | Authorize one act, not a window of time | Accepted |
 | [0145](0145-mount-part-of-a-router-as-a-copy.md) | Mount part of a router as a copy | Accepted |
 | [0146](0146-show-gates-how-a-login-was-made-and-let-a-login-keep-shorter-limits.md) | Show gates how a login was made, and let a login keep shorter limits | Accepted |
@@ -165,6 +165,7 @@ statuses, and the amendments they name.
 | [0152](0152-link-the-pages-the-code-names-to-the-releases-tag.md) | Link the pages the code names to the release's tag | Accepted |
 | [0153](0153-hold-a-new-address-or-number-until-its-code-proves-it.md) | Hold a new address or number until its code proves it | Accepted |
 | [0155](0155-choose-number-matching-and-the-same-network-per-page.md) | Choose number matching and the same network per page | Accepted |
+| [0157](0157-priorities-on-rabbitmq-an-unpartitioned-outbox-and-audit-trail-and-live-routes-in-several-processes.md) | Priorities on RabbitMQ, an unpartitioned outbox and audit trail, and live routes in several processes | Accepted |
 | [0159](0159-read-a-replica-only-while-it-is-known-to-be-within-its-bound.md) | Read a replica only while it is known to be within its bound | Accepted |
 
 ### Decisions still without a record

@@ -31,6 +31,7 @@ from domainkit.broker import (
     Handler,
     Subscription,
 )
+from domainkit.broker.base import publish_with_priority
 
 try:
     from .metrics import observe_breaker
@@ -139,6 +140,7 @@ class Watched(Broker):
         self.inner = ref(broker)
         self.breaker = breaker
         self.publish_timeout = broker.publish_timeout
+        self.priorities = broker.priorities
 
     def _broker(self) -> Broker:
         """The broker watched; it lives as long as its loop."""
@@ -151,9 +153,16 @@ class Watched(Broker):
         """Declare through the broker; only failures count."""
         await self._watch(self._broker().declare(queues), confirms=False)
 
-    async def publish(self, queue: str, body: bytes, *, message_id: str) -> None:
-        """Publish through the broker; a confirmation closes the breaker."""
-        call = self._broker().publish(queue, body, message_id=message_id)
+    async def publish(
+        self, queue: str, body: bytes, *, message_id: str, priority: int = 0
+    ) -> None:
+        """Publish through the broker; a confirmation closes the breaker.
+
+        ``priority`` reaches only a broker that takes one (``priorities``).
+        """
+        call = publish_with_priority(
+            self._broker(), queue, body, message_id=message_id, priority=priority
+        )
         await self._watch(call, confirms=True)
 
     async def consume(

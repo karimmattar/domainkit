@@ -23,6 +23,7 @@ from domainkit.db import SqlAlchemyUnitOfWork
 from domainkit.db.hooks import on_committed, on_stage
 from domainkit.db.routing import DatabaseRouter, router
 from domainkit.ddd import DeferredTask, DomainEvent, event_bus
+from domainkit.exceptions import ImproperlyConfigured
 from domainkit.lifecycle import Phase
 
 from . import runs
@@ -99,6 +100,7 @@ class MessagingConfig(DomainConfig):
         on_deployment_warnings(self.unnamed_tasks)
         on_deployment_warnings(self.unnamed_handlers)
         on_deployment_warnings(self.small_pools)
+        on_deployment_warnings(self.unkept_priorities)
 
     async def stage_outbox(
         self,
@@ -204,6 +206,43 @@ class MessagingConfig(DomainConfig):
                 )
             )
         return found
+
+    def unkept_priorities(self) -> list[CheckMessage]:
+        """``messaging.W004``: task priorities the broker drops, where deployed.
+
+        The outbox hands out its due messages by priority, but a broker
+        hands out what it holds. RabbitMQ's quorum queues do so by the
+        priority each message carries; Redis Streams, NATS JetStream, Kafka,
+        SQS, and a ``BACKEND`` whose ``priorities`` is false hand them out
+        in the order they came (user report W9, ADR 0157).
+        """
+        from domainkit.broker import brokers
+        from domainkit.broker.handler import broker_class
+
+        from .registry import all_tasks
+
+        alias = self.get_settings().BROKER
+        if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS or alias is None:
+            return []
+        try:
+            kind = broker_class(brokers.config(alias))
+        except ImproperlyConfigured:  # The worker refuses it when it starts.
+            return []
+        named = sorted(spec.key for spec in all_tasks() if spec.priority)
+        if kind.priorities or not named:
+            return []
+        return [
+            CheckMessage(
+                "messaging.W004",
+                f"Tasks name a priority ({', '.join(map(repr, named))}), and "
+                f"MESSAGING.BROKER ({alias!r}, a {kind.__name__}) hands out "
+                "messages in the order they came: a priority orders only the "
+                "messages that wait in the outbox, not those the broker holds.",
+                hint="Give urgent work a queue of its own, run by workers of its "
+                "own (@task(queue=...), runworker --queue ...); or use RabbitMQ "
+                "4.0 or later, whose queues take priorities.",
+            )
+        ]
 
     def unnamed_handlers(self) -> list[CheckMessage]:
         """``messaging.W002``: durable handlers without ``name=``, where deployed.
