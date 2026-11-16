@@ -9,6 +9,18 @@ and a status.
 
 ## [Unreleased]
 
+### Fixed
+
+- An upload check that refuses a file with a lazy string
+  (`gettext_lazy`, `ngettext_lazy`, `pgettext_lazy`) is answered 422 in
+  the caller's language, as a domain error's lazy message is
+  ([uploads.md](docs/uploads.md#checks-of-your-own)). It was a 500 for
+  every file it refused: the check's process has no settings to make the
+  string text. The process now sends the lookup and its arguments
+  (`LazyString.source()`, new), and the application makes the string
+  again (ADR 0167). `FileRefused`'s message is typed `str | LazyString`
+  (follow-up of 2.5.0).
+
 ## [2.5.0] - 2026-11-16
 
 2.5 answers a third report from the project that runs an identity

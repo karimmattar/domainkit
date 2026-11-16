@@ -687,26 +687,41 @@ translated if the catalogs have it), and `NotOfType` when the file is
 not of the type after all, so that the next type that matches is tried.
 The process has no settings and none of the application's environment:
 a check takes what it needs as arguments of its own (an object's
-fields), and its `message` is text (`gettext_noop` marks it for
-translators; a lazy string cannot be made text there, and is a 500).
-What it prints goes to the process's standard error, which is logged
-only when the check fails. Keep its module cheap to import: the
+fields). What it prints goes to the process's standard error, which is
+logged only when the check fails. Keep its module cheap to import: the
 process imports it for each upload.
 
 ```python
 from typing import IO
 
 from domainkit.http.uploads import TEXT, FileType
+from domainkit.i18n.lazy import ngettext_lazy
 from domainkit.inspection import FileRefused
 
 
 def no_formulas(file: IO[bytes]) -> None:
-    if b"=cmd|" in file.read():
-        raise FileRefused("Files with commands are not accepted.")
+    if found := file.read().count(b"=cmd|"):
+        raise FileRefused(
+            ngettext_lazy(
+                "The file holds a command.", "The file holds commands.", found
+            )
+        )
 
 
 CSV = FileType("text/csv", ".csv", TEXT.matches, no_formulas)
 ```
+
+A check's `message` is text, translated where it is shown
+(`gettext_noop` marks it for the catalogs), or a lazy string of
+`gettext_lazy`, `ngettext_lazy` or `pgettext_lazy` (since 2.6; 2.5
+answered it 500). Making a lazy string text reads the settings, which
+the process does not have: it sends the lookup and its arguments
+instead (`LazyString.source`), and the application makes the string
+again. The refusal is answered in the caller's language, as a domain
+error's lazy message is. A text filled with values
+(`gettext_lazy(...).format(...)`) is made at once, in the process, and
+is a 500. `ngettext_lazy` picks the plural form for its count, and
+fills nothing in.
 
 ## Virus scanning
 

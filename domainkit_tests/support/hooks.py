@@ -15,7 +15,12 @@ from pathlib import Path
 from typing import IO
 
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.i18n.lazy import gettext_lazy
+from domainkit.i18n.lazy import (
+    LazyString,
+    gettext_lazy,
+    ngettext_lazy,
+    pgettext_lazy,
+)
 from domainkit.inspection import FileRefused
 
 
@@ -88,7 +93,32 @@ def measured(file: IO[bytes]) -> None:
 
 def lazy(file: IO[bytes]) -> None:
     """Refuse with a lazy message, which needs settings to be text."""
-    raise FileRefused(gettext_lazy("Files with secrets are not accepted."))  # type: ignore[arg-type]
+    raise FileRefused(gettext_lazy("Files with secrets are not accepted."))
+
+
+def lazy_count(file: IO[bytes]) -> None:
+    """Refuse in the plural form for the secrets the file holds."""
+    found = file.read().count(b"SECRET")
+    raise FileRefused(
+        ngettext_lazy("The file holds a secret.", "The file holds secrets.", found)
+    )
+
+
+def lazy_in_context(file: IO[bytes]) -> None:
+    """Refuse with a lazy message looked up in a context."""
+    raise FileRefused(pgettext_lazy("upload", "Refused."))
+
+
+def lazy_of_its_own(file: IO[bytes]) -> None:
+    """Refuse with a lazy string of a function of its own, which needs no settings."""
+    raise FileRefused(LazyString(str.upper, "files with secrets are not accepted."))
+
+
+def lazy_otherwise(file: IO[bytes]) -> None:
+    """Refuse with a lazy string made by hand from a lookup, which needs settings."""
+    from domainkit.i18n import translation
+
+    raise FileRefused(LazyString(translation.gettext, "Refused."))
 
 
 def exits(file: IO[bytes]) -> None:

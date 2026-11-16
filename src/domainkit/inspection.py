@@ -106,6 +106,7 @@ from typing import IO, TYPE_CHECKING, Any, Final, Literal, Self
 from urllib.parse import unquote, urlsplit
 
 from domainkit.exceptions import DomainkitError, ImproperlyConfigured, ServiceBusy
+from domainkit.i18n.lazy import LazyString, gettext_lazy, ngettext_lazy, pgettext_lazy
 
 if TYPE_CHECKING:
     from pypdf import PdfReader
@@ -359,13 +360,14 @@ DECLARATIONS: Final = ("<!DOCTYPE", "<!ENTITY")
 class FileRefused(DomainkitError):
     """The file is of its type, but holds what is not accepted.
 
-    ``message`` is safe to show, in English, and text (the HTTP layer
-    translates it; a check's process has no settings to make a lazy
-    string text); ``code`` is the problem's: ``unsafe_file`` by default,
-    or ``unreadable_file``. ``save_upload`` answers it 422.
+    ``message`` is safe to show: text, in English, which the HTTP layer
+    translates, or a lazy string (``gettext_lazy``, ``ngettext_lazy``,
+    ``pgettext_lazy``), made text in the caller's language. ``code`` is
+    the problem's: ``unsafe_file`` by default, or ``unreadable_file``.
+    ``save_upload`` answers it 422.
     """
 
-    def __init__(self, message: str, *, code: str = "unsafe_file") -> None:
+    def __init__(self, message: str | LazyString, *, code: str = "unsafe_file") -> None:
         """Say why, and with which code."""
         super().__init__(message)
         self.message = message
@@ -1310,6 +1312,17 @@ OOM_SCORE: Final = "/proc/self/oom_score_adj"
 """Where Linux reads whom its out-of-memory killer ends first (1000: this one)."""
 CODE: Final = re.compile(r"[a-z][a-z0-9_]{0,63}")
 """A problem code a check may answer with."""
+MAX_MESSAGE: Final = 500
+"""The most characters the parent keeps of a check's message, or of a text it names."""
+LOOKUPS: Final[dict[str, tuple[Callable[..., LazyString], tuple[type, ...]]]] = {
+    "gettext": (gettext_lazy, (str,)),
+    "ngettext": (ngettext_lazy, (str, str, int)),
+    "pgettext": (pgettext_lazy, (str, str)),
+}
+"""The lookups a check's lazy refusal may name (``LazyString.source``), what
+makes each again in the parent, and the types of its arguments."""
+MAX_COUNT: Final = 2**64 - 1
+"""The largest count a refusal's ``ngettext`` may name: C's ``unsigned long``."""
 BUSY: Final = "Uploads cannot be checked now; try again later."
 TOO_LONG: Final = "The file took too long to check."
 TOO_MUCH: Final = "The file needed too much memory to check."
@@ -1347,10 +1360,11 @@ async def run_checks(
     class that is.
 
     Raises:
-        FileRefused: A check refused the file, or its process was stopped:
-            past its clock or CPU (``unreadable_file``, too long), out of
-            memory as it said (too much), or by another signal, logged
-            (the file could not be read).
+        FileRefused: A check refused the file (a lazy message is made
+            again here, from the lookup its process named), or its process
+            was stopped: past its clock or CPU (``unreadable_file``, too
+            long), out of memory as it said (too much), or by another
+            signal, logged (the file could not be read).
         NotOfType: No check took it.
         ServiceBusy: ``processes`` checks run already (503).
         ImproperlyConfigured: A check's library is not installed.
@@ -1542,7 +1556,8 @@ def _verdict(found: dict[str, Any], count: int, tail: str) -> int:
     read an untrusted file, and could say anything.
 
     Raises:
-        FileRefused: A check refused it, or the answer is of no known shape.
+        FileRefused: A check refused it, with text or a lookup's lazy
+            string (``_lazy``), or the answer is of no known shape.
         NotOfType: No check took it.
         ImproperlyConfigured: A check's library is not installed.
         RuntimeError: A check failed otherwise; logged with ``tail``, the
@@ -1551,21 +1566,51 @@ def _verdict(found: dict[str, Any], count: int, tail: str) -> int:
     took = found.get("took")
     if isinstance(took, int) and 0 <= took < count:
         return took
-    message = found.get("refused")
-    if isinstance(message, str):
+    refused = found.get("refused")
+    message = refused[:MAX_MESSAGE] if isinstance(refused, str) else _lazy(refused)
+    if message is not None:
         code = found.get("code")
         valid = isinstance(code, str) and CODE.fullmatch(code)
-        raise FileRefused(message[:500], code=code if valid else UNSAFE)  # type: ignore[arg-type]
+        raise FileRefused(message, code=code if valid else UNSAFE)  # type: ignore[arg-type]
     if found.get("none") is True:
         raise NotOfType
     if isinstance(missing := found.get("improperly"), str):
-        raise ImproperlyConfigured(missing[:500])
+        raise ImproperlyConfigured(missing[:MAX_MESSAGE])
     if isinstance(failed := found.get("failed"), str):
         logger.error("A check of an upload failed in its process: %s", tail)
         raise RuntimeError(
             f"A check of an upload failed in its process: {failed[:100]}."
         )
     raise FileRefused(DAMAGED, code=UNREADABLE)
+
+
+def _lazy(named: object) -> LazyString | None:
+    """The lazy string a process's refusal names, or None if it names none.
+
+    ``{"lookup": "ngettext", "arguments": ["A page.", "Pages.", 3]}``, and
+    nothing else: a lookup of ``LOOKUPS``, with as many arguments as it
+    takes, each of its exact type (a count is not a boolean). A text is
+    cut to ``MAX_MESSAGE`` characters, as a plain message is; a count is
+    from 0 to ``MAX_COUNT``. The process read an untrusted file: it may
+    name texts to look up, never code to run.
+    """
+    if not isinstance(named, dict) or named.keys() != {"lookup", "arguments"}:
+        return None
+    lookup, arguments = named["lookup"], named["arguments"]
+    known = LOOKUPS.get(lookup) if isinstance(lookup, str) else None
+    if known is None or not isinstance(arguments, list):
+        return None
+    make, types = known
+    if [type(value) for value in arguments] != list(types) or any(
+        isinstance(value, int) and not 0 <= value <= MAX_COUNT for value in arguments
+    ):
+        return None
+    return make(
+        *(
+            value[:MAX_MESSAGE] if isinstance(value, str) else value
+            for value in arguments
+        )
+    )
 
 
 def _serve(config: dict[str, Any], source: IO[bytes], sink: IO[bytes]) -> None:
@@ -1604,10 +1649,23 @@ def _checked(
                 continue
             return {"took": index}
     except FileRefused as refused:
-        return {"refused": refused.message, "code": refused.code}
+        return {"refused": _named(refused.message), "code": refused.code}
     except ImproperlyConfigured as missing:
         return {"improperly": str(missing)}
     return {"none": True}
+
+
+def _named(message: object) -> object:
+    """A refusal's message as the parent reads it: text, or a lazy string's lookup.
+
+    The process has no settings to make a lazy string text: it names the
+    lookup and its arguments (``LazyString.source``), and the parent makes
+    the string again (``_lazy``). Any other message is made text here.
+    """
+    if isinstance(message, LazyString) and (source := message.source()) is not None:
+        lookup, arguments = source
+        return {"lookup": lookup, "arguments": arguments}
+    return str(message)
 
 
 def _limit(memory: int, seconds: float) -> None:

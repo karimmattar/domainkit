@@ -186,7 +186,7 @@ def verdict(check: PdfCheck | OfficeCheck, data: bytes) -> str:
     try:
         check(io.BytesIO(data))
     except FileRefused as refused:
-        return refused.message if refused.code == "unsafe_file" else refused.code
+        return str(refused.message) if refused.code == "unsafe_file" else refused.code
     except NotOfType:
         return "not of type"
     return "ok"
