@@ -845,7 +845,8 @@ def test_forked_children_start_over(
 ) -> None:
     """A child gets a new queue and no thread; its first record starts one.
 
-    And a new turnstile: the fork held the parent's.
+    And a new turnstile, which nothing asks it to wait at: the fork held
+    the parent's.
     """
     handler = BackgroundHandler.writing_to(collect, maxsize=7)
     handler.handle(record("parent"))
@@ -856,8 +857,9 @@ def test_forked_children_start_over(
     for name in ("_handlers_lock", "_listening"):  # Put back after.
         monkeypatch.setattr(log, name, getattr(log, name))
     monkeypatch.setattr(log, "_forking", log._Forks())
-    log._forking.held.append([parents_turnstile])
-    parents_turnstile.acquire()  # As the fork left it.
+    assert handler.listener is not None
+    log._forking.held.append([log._Pause(handler.listener), parents_turnstile])
+    parents_turnstile.acquire()  # As the fork left them.
 
     log._after_fork_in_child()
 
@@ -867,6 +869,7 @@ def test_forked_children_start_over(
     assert handler.listener.queue is handler.queue
     assert not handler.listener.running
     assert turnstile_of(handler) is not parents_turnstile
+    assert handler.listener._forks == []
     assert list(log._listening) == []  # No thread in the child yet.
     assert log._forking.held == []
     handler._count_dropped(logging.INFO)  # As if the child's own queue was full.
@@ -994,9 +997,9 @@ def taken(lock: Any) -> bool:  # noqa: ANN401 - a Lock or an RLock.
 
 
 def where_writes_lock(handler: BackgroundHandler) -> tuple[Any, str]:
-    """Where the lock is that ``handler``'s thread writes under: its listener's."""
+    """Where the lock is that ``handler``'s thread writes under: its handler's."""
     assert handler.listener is not None
-    return handler.listener, "_writing"
+    return handler.listener.handlers[0], "lock"
 
 
 def write_lock(handler: BackgroundHandler) -> Any:  # noqa: ANN401 - an RLock.
@@ -1009,7 +1012,8 @@ def all_free(handler: BackgroundHandler, *locks: Any) -> bool:  # noqa: ANN401
     assert handler.listener is not None
     mine = (handler.listener._turnstile, write_lock(handler))
     others = (log._LOGGING_LOCK, log._handlers_lock, *locks)
-    return all(map(free_to_others, (*mine, *others)))
+    asked = bool(handler.listener._forks)
+    return not asked and all(map(free_to_others, (*mine, *others)))
 
 
 def until(condition: Callable[[], bool]) -> bool:
@@ -1390,6 +1394,53 @@ def test_the_child_of_a_nested_fork_lets_go_of_nothing_after_the_outer_one(
     log._after_fork_in_parent()  # The outer fork's, which would raise on ``reset``.
 
     assert log._forking.held == []
+
+
+def test_a_fork_waits_for_a_write_through_the_same_handler_from_another_thread(
+    held: Collect,
+    forks: "weakref.WeakSet[BackgroundListener]",
+    start_fork: Callable[[], Fork],
+) -> None:
+    """The fork takes the handler's lock, which every write through it holds.
+
+    A handler behind the queue may also be a logger's own, written to on
+    the caller's thread, as a plain handler is: that write is waited for too.
+    """
+    handler = BackgroundHandler.writing_to(held)
+    assert handler.listener is not None
+    handler.listener.start()
+    caller = threading.Thread(target=held.handle, args=(record("from a caller"),))
+    caller.start()
+    assert held.entered.wait(10)
+
+    fork = start_fork()
+    waited = not fork.ready.wait(0.2)
+    held.resume.set()
+    went_on = fork.ready.wait(10)
+    assert fork.finish()
+    caller.join(10)
+
+    assert waited
+    assert went_on
+    assert fork.holds(held.lock)
+    handler.close()
+
+
+def test_a_handler_without_a_lock_is_not_waited_for(
+    forks: "weakref.WeakSet[BackgroundListener]", start_fork: Callable[[], Fork]
+) -> None:
+    """``NullHandler`` writes nothing, and has no lock."""
+    handler = BackgroundHandler.writing_to(logging.NullHandler())
+    handler.handle(record("nowhere"))
+    assert handler.wait_written(10)
+
+    fork = start_fork()
+    went_on = fork.ready.wait(10)
+    assert fork.finish()
+
+    assert went_on
+    assert fork.holds(turnstile_of(handler))
+    handler.close()
 
 
 class Interrupted(BaseException):

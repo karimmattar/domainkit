@@ -11,8 +11,8 @@ waiting, and the count is logged once there is room again. The last tenth
 of the queue is kept for warnings and errors (``WARNING_RESERVE``), so a
 flood of lower records cannot crowd out a security event. Shutdown waits
 for the queue to drain, within ``FLUSH_TIMEOUT``. A fork waits for the
-thread to finish the record it is writing, so a child never inherits a
-stream in the middle of a write.
+thread to finish the write in progress, so a child never inherits a
+stream in the middle of one.
 
 ``JsonFormatter`` writes the line ``json.dumps`` wrote, byte for byte, in
 40% less time. ``AccessSampler`` decides which access lines to write when
@@ -447,9 +447,10 @@ class BackgroundListener(logging.handlers.QueueListener):
     """The logging thread: takes records off the queue and writes them.
 
     Handler levels are respected, and a handler that fails is reported
-    through its ``handleError`` without stopping the thread. The thread
-    holds a lock of the listener's while it writes a record, and a fork
-    takes it first (``_before_fork``).
+    through its ``handleError`` without stopping the thread. Each handler
+    writes under its own lock, as ``logging`` has it do; a fork takes those
+    locks, and has the thread wait at its turnstile before its next record
+    (``_before_fork``).
     """
 
     def __init__(
@@ -465,19 +466,17 @@ class BackgroundListener(logging.handlers.QueueListener):
         self.queue: queue.Queue[Any] = records
         self._worker: threading.Thread | None = None
         self._starting = threading.Lock()
-        self._writing = threading.RLock()
-        """Held by the thread while it writes a record, and by a fork.
-
-        Reentrant: a handler that forks, on the thread, does not wait for
-        itself."""
         self._turnstile = threading.RLock()
-        """Held by a fork; the thread passes it before each record.
+        """Held by a fork, which the thread waits for before its next record.
 
         A lock goes to whoever asks first once it is let go, and the thread
-        asks again at once for its next record: without this, a fork
-        could wait for ``_writing`` as long as records keep coming.
-        Reentrant, as a signal handler on the thread that holds it may
-        fork."""
+        would take its handlers' locks again at once for its next record: a
+        fork could wait for them as long as records keep coming. Reentrant,
+        as a signal handler on the thread that holds it may fork."""
+        self._forks: list[object] = []
+        """The forks under way that asked the thread to wait at the turnstile.
+
+        Read on every record, as a list, which costs no call."""
 
     @property
     def running(self) -> bool:
@@ -506,7 +505,11 @@ class BackgroundListener(logging.handlers.QueueListener):
             try:
                 handler.handle(record)
             except Exception:  # noqa: BLE001 - one handler must not stop the thread.
-                handler.handleError(record)
+                handler.acquire()  # It writes, as it does from ``emit``, under it.
+                try:
+                    handler.handleError(record)
+                finally:
+                    handler.release()
 
     def flush(self, timeout: float = FLUSH_TIMEOUT) -> bool:
         """Wait until what was queued before now is written; False after ``timeout``.
@@ -551,21 +554,21 @@ class BackgroundListener(logging.handlers.QueueListener):
         self.queue = records
         self._worker = None
         self._starting = threading.Lock()
-        self._writing = threading.RLock()
         self._turnstile = threading.RLock()
+        self._forks = []
 
     def _write_queued(self) -> None:
         """The thread: write what the queue holds until it reads ``_STOP``.
 
-        Each record past ``_turnstile`` and holding ``_writing``, the first
-        locks it takes: whatever the handlers take comes after them.
+        Past the turnstile, while a fork asks: the thread holds no lock
+        between two records, and takes its handlers' first.
         """
-        records, turnstile, writing = self.queue, self._turnstile, self._writing
+        records, turnstile, forks = self.queue, self._turnstile, self._forks
         while (record := records.get()) is not _STOP:
-            with turnstile:
-                pass
-            with writing:
-                self.handle(record)
+            if forks:
+                with turnstile:
+                    pass
+            self.handle(record)
 
 
 _EXCEPTIONS: Final = logging.Formatter()
@@ -853,7 +856,7 @@ def _live_handlers() -> list[BackgroundHandler]:
 
 
 class _Held(Protocol):
-    """What a fork holds until it is done."""
+    """What a fork holds until it is done: a lock, or a ``_Pause``."""
 
     def release(self) -> None:
         """Let it go."""
@@ -864,6 +867,19 @@ class _Lock(_Held, Protocol):
 
     def acquire(self, blocking: bool = ..., timeout: float = ...) -> bool:
         """Take it, waiting at most ``timeout`` seconds (-1: as long as it takes)."""
+
+
+class _Pause:
+    """A fork's request that a listener's thread wait at its turnstile."""
+
+    def __init__(self, listener: BackgroundListener) -> None:
+        """Ask before ``listener``'s thread takes its next record."""
+        self._forks = listener._forks
+        self._forks.append(self)
+
+    def release(self) -> None:
+        """Withdraw the request."""
+        self._forks.remove(self)
 
 
 class _Forks(threading.local):
@@ -882,28 +898,29 @@ _forking = _Forks()
 
 
 def _before_fork() -> None:
-    """Hold every logging thread between two records, then the locks.
+    """Hold every logging thread between two writes, then the locks.
 
     A thread in the middle of a write holds its stream's lock (a
     ``BufferedWriter``'s). A child forked then has the lock held by a
     thread it does not have, and its first write to that stream waits
-    forever. So a fork first takes every listener's turnstile, so no
-    thread starts another record, then each ``_writing``, as each thread
-    finishes the record it is writing. The waits for the threads end
-    ``FLUSH_TIMEOUT`` after the fork began: one still writing then is on
-    a stuck stream, which the child could not write to either, and the
-    fork goes on without it.
+    forever. Each handler writes under its own lock, so a fork asks every
+    thread to wait at its turnstile and takes the turnstiles, so none
+    starts another record, then each handler's lock, as its write ends.
+    The waits for the threads end ``FLUSH_TIMEOUT`` after the fork began:
+    a write still going on then is on a stuck stream, which the child
+    could not write to either, and the fork goes on without it.
 
     Then ``logging``'s lock and ``_handlers_lock``, held across the fork so
     no thread is changing the handlers then; ``logging``'s own hook takes
     its lock again, after this one. The threads' locks come first, as
     their handlers may take ``logging``'s while they write; ours last, as
     ``dictConfig`` takes it under ``logging``'s. While another thread holds
-    ``logging``'s lock, which may be ``dictConfig`` waiting for the threads
-    to write what an old handler queued, the fork lets them write on,
-    waits for the lock as ``logging``'s own hook would, then holds them
-    again. A thread started while this waited is held too; none starts
-    once ``_handlers_lock`` is held.
+    ``logging``'s lock, the fork lets the threads write on, waits for the
+    lock as ``logging``'s own hook would, then holds them again: the
+    holder may be ``dictConfig``, which flushes the handlers it replaces
+    under it, taking their locks and waiting for their threads. A thread
+    started while this waited is held too; none starts once
+    ``_handlers_lock`` is held.
 
     Each lock is noted as it is taken. A signal handler that raises while
     this waits (Ctrl-C) leaves nothing taken.
@@ -940,15 +957,18 @@ def _hold_for_fork(held: list[_Held]) -> None:
 def _pause(
     listeners: list[BackgroundListener], held: list[_Held], deadline: float
 ) -> None:
-    """Hold ``listeners``' threads between two records, until ``deadline``.
+    """Hold ``listeners``' threads between two writes, until ``deadline``.
 
-    Every turnstile first, so a thread whose record ends while the fork
+    Every turnstile first, so a thread whose write ends while the fork
     waits for another's starts no other.
     """
     for listener in listeners:
+        held.append(_Pause(listener))
         _take(listener._turnstile, held, _left(deadline))
     for listener in listeners:
-        _take(listener._writing, held, _left(deadline))
+        for handler in listener.handlers:
+            if handler.lock is not None:
+                _take(handler.lock, held, _left(deadline))
 
 
 def _take(lock: _Lock, held: list[_Held], timeout: float) -> bool:
@@ -977,10 +997,11 @@ def _after_fork_in_child() -> None:
     The child's copies of the locks ``_before_fork`` took stay held, some
     by threads the child does not have. So the child makes a new
     ``_handlers_lock`` before it reads the handlers, as ``logging`` does
-    with its own (which it has done by now: its hook runs first), and
-    each listener new locks (``restart_on``). The child has no logging
-    thread yet: each starts at its handler's first record. Nothing is
-    left to let go of after this fork, or a fork it was nested in.
+    with its own and the handlers' (which it has done by now: its hook
+    runs first), and each listener a new turnstile (``restart_on``). The
+    child has no logging thread yet: each starts at its handler's first
+    record. Nothing is left to let go of after this fork, or a fork it
+    was nested in.
     """
     global _handlers_lock, _listening, _forking
     _handlers_lock = threading.RLock()
