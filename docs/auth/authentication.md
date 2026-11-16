@@ -70,9 +70,11 @@ never mistakes a bad token for being anonymous.
 
 `Credentials` holds `user`, `scheme` (`token`, `jwt`, `cookie`,
 `certificate`, or your class's), `token_id` (the digest of the token),
-`login`, `scopes`, and `impersonator` (the staff member, during an
-[impersonation](routes.md#impersonation)). Its `repr` shows the user's
-id, the scheme, and the scopes, never a token.
+`login`, `scopes`, `impersonator` (the staff member, during an
+[impersonation](routes.md#impersonation)), and `origin`: how the login
+was made, its method, what it proved, its device, and when (since 2.4,
+[How a login was made](logging-in.md#how-a-login-was-made)). Its `repr`
+shows the user's id, the scheme, and the scopes, never a token.
 
 WebSocket handshakes are authenticated the same way, and refused with
 close code 1008. The user is the connection's actor, so the audit trail

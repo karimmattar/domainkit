@@ -128,6 +128,18 @@ Run `python manage.py makemigrations`, review the revision, then
 until the columns exist. Grants made before never expire and name no
 role. `grants_on` now lists the grants in force only.
 
+### Make and apply the tokens' two new columns
+
+The tokens table gains two nullable columns: `amr`, what a login proved,
+and `idle_timeout`, the idle timeout a hook gave it
+([ADR 0146](adr/0146-show-gates-how-a-login-was-made-and-let-a-login-keep-shorter-limits.md)).
+Run `python manage.py makemigrations`, review the revision, then
+`migrate`, before the new code serves requests. Logins made before show
+no proof in `request.auth.origin`, and keep the settings' limits. A
+login route of your own may pass `amr=` to `pass_login_gates` and
+`issue_login`, beside `method=`
+([How a login was made](auth/logging-in.md#how-a-login-was-made)).
+
 ### uvicorn becomes an extra in 3.0
 
 Every install of 2.x brings uvicorn (`uvicorn[standard]`), even where
