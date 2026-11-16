@@ -28,6 +28,16 @@ and a status.
   `LOCALE_PATHS`, a run names those messages on stderr, and `--check`
   fails ([i18n.md](docs/i18n.md#the-projects-own-messages), ADR 0166,
   user report I6).
+- Devices' mails, `devices/enrollment_code` and `devices/device_bound`,
+  ship in Arabic. A test holds every mail template domainkit ships to
+  have its files in each language its catalogs translate (user report
+  I7).
+- A `MAIL.TEMPLATE_DIRS` directory may hold a template's files in one
+  language alone: readers of that language get them, and every other
+  reader the template's own. A directory with the template's own text
+  body still wins over a later directory's translation
+  ([mail.md](docs/mail.md#templates-in-other-languages), ADR 0166, user
+  report I8).
 
 ### Fixed
 
