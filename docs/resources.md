@@ -470,7 +470,7 @@ products.command_route(DeleteProduct, service=delete_product, method="DELETE")
 | `provide` | `None` | Fields given by FastAPI dependencies, such as the caller's id for an `owner_id`. The path wins over them, and they win over the body. |
 | `body_limit` | the resource's | The most bytes a body may have ([uploads](uploads.md#body-limits-per-route)). |
 | `retry` | `None` | `Retry()`: run the service again, whole, when its transaction loses a race. |
-| `dependencies` | `()` | FastAPI dependencies of the route's own, run after its rules: a limit, such as `Depends(Throttle("50/day"))`. Its [twin](#authorizations-for-one-act) runs none of them. *New in 2.5.* |
+| `dependencies` | `()` | FastAPI dependencies of the route's own, such as a limit, `Depends(Throttle("50/day"))`. They run after the route's rules, so a request the rules refuse is not counted; but before the route reaches the aggregate (`404`, and `403` from a rule on it) and reads the body (`422`) and `If-Match` (`412`), so one refused there is. Its [twin](#authorizations-for-one-act) runs none of them. *New in 2.5.* |
 
 **Body limits.** `body_limit=` holds the route's bodies to that many
 bytes, above or below `MAX_REQUEST_BODY_SIZE`, as they arrive.

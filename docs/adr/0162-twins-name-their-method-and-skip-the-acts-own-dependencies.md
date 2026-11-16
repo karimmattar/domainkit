@@ -89,14 +89,20 @@ webhook's side effects to the request that is not a dry run.
 - Two asking routes of one path and one method, or a route of the
   project's own where a twin goes, still raise `ImproperlyConfigured`
   when declared.
-- A twin keeps its name (`<route name>_authorization`), so its operation
-  id does not change when it moves.
+- A twin keeps its name (`<route name>_authorization`). With
+  `OPENAPI_OPERATION_IDS = "route_name"`, the default, that name is its
+  operation id, which does not change when it moves; with `"fastapi"`,
+  FastAPI's id holds the path, and changes with it.
 
 ### A route's own dependencies are the act's
 
 - `command_route(dependencies=[Depends(...)])`, and so `use_case(...,
   dependencies=...)`, gives a command route FastAPI dependencies of its
-  own, run after its rules: a refused request is not counted.
+  own, run after its rules (the resource's and the route's): a request
+  they refuse is not counted. What the route checks itself comes after
+  them: the aggregate within reach (`404`), the rules on it (`403`), the
+  body (`422`), and `If-Match` (`412`); a request refused there is
+  counted.
 - Its twin runs none of them. It runs what decides whether the caller may
   act and what builds the command: the rules, the reach, `provide`, the
   body's schema and limit, and the resource's dependencies.

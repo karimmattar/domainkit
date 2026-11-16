@@ -309,7 +309,9 @@ class ActionStepUp(StepUp):
     WebSocket (``auth.E111`` refuses it there, and on an event stream).
 
     It asks for authorizations too (``domainkit.http.access.AsksAuthorization``):
-    a ``ResourceRouter`` gives its route a twin, ``POST <path>/authorization``.
+    a ``ResourceRouter`` gives its route a twin, ``POST <path>/authorization``
+    (``.../authorization/<method>`` where routes of one path ask by several
+    methods).
     """
 
     def required(self) -> frozenset[str]:

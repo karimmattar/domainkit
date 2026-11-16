@@ -13,9 +13,11 @@ and a status.
 
 - `command_route(dependencies=[...])`, and so `use_case(...,
   dependencies=...)`: FastAPI dependencies of a command route's own, run
-  after its rules, such as `Depends(Throttle("50/day"))`. The route's
-  twin (`POST <path>/authorization`) runs none of them, so a limit counts
-  acts, not the asks before them. `asking_authorization(request)`, in
+  after its rules, such as `Depends(Throttle("50/day"))`. A request the
+  rules refuse is not counted; one refused after them (`404`, `412`,
+  `422`, or a rule on the aggregate) is. The route's twin (`POST
+  <path>/authorization`) runs none of them, so a limit counts acts, not
+  the asks before them. `asking_authorization(request)`, in
   `domainkit.resources`, tells a twin's request apart for code that runs
   on both: `provide`, rules, and the resource's dependencies. A limit had
   to go in `provide`, which the twin runs, and counted each act twice.

@@ -336,8 +336,10 @@ class ResourceRouter(APIRouter):
         or ``change``); ``rule`` adds a rule of the route's own.
         ``body_limit`` holds its bodies to that many bytes (default: the
         resource's for commands, else ``MAX_REQUEST_BODY_SIZE``).
-        ``dependencies`` are FastAPI dependencies of the route's own, run
-        after its rules: a limit, such as ``Depends(Throttle("50/day"))``.
+        ``dependencies`` are FastAPI dependencies of the route's own, such
+        as a limit, ``Depends(Throttle("50/day"))``: run after its rules
+        (a request they refuse is not counted), before the aggregate is
+        reached and the body and ``If-Match`` are checked.
 
         A route whose rules ask for an authorization of the act gets a twin,
         ``POST <path>/authorization`` (``/authorization/<method>`` where

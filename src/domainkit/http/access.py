@@ -339,9 +339,10 @@ class AsksAuthorization(Protocol):
     """A rule that asks for an authorization of the act it guards (ADR 0144).
 
     ``ResourceRouter`` gives each command route whose rules hold one (at
-    the top, or inside ``&``) a twin, ``POST <the route's path>/authorization``:
-    it builds the command as the route does, asks the route's other rules,
-    and answers ``201`` with what ``ask_authorization`` returns.
+    the top, or inside ``&``) a twin, ``POST <the route's path>/authorization``
+    (``.../authorization/<method>`` where routes of one path ask by several
+    methods): it builds the command as the route does, asks the route's
+    other rules, and answers ``201`` with what ``ask_authorization`` returns.
     """
 
     def authorization_model(self) -> type[BaseModel]:

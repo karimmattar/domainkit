@@ -131,7 +131,7 @@ class RouteSpec:
     rules: tuple[Rule, ...] | None = None
     """What it checks in place of the resource's rules and its own (a twin's)."""
     dependencies: Sequence[params.Depends] = ()
-    """FastAPI dependencies of its own (``Depends(...)``), run after its rules."""
+    """FastAPI dependencies of its own (``Depends(...)``), after its ``Require``."""
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
