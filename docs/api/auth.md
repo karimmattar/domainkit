@@ -735,7 +735,7 @@ Approve sign-ins from the user's mobile app: OIDC CIBA, push and QR.
 - `WrongMatchCode`: The number typed is not the page's: the sign-in is denied (422).
 - `approve`: Approve the user's request from their device `device_id`.
 - `ask_signed_in`: Ask the phone of `user`, who is signed in, to approve `kind`.
-- `cancel`: Withdraw the request `handle` polls for: it ends now (user report A16).
+- `cancel`: Withdraw the request `handle` polls for, if unanswered (user report A16).
 - `claim`: Make the QR request whose code a phone of `user_id` scanned theirs.
 - `deny`: Deny the user's request; with `report`, every other one waiting too.
 - `poll`: The approved request `handle` polls for, redeemed now; it works once.
@@ -827,7 +827,7 @@ Start a sign-in request, let the phone answer it, and poll it (ADR 0128).
 - `Started`: A request started: what its initiator keeps, and shows on its page.
 - `approve`: Approve the user's request from their device `device_id`.
 - `ask_signed_in`: Ask the phone of `user`, who is signed in, to approve `kind`.
-- `cancel`: Withdraw the request `handle` polls for: it ends now (user report A16).
+- `cancel`: Withdraw the request `handle` polls for, if unanswered (user report A16).
 - `ciba_settings`: `CIBA`, validated (the defaults when it is unset).
 - `claim`: Make the QR request whose code a phone of `user_id` scanned theirs.
 - `deny`: Deny the user's request; with `report`, every other one waiting too.

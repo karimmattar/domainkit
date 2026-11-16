@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-11-16
-- Amends: [0144](0144-authorize-one-act-not-a-window-of-time.md), [0146](0146-show-gates-how-a-login-was-made-and-let-a-login-keep-shorter-limits.md)
+- Amends: [0128](0128-approve-sign-ins-from-the-users-mobile-app.md), [0144](0144-authorize-one-act-not-a-window-of-time.md), [0146](0146-show-gates-how-a-login-was-made-and-let-a-login-keep-shorter-limits.md)
 
 ## Context
 
@@ -85,12 +85,28 @@ Who may withdraw: whoever polls. The poll handle is the initiator's
 alone (ADR 0128), and a session's request also names the credentials
 that asked: the same check as the poll.
 
+What may be withdrawn:
+
+| Option | What it costs |
+| --- | --- |
+| Every request its initiator holds | A push sign-in is started by whoever knows an identifier. Withdrawn, it frees the user's `MAX_PENDING` place at once: start, withdraw, start pushes `START_RATE` a minute from each address, and each push leaves the phone's list before the user can report it, so `REPORT_COOLDOWN` never starts. ADR 0128's bounds on push bombing are gone. |
+| Every request, a withdrawn push sign-in still counted and reportable until it would have expired | The page gains nothing from it, and the phone lists a request no one can approve: a state, and an answer, of its own. |
+| **QR sign-ins and a session's asks; never a push sign-in** | A page's push stays until it is answered or expires, as before. A QR request pushes nothing, and counts against nothing; a session's asks come from the user's own sessions, bounded by `START_RATE` per user. |
+
+What withdrawing does to a request the phone answered:
+
+| Option | What it costs |
+| --- | --- |
+| End it too | An approved act's authorization is confirmed in auth, and nobody can redeem it: asking the phone again is `409 authorization_confirmed`. |
+| **Nothing: it is answered** | The page may still redeem an approval; a denial stays one. |
+
 A17, which refusals deny:
 
 | Option | What it costs |
 | --- | --- |
 | Every exception | A hook that fails (its database is down: a 5xx) ends a request the phone could approve again. |
-| **A refusal: a `DomainError`, or an HTTP error under 500** | A hook's own failure leaves the request waiting, as today. |
+| Any `DomainError`, or an HTTP error under 500 | A conflict to retry (`ConcurrentUpdate`, 409), or the hook's own throttle (429), ends a request a second tap would approve. |
+| **A refusal: `PermissionDenied`, or an HTTP error of 403** | What the hook's contract names ("raise to refuse it, as `PermissionDenied`"); any other error leaves the request waiting, as in 2.4. |
 
 A11, how the login names its request:
 
@@ -115,23 +131,34 @@ I8, where a kind's text comes from:
   your phone". The act, transaction and step-up routes pass the user. A
   page's push and QR starts, and a new phone's request to be bound, stay
   counted per address.
-- **The initiator withdraws a request.** `cancel(handle, *, client_id,
-  kind="sign_in", credential_digest=None)` checks the handle as `poll`
-  does, and ends the request now, unless it was redeemed: the phone no
-  longer lists it nor can answer it, it no longer counts against
-  `MAX_PENDING`, nobody redeems it, and nothing is reported or audited.
-  The routes: `POST /app-sign-in/cancel` (a page's sign-in, public),
+- **The initiator withdraws an unanswered request.** `cancel(handle, *,
+  client_id, kind="sign_in", credential_digest=None)` checks the handle
+  as `poll` does, and ends the request now, unless the phone answered
+  it, or it ended: the phone no longer lists it nor can answer it, a
+  session's ask no longer counts against `MAX_PENDING`, nobody redeems
+  it, and nothing is reported or audited. The routes: `POST
+  /app-sign-in/cancel` (a page's QR sign-in, public),
   `/app-sign-in/authorizations/cancel` and
   `/app-sign-in/transactions/cancel` (the session that asked). They
-  answer `204`, the same for a decoy and for a request answered or ended
-  already; an unknown or redeemed handle, or another's,
-  `400 sign_in_unknown`. The deprecated step-up gets none: it goes in
-  3.0. The phone's own "Deny" without `report` already reports nothing.
-- **A refusal denies.** An `on_approve` hook that raises a `DomainError`,
-  or an HTTP error under 500, denies the request, unreported
-  (`SignInDenied`), before its refusal is answered: the poll and the
-  wait answer `access_denied` at once. A request the hook denied itself
-  stays as it is. Another error refuses nothing, and denies nothing.
+  answer `204`, also for a request answered or ended already, which
+  stays as it is. An unknown or redeemed handle, another's, or a push
+  sign-in's gets `400 sign_in_unknown`. The deprecated step-up gets no
+  route: it goes in 3.0. The phone's own "Deny" without `report`
+  already reports nothing.
+- **A push sign-in is never withdrawn.** It stays on the phone, counted
+  against `MAX_PENDING` and reportable, until it is answered or
+  expires. ADR 0128's bounds on push bombing hold.
+- **A redeem needs a live request.** The poll's guarded redeem also
+  checks that the request has not ended, so a poll that read it before
+  it ended redeems nothing after. A wait checks the expiry before the
+  approval, as the poll does.
+- **A refusal denies.** An `on_approve` hook that raises
+  `PermissionDenied`, or an HTTP error of 403, denies the request,
+  unreported (`SignInDenied`), before its refusal is answered: the poll
+  and the wait answer `access_denied` at once. A request the hook denied
+  itself stays as it is. Any other error refuses nothing, and denies
+  nothing: a conflict to retry, a throttle, a rule of another kind, the
+  hook's own failure.
 - **A login names the sign-in it redeems.** `LoginOrigin` gains
   `sign_in_request_id` and `binding_message`, None by default.
   `note_login_sign_in(request, request_id, binding_message)`
@@ -159,11 +186,22 @@ I8, where a kind's text comes from:
   the request gone, and approving it is `404 sign_in_not_found`. A
   withdrawn act's authorization stays: the session asks the phone again,
   or confirms it another way.
+- A login page's push sign-in stays on the phone after its dialog
+  closes, until it expires, as in 2.4: the price of the bound on push
+  bombing. Its QR sign-in, withdrawn, can no longer be claimed, from a
+  copy of the code either.
+- A session's asks are bounded by `START_RATE` per user, not by
+  `MAX_PENDING`, since the session frees its place: a stolen session
+  pushes the user's phone up to that rate. Number matching, and the act
+  the phone reads from auth's record, stand against a tired tap; ending
+  the session stops it.
 - A withdrawn request reads as expired: its row keeps when it was
   withdrawn, not when it would have expired, and is forgotten a day
   later, as any.
 - A hook's refusal ends the request: the user who wants to try again
-  starts a new one. A hook that denied it itself keeps working.
+  starts a new one. A hook that denied it itself keeps working. A hook
+  that refuses with another error than `PermissionDenied` or a 403
+  leaves the request waiting, as in 2.4.
 - A gate can tell the dashboard's sign-ins by their binding message, as
   `on_approve` could. Whoever starts a sign-in chooses the page, so a
   gate that lets more through for a message trusts the starter.

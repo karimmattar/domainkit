@@ -162,7 +162,7 @@ handle it got (`request`, or CIBA's `auth_req_id`). The poll answers:
 | `authorization_pending` | Not answered yet. Poll again after `interval`. |
 | `slow_down` | The phone has not answered, and this poll came before `interval` was up. The interval grows by 5 seconds, from now on. A request the phone approved or denied answers at once, however soon it is polled. |
 | `access_denied` | The phone denied it. |
-| `expired_token` | Its time is up: `REQUEST_TTL` (2 minutes) to answer a push or a scanned QR code, or `QR_TTL` for a QR code no phone scanned. Or its initiator withdrew it ([below](#withdrawing-a-request)). |
+| `expired_token` | Its time is up: `REQUEST_TTL` (2 minutes) to answer a push or a scanned QR code, or `QR_TTL` for a QR code no phone scanned. Or its initiator withdrew it unanswered ([below](#withdrawing-a-request)). |
 | `sign_in_unknown` | No request has the handle, or it was redeemed, or it is another initiator's. |
 
 ### Push texts
@@ -250,7 +250,7 @@ address (`429 rate_limited`).
 | `POST /auth/app-sign-in/token` | `{"request"}` | Tokens, or a poll's answer. |
 | `POST /auth/app-sign-in/session` | `{"request"}` | A browser session (cookies and `csrf_token`), or a poll's answer. |
 | `POST /auth/app-sign-in/wait` | `{"request"}` | `{"status": "approved"}` once the phone approves, or `"pending"` after `WAIT_SECONDS`; never redeems. |
-| `POST /auth/app-sign-in/cancel` | `{"request"}` | `204`: withdrawn ([below](#withdrawing-a-request)). |
+| `POST /auth/app-sign-in/cancel` | `{"request"}` | `204`: a QR sign-in withdrawn ([below](#withdrawing-a-request)); a push sign-in's handle gets `400 sign_in_unknown`. |
 
 Keep `request` in the page's memory: never in the QR code, a URL, or
 storage another page reads. Whoever holds it gets the login once the
@@ -265,25 +265,35 @@ asked now (see [What holds](#what-holds)).
 A page that no longer wants the answer, its dialog closed, withdraws the
 request with the handle it polls with (since 2.5,
 [ADR 0164](../adr/0164-let-the-asker-withdraw-a-phone-request-count-sessions-per-user-and-word-each-kind.md)):
-`POST /auth/app-sign-in/cancel {"request"}` for a sign-in, and
+`POST /auth/app-sign-in/cancel {"request"}` for a QR sign-in, and
 `…/authorizations/cancel` or `…/transactions/cancel` for what a
 signed-in session asked, from that session alone.
 
-- **It ends now.** The phone no longer lists it, and approving or
-  denying it is `404 sign_in_not_found`. It no longer counts against
-  `MAX_PENDING`, so the page can ask again at once. Nobody redeems it: a
-  poll answers `expired_token`.
+- **An unanswered request ends now.** No phone can claim its QR code any
+  more; the phone no longer lists it, and approving or denying it is
+  `404 sign_in_not_found`; a poll answers `expired_token`. A session's
+  act or transaction no longer counts against `MAX_PENDING`, so the page
+  can ask again at once.
+- **An answered one stays as it is.** Approved, the page can still
+  redeem it: an act's authorization is confirmed already, and is not
+  asked of the phone again. Denied, it stays denied. The route answers
+  `204` all the same.
+- **A push sign-in is never withdrawn.** Whoever knows an identifier can
+  start one, so it stays on the user's phone, counted against
+  `MAX_PENDING` and open to a report, until it expires: were it
+  withdrawn, a stranger could push in a loop, and each push would vanish
+  before the user could report it. Its handle gets `400
+  sign_in_unknown`.
 - **Nothing is reported.** The user's pushes go on, and the audit trail
   records nothing.
 - **Only the initiator.** The handle names the request, and a session's
   request also names the credentials that asked: another login of the
   user, or another kind's route, gets `400 sign_in_unknown`, as for an
-  unknown or redeemed handle. A request answered, ended, or a decoy
-  answers `204` all the same.
+  unknown or redeemed handle.
 - **What it asked about stays.** A withdrawn act's authorization, or a
-  transaction, still waits: ask the phone again, or confirm it another
-  way. The push already shown stays in the phone's notifications; the
-  app finds the request gone.
+  transaction, still waits to be confirmed: ask the phone again, or
+  confirm it another way. The push already shown stays in the phone's
+  notifications; the app finds the request gone.
 
 ### Hooks of the web pages
 
@@ -300,12 +310,14 @@ approval, without its own routes. It registers on two hook points of
   runs.
 - `on_approve(hook)`: `async def hook(request, user, sign_in) -> None`,
   before a phone's approval of the user's own request is recorded; it
-  raises (`PermissionDenied`) to refuse it, and nothing is approved. The
-  refusal denies the request, as the phone's "Deny" would, reporting
-  nothing: the page's poll and wait answer `access_denied` at once
-  (since 2.5). A hook that denies it itself first keeps working. A
-  refusal is a domain error or an HTTP error under 500; any other error
-  is the hook's own failure, and leaves the request waiting.
+  raises `PermissionDenied`, or an HTTP error of 403, to refuse it, and
+  nothing is approved. The refusal denies the request, as the phone's
+  "Deny" would, reporting nothing: the page's poll and wait answer
+  `access_denied` at once (since 2.5). A hook that denies it itself
+  first keeps working. Any other error is no refusal, and leaves the
+  request waiting for the phone to try again: a conflict to retry
+  (`ConcurrentUpdate`), a throttle (429), a rule of another kind (422),
+  the hook's own failure (5xx).
 
 `domainkit.contrib.ciba.api.count_start(request)` counts a start of a
 project's own route against `START_RATE`, with the built-in ones;
@@ -982,7 +994,10 @@ devices app's ([above](#the-mobile-app-as-identity)).
 - **Push bombing is bounded.** A user gets at most `MAX_PENDING` pushes
   waiting, none for `REPORT_COOLDOWN` after a report, and a web page
   needs the number it shows, unless its policy turns it off. A wrong
-  number denies the request: guessing gets one try.
+  number denies the request: guessing gets one try. A push sign-in
+  stays until it is answered or expires: its page cannot withdraw it.
+  What a signed-in session asks it can withdraw, and is bounded by
+  `START_RATE` per user instead: only the user's own sessions ask.
 - **Nothing tells who exists.** A push to an unknown identifier, an
   inactive user, a user with no bound device, one at `MAX_PENDING`, or
   one in the cooldown is a decoy. It answers like any request, and nobody
@@ -992,9 +1007,11 @@ devices app's ([above](#the-mobile-app-as-identity)).
   the user is.
 - **Pushes can be crowded out.** Someone who knows a user's identifier can
   keep `MAX_PENDING` push requests waiting for them, so the user's own
-  push sign-ins become decoys until those expire, are denied, or are
-  withdrawn. QR codes still work, and a report pauses the pushes. Lower
-  `START_RATE` if this is abused.
+  push sign-ins become decoys until those expire or are denied. Its page
+  cannot withdraw a push sign-in to free the place sooner, nor hide it
+  from a report ([Withdrawing a request](#withdrawing-a-request)). QR
+  codes still work, and a report pauses the pushes. Lower `START_RATE`
+  if this is abused.
 - **A relayed QR code is caught, not prevented.** An attacker can show
   their own page's code to a victim. The phone shows the page's address
   and browser, and warns when it is not on the same network, or refuses
@@ -1033,7 +1050,7 @@ approved = await poll(started.handle, client_id=None)  # commits itself
 | `approve(uow, user_id, request_id, device_id, *, match_code=None)` | The approved request, or `None` for a wrong number (commit, then raise `WrongMatchCode`). Raises `SignInNotFound`. |
 | `deny(uow, user_id, request_id, *, report=False)` | Denies, and with `report` every other waiting request. Raises `SignInNotFound`. |
 | `poll(handle, *, client_id)` | The approved request, redeemed; else a `PollRefused`. |
-| `cancel(handle, *, client_id, kind="sign_in", credential_digest=None)` | Withdraws the request: it ends now, reported to no one. Raises `SignInUnknown` as `poll` does. Commits itself (since 2.5). |
+| `cancel(handle, *, client_id, kind="sign_in", credential_digest=None)` | Withdraws the request, if unanswered: it ends now, reported to no one. An answered one stays as it is. Raises `SignInUnknown` as `poll` does, and for a push sign-in, which is never withdrawn. Commits itself (since 2.5). |
 
 `CibaUnitOfWork` is a `DevicesUnitOfWork` with `requests`, `clients`, and
 `assertions`. `register(...)` and `rotate_secret(...)` in

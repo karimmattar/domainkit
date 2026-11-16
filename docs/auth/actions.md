@@ -220,8 +220,9 @@ POST /auth/app-sign-in/authorizations/token {"request"}  400 authorization_pendi
   (`START_RATE` per user, `MAX_PENDING`, `NUMBER_MATCHING`, `409
   phone_unavailable`), and only the session that asked redeems it, or
   withdraws it (`POST /auth/app-sign-in/authorizations/cancel
-  {"request"}`, since 2.5): the phone no longer lists it, and the
-  authorization stays to be confirmed.
+  {"request"}`, since 2.5): unanswered, the phone no longer lists it,
+  and the authorization stays to be confirmed; approved, it stays to be
+  redeemed.
 - The phone lists it with an `authorization` object: the purpose, the
   kept title and details, and the digest, read from the row.
 - It approves with the digest, in a request its device signs: another

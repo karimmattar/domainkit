@@ -11,16 +11,19 @@ and a status.
 
 ### Added
 
-- `POST /auth/app-sign-in/cancel {"request"}` withdraws a page's
-  sign-in, and `…/authorizations/cancel` and `…/transactions/cancel`
-  what a signed-in session asked the phone, from that session alone. The
-  request ends now: the phone no longer lists it nor can answer it, it
-  no longer counts against `CIBA.MAX_PENDING`, nobody redeems it, and
-  nothing is reported, so the user's pushes go on. `cancel(handle, ...)`
-  (`domainkit.contrib.ciba`) does it without HTTP. A page could only let
-  the request expire, or have the user deny it as "Not me", which
-  stopped their pushes for `REPORT_COOLDOWN`. ADR 0164 (user report
-  A16).
+- `…/authorizations/cancel` and `…/transactions/cancel` (under
+  `/auth/app-sign-in`) withdraw what a signed-in session asked the
+  phone, from that session alone, and `POST /auth/app-sign-in/cancel
+  {"request"}` a page's QR sign-in. An unanswered request ends now: the
+  phone no longer lists it nor can answer it, a session's ask no longer
+  counts against `CIBA.MAX_PENDING`, nobody redeems it, and nothing is
+  reported, so the user's pushes go on. A request the phone answered
+  stays as it is. A page's push sign-in is never withdrawn: anyone who
+  knows an identifier starts one, so it stays counted and reportable
+  until it expires. `cancel(handle, ...)` (`domainkit.contrib.ciba`)
+  does it without HTTP. A page could only let the request expire, or
+  have the user deny it as "Not me", which stopped their pushes for
+  `REPORT_COOLDOWN`. ADR 0164 (user report A16).
 - A login a page redeems at `/auth/app-sign-in/token` or `/session`
   names the sign-in request in its origin, for login gates
   (`login_origin`) and `on_session_limits`:
@@ -47,12 +50,12 @@ and a status.
   minute. `count_start(request, user=user)` counts a route of your own
   the same way; a page's sign-ins stay counted per address. ADR 0164
   (user report A15).
-- An `on_approve` hook's refusal, a domain error or an HTTP error under
-  500, denies the request, unreported, before the phone is answered: the
+- An `on_approve` hook's refusal, `PermissionDenied` or an HTTP error of
+  403, denies the request, unreported, before the phone is answered: the
   page's poll and wait answer `access_denied` at once. The request waited
-  until it expired. A hook that denies it itself keeps working, and a
-  hook's own failure (an error of 500 or more) still denies nothing.
-  ADR 0164 (user report A17).
+  until it expired. A hook that denies it itself keeps working, and any
+  other error (a conflict to retry, a throttle, the hook's own failure)
+  still leaves it waiting. ADR 0164 (user report A17).
 
 ## [2.4.0] - 2026-11-16
 

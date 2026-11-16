@@ -138,7 +138,7 @@ statuses, and the amendments they name.
 | [0125](0125-freeze-the-public-api-for-1-0-renaming-what-was-never-published.md) | Freeze the public API for 1.0, renaming what was never published | Accepted |
 | [0126](0126-identify-users-by-the-fields-a-project-chooses-and-verify-them-by-code.md) | Identify users by the fields a project chooses, and verify them by code | Accepted; links removed in 2.0, as decided here |
 | [0127](0127-ping-a-pooled-connection-only-after-it-rested.md) | Ping a pooled connection only after it rested | Accepted |
-| [0128](0128-approve-sign-ins-from-the-users-mobile-app.md) | Approve sign-ins from the user's mobile app | Accepted; amended by [0155](0155-choose-number-matching-and-the-same-network-per-page.md) |
+| [0128](0128-approve-sign-ins-from-the-users-mobile-app.md) | Approve sign-ins from the user's mobile app | Accepted; amended by [0155](0155-choose-number-matching-and-the-same-network-per-page.md) and [0164](0164-let-the-asker-withdraw-a-phone-request-count-sessions-per-user-and-word-each-kind.md) |
 | [0129](0129-complete-the-phone-as-identity.md) | Complete the phone as identity | Accepted |
 | [0130](0130-show-where-each-login-came-from-and-manage-logins-from-the-phone.md) | Show where each login came from, and manage logins from the phone | Accepted |
 | [0131](0131-choose-what-a-password-change-does-to-the-devices-logins.md) | Choose what a password change does to the devices' logins | Accepted |

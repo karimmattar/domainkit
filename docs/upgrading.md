@@ -43,10 +43,12 @@ on domainkit. It breaks nothing a project relies on; each item of this
 list says what changes, and what a project that relied on 2.4's
 behaviour does.
 
-- **An `on_approve` hook's refusal denies the request.** The page's poll
-  and wait answer `access_denied` at once, where the request waited
-  until it expired; nothing is reported. A hook that called `deny()`
-  itself before raising may drop the call: it still works
+- **An `on_approve` hook's refusal denies the request.** A hook that
+  raises `PermissionDenied`, or an HTTP error of 403, ends the request:
+  the page's poll and wait answer `access_denied` at once, where the
+  request waited until it expired; nothing is reported. A hook that
+  called `deny()` itself before raising may drop the call: it still
+  works. Any other error leaves the request waiting, as before
   ([Hooks of the web pages](auth/ciba.md#hooks-of-the-web-pages)).
 - **Each kind of request has its own push text.** `CIBA.PUSH_TITLE` and
   `PUSH_BODY` default to `None`, and each kind has its words
