@@ -556,3 +556,17 @@ def test_a_batch_item_that_raises_a_validation_error_is_its_422(
             "error": {"code": "validation_error", "detail": "The request is invalid."},
         },
     ]
+
+
+def test_a_command_whose_hints_raise_type_error_gets_dicts() -> None:
+    """A hint that cannot be resolved (a quoted name in a union) is 2.4's dicts."""
+    from domainkit.resources.routing.values import instances
+
+    class Body(BaseModel):
+        owner: dict[str, str] | None = None
+
+    @dataclasses.dataclass
+    class Broken:
+        owner: "'Owner' | None" = None  # noqa: F821 - resolving it raises TypeError.
+
+    assert instances(Broken, Body) == frozenset()

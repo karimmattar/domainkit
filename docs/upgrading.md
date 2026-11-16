@@ -47,7 +47,11 @@ this list says what a project that relied on 2.4's behaviour changes.
   got dicts from a command route, a batch, or a twin: a `@use_case`'s
   `tuple[Address, ...]` came as `({"street": ..., "city": ...},)`. It
   gets the instances the body validated, `(Address(...),)`. A service
-  that rebuilt them (`Address(**item)`) drops that step. A
+  that rebuilt them (`Address(**item)`) drops that step; it gets
+  pydantic's instances, built with their `__post_init__` but without
+  their markers (`MaxLength`, ...) checked, as 2.4 built them before
+  dumping them, so a service that relied on the rebuild to check the
+  markers checks them itself. A
   `@field_serializer` on such a body field no longer applies to what the
   command gets. A field the command declares as `dict`, `Any`, `Mapping`,
   or anything else, a `list[...]`, and a field the body gives in a shape

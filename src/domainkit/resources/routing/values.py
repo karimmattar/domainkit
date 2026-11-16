@@ -55,7 +55,7 @@ def instances(message: type, body: type[BaseModel] | None) -> frozenset[str]:
         return frozenset()
     try:
         fields = fields_of(message)
-    except NameError:
+    except (NameError, TypeError):  # Hints that do not resolve, as 2.4 took them.
         return frozenset()
     return frozenset(
         name
