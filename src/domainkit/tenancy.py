@@ -35,17 +35,20 @@ its tenant. While a tenant is current:
 import functools
 import inspect
 import keyword
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Annotated, Any, Final
 
-from fastapi import Path
+from fastapi import FastAPI, Path
+from fastapi.dependencies.models import Dependant
 from starlette.exceptions import HTTPException
 from starlette.requests import HTTPConnection
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from domainkit.checks import CheckMessage
 from domainkit.conf.global_settings import TenancyConfig
 from domainkit.ddd.tenancy import (
     TENANT_ID,
@@ -60,7 +63,12 @@ from domainkit.ddd.tenancy import (
     tenant,
 )
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.http.access import DEFAULT_CHALLENGE, NotAuthenticated
+from domainkit.http.access import (
+    DEFAULT_CHALLENGE,
+    NotAuthenticated,
+    checks_callers,
+    served_routes,
+)
 from domainkit.http.errors import error_response
 from domainkit.http.live import record_check
 from domainkit.utils.module_loading import import_string
@@ -413,3 +421,54 @@ def _path_members() -> _Members:
             "a path names whichever tenant the caller types."
         )
     return admitting
+
+
+def path_tenant_problems(app: FastAPI) -> list[str]:
+    """Routes whose ``PathTenant`` cannot serve them as it should.
+
+    ``tenancy.E001``: it names a parameter the route's path does not have,
+    so every request would be refused (422). ``tenancy.E002``: a rule (a
+    dependency that checks callers, such as ``Require``) comes before it
+    among the route's own dependencies, so the rule sees no tenant. A
+    ``PathTenant`` inside another dependency is checked against the path
+    only.
+    """
+    problems: list[str] = []
+    for route, dependant in served_routes(app.routes):
+        if dependant is None:
+            continue
+        named = {each.parameter for each in _path_tenants(dependant)}
+        problems.extend(
+            CheckMessage(
+                "tenancy.E001",
+                f"{route} takes its tenant from the path parameter "
+                f"{parameter!r} (PathTenant), which its path does not have: "
+                f"add {{{parameter}}} to the path, or name the parameter it has.",
+            )
+            for parameter in sorted(named)
+            if not re.search(rf"\{{{parameter}(:[^}}]*)?\}}", route)
+        )
+        own = dependant.dependencies
+        first = next(
+            (n for n, each in enumerate(own) if isinstance(each.call, PathTenant)),
+            None,
+        )
+        if first is not None and any(checks_callers(each) for each in own[:first]):
+            problems.append(
+                CheckMessage(
+                    "tenancy.E002",
+                    f"{route} checks who calls before PathTenant serves the "
+                    "path's tenant: those rules see no tenant, so members are "
+                    "refused, and strangers get 403 rather than 404. Put "
+                    "Depends(PathTenant(...)) first.",
+                )
+            )
+    return problems
+
+
+def _path_tenants(dependant: Dependant) -> list[PathTenant]:
+    """Every ``PathTenant`` among ``dependant``'s dependencies, at any depth."""
+    found = [dependant.call] if isinstance(dependant.call, PathTenant) else []
+    for each in dependant.dependencies:
+        found.extend(_path_tenants(each))
+    return found

@@ -17,6 +17,7 @@ from fastapi import (
     Depends,
     FastAPI,
     Request,
+    Response,
     WebSocket,
 )
 from fastapi.testclient import TestClient
@@ -32,7 +33,8 @@ from domainkit.db import connections
 from domainkit.ddd import AggregateRoot, InMemoryRepository
 from domainkit.ddd.tenancy import TenantOwned
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.http.access import AnonymousPrincipal
+from domainkit.http.access import AnonymousPrincipal, HasPermissions, Require
+from domainkit.http.application import application_problems
 from domainkit.http.errors import install_exception_handlers
 from domainkit.http.live import reauthorize
 from domainkit.management.base import run_async
@@ -41,6 +43,7 @@ from domainkit.tenancy import (
     TenantMiddleware,
     current_tenant,
     member_permissions,
+    path_tenant_problems,
     tenant,
 )
 from domainkit_tests import sample_tenant_orgs
@@ -324,6 +327,54 @@ def test_a_path_tenant_names_a_parameter(name: str) -> None:
     """What cannot be a path parameter's name is refused at once."""
     with pytest.raises(ImproperlyConfigured, match="path parameter"):
         PathTenant(name)
+
+
+def test_check_finds_a_path_tenant_that_cannot_serve_its_route() -> None:
+    """``tenancy.E001``: no such parameter; ``tenancy.E002``: a rule before it.
+
+    A router's own dependencies come before its routes', and those given to
+    ``include_router`` before both, so the router below passes.
+    """
+    rule = Depends(Require(HasPermissions("notes.view_note")))
+    good = APIRouter(prefix="/orgs/{org_id}", dependencies=[Depends(BY_PATH)])
+    late = APIRouter(dependencies=[rule])
+    served = FastAPI()
+
+    @good.get("/fine", dependencies=[rule])
+    async def fine() -> None: ...
+
+    @late.get("/late/{org_id}", dependencies=[Depends(BY_PATH)])
+    async def after_a_rule() -> None: ...
+
+    @served.get("/nowhere", dependencies=[Depends(BY_PATH)])
+    async def nowhere() -> None: ...
+
+    @served.get("/typed/{org_id:str}")
+    async def typed(org: Annotated[str, Depends(BY_PATH)]) -> None: ...
+
+    async def named(org: Annotated[str, Depends(BY_PATH)]) -> str:
+        return org
+
+    @served.get("/deep/{tenant}")
+    async def deep(org: Annotated[str, Depends(named)]) -> None: ...
+
+    served.include_router(good)
+    served.include_router(late)
+    served.include_router(late, prefix="/first", dependencies=[Depends(BY_PATH)])
+    served.add_route("/starlette", lambda request: Response())  # No dependencies.
+    problems = [
+        problem
+        for problem in application_problems(served)
+        if getattr(problem, "id", "").startswith("tenancy.")
+    ]
+
+    assert [(getattr(p, "id", None), p.split(" ")[1]) for p in problems] == [
+        ("tenancy.E001", "/nowhere"),
+        ("tenancy.E001", "/deep/{tenant}"),
+        ("tenancy.E002", "/late/{org_id}"),
+    ]
+    assert path_tenant_problems(served) == problems
+    assert "add {org_id} to the path" in problems[0]
 
 
 def test_member_permissions_are_asked_once_per_request() -> None:
