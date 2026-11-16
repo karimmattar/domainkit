@@ -100,7 +100,7 @@ services:
         condition: service_completed_successfully
 
   redis:
-    image: redis:8.8.3-alpine@sha256:0b2b77d3ea5078274795e3177cdbdada8b96316684a38911d528534ed679b5ec
+    image: redis:8.10.2-alpine@sha256:9f8d2d789b9a1d1e3f283f979aa9cbf393373806472e1ccd460e2f9c869b833b
     command:
       - redis-server
       - --port
