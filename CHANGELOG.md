@@ -9,6 +9,25 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `record_submission`, `record_approval`, `record_rejection`, and
+  `record_cancellation` (`domainkit.contrib.approvals`) are public: the
+  project's own code (a periodic task, a management command, an event
+  handler) submits, approves, rejects, and cancels with them, asking for
+  no action authorization whatever `APPROVALS.SUBMIT_ACTION`,
+  `APPROVE_ACTION`, `REJECT_ACTION`, and `CANCEL_ACTION` say. The routes,
+  and the services they run, keep asking for one. The functions refuse
+  all the services refuse but the authorization, and trust their caller
+  for who acts, as every service of approvals does: never call them from
+  a route a user reaches. A `ResourceRouter` route of approvals' rules
+  (`RequestActions`, `ApproveAction`, `RejectAction`, `CancelAction`,
+  `SubmitAction`) that runs one, or another step's service, is refused
+  when it is declared: its rule takes any authorization of the act, and
+  only the step's own service binds it to the request
+  ([From the project's own code](docs/contrib/approvals.md#from-the-projects-own-code),
+  ADR 0163) (follow-up of 2.5.0).
+
 ## [2.5.0] - 2026-11-16
 
 2.5 answers a third report from the project that runs an identity

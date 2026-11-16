@@ -29,6 +29,12 @@ worker runs it once, after checking it is what was approved. Requests
 expire (``APPROVALS.EXPIRES_AFTER``), are rejected with a reason, or
 cancelled by their maker; every change is a domain event the audit trail
 records with its actor. See ``docs/contrib/approvals.md`` and ADR 0121.
+
+The project's own code (a task, a command, an event handler) submits,
+approves, rejects, and cancels with ``record_submission``,
+``record_approval``, ``record_rejection``, and ``record_cancellation``:
+what the services do, asking for no authorization of the act whatever
+``APPROVALS`` says (ADR 0163). Never from a route a user reaches.
 """
 
 from .builtin import (
@@ -102,6 +108,10 @@ from .services import (
     cancel_request,
     execute_request,
     expire_requests,
+    record_approval,
+    record_cancellation,
+    record_rejection,
+    record_submission,
     reject_request,
     submit_command,
     submit_request,
@@ -172,6 +182,10 @@ __all__ = [
     "fingerprint",
     "guard",
     "guards",
+    "record_approval",
+    "record_cancellation",
+    "record_rejection",
+    "record_submission",
     "refuse_if_guarded",
     "reject_request",
     "requires_approval",
