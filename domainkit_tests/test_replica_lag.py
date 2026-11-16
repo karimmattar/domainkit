@@ -15,7 +15,6 @@ import logging
 import math
 import os
 from collections.abc import AsyncIterator, Callable, Coroutine
-from pathlib import Path
 from typing import Any, Final
 
 import pytest
@@ -35,6 +34,11 @@ from domainkit_tests.gadgets import GadgetsUnitOfWork, make_gadget, metadata
 pytestmark = pytest.mark.anyio
 LOCAL: Final = "sqlite+aiosqlite:///x.sqlite3"
 ON_POSTGRES: Final = bool(os.environ.get(POSTGRES_VARIABLE))
+GONE: Final = "postgresql+asyncpg://replica@127.0.0.1:1/copy"
+"""A replica out of reach: nothing listens on port 1, and asyncpg is refused at
+once. A SQLite file that cannot be opened would do too, but aiosqlite stops
+its thread after a failed connect without waiting: when the test's loop
+closes first, the thread raises in a later test ("Event loop is closed")."""
 postgres_only = pytest.mark.skipif(not ON_POSTGRES, reason=f"set {POSTGRES_VARIABLE}")
 
 
@@ -390,14 +394,14 @@ def test_without_an_event_loop_a_replica_with_max_lag_is_not_chosen(
 
 
 async def test_ready_leaves_out_a_replica_with_max_lag(
-    make_database: MakeDatabase, tmp_path: Path
+    make_database: MakeDatabase,
 ) -> None:
     """Reads go to the primary while it is away: it takes no process out of rotation.
 
     A replica without ``MAX_LAG`` still fails ``/ready``: reads have nowhere
     else to go.
     """
-    gone = f"sqlite+aiosqlite:///{tmp_path / 'missing' / 'copy.sqlite3'}"
+    gone = GONE
     urls = {"default": make_database("primary"), "copy": gone}
     databases = checked(urls)
     with override_settings(DATABASES=databases):
@@ -411,10 +415,10 @@ async def test_ready_leaves_out_a_replica_with_max_lag(
 
 
 async def test_a_replica_out_of_reach_is_found_by_the_real_probe(
-    make_database: MakeDatabase, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    make_database: MakeDatabase, caplog: pytest.LogCaptureFixture
 ) -> None:
     """No stub: the probe cannot open it, and reads stay on the primary."""
-    gone = f"sqlite+aiosqlite:///{tmp_path / 'missing' / 'copy.sqlite3'}"
+    gone = GONE
     urls = {"default": make_database("primary"), "copy": gone}
     with override_settings(DATABASES=checked(urls)), clock.freeze_time():
         await read_alias()
