@@ -19,7 +19,7 @@ from uuid import UUID
 
 from domainkit.apps.hooks import HookPoint
 from domainkit.clock import now
-from domainkit.contrib.auth.backends import has_perm
+from domainkit.contrib.auth.backends import get_all_permissions, has_perm
 from domainkit.contrib.auth.models import AnyUser
 from domainkit.contrib.auth.uow import AuthUnitOfWork
 from domainkit.db.routing import router
@@ -404,13 +404,15 @@ async def _check_ceiling(
 async def _check_holds(actor: AnyUser, permissions: Iterable[str], obj: object) -> None:
     """Refuse an actor who lacks one of ``permissions``, on the model and on ``obj``.
 
+    What they hold on the model is what they hold everywhere: a member's keys
+    hold in one tenant, and never reach an object of another (ADR 0150).
+
     Raises:
         PermissionDenied: They lack one.
     """
+    held = await get_all_permissions(actor)
     for permission in sorted(permissions):
-        if not (
-            await has_perm(actor, permission) or await has_perm(actor, permission, obj)
-        ):
+        if not (permission in held or await has_perm(actor, permission, obj)):
             raise PermissionDenied(
                 "You may grant or revoke only permissions you hold on the object."
             )

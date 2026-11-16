@@ -6,8 +6,10 @@ those who do not belong, and no memberships that carry permissions, so it
 wrote its own ``MembershipBackend`` (ADR 0150).
 """
 
+import io
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Annotated, Any, Final, NewType
 from uuid import UUID, uuid4
 
@@ -28,18 +30,21 @@ from starlette.datastructures import Headers
 from starlette.testclient import WebSocketDenialResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from domainkit import setup
 from domainkit.apps import registry
 from domainkit.conf import TenancyConfig, override_settings
-from domainkit.contrib.auth import AuthUnitOfWork
-from domainkit.contrib.auth.backends import MembershipBackend, ObjectGrant
+from domainkit.contrib.auth import AbstractBaseUser, AuthUnitOfWork
+from domainkit.contrib.auth.backends import MembershipBackend, ObjectGrant, has_perm
+from domainkit.contrib.objectpermissions import ObjectPermission, grant_permission
 from domainkit.db import connections
-from domainkit.ddd import AggregateRoot, InMemoryRepository
+from domainkit.ddd import AggregateRoot, InMemoryRepository, PermissionDenied
 from domainkit.ddd.tenancy import TenantOwned
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import AnonymousPrincipal, HasPermissions, Require
 from domainkit.http.application import application_problems
 from domainkit.http.errors import install_exception_handlers
 from domainkit.http.live import reauthorize
+from domainkit.management import call_command
 from domainkit.management.base import run_async
 from domainkit.tenancy import (
     PathTenant,
@@ -52,11 +57,17 @@ from domainkit.tenancy import (
 )
 from domainkit_tests import sample_tenant_orgs
 from domainkit_tests.conftest import (
+    ALPHA,
     API,
+    AUTH,
+    CONTENTTYPES,
+    FAST_HASHER,
     MIDDLEWARE,
+    SHOP,
     Api,
     UseAuth,
 )
+from domainkit_tests.sample_domains.shop.models import Product, ProductId
 from domainkit_tests.support.auth import PASSWORD, bearer, create_user, grant, login
 from domainkit_tests.test_auth_access import user
 from domainkit_tests.test_auth_admin import ADMIN, staff, token_for
@@ -71,6 +82,7 @@ TENANT_MIDDLEWARE: Final = [
 """Authentication first, then the tenant, as docs/tenancy.md orders them."""
 
 HERE: Final = "domainkit_tests.test_tenancy_paths"
+OBJECTPERMISSIONS: Final = "domainkit.contrib.objectpermissions"
 PEOPLE: Final = {
     "ann": user(username="ann"),
     "bob": user(username="bob"),
@@ -788,3 +800,83 @@ def test_check_warns_that_only_superusers_change_users(use_auth: UseAuth) -> Non
         }
     ):
         assert warnings() == []
+
+
+async def shop_roles(user: Any, tenant_id: str) -> frozenset[str] | None:  # noqa: ANN401
+    """The shopkeeper of acme changes its products; no one else is a member."""
+    if (getattr(user, "username", None), tenant_id) != ("keeper", "acme"):
+        return None
+    return frozenset({"shop.change_product"})
+
+
+@pytest.fixture
+def granting(database_url: str, tmp_path: Path) -> Iterator[None]:
+    """Auth, object permissions, and the shop, migrated; roles from ``shop_roles``."""
+    registry.clear()
+    with override_settings(
+        INSTALLED_DOMAINS=[CONTENTTYPES, AUTH, OBJECTPERMISSIONS, SHOP, ALPHA],
+        DATABASES={"default": {"URL": database_url}},
+        MIGRATIONS_DIR=tmp_path / "migrations",
+        AUTH={
+            "PASSWORD_HASHERS": [FAST_HASHER],
+            "BACKENDS": [
+                *MEMBERSHIP_BACKENDS,
+                "domainkit.contrib.objectpermissions.ObjectPermissionBackend",
+            ],
+        },
+        TENANCY={"MEMBER_PERMISSIONS": f"{HERE}.shop_roles"},
+    ):
+        setup()
+        call_command("makemigrations", "-m", "init", stdout=io.StringIO())
+        call_command("migrate", stdout=io.StringIO())
+        yield
+    registry.clear()
+
+
+def loaded(username: str, *keys: str) -> AbstractBaseUser:
+    """Store ``username``, granted ``keys``; return them as a request loads them."""
+    create_user(username)
+    if keys:
+        grant(username, *keys)
+
+    async def load() -> AbstractBaseUser:
+        async with AuthUnitOfWork() as uow:
+            found = await uow.users.get_by_natural_key(username)
+        assert found is not None
+        return found
+
+    return run_async(load())
+
+
+def test_a_member_grants_on_objects_only_what_they_hold_everywhere(
+    granting: None,
+) -> None:
+    """A role's key changes acme's products, and is handed out on none.
+
+    Granting on an object is a ceiling, as the admin API's are: a key held
+    only through a membership would leave the tenant with the grant.
+    """
+    manage = "objectpermissions.add_objectpermission"
+    change = "shop.change_product"
+    keeper = loaded("keeper", manage)
+    holder = loaded("holder", manage, change)
+    ada = loaded("ada")
+    product = Product(id=ProductId(uuid4()), name="one")
+
+    async def in_acme(actor: AbstractBaseUser) -> tuple[bool, object]:
+        with tenant("acme"):
+            holds = await has_perm(actor, change)
+            try:
+                return holds, await grant_permission(
+                    actor, change, product, user=ada.id
+                )
+            except PermissionDenied as refused:
+                return holds, str(refused)
+
+    assert run_async(in_acme(keeper)) == (
+        True,
+        "You may grant or revoke only permissions you hold on the object.",
+    )
+    holds, granted = run_async(in_acme(holder))
+    assert holds
+    assert isinstance(granted, ObjectPermission)
