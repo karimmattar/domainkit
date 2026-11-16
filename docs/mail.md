@@ -562,14 +562,20 @@ NOTIFICATIONS = {
   before they expire, and Apple's provider token for 50 minutes.
 - **Tokens that are gone.** A device token that the service does not
   know raises `PushTokenGone`: FCM's `UNREGISTERED`, and its
-  `INVALID_ARGUMENT` for the token itself (its own error, with no field,
-  or `message.token` alone); APNs' `410` and its reasons for a lost token;
-  Push Kit's `80300007`. The worker drops the notification, without trying
-  again, and publishes `PushTokenExpired` with the token's SHA-256 digest
+  `INVALID_ARGUMENT` for the token itself (`message.token` alone); APNs'
+  `410` and its reasons for a lost token; Push Kit's `80300007`. The
+  worker drops the notification, without trying again, and publishes
+  `PushTokenExpired` with the token's SHA-256 digest
   (`token_digest(token)`, in `domainkit.contrib.notifications.events`).
   `domainkit.contrib.devices` uses it to forget the token
   ([push tokens](auth/devices.md#push-tokens)). A `404` from FCM without
   `UNREGISTERED` is no token gone: a wrong `PROJECT_ID` could answer so.
+  FCM answers `INVALID_ARGUMENT` with its own error and no field both to
+  a token it never made and to a message it cannot take ("Android
+  message is too big"): `send` then asks a dry run of the token alone.
+  The token is gone only if FCM refuses it too; else the message is
+  refused for good, and the token kept (*changed in 2.5*: 2.4 forgot
+  the token).
 - **Messages a service will refuse again.** A payload or field it cannot
   take (FCM's `INVALID_ARGUMENT` naming fields, `SENDER_ID_MISMATCH`;
   APNs' `400`, `404`, `405`, `413`; Push Kit's `80100003`, `80300008`)
@@ -594,7 +600,8 @@ NOTIFICATIONS = {
   service's answer in `refusal(response)`, which returns a `Refusal`
   (`code`, `gone`, `lasting`, `fields`). Override it for one case, and
   call `super()` for the rest; `send` and its request stay the
-  backend's. An SMS backend lists its lasting codes in `lasting`: a
+  backend's. An answer of another shape (an `error` that is no object,
+  `details` that are no list) is read as far as it goes, never raising. An SMS backend lists its lasting codes in `lasting`: a
   subclass may give its own.
 
 | SMS backend | Refusals that last (`NotificationRefused`) |

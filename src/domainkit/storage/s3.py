@@ -9,32 +9,50 @@
         },
     }
 
-AWS S3, and with ``endpoint`` the stores that speak its API: MinIO
-(``path_style=True``), Cloudflare R2 (``region="auto"``), Huawei OBS,
-Alibaba OSS, Google Cloud Storage's interoperability API (HMAC keys).
-Every request is signed with Signature Version 4 here and sent through
-``domainkit.http.client`` (pooled, retried, bounded by the deadline): no
-AWS SDK is needed. Credentials come from ``access_key_id`` and
-``secret_access_key``, else from the environment as AWS's tools read it
-(``domainkit.keys.aws.default_credentials``: variables, a web identity,
-the container's).
+AWS S3, and with ``endpoint`` the stores that speak its API: Cloudflare
+R2 (``region="auto"``), SeaweedFS, RustFS, and Versity's gateway
+(usually ``path_style=True``), Huawei OBS, Alibaba OSS, and Google Cloud
+Storage's interoperability API (HMAC keys). MinIO speaks it too, but
+its community edition is no longer maintained, and publishes source
+only. Every request is signed with Signature Version 4 here and sent
+through ``domainkit.http.client`` (pooled, retried, bounded by the
+deadline): no AWS SDK is needed. Credentials come from
+``access_key_id`` and ``secret_access_key``, else from the environment
+as AWS's tools read it (``domainkit.keys.aws.default_credentials``:
+variables, a web identity, the container's).
 
 Files of up to 8 MiB are one ``PUT``; larger ones a multipart upload,
 aborted if the content fails. Reads are ranged ``GET`` requests of 4 MiB.
 ``presigned_url`` and ``presigned_upload`` let clients fetch and send
 files without passing through the application; an upload's size and type
 are signed, so the URL takes nothing else.
+
+An upload's URL also signs ``If-None-Match: *`` (``write_once``), so it
+creates its name and never replaces the file once it is there. That holds
+only where the store honours the header on ``PutObject``: AWS S3 (since
+August 2024), Cloudflare R2, SeaweedFS, RustFS, Versity's gateway, and
+MinIO do; Garage (2.5) and Scality CloudServer (9.5) read no condition
+on ``PutObject`` and replace the file without a word. ``probe_write_once``
+asks the store: it writes a probe object twice and expects the second
+write refused. ``check_write_once=True`` runs it before the first
+presigned upload of each storage, in each process, once however many ask
+at once, keeps its verdict, and refuses presigned uploads where the store
+would replace their files: ``WriteOnceIgnored``, 503 over HTTP (ADR 0169).
 """
 
+import asyncio
 import hashlib
 import hmac
+import logging
 import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, timedelta
 from typing import TYPE_CHECKING, ClassVar, Final
 from urllib.parse import quote, urlsplit
+from weakref import WeakKeyDictionary
 
 from domainkit import clock
+from domainkit.exceptions import UpstreamError
 from domainkit.keys.aws import (
     ALGORITHM,
     AwsCredentials,
@@ -42,18 +60,38 @@ from domainkit.keys.aws import (
     default_credentials,
     signing_key,
 )
-from domainkit.storage.base import StorageError
-from domainkit.storage.remote import ObjectStorage
+from domainkit.storage.base import StorageError, new_name
+from domainkit.storage.remote import ObjectStorage, PresignedUpload
 
 if TYPE_CHECKING:
     import httpx2
 
-__all__ = ["S3Storage"]
+__all__ = ["S3Storage", "WriteOnceIgnored"]
+
+logger = logging.getLogger(__name__)
 
 UNSIGNED: Final = "UNSIGNED-PAYLOAD"
 _UPLOAD_ID: Final = re.compile(rb"<UploadId>([^<]{1,1024})</UploadId>")
 _ERROR_CODE: Final = re.compile(rb"<Code>([A-Za-z0-9]{1,64})</Code>")
 _BUCKET: Final = re.compile(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")
+PROBES: Final = "write-once-probes"
+"""Where, under the storage's prefix, ``probe_write_once`` writes its object."""
+REFUSED_AGAIN: Final = frozenset({409, 412})
+"""What a store answers a second create of one key: 412, or 409 in a race."""
+
+
+class WriteOnceIgnored(StorageError, UpstreamError):
+    """The S3 store ignores ``If-None-Match: *``: presigned uploads are refused.
+
+    Its URL could replace the file the application checked. Over HTTP,
+    503 ``direct_upload_unavailable``: the client uploads through the API.
+    """
+
+    status_code: ClassVar[int] = 503
+    code: ClassVar[str] = "direct_upload_unavailable"
+    detail: ClassVar[str] = (
+        "Uploads straight to storage are not available; upload through the API."
+    )
 
 
 class S3Storage(ObjectStorage):
@@ -74,6 +112,7 @@ class S3Storage(ObjectStorage):
         prefix: str = "",
         public_url: str | None = None,
         timeout: float | None = None,
+        check_write_once: bool = False,
     ) -> None:
         """Keep files in ``bucket`` of ``region``.
 
@@ -82,6 +121,9 @@ class S3Storage(ObjectStorage):
         rather than the host name. ``access_key_id`` and
         ``secret_access_key`` are the credentials, or ``credentials`` an
         async callable returning them; without either, the environment's.
+        ``check_write_once`` probes the store (``probe_write_once``) before
+        the first presigned upload, and refuses presigned uploads if it
+        would replace their files.
 
         Raises:
             ValueError: The bucket name, the endpoint, or the prefix is malformed,
@@ -124,6 +166,119 @@ class S3Storage(ObjectStorage):
         from domainkit.http.client import HttpClient
 
         self.client = HttpClient(timeout=timeout, propagate=False)
+        self.check_write_once = check_write_once
+        self._write_once: bool | None = None
+        """The store's verdict: True, it refuses a second create; None, unasked."""
+        self._probing: WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = (
+            WeakKeyDictionary()
+        )
+
+    async def presigned_upload(
+        self,
+        *,
+        size: int,
+        content_type: str,
+        directory: str = "",
+        extension: str = "",
+        expires: timedelta = timedelta(minutes=15),
+    ) -> PresignedUpload:
+        """``ObjectStorage.presigned_upload``, probed first with ``check_write_once``.
+
+        The store is probed once per storage and process: uploads asked at
+        once wait for the one probe, and its verdict is kept. A probe that
+        could not tell is made again at the next upload.
+
+        Raises:
+            WriteOnceIgnored: The store would let the URL replace its file
+                (503 over HTTP).
+            StorageError: The probe could not tell.
+            ValueError: As ``ObjectStorage.presigned_upload``.
+        """
+        if self.check_write_once:
+            await self._check_write_once()
+        return await super().presigned_upload(
+            size=size,
+            content_type=content_type,
+            directory=directory,
+            extension=extension,
+            expires=expires,
+        )
+
+    async def _check_write_once(self) -> None:
+        """Probe the store once, however many uploads ask at once; keep the verdict.
+
+        Raises:
+            WriteOnceIgnored: The store ignores ``If-None-Match: *``.
+            StorageError: The probe could not tell.
+        """
+        if self._write_once is None:
+            loop = asyncio.get_running_loop()
+            probing = self._probing.setdefault(loop, asyncio.Lock())
+            async with probing:
+                if self._write_once is None:
+                    self._write_once = await self._probe()
+        if not self._write_once:
+            raise self._ignored()
+
+    async def probe_write_once(self) -> None:
+        """Ask the store whether it honours ``write_once``'s ``If-None-Match: *``.
+
+        A probe object is written under the prefix, in ``write-once-probes/``,
+        then written again with the header: the store must refuse the
+        second write (``412``, or ``409``). The probe is then deleted; a
+        store that refuses the delete leaves it, and the answer stands.
+        The verdict is kept for ``check_write_once``.
+
+        Raises:
+            WriteOnceIgnored: The store replaced the probe, so a presigned
+                upload's URL could replace the file it made.
+            StorageError: The store refused a write, or answered otherwise:
+                the probe could not tell.
+        """
+        self._write_once = await self._probe()
+        if not self._write_once:
+            raise self._ignored()
+
+    async def _probe(self) -> bool:
+        """Whether the store refused the probe's second write.
+
+        Raises:
+            StorageError: It refused the first, or answered the second
+                otherwise; the message says it was the probe.
+        """
+        name = new_name(PROBES)
+        try:
+            await self._call(
+                "PUT", name, headers=self.write_once, body=b"1", expect={200}
+            )
+        except StorageError as exc:
+            raise StorageError(f"Write-once probe: {exc}") from exc
+        try:
+            again = await self._send("PUT", name, {}, dict(self.write_once), b"2")
+        finally:
+            try:
+                await self._call("DELETE", name, expect={204, 200})
+            except StorageError as exc:
+                logger.warning(
+                    "The write-once probe %s stays in the bucket: %s", name, exc
+                )
+        if again.status_code in REFUSED_AGAIN:
+            return True
+        if again.status_code == 200:
+            return False
+        raise StorageError(
+            f"Write-once probe: S3 answered {again.status_code} to the second "
+            f"write ({_code(again.content)})."
+        )
+
+    def _ignored(self) -> "WriteOnceIgnored":
+        """The refusal of a store that ignores ``If-None-Match: *``."""
+        return WriteOnceIgnored(
+            f"Write-once probe: the S3 store at {self.origin} replaced an object "
+            "written with If-None-Match: *. It ignores the header, so a "
+            "presigned upload's URL could replace the file it made: use a "
+            "store that honours it, or upload through the application."
+        )
 
     def path(self, name: str) -> str:
         """The object's path on the origin."""

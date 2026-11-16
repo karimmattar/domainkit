@@ -78,6 +78,7 @@ the baseline below do not load. So startup and every command fail on:
 | `deploy.E007` | `SEARCH` with `MemorySearchBackend`: its index lives in one process |
 | `security.E019` | no `EVIDENCE.SUBJECT_KEY` (or `SUBJECT_KEYS`), with `domainkit.contrib.evidence` installed: the development key is public ([evidence](../contrib/evidence.md#evidence-records-that-provably-never-change)) |
 | `security.E020` | an `IDENTITY.LDAP` directory reached by `ldap://` without `START_TLS`, with `domainkit.contrib.identity` installed: every password a login checks would cross the network in clear. Use an `ldaps://` URL, or set `START_TLS`. |
+| `documents.E001` | a `DOCUMENTS["RENDERER"]` `URL` of plain `http://` to another host: documents, and Gotenberg's password, would cross the network unencrypted. A renderer on `localhost` or a loopback address may keep http, and `ALLOW_HTTP = True` accepts a network that encrypts by itself, such as a service mesh ([documents.md](../documents.md#hardening-gotenberg)). New in 2.5. |
 
 `migrate --downgrade` also needs `--allow-data-loss` in staging and
 production ([commands](commands.md)).
@@ -132,7 +133,7 @@ application logs them as a warning and starts.
 | `auth.E107` | auth's routes that send codes (resets, signups) to mobile numbers, where `mobile_number` is in `AUTH.IDENTIFIERS`, without `domainkit.contrib.notifications` in `INSTALLED_DOMAINS` ([Password reset](../auth/logging-in.md#password-reset)) |
 | `auth.E108` | an `Action` whose methods (or `AUTH.AUTHORIZATIONS.METHODS`) no installed way to confirm proves, such as `["phone"]` without the phone's app: nobody could confirm it ([Authorizing one act](../auth/actions.md#confirming-it)) |
 | `auth.E109` | a route that asks `StepUp(for_=...)` for a purpose no registered action has ([Authorizing one act](../auth/actions.md#the-route-asks-stepupfor_)) |
-| `auth.E110` | a route that asks for an action that no service decorated `requires_authorization` spends ([Authorizing one act](../auth/actions.md#the-act-spends-it)) |
+| `auth.E110` | a route that asks for an action that nothing spends: no service decorated `requires_authorization`, and no code that said so with `spent_in_code(action)` ([Authorizing one act](../auth/actions.md#the-act-spends-it)) |
 | `auth.E111` | `StepUp(for_=...)` on a WebSocket or an event stream, which is asked again and again and has no act to spend it on |
 | `ciba.E002` | the OpenID Provider's CIBA routes served, but `AUTH.JWT` has no `ISSUER` or signs with a shared secret, so clients could not verify ID tokens ([Sign-in approvals](../auth/ciba.md#oidc-clients)) |
 | `ciba.E003` | `CIBA.APPROVE_LOGINS` on, but the routes of `domainkit.contrib.ciba.api` or `domainkit.contrib.devices.api` not served, so users with a bound phone could not sign in on the web ([Sign-in approvals](../auth/ciba.md#the-mobile-app-as-identity)) |
@@ -172,6 +173,7 @@ everywhere.
 | `security.W004` | a rate limit with no `TRUSTED_PROXIES`: behind a load balancer, every caller would share its address and its count |
 | `security.W005` | `LIVE_REAUTH_INTERVAL = None`: open WebSockets and event streams keep a revoked token |
 | `security.W006` | `*` in `CORS_ALLOWED_ORIGINS`: any web site may call the API from its visitors' browsers |
+| `security.W007` | `UPLOAD_SCANNER` reaches clamd (`ClamAVScanner`, or a subclass) on another host without `tls`: clamd speaks no TLS, so every upload crosses the network in clear. Put a TLS proxy in front of it, or silence the warning where the network is the service's own ([Virus scanning](../uploads.md#virus-scanning)) |
 | `deploy.W001` | no `REQUEST_TIMEOUT`, or `DeadlineMiddleware` missing from `MIDDLEWARE` |
 | `deploy.W002` | no `MAX_CONCURRENT_REQUESTS`, or `ConcurrencyLimitMiddleware` missing |
 | `deploy.W003` | a database that seems to go through PgBouncer (port 6432, or a statement cache turned off in `CONNECT_ARGS`) without `PGBOUNCER = True` |
@@ -205,6 +207,7 @@ everywhere.
 | `limits.W001` | limits without `domainkit.contrib.messaging`: no worker purges old usage, and its table grows with every movement. Silence it once `manage.py limits purge` runs on the project's own schedule ([limits.md](../contrib/limits.md#settings)) |
 | `idempotency.W001` | with `IDEMPOTENCY.REQUIRE_DEADLINE = False` only: what `idempotency.E002` refuses |
 | `keys.W001` | from `manage.py keys status --check`, not `check`: values, blind indexes, or subjects' keys are still sealed under a retired key. `manage.py keys reencrypt` moves them; then remove the key ([keys.md](../contrib/keys.md#rotating)) |
+| `documents.W001` | a `DOCUMENTS["RENDERER"]` without `USERNAME` and `PASSWORD` (in staging and production): Gotenberg renders, and fetches what a page links, for anyone who reaches it. Start it with `--api-enable-basic-auth`, or silence the warning where only the service reaches it ([documents.md](../documents.md#hardening-gotenberg)). New in 2.5 |
 
 The production settings that `init` writes avoid the first three
 warnings, and ask for `TRUSTED_PROXIES`: leave it empty only when callers
@@ -236,6 +239,7 @@ in `SILENCED_CHECKS`, it silences nothing.
 | --- | --- |
 | `security.I001` | in staging and production: where a request's scheme comes from ([below](#information-https)) |
 | `keys.I001` | in every environment: `KEYS.DATA_KEYS` keeps retired keys, as a rotation does until `keys reencrypt` moved what they seal; `keys status --check` says when they can go ([keys.md](../contrib/keys.md#rotating)) |
+| `documents.I001` | in staging and production, with `DOCUMENTS["RENDERER"]` set: Gotenberg's flags are not checked, since they are set where it runs and its API does not show them; the hint names those to set ([documents.md](../documents.md#hardening-gotenberg)). New in 2.5 |
 
 A domain's own infos (`<label>.I001`, from `on_deployment_warnings`) are
 listed the same way: never a failure, and nothing to silence.

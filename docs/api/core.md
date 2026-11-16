@@ -406,7 +406,9 @@ pytest plugin for domainkit projects: test settings, databases, clients.
 - `approve_request`: Approve the approval request at `url` as `client`'s user; return it.
 - `assert_max_queries`: Check that the `with` block runs at most `limit` SQL statements.
 - `assert_num_queries`: Check that the `with` block runs exactly `expected` SQL statements.
+- `authorize_act`: Ask for an authorization of the act at `url`, and confirm it; return it.
 - `browser_session_for`: Return the headers of a browser signed in as `user`, a user stored already.
+- `confirm_authorization`: Confirm the action authorization `authorization_id`; return `<id>.<code>`.
 - `confirm_sca`: Confirm SCA `challenge` with a code of `app`; return the authorization.
 - `enrol_totp`: Turn on an authenticator app for `client`'s user; return the app.
 - `freeze_time`: Return a clock frozen at `when` (default: now), for a `with` block.

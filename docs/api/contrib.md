@@ -217,9 +217,12 @@ Approval requests over HTTP: submit, list, read, approve, reject, cancel.
 Who may decide a request: its policy's approvers, and the rule approving asks.
 
 - `ApproveAction`: With `APPROVALS.APPROVE_ACTION` on: the approval holds its own authorization.
+- `CancelAction`: With `APPROVALS.CANCEL_ACTION` on: the withdrawal holds its own authorization.
 - `IsApprover`: One of the people a request's policy lets decide it.
 - `MayApprove`: The rule approving a request asks for besides its approvers: a step-up, say.
+- `RejectAction`: With `APPROVALS.REJECT_ACTION` on: the rejection holds its own authorization.
 - `RequestActions`: The rules of each route of the requests (`ModelActions`' protocol).
+- `SubmitAction`: With `APPROVALS.SUBMIT_ACTION` on: the submission holds its own authorization.
 - `configured_rule`: `APPROVALS.APPROVE_RULE`, imported: a rule instance, or None.
 
 ## `domainkit.contrib.admin`

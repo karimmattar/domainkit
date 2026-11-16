@@ -437,8 +437,10 @@ class ApprovalRequest(AggregateRoot[RequestId]):
         self._reseal()
         self.record(RequestRejected(request_id=self.id))
 
-    def cancel(self, maker: str, reason: str) -> None:
-        """Withdraw it, as its maker; records ``RequestCancelled``.
+    def check_cancel(self, maker: str) -> None:
+        """Refuse a withdrawal by ``maker`` that cannot be made now.
+
+        What cancelling checks, changing nothing.
 
         Raises:
             RequestTampered: Its seal does not hold.
@@ -450,6 +452,16 @@ class ApprovalRequest(AggregateRoot[RequestId]):
             raise RequestNotPending("The request is no longer waiting for a decision.")
         if maker != self.maker:
             raise NotTheMaker("Only whoever submitted a request can cancel it.")
+
+    def cancel(self, maker: str, reason: str) -> None:
+        """Withdraw it, as its maker; records ``RequestCancelled``.
+
+        Raises:
+            RequestTampered: As for ``check_cancel``.
+            RequestNotPending: As for ``check_cancel``.
+            NotTheMaker: As for ``check_cancel``.
+        """
+        self.check_cancel(maker)
         self.status = RequestStatus.CANCELLED
         self.decided_at = clock.now()
         self.reason = reason

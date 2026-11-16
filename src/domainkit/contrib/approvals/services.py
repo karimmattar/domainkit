@@ -52,7 +52,7 @@ from .exceptions import (
     RequestNotPending,
     RequestTampered,
 )
-from .guards import Guard, Running, guard_for, policy_of, running
+from .guards import Guard, Policy, Running, guard_for, policy_of, running
 from .models import (
     MAX_PERSON,
     MAX_REASON,
@@ -132,10 +132,8 @@ def _reason(value: str) -> str:
     return value
 
 
-async def _submit(
-    guard: Guard, command: object, maker: str, uow: ApprovalsUnitOfWork
-) -> ApprovalRequest:
-    """Store ``command`` as a request of ``maker``'s under the policy that applies.
+def _prepared(guard: Guard, command: object, maker: str) -> tuple[Policy, Any]:
+    """The policy that applies to ``command``, and its arguments, if it may wait.
 
     Raises:
         ApprovalNotNeeded: No policy of the guard applies to it.
@@ -150,10 +148,23 @@ async def _submit(
     if policy is None:
         raise ApprovalNotNeeded("This command needs no approval: run it directly.")
     arguments = guard.dump(command)
-    settings = config()
     size = len(json.dumps(arguments, separators=(",", ":")).encode("utf-8"))
-    if size > settings.MAX_ARGUMENTS_BYTES:
+    if size > config().MAX_ARGUMENTS_BYTES:
         raise InvalidArguments("The command is larger than APPROVALS allows.")
+    return policy, arguments
+
+
+async def _submit(
+    guard: Guard, command: object, maker: str, uow: ApprovalsUnitOfWork
+) -> ApprovalRequest:
+    """Store ``command`` as a request of ``maker``'s under the policy that applies.
+
+    Raises:
+        ApprovalNotNeeded: As for ``_prepared``.
+        InvalidArguments: As for ``_prepared``.
+    """
+    policy, arguments = _prepared(guard, command, maker)
+    settings = config()
     request = ApprovalRequest.submit(
         guard.action,
         arguments,
@@ -176,13 +187,65 @@ async def submit_request(
     """Store a guarded command, given as JSON arguments, as a pending request.
 
     What is stored is the command the arguments make, read back as JSON:
-    the fingerprint is of that, so what runs is what is shown.
+    the fingerprint is of that, so what runs is what is shown. With
+    ``APPROVALS.SUBMIT_ACTION`` on, it spends the maker's authorization of
+    this submission (``approvals.submit``), with the request's commit
+    where the requests share auth's database: called without one, it is
+    refused.
 
     Raises:
         UnknownAction: No guard is registered as ``action``.
         InvalidArguments: The arguments do not make its command, or are too
             large; or the maker is malformed.
         ApprovalNotNeeded: No policy of the guard applies to the command.
+        AuthorizationRequired: With ``SUBMIT_ACTION``, no authorization of
+            this submission came with the request (auth's, 401).
+        ActionNotAuthorized: With ``SUBMIT_ACTION``, it is of another
+            submission (auth's, 403).
+    """
+    if config().SUBMIT_ACTION:
+        from .authorizing import submit_authorized
+
+        return await submit_authorized(command, uow)
+    return await record_submission(command, uow)
+
+
+async def record_submission(
+    command: SubmitRequest, uow: ApprovalsUnitOfWork
+) -> ApprovalRequest:
+    """Submit, as ``submit_request`` does, asking for no authorization.
+
+    Raises:
+        UnknownAction: As for ``submit_request``.
+        InvalidArguments: As for ``submit_request``.
+        ApprovalNotNeeded: As for ``submit_request``.
+    """
+    guard, made, maker = _made(command)
+    return await _submit(guard, made, maker, uow)
+
+
+def check_submission(command: SubmitRequest) -> Any:  # noqa: ANN401 - JSON.
+    """The arguments ``command`` would be stored with, if it may be submitted.
+
+    What submitting checks, storing nothing: asking for an authorization of
+    a submission that would be refused is refused as it would be.
+
+    Raises:
+        UnknownAction: As for ``submit_request``.
+        InvalidArguments: As for ``submit_request``.
+        ApprovalNotNeeded: As for ``submit_request``.
+    """
+    guard, made, maker = _made(command)
+    return _prepared(guard, made, maker)[1]
+
+
+def _made(command: SubmitRequest) -> tuple[Guard, object, str]:
+    """The guard, the command its arguments make, and the maker.
+
+    Raises:
+        UnknownAction: No guard is registered as ``action``.
+        InvalidArguments: The arguments do not make its command; or the
+            maker is malformed.
     """
     maker = _person(command.maker, MAKER)
     guard = guard_for(command.action)
@@ -190,7 +253,7 @@ async def submit_request(
         made = guard.load(guard.with_maker(command.arguments, maker))
     except ValidationError:
         raise InvalidArguments("The arguments do not make the command.") from None
-    return await _submit(guard, made, maker, uow)
+    return guard, made, maker
 
 
 async def submit_command(
@@ -389,8 +452,7 @@ async def check_approval(command: ApproveRequest) -> ApprovalRequest:
         FingerprintMismatch: As for ``approve_request``.
     """
     approver = _person(command.approver, APPROVER)
-    async with ApprovalsUnitOfWork() as uow:
-        request = await uow.requests.get(RequestId(command.request_id))
+    request = await _read(command.request_id)
     request.check_sealed()
     request.check_decision(approver, command.fingerprint, await _parties(request))
     return request
@@ -416,6 +478,10 @@ async def reject_request(
 ) -> ApprovalRequest:
     """Reject a request for a reason; one rejection ends it.
 
+    With ``APPROVALS.REJECT_ACTION`` on, it spends the approver's
+    authorization of this rejection (``approvals.reject``), as approving
+    spends one: called without one, it is refused.
+
     Raises:
         RequestNotFound: As for ``approve_request``.
         RequestTampered: As for ``approve_request``.
@@ -425,6 +491,32 @@ async def reject_request(
         InterestedParty: As for ``approve_request``.
         AlreadyDecided: As for ``approve_request``.
         InvalidArguments: The reason is longer than 500 characters.
+        AuthorizationRequired: With ``REJECT_ACTION``, no authorization of
+            this rejection came with the request (auth's, 401).
+        ActionNotAuthorized: With ``REJECT_ACTION``, it is of another
+            request or reason (auth's, 403).
+    """
+    if config().REJECT_ACTION:
+        from .authorizing import reject_authorized
+
+        return await reject_authorized(command, uow)
+    return await record_rejection(command, uow)
+
+
+async def record_rejection(
+    command: RejectRequest, uow: ApprovalsUnitOfWork
+) -> ApprovalRequest:
+    """Reject a request, as ``reject_request`` does, asking for no authorization.
+
+    Raises:
+        RequestNotFound: As for ``reject_request``.
+        RequestTampered: As for ``reject_request``.
+        PolicyRemoved: As for ``reject_request``.
+        RequestNotPending: As for ``reject_request``.
+        MakerCannotDecide: As for ``reject_request``.
+        InterestedParty: As for ``reject_request``.
+        AlreadyDecided: As for ``reject_request``.
+        InvalidArguments: As for ``reject_request``.
     """
     approver = _person(command.approver, APPROVER)
     reason = _reason(command.reason)
@@ -442,12 +534,39 @@ async def cancel_request(
 ) -> ApprovalRequest:
     """Withdraw a pending request, as its maker.
 
+    With ``APPROVALS.CANCEL_ACTION`` on, it spends the maker's
+    authorization of this cancellation (``approvals.cancel``), as
+    approving spends one: called without one, it is refused.
+
     Raises:
         RequestNotFound: No request has that id.
         RequestTampered: Its seal does not hold.
         RequestNotPending: It is decided already.
         NotTheMaker: ``maker`` did not submit it.
         InvalidArguments: The reason is longer than 500 characters.
+        AuthorizationRequired: With ``CANCEL_ACTION``, no authorization of
+            this cancellation came with the request (auth's, 401).
+        ActionNotAuthorized: With ``CANCEL_ACTION``, it is of another
+            request or reason (auth's, 403).
+    """
+    if config().CANCEL_ACTION:
+        from .authorizing import cancel_authorized
+
+        return await cancel_authorized(command, uow)
+    return await record_cancellation(command, uow)
+
+
+async def record_cancellation(
+    command: CancelRequest, uow: ApprovalsUnitOfWork
+) -> ApprovalRequest:
+    """Withdraw a request, as ``cancel_request`` does, asking for no authorization.
+
+    Raises:
+        RequestNotFound: As for ``cancel_request``.
+        RequestTampered: As for ``cancel_request``.
+        RequestNotPending: As for ``cancel_request``.
+        NotTheMaker: As for ``cancel_request``.
+        InvalidArguments: As for ``cancel_request``.
     """
     reason = _reason(command.reason)
 
@@ -455,6 +574,47 @@ async def cancel_request(
         request = await uow.locked(command.request_id)
         request.cancel(command.maker, reason)
         await uow.commit()
+    return request
+
+
+async def check_rejection(command: RejectRequest) -> ApprovalRequest:
+    """The request ``command`` rejects, if the approver may reject it now.
+
+    What rejecting checks, changing nothing.
+
+    Raises:
+        RequestNotFound: As for ``reject_request``.
+        RequestTampered: As for ``reject_request``.
+        PolicyRemoved: As for ``reject_request``.
+        RequestNotPending: As for ``reject_request``.
+        MakerCannotDecide: As for ``reject_request``.
+        InterestedParty: As for ``reject_request``.
+        AlreadyDecided: As for ``reject_request``.
+        InvalidArguments: As for ``reject_request``.
+    """
+    approver = _person(command.approver, APPROVER)
+    _reason(command.reason)
+    request = await _read(command.request_id)
+    request.check_sealed()
+    request.check_decision(approver, request.fingerprint, await _parties(request))
+    return request
+
+
+async def check_cancellation(command: CancelRequest) -> ApprovalRequest:
+    """The request ``command`` withdraws, if its maker may withdraw it now.
+
+    What cancelling checks, changing nothing.
+
+    Raises:
+        RequestNotFound: As for ``cancel_request``.
+        RequestTampered: As for ``cancel_request``.
+        RequestNotPending: As for ``cancel_request``.
+        NotTheMaker: As for ``cancel_request``.
+        InvalidArguments: As for ``cancel_request``.
+    """
+    _reason(command.reason)
+    request = await _read(command.request_id)
+    request.check_cancel(command.maker)
     return request
 
 

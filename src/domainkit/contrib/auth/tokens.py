@@ -89,6 +89,8 @@ class LoginOrigin:
 
     A login gate sees the login it judges (``gates.login_origin``); a
     request sees the login its credentials belong to (``Credentials.origin``).
+    A login approved on the phone also names the sign-in request it
+    redeems, while it is made: its gates and ``on_session_limits`` see it.
     """
 
     method: str | None = None
@@ -103,6 +105,15 @@ class LoginOrigin:
     login, and for logins made before 2.4."""
     at: datetime | None = None
     """When it was made; None where it is not known."""
+    sign_in_request_id: UUID | None = None
+    """The sign-in request approved on the user's phone that the login
+    redeems (``domainkit.contrib.ciba``'s push or QR sign-ins): its id.
+    None for other logins, and in ``Credentials.origin``: the login does
+    not keep it. Since 2.5."""
+    binding_message: str | None = None
+    """That request's binding message: what its page's ``on_start`` hook
+    named it ("Sign in to the dashboard"); None without one. Whoever starts
+    a sign-in chooses the page, as ciba's docs say. Since 2.5."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,6 +205,35 @@ def signed_by_device(origin: LoginOrigin, scope: Mapping[str, Any]) -> LoginOrig
 
 LOGIN_DEVICE: Final = "domainkit.auth.login_device"
 """Where a request keeps the bound device that signed it, for its login."""
+LOGIN_SIGN_IN: Final = "domainkit.auth.login_sign_in"
+"""Where a request keeps the sign-in request its login redeems, for its login."""
+
+
+def note_login_sign_in(
+    connection: object, request_id: UUID, binding_message: str | None
+) -> None:
+    """Say that the login this request makes redeems sign-in request ``request_id``.
+
+    Its gates (``login_origin``) and ``on_session_limits`` then see the
+    request's id and ``binding_message`` in the login's origin (user
+    report A11). The ciba app calls it when a page redeems a sign-in the
+    phone approved; ``connection`` is the request.
+    """
+    connection.scope[LOGIN_SIGN_IN] = (request_id, binding_message)  # type: ignore[attr-defined]
+
+
+def noted(origin: LoginOrigin, scope: Mapping[str, Any]) -> LoginOrigin:
+    """``origin``, with what the request noted of its login.
+
+    The bound device that signed it (``signed_by_device``), and the
+    sign-in request it redeems (``note_login_sign_in``).
+    """
+    origin = signed_by_device(origin, scope)
+    sign_in = scope.get(LOGIN_SIGN_IN)
+    if sign_in is None:
+        return origin
+    request_id, message = sign_in
+    return replace(origin, sign_in_request_id=request_id, binding_message=message)
 
 
 def note_login_device(connection: object, device_id: UUID) -> None:
