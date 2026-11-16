@@ -63,8 +63,9 @@ and a status.
   a listing with links too: `Location` and `links` were built from the
   resource's and its parent's ids only. They take the prefix's parameters
   from the request, and those of a router the resource is included in
-  (`APIRouter(prefix="/orgs/{org}")`), which failed in 2.4 too. Each
-  value is percent-encoded, ids included (user report U5).
+  (`APIRouter(prefix="/orgs/{org}")`), which failed in 2.4 too, as the
+  read route of that name declares them. Each value is percent-encoded,
+  ids included (user report U5).
 
 ## [2.4.0] - 2026-11-16
 

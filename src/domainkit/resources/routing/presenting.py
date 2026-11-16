@@ -273,9 +273,10 @@ def parameters(
 ) -> tuple[tuple[str, str], ...]:
     """The path parameters of ``app``'s route ``name``, and what each keeps as is.
 
-    A ``path`` parameter keeps its slashes. Read once per application: the
-    route as the application serves it, under the prefixes of the routers
-    it is included in; one in a mount, from ``owner``'s prefix.
+    A ``path`` parameter keeps its slashes. Read once per application,
+    from the first route of that name FastAPI lists, under the prefixes of
+    the routers it is included in; one it does not list (in a mount), from
+    ``owner``'s prefix.
     """
     known = _PARAMETERS.setdefault(app, {})
     found = known.get(name)

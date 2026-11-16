@@ -1102,7 +1102,10 @@ A prefix may hold path parameters of its own, not a parent's:
 `ResourceRouter("/companies/{company_id}/templates", ...)`. A create's
 `Location` and the links take them from the request, percent-encoded:
 `/companies/7/templates/<id>`. So they take those of a router the
-resource is included in, `APIRouter(prefix="/orgs/{org}")`. Read them in
+resource is included in, `APIRouter(prefix="/orgs/{org}")`. They are the
+parameters of the first route of the read route's name in the
+application: give two resources of one model a `name_prefix`. A resource
+in a mounted application fills its own prefix's only. Read them in
 `scope`, a rule, or `provide` (`request.path_params["company_id"]`).
 
 ## Routes of your own on a resource
