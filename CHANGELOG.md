@@ -9,6 +9,27 @@ and a status.
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-11-16
+
+2.5 answers a third report from the project that runs an identity
+service on domainkit. A use case can be an act, twins of one path name
+their method, and the admin API's changes and an approval request's
+steps can be acts (ADRs 0161 to 0163). A signed-in session can withdraw
+what it asked the phone, its asks are counted per user, and each kind of
+request is pushed with its own words (ADR 0164). An operator can prove a
+superuser's address or promote a proved account, and a number given at
+signup with an address is proved by its own code (ADRs 0165 and 0171).
+A domain layer may mark its texts for translation (ADR 0166). Uploads are
+checked whole before they are stored, and a resource can take a file
+(ADR 0167). `domainkit.documents` renders, fills, and lays out documents
+(ADR 0168). Granian keeps to the HTTP versions set, FCM's refusals are
+told apart, write-once stores can be probed, clamd can be reached over
+TLS, and dropped files are removed (ADR 0169). A resource's items can be
+tenants, and lists can name what they refer to (ADR 0170). No table
+changes. Deploy the workers before the web processes, and read
+[upgrading.md](docs/upgrading.md#24-to-25) for what else a project
+changes.
+
 ### Added
 
 - A domain layer may import `domainkit.i18n.lazy`, and no other module of
@@ -20,7 +41,6 @@ and a status.
   `ARCHITECTURE["DOMAIN_ALLOWED"]` may drop it
   ([i18n.md](docs/i18n.md#messages-of-the-domain-layer), ADR 0166, user
   report I2).
-
 - `makemessages` also reads the project's own modules: the package that
   holds the settings module, and the one that holds `ROOT_ROUTER`'s
   module, without the installed domains. What they mark is added to the
@@ -31,19 +51,16 @@ and a status.
   translates already, and `--check` fails on them
   ([i18n.md](docs/i18n.md#the-projects-own-messages), ADR 0166, user
   report I6).
-
 - Devices' mails, `devices/enrollment_code` and `devices/device_bound`,
   ship in Arabic. A test holds every mail template domainkit ships to
   have its files in each language its catalogs translate (user report
   I7).
-
 - A `MAIL.TEMPLATE_DIRS` directory may hold a template's files in one
   language alone: readers of that language get them, and every other
   reader the template's own. A directory with the template's own text
   body still wins over a later directory's translation
   ([mail.md](docs/mail.md#templates-in-other-languages), ADR 0166, user
   report I8).
-
 - `requires_authorization(ACTION)` takes a `@use_case`: it returns a
   copy whose `run`, and so its call, spends the act's authorization,
   and leaves the use case as it was, so a route that runs it without an
@@ -59,7 +76,6 @@ and a status.
   no route of a use case could take
   ([A use case as the act](docs/auth/actions.md#a-use-case-as-the-act),
   ADR 0161) (user report A13).
-
 - An action's `show` may take the unit of work the act runs in,
   `show(command, uow)`, and read through its port: it is given it open,
   and left without a commit. A `ResourceRouter`'s twin lends its
@@ -70,13 +86,11 @@ and a status.
   `ask_authorization` also takes `uow` is given the route's unit of
   work; a rule written for 2.4 is called as before (ADR 0161) (user
   report A13).
-
 - The twin's `201` (`ActionAuthorizationOut`) carries `methods`, what
   confirming the authorization must prove, as `GET
   /auth/authorizations/{id}` answers it, so a page knows at once which
   ways to offer. Approvals' approve twin and the act the phone lists
   carry it too (user report A17).
-
 - `domainkit.testing.authorize_act(client, url, app=None, *, json=None,
   password=None, prefix="/auth")` asks an act's twin for an
   authorization and confirms it; `confirm_authorization(client,
@@ -87,7 +101,6 @@ and a status.
   unless `ENVIRONMENT = "test"`. Asking still needs the user to have a
   way to confirm the act: an authenticator app, or a bound device
   ([Testing](docs/auth/actions.md#testing)) (user report A17).
-
 - `…/authorizations/cancel` and `…/transactions/cancel` (under
   `/auth/app-sign-in`) withdraw what a signed-in session asked the
   phone, from that session alone, and `POST /auth/app-sign-in/cancel
@@ -106,7 +119,6 @@ and a status.
   without HTTP. A page could only let the request expire, or have the
   user deny it as "Not me", which stopped their pushes for
   `REPORT_COOLDOWN`. ADR 0164 (user report A16).
-
 - A login a page redeems at `/auth/app-sign-in/token` or `/session`
   names the sign-in request in its origin, for login gates
   (`login_origin`) and `on_session_limits`:
@@ -115,7 +127,6 @@ and a status.
   of your own notes them with `note_login_sign_in(request, request_id,
   binding_message)` (`auth.integration`). The login does not keep them.
   A gate read the redeem's `Origin` instead. ADR 0164 (user report A11).
-
 - `AUTH.ADMIN_ACTION` (off by default): each change of the admin API asks
   for an authorization of its own, the action `auth.admin_change`, in
   place of a step-up window, so the phone confirms making staff, giving
@@ -137,14 +148,12 @@ and a status.
   While the setting is off, the admin API loads nothing of it
   ([Each change, authorized as one act](docs/auth/routes.md#each-change-authorized-as-one-act),
   ADR 0163) (user report A6).
-
 - `on_create_staff` (`auth.gates`) registers a check of creating a user
   who is staff in the admin API, run with the creation's own checks and
   in its twin. Approvals refuses there, while `ADMIN_APPROVALS` holds
   making staff, what it refused in its `on_admin_change` check, so asking
   for an authorization of such a creation is refused too (ADR 0163)
   (user report A6).
-
 - `APPROVALS.SUBMIT_ACTION`, `REJECT_ACTION`, and `CANCEL_ACTION` (each
   off by default), as `APPROVE_ACTION`: submitting at `POST /requests`,
   rejecting, and cancelling each ask for an authorization of their own,
@@ -160,7 +169,6 @@ and a status.
   none of the framework's back-office acts
   ([Submitting, rejecting, and cancelling with an authorization](docs/contrib/approvals.md#submitting-rejecting-and-cancelling-with-an-authorization),
   ADR 0163) (user report A6).
-
 - `SERVE["HTTP"]` (`"auto"`, `"1"`, `"2"`): the HTTP versions Granian
   speaks under `manage.py serve`. `"1"` keeps it to HTTP/1.1, as under
   uvicorn; `"auto"`, the default as in 2.4, also takes HTTP/2 without TLS
@@ -168,7 +176,6 @@ and a status.
   under uvicorn and with `WEBSOCKETS` on
   ([HTTP versions](docs/reference/servers.md#http-versions), ADR 0169)
   (user report S1).
-
 - `SERVE["EXIT_ON_FAILED_START"]`, off unless set: under Granian, a
   worker whose application cannot be imported, or whose startup fails,
   stops the server, and `serve` exits 3, as uvicorn and gunicorn do. A
@@ -177,7 +184,6 @@ and a status.
   worker that dies once it served is still started again
   ([A worker that fails as it starts](docs/reference/servers.md#a-worker-that-fails-as-it-starts),
   ADR 0169) (user report S1).
-
 - `S3Storage.probe_write_once()` writes a probe object twice with
   `If-None-Match: *` and raises `StorageError` unless the store refuses
   the second write; `S3Storage(check_write_once=True)` runs it before
@@ -189,7 +195,6 @@ and a status.
   which is no longer maintained
   ([A store that ignores create only](docs/uploads.md#a-store-that-ignores-create-only),
   ADR 0169) (user report U4).
-
 - `ClamAVScanner` speaks TLS to a proxy in front of clamd (stunnel),
   which speaks none: `tls`, `tls_ca`, and a client certificate
   (`tls_cert`, `tls_key`, `tls_key_password`) for the proxy to require.
@@ -198,7 +203,6 @@ and a status.
   another host without TLS
   ([clamd on another host](docs/uploads.md#clamd-on-another-host),
   ADR 0169) (user report U5).
-
 - `domainkit.storage.cleanup`: a use case defers
   `remove_unreferenced(names)` to remove the stored files a change
   dropped, once it commits; the worker deletes each name that no row of
@@ -207,7 +211,6 @@ and a status.
   `domainkit.storage.remove_unreferenced`
   ([Removing files a change dropped](docs/uploads.md#removing-files-a-change-dropped),
   ADR 0169) (user report U5).
-
 - `domainkit.documents` renders, fills, and lays out documents. A
   `Renderer` port turns HTML (Chromium) and Office documents
   (LibreOffice) into PDFs; `GotenbergRenderer` is it on Gotenberg 8.40
@@ -232,7 +235,6 @@ and a status.
   text. Arabic is rendered by Chromium or LibreOffice, never drawn. They need the new `documents` extra
   (pypdf, lxml, nh3) and say so when it is missing. Guide:
   `docs/documents.md`; ADR 0168 (user report U2).
-
 - Staging and production refuse a `DOCUMENTS["RENDERER"]` reached by
   plain `http://` on another host (`documents.E001`; `localhost` and
   `ALLOW_HTTP = True` may), and warn of one without a login
@@ -240,7 +242,6 @@ and a status.
   checked from the service (`documents.I001`), and names those to set,
   for Chromium and LibreOffice: `docs/documents.md`, "Hardening
   Gotenberg". ADR 0168 (user report U2).
-
 - `ResourceRouter(tenant=PathTenant("company_id"))` serves each route
   whose path holds the parameter as that tenant, before the route's
   rules: a companies resource serves `/companies/{company_id}` and its
@@ -265,7 +266,6 @@ and a status.
   tenant reads its id's type. On the router, `PathTenant` refused the
   list (`tenancy.E001`), and command routes take no `dependencies=`.
   ADR 0170 (user report D3).
-
 - `HasMemberPermissions(*perms)` (`domainkit.tenancy`) and
   `MemberActions(model, *rules, outside=None)` (`domainkit.resources`)
   count the keys a caller holds as a member of the tenant served
@@ -281,29 +281,24 @@ and a status.
   member rule narrows its list. `InTenant` allows requests served as a
   tenant.
   ADR 0170 (user report D3).
-
 - `Throttle(..., per_tenant=False)` counts a caller once across tenants:
   a member of ten tenants gets the rate once, not ten times. The default
   stays one count per tenant. ADR 0170 (user report D3).
-
 - The admin API's `GET /users` takes `id`, repeated, up to 200: a page of
   rows that refer to users names them in one request. ADR 0170 (user
   report D2).
-
 - `ResourceRouter(present_many=...)`, an async function of an answer's
   aggregates and the request, shows them in one call, in `present`'s
   place: a page, an export's chunk, a query's items, or one aggregate.
   It can load what another domain holds for the whole page at once; an
   answer not in the aggregates' order fails the request.
   ADR 0170 (user report D2).
-
 - `FilterSet.search_through = {"user_id": users_named}` searches what a
   field refers to: `users_named(word, limit)` returns the ids of at most
   `max_reference_matches` (100) rows each word names, once per word in
   any case and only for a query the set accepts, and a row matches when
   its field is one of them. A resource's members can be found by
   their user's name, wherever users are kept. ADR 0170 (user report D2).
-
 - `command_route(dependencies=[...])`, and so `use_case(...,
   dependencies=...)`: FastAPI dependencies of a command route's own, run
   after its rules, such as `Depends(Throttle("50/day"))`. A request the
@@ -315,14 +310,12 @@ and a status.
   on both: `provide`, rules, and the resource's dependencies. A limit had
   to go in `provide`, which the twin runs, and counted each act twice.
   ADR 0162 (user report A14).
-
 - Routes of one path that ask for an authorization by several methods,
   such as a `PATCH` and a `DELETE` of one item, each get a twin, whose
   path names its route's method: `POST <path>/authorization/patch` and
   `POST <path>/authorization/delete`. A route alone on its path keeps
   `<path>/authorization`. The router refused the second route. ADR 0162
   (user report A17).
-
 - `createsuperuser --verify` proves the new superuser's email address
   and mobile number: it mails, or texts, a code to each at once, not
   through the outbox, and asks for it at the prompt. `createsuperuser
@@ -342,7 +335,6 @@ and a status.
   code reaches it, so under `CIBA.APPROVE_LOGINS = "always"` it could
   never enroll a phone, nor log in. Nothing changes for a command that
   gives neither option. ADR 0165 (user report A12).
-
 - Uploads can be checked whole before they are stored. A `FileType` takes
   an `inspect` hook, which `save_upload` runs on the upload, held in a
   temporary file, in a process of its own; a file it refuses is never
@@ -375,13 +367,11 @@ and a status.
   `ZIP` still read the first bytes only
   ([ADR 0167](docs/adr/0167-check-an-upload-whole-and-let-a-resource-take-one.md))
   (user report U1).
-
 - `save_upload` takes bytes, or an async iterable of bytes such as a
   request's body, with `filename=`, as well as an `UploadFile`.
   `receive_upload` receives and checks a file without storing it
   (`ReceivedUpload`). `StoredUpload` is public, in `domainkit.storage`,
   and carries the SHA-256 of what was stored (user report U3).
-
 - `ResourceRouter.upload_route(...)` takes a file: the body itself, its
   name in `X-Filename`, which a phone can sign, or a form. It checks the
   reach and `If-Match` before it reads the body, as a command route
@@ -393,11 +383,9 @@ and a status.
   storage gave it, wherever the command holds it (a list, a set, a
   mapping under any keys, a model), so the twin and the act agree on the
   file; a set's items are bound in a sorted order (user report U3).
-
 - `HttpClient.request(files=...)` sends a `multipart/form-data` form,
   `data=` its other fields, within the client's deadlines and retries; a
   retry sends each file whole again (user report U5).
-
 - `stub(handler, everywhere=True)` stubs every call of the process until
   its block ends, for a pytest fixture whose context the test does not
   share: an async fixture of a sync test, or a sync fixture after an
@@ -410,7 +398,6 @@ and a status.
   when first read as its attributes, and are the same objects; `dir()`
   lists them all. A domain layer that imports `domainkit.i18n.lazy` so
   loads no settings (ADR 0166, user report I2).
-
 - Each kind of request is pushed with its own words: "Approve sign-in?",
   "Approve an action?", "Approve a transaction?", and "Confirm it's
   you?" for a step-up, each with a body to match, in English and Arabic.
@@ -418,7 +405,6 @@ and a status.
   kind's. `PUSH_TITLE` and `PUSH_BODY` now default to `None`; set, they
   still stand for every kind `PUSH_TEXTS` names none for. Every kind was
   pushed as "Approve sign-in?". ADR 0164 (user report I8).
-
 - What a signed-in session asks the phone (an act, a transaction, the
   deprecated step-up) is counted against `CIBA.START_RATE` per user,
   from any address, and refused with "Too many requests were sent to
@@ -427,14 +413,12 @@ and a status.
   minute. `count_start(request, user=user)` counts a route of your own
   the same way; a page's sign-ins stay counted per address. ADR 0164
   (user report A15).
-
 - An `on_approve` hook's refusal, `PermissionDenied` or an HTTP error of
   403, denies the request, unreported, before the phone is answered: the
   page's poll and wait answer `access_denied` at once. The request waited
   until it expired. A hook that denies it itself keeps working, and any
   other error (a conflict to retry, a throttle, the hook's own failure)
   still leaves it waiting. ADR 0164 (user report A17).
-
 - A command field declared as a dataclass, such as a value object, or a
   tuple of one (a `@use_case`'s `tuple[Address, ...]`), gets the
   instances the body validated, where the body's field is typed as that
@@ -447,11 +431,9 @@ and a status.
   (a nested model) come as before. Schemas are unchanged. A service that
   rebuilt the instances from dicts stops
   ([upgrading.md](docs/upgrading.md#24-to-25)) (user report U5).
-
 - A batch item whose service raises `RequestValidationError` answers that
   item's `422 validation_error`, as a request of its own would, and no
   longer `500` (user report U5).
-
 - The layer rules let the infrastructure layer import
   `domainkit.http.uploads`, as they let it import `domainkit.http.client`:
   a file gateway checks and stores the bytes its route hands it.
@@ -474,14 +456,11 @@ and a status.
   `InvalidField`'s, or `error_response`'s detail is answered as its text
   in the caller's language. It made a `500`: the body refused anything
   but text (user report I2).
-
 - `LocaleMiddleware` reads `LANGUAGE_CODE` and `LANGUAGES` per request,
   not when the application is built: a test that overrides them is
   served in the new ones (user report I5).
-
 - `makemessages` extracts the texts marked with `gettext_noop`, as the
   docs said it did (user report I2).
-
 - `check` refused a route that asks `StepUp(for_=...)` for an act that
   code spends with `spend_authorization`, as the docs offer for code that
   is not a service (`auth.E110`: "no service spends it"). Code says so
@@ -490,7 +469,6 @@ and a status.
   still refused; one declared and never spent still fails its requests
   under `DEBUG` and in tests (`500 authorization_unspent`) (ADR 0163)
   (user report A6).
-
 - `FcmPushBackend` no longer forgets a working token when FCM refuses a
   message as too big. FCM answers `INVALID_ARGUMENT` with no field both
   to that and to a token it never made; `send` now asks a dry run of the
@@ -499,13 +477,11 @@ and a status.
   `{"error": {"details": 5}}`, is read without raising `TypeError`
   ([Text messages and push notifications](docs/mail.md#text-messages-and-push-notifications),
   ADR 0169) (user report N1).
-
 - Under `manage.py serve`, Granian bounds a request's headers by
   `SERVE["MAX_HEADER_SIZE"]` over HTTP/2 too
   (`--http2-max-headers-size`), where its HTTP/2 took 16 MiB of headers
   from an h2c client ([HTTP versions](docs/reference/servers.md#http-versions))
   (user report S1).
-
 - A resource whose prefix holds a path parameter of its own, such as
   `/companies/{company_id}/templates`, answered a create with `500`, and
   a listing with links too: `Location` and `links` were built from the
@@ -514,7 +490,6 @@ and a status.
   (`APIRouter(prefix="/orgs/{org}")`), which failed in 2.4 too, as the
   read route of that name declares them. Each value is percent-encoded,
   ids included (user report U5).
-
 - The password rules' refusals and descriptions are in the shipped
   catalogs, in English and Arabic. `MinimumLengthValidator` and
   `UserAttributeSimilarityValidator` filled their value in before
@@ -525,14 +500,12 @@ and a status.
   translated in the `field` context. A project catalog that translated
   the filled English text (`...at least 12 characters.`) translates the
   text with its placeholder instead (user report I4).
-
 - A request's `email` not shaped as an address (`/signup`,
   `/password-reset`, `/email-verification`) is refused as `Enter a
   valid email address.`, translated, not with the pattern that checks
   it. Its error's `type` is now `value_error`, as for an address with a
   name, not `string_pattern_mismatch`. OpenAPI still shows the pattern
   (user report I8).
-
 - The `auth/signup_exists` mail, and the `409 signup_taken` of
   `/signup/code`, name what the signup gave (the username, the address,
   the number) and suggest another username only where the signup chose
@@ -562,14 +535,12 @@ and a status.
   signup by a number alone is unchanged. See
   [upgrading.md](docs/upgrading.md#24-to-25). ADR 0171 (found in review
   of user report A12).
-
 - Verification codes (`/email-verification`, `/mobile-verification`) are
   each user's own: a code another user asked for, for the same address
   or number, no longer replaces one's own. Asking again with no body
   counts against `AUTH.EMAIL_RATE` per the value the code goes to, a
   held one too, which re-asking had escaped since 2.4. Codes issued
   before the upgrade stop working (found in review of user report A12).
-
 - `createsuperuser --promote` reads its value once NFKC folds look-alike
   characters, reads any form of an id as an id, and refuses digits that
   are no number in international form (`0612345678`, `0033…`): such
@@ -8029,7 +8000,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.4.0...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.5.0...HEAD
+[2.5.0]: https://github.com/karimmattar/domainkit/compare/v2.4.0...v2.5.0
 [2.4.0]: https://github.com/karimmattar/domainkit/compare/v2.3.0...v2.4.0
 [2.3.0]: https://github.com/karimmattar/domainkit/compare/v2.2.1...v2.3.0
 [2.2.1]: https://github.com/karimmattar/domainkit/compare/v2.2.0...v2.2.1
