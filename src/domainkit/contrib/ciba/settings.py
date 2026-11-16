@@ -7,7 +7,26 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from domainkit.utils.rates import parse_rate
 
-__all__ = ["CibaSettings"]
+__all__ = ["CibaSettings", "PushText"]
+
+type PushKind = Literal["sign_in", "step_up", "transaction", "authorization"]
+"""The kinds of request a push asks about; a phone's own request to be bound
+(``device``) is scanned, never pushed."""
+
+
+class PushText(BaseModel):
+    """The notification of one kind of request: ``CIBA["PUSH_TEXTS"][kind]``.
+
+    A field left None takes ``PUSH_TITLE`` or ``PUSH_BODY``, else the
+    kind's own text.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    TITLE: str | None = Field(default=None, min_length=1, max_length=100)
+    """The notification's title."""
+    BODY: str | None = Field(default=None, min_length=1, max_length=200)
+    """Its text, under the title."""
 
 
 class CibaSettings(BaseModel):
@@ -58,7 +77,9 @@ class CibaSettings(BaseModel):
     """What a QR code holds; ``{code}`` is replaced by the secret
     (``"https://id.example.com/qr#{code}"`` for a universal link)."""
     START_RATE: str | None = "10/minute"
-    """Sign-ins the public routes start per client address."""
+    """Sign-ins the public routes start per client address; and, per user,
+    the acts and transactions a user's signed-in sessions ask their phone
+    to confirm, whatever address they come from."""
     CLIENT_RATE: str | None = "60/minute"
     """Requests each CIBA client starts."""
     ACCESS_TOKEN_TTL: timedelta = Field(
@@ -73,14 +94,18 @@ class CibaSettings(BaseModel):
         default=timedelta(minutes=5), gt=timedelta(0), le=timedelta(hours=1)
     )
     """The furthest a client's ``private_key_jwt`` assertion may expire."""
-    PUSH_TITLE: str = Field(default="Approve sign-in?", min_length=1, max_length=100)
-    PUSH_BODY: str = Field(
-        default="Open the app to approve or deny it.", min_length=1, max_length=200
-    )
-    """The notification's text. No personal data: it goes through the push
-    service; the app fetches the request's details itself. Translated into
-    the user's language, or the request's: domainkit's catalogs have the
+    PUSH_TITLE: str | None = Field(default=None, min_length=1, max_length=100)
+    PUSH_BODY: str | None = Field(default=None, min_length=1, max_length=200)
+    """The notification's text for every kind of request ``PUSH_TEXTS``
+    gives none; None: each kind's own ("Approve sign-in?", "Approve an
+    action?", ...). No personal data: it goes through the push service;
+    the app fetches the request's details itself. Translated into the
+    user's language, or the request's: domainkit's catalogs have the
     defaults in Arabic, and a project's catalogs may translate its own."""
+    PUSH_TEXTS: dict[PushKind, PushText] = Field(default_factory=dict)
+    """The notification's text per kind of request (``sign_in``,
+    ``step_up``, ``transaction``, ``authorization``), before
+    ``PUSH_TITLE`` and ``PUSH_BODY``."""
 
     @field_validator("QR_FORMAT")
     @classmethod

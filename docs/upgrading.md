@@ -38,6 +38,32 @@ never published), with each section below.
 
 ## 2.4 to 2.5
 
+2.5 answers a third report from a project that runs an identity service
+on domainkit. It breaks nothing a project relies on; each item of this
+list says what changes, and what a project that relied on 2.4's
+behaviour does.
+
+- **An `on_approve` hook's refusal denies the request.** A hook that
+  raises `PermissionDenied`, or an HTTP error of 403, ends the request:
+  the page's poll and wait answer `access_denied` at once, where the
+  request waited until it expired; nothing is reported. A hook that
+  called `deny()` itself before raising may drop the call: it still
+  works. Any other error leaves the request waiting, as before
+  ([Hooks of the web pages](auth/ciba.md#hooks-of-the-web-pages)).
+- **Each kind of request has its own push text.** `CIBA.PUSH_TITLE` and
+  `PUSH_BODY` default to `None`, and each kind has its words
+  ([Push texts](auth/ciba.md#push-texts)). A project that set them keeps
+  them, for every kind; to give each kind its own, unset them, or name
+  each in `PUSH_TEXTS`. Code that read `PUSH_TITLE` gets `None` where it
+  was not set. domainkit's catalogs have the new texts in Arabic; a
+  project whose catalogs translate the push into other languages adds
+  them there.
+- **A session's asks are counted per user.** `START_RATE` counts what a
+  signed-in session asks the phone per user, from any address. A test
+  suite that raised `START_RATE` for one user's acts still needs it
+  raised; one that raised it for many users behind one address no
+  longer does.
+
 2.5 answers a third report from the project that runs an identity
 service on domainkit. The sections below say what a project that relied
 on 2.4's behaviour changes.

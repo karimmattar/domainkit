@@ -1434,6 +1434,7 @@ async def confirm_action_with(
     signature: bytes | None = None,
     signed: bytes | None = None,
     signed_at: datetime | None = None,
+    uow: AuthUnitOfWork | None = None,
 ) -> str:
     """Confirm the authorization, which ``methods`` proved; return ``<id>.<code>``.
 
@@ -1446,6 +1447,9 @@ async def confirm_action_with(
     public key, what it signed, its signature, and when are kept with the
     row; with ``domainkit.contrib.evidence`` installed, a signed
     confirmation goes into the evidence ledger too, which outlives the row.
+    With ``uow`` (since 2.5), the confirmation is made in it and its
+    caller commits: with a change of its own, in one transaction (ciba
+    approves the phone's request with it).
 
     Raises:
         AuthorizationNotFound: None of the user's (or the login's) has that id.
@@ -1471,17 +1475,33 @@ async def confirm_action_with(
         "signed": signed,
         "signed_at": signed_at,
     }
-    async with AuthUnitOfWork() as uow:
-        confirmed = not authorization.expired() and await _record_confirmation(
-            uow, authorization, tuple(sorted(proved)), **device
-        )
-        if confirmed and signature is not None:
-            _defer_evidence(uow, authorization, tuple(sorted(proved)), **device)
-        if confirmed:
-            await uow.commit()
-    if not confirmed:
-        raise _expired()
+    if uow is None:
+        async with AuthUnitOfWork() as own:
+            await _confirm_in(own, authorization, proved, device)
+            await own.commit()
+    else:
+        await _confirm_in(uow, authorization, proved, device)
     return _authorization(authorization)
+
+
+async def _confirm_in(
+    uow: AuthUnitOfWork,
+    authorization: ActionAuthorization,
+    proved: frozenset[str],
+    device: dict[str, Any],
+) -> None:
+    """Confirm ``authorization`` in ``uow``, its evidence deferred to the commit.
+
+    Raises:
+        APIError: 409 ``authorization_expired``: it can no more.
+    """
+    methods = tuple(sorted(proved))
+    if authorization.expired() or not await _record_confirmation(
+        uow, authorization, methods, **device
+    ):
+        raise _expired()
+    if device["signature"] is not None:
+        _defer_evidence(uow, authorization, methods, **device)
 
 
 def _waiting(authorization: ActionAuthorization) -> None:

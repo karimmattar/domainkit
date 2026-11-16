@@ -88,6 +88,34 @@ and a status.
   way to confirm the act: an authenticator app, or a bound device
   ([Testing](docs/auth/actions.md#testing)) (user report A17).
 
+- `…/authorizations/cancel` and `…/transactions/cancel` (under
+  `/auth/app-sign-in`) withdraw what a signed-in session asked the
+  phone, from that session alone, and `POST /auth/app-sign-in/cancel
+  {"request"}` a page's QR sign-in no phone scanned yet. An unanswered
+  request ends now: the phone no longer lists it nor can answer it, a
+  session's ask no longer counts against `CIBA.MAX_PENDING`, nobody
+  redeems it, and nothing is reported, so the user's pushes go on. A
+  request the phone answered or scanned stays as it is; the phone
+  approves an act and auth confirms it in one transaction
+  (`confirm_action_with(..., uow=...)`). A page's push sign-in is never
+  withdrawn: anyone who knows an identifier starts one, so it stays
+  counted and reportable until it expires. A user's unanswered asks of
+  the last `REQUEST_TTL`, withdrawn ones too, are at most twice
+  `MAX_PENDING`, and the phone reports a withdrawn one from its push
+  until then. `cancel(handle, ...)` (`domainkit.contrib.ciba`) does it
+  without HTTP. A page could only let the request expire, or have the
+  user deny it as "Not me", which stopped their pushes for
+  `REPORT_COOLDOWN`. ADR 0164 (user report A16).
+
+- A login a page redeems at `/auth/app-sign-in/token` or `/session`
+  names the sign-in request in its origin, for login gates
+  (`login_origin`) and `on_session_limits`:
+  `LoginOrigin.sign_in_request_id`, and `binding_message`, what the
+  page's `on_start` hook named it ("Sign in to the dashboard"). A route
+  of your own notes them with `note_login_sign_in(request, request_id,
+  binding_message)` (`auth.integration`). The login does not keep them.
+  A gate read the redeem's `Origin` instead. ADR 0164 (user report A11).
+
 ### Changed
 
 - `import domainkit.i18n` imports none of its modules. Its names, and its
@@ -95,6 +123,30 @@ and a status.
   when first read as its attributes, and are the same objects; `dir()`
   lists them all. A domain layer that imports `domainkit.i18n.lazy` so
   loads no settings (ADR 0166, user report I2).
+
+- Each kind of request is pushed with its own words: "Approve sign-in?",
+  "Approve an action?", "Approve a transaction?", and "Confirm it's
+  you?" for a step-up, each with a body to match, in English and Arabic.
+  `CIBA["PUSH_TEXTS"] = {kind: {"TITLE": ..., "BODY": ...}}` sets a
+  kind's. `PUSH_TITLE` and `PUSH_BODY` now default to `None`; set, they
+  still stand for every kind `PUSH_TEXTS` names none for. Every kind was
+  pushed as "Approve sign-in?". ADR 0164 (user report I8).
+
+- What a signed-in session asks the phone (an act, a transaction, the
+  deprecated step-up) is counted against `CIBA.START_RATE` per user,
+  from any address, and refused with "Too many requests were sent to
+  your phone; try again later." (in Arabic too). It was counted per
+  address with the pages' sign-ins, so an office's staff shared 10 a
+  minute. `count_start(request, user=user)` counts a route of your own
+  the same way; a page's sign-ins stay counted per address. ADR 0164
+  (user report A15).
+
+- An `on_approve` hook's refusal, `PermissionDenied` or an HTTP error of
+  403, denies the request, unreported, before the phone is answered: the
+  page's poll and wait answer `access_denied` at once. The request waited
+  until it expired. A hook that denies it itself keeps working, and any
+  other error (a conflict to retry, a throttle, the hook's own failure)
+  still leaves it waiting. ADR 0164 (user report A17).
 
 ### Deprecated
 

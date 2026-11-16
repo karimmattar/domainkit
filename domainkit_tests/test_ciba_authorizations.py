@@ -43,13 +43,14 @@ from domainkit_tests import sample_action_routes as acts
 from domainkit_tests.conftest import UseAuth
 from domainkit_tests.support.auth import audited, create_user
 from domainkit_tests.test_action_authorisations import rows
-from domainkit_tests.test_ciba import PHONE, App, Phone, app, sign_in_pushes
+from domainkit_tests.test_ciba import PHONE, SITE, App, Phone, app, sign_in_pushes
 from domainkit_tests.test_ciba import rows as sign_in_rows
 from domainkit_tests.test_ciba_step_up import ask, redeem, web_of
 
 __all__ = ["app"]  # The fixture the tests take.
 
 ROUTES = "domainkit_tests.sample_ciba_action_routes.router"
+ELSEWHERE = ("192.0.2.44", 50002)
 DEPRECATION_DOCS = (
     "https://github.com/karimmattar/domainkit/blob/main/docs/auth/ciba.md"
     "#the-pages-words-and-a-window-deprecated"
@@ -169,7 +170,7 @@ def test_the_phone_confirms_one_act_in_the_servers_words_and_it_is_spent_once(
     assert set(started.json()) == {"request", "expires_in", "interval", "match_code"}
     assert pending.json()["code"] == "authorization_pending"
     assert push["data"]["request_id"] == listed["id"]
-    assert push["title"] == "Approve sign-in?"
+    assert push["title"] == "Approve an action?"
     assert "Change your first name" not in json.dumps(push)
     [row] = rows()
     assert listed["kind"] == "authorization"
@@ -274,7 +275,10 @@ async def refuse_every_act(request: Request, user: Any, sign_in: Any) -> None:  
 
 
 def test_an_act_a_hook_refuses_is_neither_confirmed_nor_approved(acting: App) -> None:
-    """``on_approve`` runs before auth confirms the act: nothing is kept."""
+    """``on_approve`` runs before auth confirms the act: nothing is kept.
+
+    The request is denied: the page hears it at once (user report A17).
+    """
     phone = Phone(acting(PHONE))
     session = Session(acting())
     on_approve(refuse_every_act, domain="ciba")
@@ -286,8 +290,8 @@ def test_an_act_a_hook_refuses_is_neither_confirmed_nor_approved(acting: App) ->
 
     assert refused.status_code == 403, refused.json()
     assert refused.json()["detail"] == "Acts are not approved from the phone here."
-    assert polled.json()["code"] == "authorization_pending"
-    assert [each["id"] for each in phone.waiting()] == [listed["id"]]
+    assert polled.json()["code"] == "access_denied"
+    assert phone.waiting() == []
     [row] = rows()
     assert (row["confirmed_at"], row["signature"]) == (None, None)
 
@@ -408,6 +412,35 @@ def test_the_phone_is_asked_as_a_step_up_is_counted_and_bounded(acting: App) -> 
     assert asked.status_code == 200, asked.json()
     assert code_of(unavailable) == (409, "phone_unavailable")
     assert code_of(throttled) == (429, "rate_limited")
+
+
+def test_a_sessions_asks_are_counted_per_user_whatever_the_address(
+    acting: App,
+) -> None:
+    """``START_RATE`` per user for what sessions ask; a page's start per address.
+
+    Two users behind one address, an office's, each have the rate (user
+    report A15). One user from another address has it once, and is told
+    of their phone; a QR start from the office is counted apart.
+    """
+    Phone(acting(PHONE))
+    Phone(acting(PHONE), "bob")
+    office = acting(START_RATE="1/minute")
+    away = TestClient(office.app, base_url=SITE, client=ELSEWHERE)
+    alice, bob, alice_away = Session(office), Session(office, "bob"), Session(away)
+
+    first = alice.ask_phone(alice.asked("Al")["id"])
+    second = bob.ask_phone(bob.asked("Bo")["id"])
+    again = alice_away.ask_phone(alice_away.asked("Cy")["id"])
+    started = office.post("/auth/app-sign-in/qr")
+
+    assert first.status_code == 200, first.json()
+    assert second.status_code == 200, second.json()
+    assert code_of(again) == (429, "rate_limited")
+    assert again.json()["detail"] == (
+        "Too many requests were sent to your phone; try again later."
+    )
+    assert started.status_code == 200, started.json()
 
 
 def test_the_phone_counts_as_a_way_to_confirm_for_a_user_with_a_bound_device(

@@ -295,8 +295,13 @@ POST /auth/app-sign-in/authorizations/token {"request"}  400 authorization_pendi
 ```
 
 - The request is counted and bounded as the phone's step-up is
-  (`START_RATE`, `MAX_PENDING`, `NUMBER_MATCHING`, `409
-  phone_unavailable`), and only the session that asked redeems it.
+  (`START_RATE` per user, `MAX_PENDING`, `NUMBER_MATCHING`, `409
+  phone_unavailable`), and only the session that asked redeems it, or
+  withdraws it (`POST /auth/app-sign-in/authorizations/cancel
+  {"request"}`, since 2.5): unanswered, the phone no longer lists it,
+  and the authorization stays to be confirmed; approved, it stays to be
+  redeemed. A user's unanswered asks of the last `REQUEST_TTL`,
+  withdrawn ones too, are at most twice `MAX_PENDING`.
 - The phone lists it with an `authorization` object: the purpose, the
   kept title and details, what confirming it must prove (`methods`),
   and the digest, read from the row.

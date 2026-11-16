@@ -1143,6 +1143,9 @@ msgstr "لا يوجد تسجيل دخول ينتظر بهذا المعرّف."
 msgid "Too many sign-ins were started; try again later."
 msgstr "بُدئت محاولات تسجيل دخول كثيرة جدًا؛ حاول مرة أخرى لاحقًا."
 
+msgid "Too many requests were sent to your phone; try again later."
+msgstr "أُرسلت طلبات كثيرة جدًا إلى هاتفك؛ حاول مرة أخرى لاحقًا."
+
 #. domainkit.contrib.auth and domainkit.contrib.ciba: action authorizations
 msgid "A rule accepted an authorization that no service spent: decorate the act's service with requires_authorization."
 msgstr "قبلت قاعدةٌ تفويضًا لم تستهلكه أي خدمة: زيّن خدمة الإجراء بـ requires_authorization."
@@ -1246,6 +1249,24 @@ msgstr "هل توافق على تسجيل الدخول؟"
 
 msgid "Open the app to approve or deny it."
 msgstr "افتح التطبيق لتوافق عليه أو ترفضه."
+
+msgid "Confirm it's you?"
+msgstr "هل تؤكد هويتك؟"
+
+msgid "Open the app to see what for, and approve or deny it."
+msgstr "افتح التطبيق لترى الغرض منه، ثم توافق عليه أو ترفضه."
+
+msgid "Approve a transaction?"
+msgstr "هل توافق على المعاملة؟"
+
+msgid "Open the app to see its amount and payee, and approve or deny it."
+msgstr "افتح التطبيق لترى مبلغها والمستفيد منها، ثم توافق عليها أو ترفضها."
+
+msgid "Approve an action?"
+msgstr "هل توافق على الإجراء؟"
+
+msgid "Open the app to see what it is, and approve or deny it."
+msgstr "افتح التطبيق لترى ما هو، ثم توافق عليه أو ترفضه."
 
 #. domainkit.contrib.auth: new addresses and numbers, held until proved
 msgid "Another user has that email address."
