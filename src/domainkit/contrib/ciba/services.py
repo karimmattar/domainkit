@@ -675,24 +675,35 @@ async def cancel(
     kind: str = SIGN_IN,
     credential_digest: str | None = None,
 ) -> None:
-    """Withdraw the request ``handle`` polls for: it ends now (user report A16).
+    """Withdraw the request ``handle`` polls for, if unanswered (user report A16).
 
     For the initiator that no longer wants the answer (the page closed its
-    dialog). The phone no longer lists it, nor can answer it, and it no
-    longer counts against ``MAX_PENDING``; nobody can redeem it. Nothing
-    is reported: the user's pushes go on. A handle cancels only as it
-    polls: for its initiator, as its ``kind``, and from the credentials
-    that asked (``credential_digest``). A request answered or ended already
-    is cancelled again, the same way, and a decoy as any other. Commits.
+    dialog): a QR sign-in, whose code no phone can claim then, or what a
+    signed-in session asked (an act, a transaction), which no longer
+    counts against ``MAX_PENDING``. It ends now: the phone no longer lists
+    it, nor can answer it, and nobody redeems it. Nothing is reported. A
+    request the phone answered, or that ended, stays as it is: an approved
+    one is still redeemed.
+
+    A push sign-in is never withdrawn. Whoever knows an identifier starts
+    one, so it stays on the user's phone, counted against ``MAX_PENDING``
+    and open to a report, until it expires: ADR 0128's bounds on push
+    bombing hold.
+
+    A handle cancels only as it polls: for its initiator, as its ``kind``,
+    and from the credentials that asked (``credential_digest``). Commits.
 
     Raises:
         SignInUnknown: No request of the initiator, of ``kind``, and of
-            these credentials has the handle, or it was redeemed.
+            these credentials has the handle, or it was redeemed, or it
+            is a push sign-in.
     """
     now = utc_now()
     async with CibaUnitOfWork() as uow:
         request = await uow.requests.by_handle(secret_digest(handle))
-        if not _initiated(request, client_id, kind, credential_digest):
+        if not _initiated(request, client_id, kind, credential_digest) or (
+            request.kind == SIGN_IN and request.channel == PUSH
+        ):
             raise SignInUnknown()
         await uow.requests.end(request.id, now)
         await uow.commit()
@@ -754,10 +765,10 @@ async def wait(
                 raise SignInUnknown()
             if request.denied_at is not None:
                 raise AccessDenied()
+            if request.expired(now) or unscanned_too_long(request, now):
+                raise SignInExpired()  # As a poll would: before an approval.
             if request.approved_at is not None:
                 return True
-            if request.expired(now) or unscanned_too_long(request, now):
-                raise SignInExpired()
             watched[:] = [request.id]
             left = end - loop.time()
             if left <= 0:

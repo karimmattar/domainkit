@@ -27,8 +27,9 @@ per address):
   poll. ``/app-sign-in/authorizations/wait``,
   ``/app-sign-in/transactions/wait`` and ``/app-sign-in/step-up/wait`` do
   the same for a session's asks.
-- ``POST /app-sign-in/cancel`` ``{"request"}``: withdraw the sign-in; the
-  phone no longer lists it, and nothing is reported.
+- ``POST /app-sign-in/cancel`` ``{"request"}``: withdraw a QR sign-in;
+  the phone no longer lists it, and nothing is reported. A push sign-in
+  stays until it expires, for the user to deny or report.
   ``/app-sign-in/authorizations/cancel`` and
   ``/app-sign-in/transactions/cancel`` do the same for a session's asks.
 
@@ -141,7 +142,7 @@ from domainkit.contrib.devices.binding import (
     signed_message,
     signing_device,
 )
-from domainkit.ddd import DomainError, NotFound
+from domainkit.ddd import NotFound, PermissionDenied
 from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import IsUnscoped, Public, Require
@@ -202,6 +203,8 @@ CODE_LENGTH: Final = 400
 """Characters a scanned QR code may hold: ``QR_FORMAT`` and its 43."""
 STARTS_THROTTLED: Final = "Too many sign-ins were started; try again later."
 ASKS_THROTTLED: Final = "Too many requests were sent to your phone; try again later."
+FORBIDDEN: Final = status.HTTP_403_FORBIDDEN
+"""An ``on_approve`` hook's HTTP refusal: it denies the request."""
 PHONE_COVERS: Final = frozenset({"otp", "phone"})
 """What an act may ask the phone's approval to prove: ``hwk`` stands for
 an authenticator's code (``otp``), never for the password (``pwd``)."""
@@ -766,12 +769,13 @@ async def wait_for_sign_in(body: PollIn, response: Response) -> WaitOut:
     responses=error_responses(status.HTTP_400_BAD_REQUEST),
 )
 async def cancel_sign_in(body: PollIn) -> None:
-    """Withdraw the page's sign-in, as its dialog closes (user report A16).
+    """Withdraw the page's QR sign-in, as its dialog closes (user report A16).
 
-    It ends now: the phone no longer lists it, nor can answer it, and it
-    no longer counts against ``MAX_PENDING``. Nobody redeems it, and
-    nothing is reported. A sign-in answered or ended already answers the
-    same; an unknown or redeemed handle, ``sign_in_unknown``.
+    It ends now, unless the phone answered it: no phone can claim its code
+    any more, the phone that did no longer lists it, and nobody redeems
+    it. Nothing is reported. A push sign-in is never withdrawn: it stays
+    on the phone, counted and reportable, until it expires, so its handle
+    gets ``sign_in_unknown``, as an unknown or redeemed one does.
     """
     await cancel(body.request, client_id=None)
 
@@ -916,16 +920,17 @@ async def approve_sign_in(
     was shown: auth confirms its authorization with the device's key, the
     bytes it signed, and its signature, kept to check it again. Another
     digest denies the request (``409 authorization_changed``). An
-    ``on_approve`` hook's refusal denies it too, and is answered.
+    ``on_approve`` hook's refusal (``PermissionDenied``, a 403) denies it
+    too, and is answered; any other error of a hook leaves it waiting.
     """
     device = await _device(request, user)
     async with CibaUnitOfWork() as uow:
         asked = await waiting(uow, user.id, request_id)
     try:
-        for hook in on_approve:  # Raising refuses it: denied, nothing confirmed.
+        for hook in on_approve:  # A refusal denies it; nothing is confirmed.
             await hook.call(request, user, asked)
-    except (DomainError, HTTPException) as refusal:
-        if not isinstance(refusal, HTTPException) or refusal.status_code < 500:
+    except (PermissionDenied, HTTPException) as refusal:
+        if not isinstance(refusal, HTTPException) or refusal.status_code == FORBIDDEN:
             await _deny_refused(user, asked)
         raise
     if asked.kind == AUTHORIZATION and matches(asked, body.match_code):
@@ -942,10 +947,13 @@ async def approve_sign_in(
 async def _deny_refused(user: AbstractBaseUser, asked: SignInRequest) -> None:
     """Deny the request an ``on_approve`` hook refused; report nothing.
 
-    Its initiator's poll and wait answer ``access_denied`` at once, rather
+    A refusal is ``PermissionDenied``, or an HTTP error of 403. Its
+    initiator's poll and wait answer ``access_denied`` at once, rather
     than when it expires (user report A17). A request answered or ended
-    meanwhile (a hook that denied it itself) stays as it is. A hook's own
-    failure (an error of 500 or more) refuses nothing: it denies nothing.
+    meanwhile (a hook that denied it itself) stays as it is. Any other
+    error refuses nothing, and denies nothing: a conflict to retry
+    (``ConcurrentUpdate``), a throttle (429), the hook's own failure (5xx)
+    leave the request waiting, for the phone to try again.
     """
     with suppress(SignInNotFound):
         async with CibaUnitOfWork() as uow:
@@ -1208,8 +1216,9 @@ async def cancel_phone_transaction(  # Before /{challenge_id}, which "cancel" ma
 ) -> None:
     """Withdraw what this session asked the phone of a transaction (``/cancel``).
 
-    The transaction stays as it is: ask the phone again, or confirm it
-    another way.
+    Unanswered, the request ends, and the transaction still waits: ask
+    the phone again, or confirm it another way. Approved, it stays to be
+    redeemed.
     """
     _, digest = _session_of(request)
     await cancel(
@@ -1327,8 +1336,9 @@ async def cancel_phone_authorization(  # Before /{authorization_id}: "cancel" ma
 ) -> None:
     """Withdraw what this session asked the phone of an act (``/cancel``).
 
-    The act's authorization stays as it is: ask the phone again, or
-    confirm it another way.
+    Unanswered, the request ends, and the act's authorization still waits:
+    ask the phone again, or confirm it another way. Approved, it stays to
+    be redeemed: the authorization is confirmed already.
     """
     _, digest = _session_of(request)
     await cancel(

@@ -285,15 +285,18 @@ class SignInRequestStore:
         return int(result.rowcount or 0)  # type: ignore[attr-defined]
 
     async def end(self, request_id: UUID, now: datetime) -> None:
-        """End the request at ``now``, unless it was redeemed or ended already.
+        """End the request at ``now``, unless it was answered or ended already.
 
         Its initiator withdrew it: the phone can no longer answer it, nor
-        anyone redeem it, and it is forgotten as an expired request is.
+        anyone redeem it, and it is forgotten as an expired request is. An
+        approved request stays redeemable: the phone answered first.
         """
         await self.session.execute(
             update(sign_in_requests)
             .where(
                 sign_in_requests.c.id == request_id,
+                sign_in_requests.c.approved_at.is_(None),
+                sign_in_requests.c.denied_at.is_(None),
                 sign_in_requests.c.redeemed_at.is_(None),
                 sign_in_requests.c.expires_at > now,
             )
@@ -324,13 +327,18 @@ class SignInRequestStore:
         )
 
     async def redeem(self, request_id: UUID, now: datetime) -> bool:
-        """Spend the approved request; whether this poll is the one that did."""
+        """Spend the approved request; whether this poll is the one that did.
+
+        Not once it ended: a poll that read it before it expired, or before
+        its initiator withdrew it, redeems nothing after.
+        """
         result = await self.session.execute(
             update(sign_in_requests)
             .where(
                 sign_in_requests.c.id == request_id,
                 sign_in_requests.c.approved_at.is_not(None),
                 sign_in_requests.c.redeemed_at.is_(None),
+                sign_in_requests.c.expires_at > now,
             )
             .values(redeemed_at=now)
         )

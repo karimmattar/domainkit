@@ -25,7 +25,7 @@ from domainkit.contrib.auth.gates import (
 )
 from domainkit.contrib.ciba import CibaUnitOfWork, deny
 from domainkit.contrib.ciba.hooks import on_approve, on_start
-from domainkit.ddd import PermissionDenied
+from domainkit.ddd import BusinessRuleViolation, ConcurrentUpdate, PermissionDenied
 from domainkit.http.errors import APIError
 from domainkit.management.base import run_async
 from domainkit_tests.support.auth import audited, bearer, login
@@ -137,15 +137,22 @@ def test_an_approval_a_hook_refuses_is_denied_and_reports_nothing(app: App) -> N
     ("error", "status", "denied"),
     [
         (PermissionDenied("Not from the phone."), 403, True),
-        (APIError(409, "Not now.", code="not_now"), 409, True),
+        (APIError(403, "Not from the phone.", code="not_here"), 403, True),
+        (ConcurrentUpdate("The user changed meanwhile."), 409, False),
+        (APIError(429, "Too many checks.", code="rate_limited"), 429, False),
+        (BusinessRuleViolation("Not now."), 422, False),
         (APIError(503, "The directory is down.", code="directory_down"), 503, False),
     ],
-    ids=["domain-error", "client-error", "hooks-own-failure"],
+    ids=["denied", "forbidden", "retry", "throttled", "rule", "hooks-own-failure"],
 )
-def test_a_refusal_denies_and_the_hooks_own_failure_does_not(
+def test_a_refusal_denies_and_any_other_error_does_not(
     app: App, error: Exception, status: int, *, denied: bool
 ) -> None:
-    """A domain error or a 4xx refuses, and denies; a 5xx is the hook's: it waits."""
+    """``PermissionDenied`` or a 403 refuses, and denies; anything else waits.
+
+    A conflict to retry, a throttle, or the hook's own failure is no
+    answer: the phone may approve again once it passes.
+    """
     web = app(NUMBER_MATCHING=False)
     phone = Phone(app(PHONE))
     started = start_push(web)
