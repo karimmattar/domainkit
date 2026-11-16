@@ -303,6 +303,7 @@ def guard_vaults(approvals: int = 2, **options: Any) -> None:  # noqa: ANN401 - 
     )
 
 
+@pytest.mark.usefixtures("many_connections")
 async def test_twenty_approvals_at_once_count_to_ten_and_run_once(
     project: str,
 ) -> None:

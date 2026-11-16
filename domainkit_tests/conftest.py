@@ -1,6 +1,7 @@
 """Fixtures for framework tests: isolated settings, registry, and packages."""
 
 import asyncio
+import fcntl
 import functools
 import importlib
 import io
@@ -384,6 +385,46 @@ def on_server(url: str, statement: str) -> None:
 
     with ThreadPoolExecutor(max_workers=1) as pool:
         pool.submit(asyncio.run, run()).result()
+
+
+CROWD_LOCK: Final = "domainkit-many-connections.lock"
+"""The file ``many_connections`` locks, in a directory every worker of a run shares."""
+
+
+@contextmanager
+def one_at_a_time(path: Path) -> Iterator[None]:
+    """Hold the lock on ``path`` while the block runs; wait for it first.
+
+    ``flock`` locks the open file: another process, or another open of the
+    file, waits until the block ends and the file is closed, or until the
+    process holding it ends, however it ends. The suite runs on POSIX
+    systems only (``time.tzset``, ``os.fork``), which all have ``fcntl``.
+    """
+    with path.open("ab") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        yield
+
+
+@pytest.fixture
+def many_connections(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    """Run the test while no other test that asks for this runs, on any worker.
+
+    For a test whose pool may open 55 connections (``POOL_SIZE`` 25 and
+    ``MAX_OVERFLOW`` 30), so that fifty tasks each hold one at once. Two of
+    them on two pytest-xdist workers needed more than PostgreSQL's default
+    ``max_connections`` of 100, which CI's servers keep, and failed with
+    "too many clients". Ask for it with ``usefixtures``: it is set up
+    before the test's own fixtures and torn down after them, so the lock
+    is held until the test's pool is closed.
+
+    The lock file goes in the directory the workers' temporary directories
+    share (pytest-xdist's recipe for a fixture run once per run). Without
+    xdist it is the directory above the run's own, which other runs of the
+    same user share: they take turns too. ``xdist_group`` keeps tests on
+    one worker only under ``--dist loadgroup``; CI runs ``worksteal``.
+    """
+    with one_at_a_time(tmp_path_factory.getbasetemp().parent / CROWD_LOCK):
+        yield
 
 
 @pytest.fixture
