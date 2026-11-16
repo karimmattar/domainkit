@@ -62,7 +62,9 @@ from .settings import (
 )
 from .tokens import (
     LAST_USED_EVERY,
+    LoginOrigin,
     TokenKind,
+    idle_limit,
     idle_since,
     is_login,
     last_used_every,
@@ -117,6 +119,11 @@ class Credentials:
     """What that step-up proved (its ``amr`` claim): ``otp``, ``pwd``."""
     impersonator: UUID | None = None
     """The staff member acting as ``user`` (an impersonation token), if one is."""
+    origin: LoginOrigin | None = None
+    """How the login these credentials belong to was made: its method,
+    what it proved (``amr``), when, and its bound device (ADR 0146). None
+    for credentials that are no login: a personal token, a certificate,
+    a class of your own that does not say."""
 
     def allows(self, *perms: str) -> bool:
         """Whether the credentials' scopes cover every one of ``perms``."""
@@ -282,8 +289,8 @@ class TokenAuthentication(BaseAuthentication):
             forget(entry)
             raise AuthenticationFailed("Token expired.")
         every = LAST_USED_EVERY
-        if config.IDLE_TIMEOUT is not None:
-            every = last_used_every()
+        if idle_limit(token.idle_timeout) is not None:
+            every = last_used_every(token.idle_timeout)
             entry = await unless_idle(
                 entry, TOKEN_SCHEME, digest, config.PRINCIPAL_CACHE
             )
@@ -306,13 +313,14 @@ class TokenAuthentication(BaseAuthentication):
             token_id=token.id,
             scopes=token.scopes,
             impersonator=impersonator,
+            origin=token.origin(),
         )
 
     async def issue(self, uow: AuthUnitOfWork, user: AbstractBaseUser) -> IssuedTokens:
-        """One access token for ``AUTH.TOKEN_TTL``."""
+        """One access token for ``AUTH.TOKEN_TTL``, or the login's shorter lifetime."""
         ttl = auth_settings().TOKEN_TTL
-        raw = await uow.tokens.issue(user.id, ttl=ttl, name="login")
-        return IssuedTokens(access_token=raw, expires_in=_seconds(ttl))
+        raw, token = await uow.tokens.create(user.id, ttl=ttl, name="login")
+        return IssuedTokens(access_token=raw, expires_in=_seconds(token.lifetime()))
 
 
 class JWTAuthentication(BaseAuthentication):
@@ -359,8 +367,9 @@ class JWTAuthentication(BaseAuthentication):
 
         The login and the user are kept as opaque tokens' are, by login
         and user; the signature and the times are checked every time. With
-        ``AUTH.IDLE_TIMEOUT``, a token issued longer ago than it is refused:
-        its login was not refreshed for that long, whatever its lifetime.
+        ``AUTH.IDLE_TIMEOUT``, or the login's own shorter one, a token
+        issued longer ago than it is refused: its login was not refreshed
+        for that long, whatever its lifetime.
         """
         raw = bearer_token(connection)
         if raw is None or raw.count(".") != 2:  # Not a JWT: header.payload.signature.
@@ -373,15 +382,25 @@ class JWTAuthentication(BaseAuthentication):
         session = _uuid(claims["sid"])
         config = auth_settings().PRINCIPAL_CACHE
         entry = await login_principal(session, _uuid(claims["sub"]), config)
-        if entry.login is None or not entry.login.active_at(utc_now()):
+        login = entry.login
+        if login is None or not login.active_at(utc_now()):
             raise AuthenticationFailed("Session ended; log in again.")
+        if login.idle_timeout is not None and idle_since(
+            _issued(claims), utc_now(), login.idle_timeout
+        ):
+            raise AuthenticationFailed(IDLE)
         user = entry.user()
         if user is None:
             raise AuthenticationFailed("User inactive or deleted.")
         remember(entry, config)
         auth_time, amr = _proof_claims(claims)
         return Credentials(
-            user, scheme=JWT_SCHEME, login=session, auth_time=auth_time, amr=amr
+            user,
+            scheme=JWT_SCHEME,
+            login=session,
+            auth_time=auth_time,
+            amr=amr,
+            origin=login.origin,
         )
 
     async def issue(self, uow: AuthUnitOfWork, user: AbstractBaseUser) -> IssuedTokens:
@@ -417,7 +436,9 @@ class JWTAuthentication(BaseAuthentication):
         await uow.tokens.lock_user(token.user_id)
         if not await uow.tokens.stored(token.id):
             raise AuthenticationFailed("Invalid refresh token.")
-        if is_login(token.kind, token.name) and idle_since(token.created_at, utc_now()):
+        if is_login(token.kind, token.name) and idle_since(
+            token.created_at, utc_now(), token.idle_timeout
+        ):
             raise AuthenticationFailed(IDLE)
         if token.used_at is not None or not await uow.tokens.mark_used(token):
             await uow.tokens.revoke_family(token.family)
@@ -709,7 +730,7 @@ async def accept(
         now = utc_now()
         if principal_cache.claim_touch(entry, now, every):
             async with AuthUnitOfWork() as uow:
-                if await uow.tokens.touch_digest(entry.credential.id, now):
+                if await uow.tokens.touch_digest(entry.credential.id, now, every):
                     await uow.commit()
     remember(entry, config)
 

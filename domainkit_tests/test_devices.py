@@ -244,6 +244,37 @@ def test_a_passkey_logs_in_with_no_password_and_no_second_factor(app: App) -> No
     assert listed[0]["last_used_at"] is not None
 
 
+def test_a_passkey_login_proves_a_key_verified_with_its_user(app: App) -> None:
+    """Its gates and its credentials see ``hwk`` and ``mfa`` (ADR 0146)."""
+    from starlette.requests import Request
+
+    from domainkit.contrib.auth import AbstractBaseUser
+    from domainkit.contrib.auth.gates import LoginOrigin, login_origin, on_login_gate
+    from domainkit_tests.test_auth_principals import credentials_of
+
+    client = app(**SETTINGS)
+    key = Authenticator()
+    add_passkey(client, signed_in(client), key)
+    seen: list[LoginOrigin | None] = []
+
+    async def gate(request: Request, user: AbstractBaseUser) -> None:
+        seen.append(login_origin(request))
+
+    on_login_gate(gate, domain="devices")
+    tokens = passkey_login(client, key)
+    found = run_async(credentials_of(headers=bearer(tokens.json()["access_token"])))
+
+    [judged] = seen
+    assert judged is not None
+    assert (judged.method, judged.amr) == ("passkey", frozenset({"hwk", "mfa"}))
+    assert found is not None
+    assert found.origin is not None
+    assert (found.origin.method, found.origin.amr) == (
+        "passkey",
+        frozenset({"hwk", "mfa"}),
+    )
+
+
 def test_the_options_follow_webauthn(app: App) -> None:
     """Resident keys, users verified, no attestation; held keys excluded."""
     client = app(**SETTINGS, RP_NAME="Acme")

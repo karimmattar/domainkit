@@ -6,7 +6,7 @@ Internal to ``domainkit.contrib.auth``: its route modules (``api``,
 Other apps use ``auth.integration``.
 """
 
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import replace
 from uuid import UUID
@@ -16,10 +16,11 @@ from fastapi import Request, Response
 from domainkit.context import bind_request, current_request
 
 from .authentication import Credentials
+from .gates import session_limits
 from .models import AbstractBaseUser
 from .settings import auth_settings
 from .throttling import Attempt, Limit, Window, account_key, attempt
-from .tokens import logging_in
+from .tokens import Issuing, LoginOrigin, signed_by_device, utc_now
 
 LOGIN_THROTTLED = "Too many login attempts; try again later."
 """The detail of a throttled login."""
@@ -82,14 +83,24 @@ def credentials_of(request: Request) -> Credentials:
     return credentials
 
 
-@contextmanager
-def made_by(method: str | None, device_id: UUID | None) -> Iterator[None]:
-    """Record the logins issued inside as made by ``method``, if one is given."""
-    if method is None:
-        yield
-        return
-    with logging_in(method, device_id):
-        yield
+async def made_by(
+    user: AbstractBaseUser,
+    method: str | None,
+    device_id: UUID | None,
+    amr: Iterable[str],
+) -> Issuing:
+    """How a login of ``user`` is made, now, and the limits it keeps.
+
+    The bound device that signed the request counts (``signed_by_device``);
+    the limits are what ``on_session_limits`` gives (ADR 0146). Issue the
+    login inside ``logging_in`` with them.
+    """
+    request = current_request()
+    origin = signed_by_device(
+        LoginOrigin(method, device_id, frozenset(amr), utc_now()),
+        getattr(request, "scope", {}),
+    )
+    return Issuing(origin, await session_limits(user, origin))
 
 
 @contextmanager

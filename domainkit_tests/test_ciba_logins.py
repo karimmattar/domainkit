@@ -6,11 +6,17 @@ signs may list the logins or end one that is not its own.
 
 from datetime import timedelta
 from typing import Any
+from uuid import UUID
 
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from domainkit import clock
+from domainkit.contrib.auth import AbstractBaseUser
+from domainkit.contrib.auth.gates import LoginOrigin, login_origin, on_login_gate
+from domainkit.management.base import run_async
 from domainkit_tests.support.auth import PASSWORD, bearer, create_user
+from domainkit_tests.test_auth_principals import credentials_of
 from domainkit_tests.test_ciba import (
     LAPTOP,
     PHONE,
@@ -125,3 +131,52 @@ def test_users_without_a_phone_or_outside_the_phone_modes_manage_as_before(
     unsigned = phone.client.get("/auth/tokens", headers=phone.headers)
     assert unsigned.status_code == 200
     assert {item["method"] for item in unsigned.json()["items"]} == {"password"}
+
+
+def test_the_gates_see_an_approval_and_the_phones_own_signed_login(app: App) -> None:
+    """A push proves the phone's key; its own signed login, the password too.
+
+    ADR 0146: the phone's password login, which it signs, names its device.
+    A gate registered after ciba's sees the device ciba's gate checked.
+    """
+    phone = Phone(app(PHONE, APPROVE_LOGINS=True))
+    web = app()
+    seen: list[tuple[str, LoginOrigin | None]] = []
+
+    async def gate(request: Request, user: AbstractBaseUser) -> None:
+        seen.append((request.url.path, login_origin(request)))
+
+    on_login_gate(gate, domain="ciba")
+    laptop = web_login(web, phone)
+    signed = phone.send(
+        "POST", "/auth/login", {"identifier": "alice", "password": PASSWORD}
+    )
+    assert signed.status_code == 200, signed.json()
+    by_push = run_async(credentials_of(headers=laptop))
+    by_phone = run_async(credentials_of(headers=bearer(signed.json()["access_token"])))
+
+    device = UUID(phone.device.id)
+    [(push_path, push), (login_path, own)] = seen
+    assert push_path == "/auth/app-sign-in/token"
+    assert push is not None
+    assert (push.method, push.amr, push.device_id) == (
+        "push",
+        frozenset({"hwk"}),
+        None,
+    )
+    assert login_path == "/auth/login"
+    assert own is not None
+    assert (own.method, own.amr, own.device_id) == (
+        "password",
+        frozenset({"pwd", "hwk"}),
+        device,
+    )
+    assert by_push is not None
+    assert by_push.origin is not None
+    assert by_push.origin.amr == frozenset({"hwk"})
+    assert by_phone is not None
+    assert by_phone.origin is not None
+    assert (by_phone.origin.amr, by_phone.origin.device_id) == (
+        frozenset({"pwd", "hwk"}),
+        device,
+    )

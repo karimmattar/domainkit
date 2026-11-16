@@ -116,6 +116,10 @@ __all__ = ["router"]
 
 LOGIN_THROTTLED: Final = "Too many login attempts; try again later."
 """The detail of a throttled device login, as of a password login."""
+HWK: Final = frozenset({"hwk"})
+"""What a bound device's signature proves (RFC 8176): its key."""
+PASSKEY: Final = frozenset({"hwk", "mfa"})
+"""What a passkey verified with its user proves: a key, and two factors."""
 ENROLL_CODE_SCOPE: Final = "device-enroll-code"
 """What the requests for an enrollment code are counted as."""
 
@@ -302,8 +306,10 @@ async def finish_login(
     """Tokens for the user whose passkey answered."""
     response.headers["Cache-Control"] = "no-store"
     user = await authenticate(body.credential.assertion(), LOGIN)
-    await pass_login_gates(request, user)
-    issued = await issue_login(user, factor_proven=True, method=LoginMethod.PASSKEY)
+    await pass_login_gates(request, user, method=LoginMethod.PASSKEY, amr=PASSKEY)
+    issued = await issue_login(
+        user, factor_proven=True, method=LoginMethod.PASSKEY, amr=PASSKEY
+    )
     return TokenOut(
         access_token=issued.access_token,
         expires_in=issued.expires_in,
@@ -328,7 +334,7 @@ async def finish_step_up(
     response.headers["Cache-Control"] = "no-store"
     credentials = stepping_credentials(request)
     await authenticate(body.credential.assertion(), STEP_UP, user)
-    return await _stepped_up(credentials, user, frozenset({"hwk", "mfa"}))
+    return await _stepped_up(credentials, user, PASSKEY)
 
 
 @router.post(
@@ -424,13 +430,17 @@ async def device_login(request: Request, response: Response) -> TokenOut:
         await audit_refusal("devices.login", "device_signature_refused")
         raise DeviceSignatureRefused()
     await counted.succeeded()
-    await pass_login_gates(request, user)
     signer = await signing_device(request, user)  # ``_signer`` checked it.
+    signed_by = None if signer is None else signer.id
+    await pass_login_gates(
+        request, user, method=LoginMethod.DEVICE, amr=HWK, device_id=signed_by
+    )
     issued = await issue_login(
         user,
         factor_proven=True,
         method=LoginMethod.DEVICE,
-        device_id=None if signer is None else signer.id,
+        device_id=signed_by,
+        amr=HWK,
     )
     return TokenOut(
         access_token=issued.access_token,
@@ -547,9 +557,15 @@ async def enroll_device(
         algorithm=algorithm,
         public_key=key,
     )
-    await pass_login_gates(request, user)
+    await pass_login_gates(
+        request, user, method=LoginMethod.DEVICE, amr=HWK, device_id=device.id
+    )
     issued = await issue_login(
-        user, factor_proven=True, method=LoginMethod.DEVICE, device_id=device.id
+        user,
+        factor_proven=True,
+        method=LoginMethod.DEVICE,
+        device_id=device.id,
+        amr=HWK,
     )
     return EnrolledOut(
         access_token=issued.access_token,
@@ -685,7 +701,7 @@ async def device_step_up(
     """Step up: a device of the user signed this request (``hwk``)."""
     response.headers["Cache-Control"] = "no-store"
     credentials = stepping_credentials(request)
-    return await _stepped_up(credentials, user, frozenset({"hwk"}))
+    return await _stepped_up(credentials, user, HWK)
 
 
 class DigestIn(BaseModel):

@@ -234,7 +234,7 @@ async def logged_in(
 
     The login passes the login gates first (``auth.gates``).
     """
-    await pass_login_gates(request, user)
+    await pass_login_gates(request, user, method=LoginMethod.PROVIDER)
     pending = await challenge(user)
     if pending is not None:
         response.status_code = status.HTTP_202_ACCEPTED

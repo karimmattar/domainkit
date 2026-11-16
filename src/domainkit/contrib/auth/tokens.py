@@ -13,13 +13,13 @@ together if a used token comes back.
 import hashlib
 import re
 import secrets
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from enum import StrEnum
-from typing import Final
+from typing import Any, Final
 from uuid import UUID
 
 from domainkit import clock
@@ -36,6 +36,16 @@ IDLE_PRECISION: Final = 10
 """Last uses are written this many times per ``AUTH.IDLE_TIMEOUT``."""
 AGENT_MAX_LENGTH: Final = 200
 """A login keeps this much of its ``User-Agent`` at most."""
+MIN_IDLE: Final = timedelta(minutes=5)
+"""The shortest idle timeout: last uses are written a tenth as often."""
+MAX_IDLE: Final = timedelta(days=30)
+"""The longest idle timeout."""
+DEVICE_KEY: Final = "hwk"
+"""What a login a bound device made or signed proved (RFC 8176): its key."""
+PWD: Final = frozenset({"pwd"})
+"""What a password login proved (RFC 8176's names)."""
+PWD_OTP: Final = frozenset({"pwd", "otp"})
+"""What a password login finished with a second factor's code proved."""
 
 
 class TokenKind(StrEnum):
@@ -75,28 +85,111 @@ class LoginMethod(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class LoginOrigin:
-    """How a login being issued signed in, and the device that made it."""
+    """How a login was made: its method, what it proved, when, and its device.
 
-    method: str
+    A login gate sees the login it judges (``gates.login_origin``); a
+    request sees the login its credentials belong to (``Credentials.origin``).
+    """
+
+    method: str | None = None
+    """How it signed in (``LoginMethod``); None where its issuer did not say."""
     device_id: UUID | None = None
+    """The bound device that made it, or signed its request."""
+    amr: frozenset[str] = frozenset()
+    """What it proved, in RFC 8176's names: ``pwd`` for the password,
+    ``otp`` for the authenticator's code (or a recovery code, which stands
+    in for it), ``hwk`` for a bound device's key, ``mfa`` with ``hwk`` for
+    a passkey verified with its user. Empty for an identity provider's
+    login, and for logins made before 2.4."""
+    at: datetime | None = None
+    """When it was made; None where it is not known."""
 
 
-_origin: ContextVar[LoginOrigin | None] = ContextVar("login_origin", default=None)
+@dataclass(frozen=True, slots=True)
+class SessionLimits:
+    """Shorter limits for one login than the settings give every login.
+
+    Returned by an ``on_session_limits`` hook when the login is made, and
+    kept with it: a limit longer than the setting's changes nothing.
+
+    Raises:
+        ValueError: ``idle_timeout`` is not from 5 minutes to 30 days, or
+            ``lifetime`` is not positive.
+    """
+
+    idle_timeout: timedelta | None = None
+    """End the login once unused for this long, as ``AUTH.IDLE_TIMEOUT``
+    does; None: the setting's."""
+    lifetime: timedelta | None = None
+    """End the login this long after it was made, whatever its use: a
+    shorter ``TOKEN_TTL``, ``COOKIE.TTL``, or ``JWT.REFRESH_TOKEN_TTL``.
+    None: the setting's."""
+
+    def __post_init__(self) -> None:
+        """Refuse limits no login could keep."""
+        idle = self.idle_timeout
+        if idle is not None and not MIN_IDLE <= idle <= MAX_IDLE:
+            raise ValueError(
+                f"SessionLimits.idle_timeout must be from 5 minutes to 30 days, "
+                f"not {idle}"
+            )
+        if self.lifetime is not None and self.lifetime <= timedelta(0):
+            raise ValueError(
+                f"SessionLimits.lifetime must be positive, not {self.lifetime}"
+            )
+
+    def within(self, other: "SessionLimits") -> "SessionLimits":
+        """The shorter of each limit of these and ``other``."""
+        return SessionLimits(
+            shortest(self.idle_timeout, other.idle_timeout),
+            shortest(self.lifetime, other.lifetime),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Issuing:
+    """A login being issued: how it was made, and the limits it keeps."""
+
+    origin: LoginOrigin
+    limits: SessionLimits = field(default_factory=SessionLimits)
+
+
+_issuing: ContextVar[Issuing | None] = ContextVar("login_issuing", default=None)
 
 
 @contextmanager
-def logging_in(method: str, device_id: UUID | None = None) -> Iterator[None]:
-    """Record the logins issued inside as made by ``method`` (and ``device_id``)."""
-    reset = _origin.set(LoginOrigin(method, device_id))
+def logging_in(
+    origin: LoginOrigin, limits: SessionLimits | None = None
+) -> Iterator[None]:
+    """Record the logins issued inside as made as ``origin`` says, to ``limits``."""
+    reset = _issuing.set(Issuing(origin, limits or SessionLimits()))
     try:
         yield
     finally:
-        _origin.reset(reset)
+        _issuing.reset(reset)
 
 
-def login_origin() -> LoginOrigin | None:
-    """How the login being issued signed in, if its issuer said (``logging_in``)."""
-    return _origin.get()
+def issuing() -> Issuing | None:
+    """The login being issued, if its issuer said how it was made (``logging_in``)."""
+    return _issuing.get()
+
+
+def shortest(*durations: timedelta | None) -> timedelta | None:
+    """The shortest of ``durations`` that are set; None if none is."""
+    return min((each for each in durations if each is not None), default=None)
+
+
+def signed_by_device(origin: LoginOrigin, scope: Mapping[str, Any]) -> LoginOrigin:
+    """``origin``, with the bound device that signed the request, if one did.
+
+    The device is ``origin``'s, or the one ``note_login_device`` put in the
+    request's ``scope``. A login a device made or signed proved its key
+    (``hwk``).
+    """
+    device = origin.device_id or scope.get(LOGIN_DEVICE)
+    if device is None:
+        return origin
+    return replace(origin, device_id=device, amr=origin.amr | {DEVICE_KEY})
 
 
 LOGIN_DEVICE: Final = "domainkit.auth.login_device"
@@ -140,6 +233,12 @@ class AuthToken(Entity[str]):
     """The address its login was made from (``TRUSTED_PROXIES`` resolves it)."""
     device_id: UUID | None = None
     """The bound device that made its login: the phone's own."""
+    amr: frozenset[str] | None = None
+    """What its login proved (``LoginOrigin.amr``); None for other tokens,
+    and logins made before 2.4."""
+    idle_timeout: int | None = None
+    """Seconds its login may idle, where a hook made it shorter than
+    ``AUTH.IDLE_TIMEOUT`` (``on_session_limits``); None: the setting's."""
 
     class Meta:
         """Its content type's name."""
@@ -150,15 +249,30 @@ class AuthToken(Entity[str]):
         """Whether the token's lifetime is over."""
         return self.expires_at is not None and (now or utc_now()) >= self.expires_at
 
+    def lifetime(self) -> timedelta | None:
+        """How long it works from when it was made; None: until revoked."""
+        return None if self.expires_at is None else self.expires_at - self.created_at
 
-def last_used_every() -> timedelta:
-    """How often a token's ``last_used_at`` is written, at most.
 
-    ``LAST_USED_EVERY``, or a tenth of ``AUTH.IDLE_TIMEOUT`` if shorter.
+def idle_limit(seconds: int | None = None) -> timedelta | None:
+    """How long a login may idle: ``AUTH.IDLE_TIMEOUT``, or its own if shorter.
+
+    ``seconds``: the login's own (``AuthToken.idle_timeout``). None: it
+    never idles out.
     """
     from .settings import auth_settings  # Imports nothing of this module.
 
-    idle = auth_settings().IDLE_TIMEOUT
+    own = None if seconds is None else timedelta(seconds=seconds)
+    return shortest(auth_settings().IDLE_TIMEOUT, own)
+
+
+def last_used_every(seconds: int | None = None) -> timedelta:
+    """How often a login's ``last_used_at`` is written, at most.
+
+    ``LAST_USED_EVERY``, or a tenth of its idle timeout (``idle_limit``)
+    if shorter.
+    """
+    idle = idle_limit(seconds)
     return (
         LAST_USED_EVERY if idle is None else min(LAST_USED_EVERY, idle / IDLE_PRECISION)
     )
@@ -174,16 +288,15 @@ def is_login(kind: str, name: str) -> bool:
     )
 
 
-def idle_since(last: datetime, now: datetime) -> bool:
-    """Whether a login last used at ``last`` has idled past ``AUTH.IDLE_TIMEOUT``.
+def idle_since(last: datetime, now: datetime, seconds: int | None = None) -> bool:
+    """Whether a login last used at ``last`` has idled past its idle timeout.
 
-    Its last use may be written up to ``last_used_every()`` late, so the
-    login ends that much after the timeout at most, never before.
+    ``AUTH.IDLE_TIMEOUT``, or the login's own ``seconds`` if shorter. Its
+    last use may be written up to ``last_used_every()`` late, so the login
+    ends that much after the timeout at most, never before.
     """
-    from .settings import auth_settings
-
-    idle = auth_settings().IDLE_TIMEOUT
-    return idle is not None and now - last >= idle + last_used_every()
+    idle = idle_limit(seconds)
+    return idle is not None and now - last >= idle + last_used_every(seconds)
 
 
 def utc_now() -> datetime:

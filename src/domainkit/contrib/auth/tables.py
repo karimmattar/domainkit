@@ -271,6 +271,10 @@ tokens = Table(
     Column("agent", String(200)),
     Column("ip", String(45)),
     Column("device_id", Uuid),
+    # How it was made (ADR 0146): what it proved (RFC 8176's names, as the
+    # scopes are kept), and the seconds it may idle where a hook shortened it.
+    Column("amr", ScopesType),
+    Column("idle_timeout", Integer),
     Index("ix_domainkit_tokens_user_id", "user_id"),
     Index("ix_domainkit_tokens_family", "family"),
     Index("ix_domainkit_tokens_expires_at", "expires_at"),

@@ -24,14 +24,16 @@ from ..settings import auth_settings
 from ..tables import tokens
 from ..tokens import (
     AGENT_MAX_LENGTH,
-    LOGIN_DEVICE,
     LOGIN_NAME,
     AuthToken,
+    LoginOrigin,
     TokenKind,
     is_login,
+    issuing,
     last_used_every,
-    login_origin,
     new_token,
+    shortest,
+    signed_by_device,
     token_digest,
     utc_now,
 )
@@ -132,12 +134,17 @@ class TokenStore:
         """``issue``, returning the stored token with the raw one.
 
         A login's token records where the login came from (ADR 0130): how
-        it signed in and its device (``logging_in``), and the request's
-        address and agent. ``like`` gives a token whose origin it keeps
-        instead, as a refreshed login does.
+        it signed in, what it proved, and its device (``logging_in``), and
+        the request's address and agent. It keeps the limits the login was
+        made with (ADR 0146): a shorter ``ttl``, and its own idle timeout.
+        ``like`` gives a token whose origin and limits it keeps instead, as
+        a refreshed login does.
         """
         raw = new_token(auth_settings().TOKEN_PREFIX)
         now = now or utc_now()
+        issued = issuing()
+        if like is None and issued is not None and is_login(kind, name):
+            ttl = shortest(ttl, issued.limits.lifetime)
         token = AuthToken(
             id=token_digest(raw),
             user_id=user_id,
@@ -179,24 +186,29 @@ class TokenStore:
         """
         moment = now or utc_now()
         last = token.last_used_at
-        if last is not None and moment - last < last_used_every():
+        every = last_used_every(token.idle_timeout)
+        if last is not None and moment - last < every:
             return False
-        written = await self.touch_digest(token.id, moment)
+        written = await self.touch_digest(token.id, moment, every)
         set_committed_value(token, "last_used_at", moment)
         return written
 
-    async def touch_digest(self, digest: str, now: datetime) -> bool:
+    async def touch_digest(
+        self, digest: str, now: datetime, every: timedelta | None = None
+    ) -> bool:
         """Write ``now`` as the ``last_used_at`` of token ``digest``, if it is due.
 
-        Due when none is stored, or the stored one is ``last_used_every()``
-        old: of concurrent writers, from any process, one wins.
+        Due when none is stored, or the stored one is ``every`` old (default:
+        ``last_used_every()``): of concurrent writers, from any process, one
+        wins.
         """
+        every = last_used_every() if every is None else every
         result = await self.session.execute(
             update(tokens)
             .where(
                 tokens.c.id == digest,
                 tokens.c.last_used_at.is_(None)
-                | (tokens.c.last_used_at <= now - last_used_every()),
+                | (tokens.c.last_used_at <= now - every),
             )
             .values(last_used_at=now)
             .execution_options(**HANDLED)  # A last use changes no principal.
@@ -456,7 +468,8 @@ def _origin_of(kind: str, name: str, like: AuthToken | None) -> dict[str, Any]:
     Only a login's token records it, or one issued while ``logging_in``
     names its origin (an impersonation); a personal token records nothing.
     The device is the origin's, or the one ``note_login_device`` says signed
-    this request (ADR 0131).
+    this request (ADR 0131). A login's token keeps the idle timeout the
+    login was made with (ADR 0146).
     """
     if like is not None:
         return {
@@ -464,20 +477,27 @@ def _origin_of(kind: str, name: str, like: AuthToken | None) -> dict[str, Any]:
             "agent": like.agent,
             "ip": like.ip,
             "device_id": like.device_id,
+            "amr": like.amr,
+            "idle_timeout": like.idle_timeout,
         }
-    origin = login_origin()
-    if origin is None and not is_login(kind, name):
+    issued = issuing()
+    if issued is None and not is_login(kind, name):
         return {}
     request = current_request()
     scope = getattr(request, "scope", {})
     headers = scope.get("headers", ())
     agent = next((value for key, value in headers if key == b"user-agent"), None)
-    device = None if origin is None else origin.device_id
+    origin = signed_by_device(LoginOrigin() if issued is None else issued.origin, scope)
+    idle = None if issued is None else issued.limits.idle_timeout
     return {
-        "method": None if origin is None else origin.method,
+        "method": origin.method,
         "agent": None
         if agent is None
         else agent.decode("latin-1")[:AGENT_MAX_LENGTH] or None,
         "ip": None if request is None else request.client_ip,
-        "device_id": device if device is not None else scope.get(LOGIN_DEVICE),
+        "device_id": origin.device_id,
+        "amr": origin.amr or None,
+        "idle_timeout": None
+        if idle is None or not is_login(kind, name)
+        else int(idle.total_seconds()),
     }
