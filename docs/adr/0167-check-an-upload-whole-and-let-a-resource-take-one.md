@@ -417,10 +417,13 @@ project that wrote its checks' refusals the same way got a 500.
   and `APIError.detail` are, so that no project's code that reads it as
   text stops type-checking. A lazy one compares and formats as its
   text, and `str()` makes it text.
-- `save_upload` makes the message text in the request, in its language,
-  so that its log line says what the answer says. An `APIError` whose
-  detail is a lazy string is answered as its text too, since 2.6; in
-  2.5 it was answered with its code in words.
+- `save_upload` logs a refusal in English, as its check wrote it: a
+  lazy one as no catalog translates it (`NullTranslations`), so that a
+  log reads one way whatever each caller asked for. It hands the lazy
+  string to `UploadRefused`, and the HTTP layer answers it in the
+  caller's language: an `APIError` whose detail is a lazy string is
+  answered as its text since 2.6; in 2.5 it was answered with its code
+  in words.
 
 A check refuses with a lazy string as a domain layer does: the answer
 is in the caller's language, its plural form the language's, its

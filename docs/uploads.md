@@ -720,8 +720,10 @@ answered it 500). Making a lazy string text reads the settings, which
 the process does not have: it sends the lookup and its arguments
 instead (`LazyString.source`), and the application makes the string
 again. The refusal is answered in the caller's language, as a domain
-error's lazy message is. `ngettext_lazy` picks the plural form for its
-count, and fills nothing in.
+error's lazy message is, and logged in English, as a plain one is:
+`An upload was refused by its check: ...` (`domainkit.http.uploads`, at
+`INFO`). `ngettext_lazy` picks the plural form for its count, and fills
+nothing in.
 
 A text filled with values (`gettext_lazy(...).format(...)`), or a
 call to `gettext`, is made at once, in the process, and reads the

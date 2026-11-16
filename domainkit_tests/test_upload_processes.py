@@ -427,13 +427,15 @@ def refusals_logged(caplog: pytest.LogCaptureFixture) -> list[str]:
 
 
 def test_a_lazy_refusal_is_answered_in_the_callers_language(
-    arabic_checks: None,
+    arabic_checks: None, caplog: pytest.LogCaptureFixture
 ) -> None:
     """In Arabic for a caller who asks for it, in English otherwise: 422, not 500.
 
     As a domain error's lazy message is since 2.5.0; the plural form is
-    the caller's language's, and a context is kept.
+    the caller's language's, and a context is kept. The log says it in
+    English, whatever the language: as a plain refusal is logged.
     """
+    caplog.set_level(logging.INFO, logger="domainkit.http.uploads")
     checks = {
         "plain": hooks.lazy,
         "count": hooks.lazy_count,
@@ -466,6 +468,11 @@ def test_a_lazy_refusal_is_answered_in_the_callers_language(
         ("context", "ar"): (422, "unsafe_file", "ar", "مرفوض."),
         ("context", None): (422, "unsafe_file", "en", "Refused."),
     }
+    assert refusals_logged(caplog) == [
+        f"An upload was refused by its check: {text}"
+        for text in (SECRETS, "The file holds secrets.", "Refused.")
+        for _ in ("ar", None)
+    ]
 
 
 def test_a_refusal_in_the_files_own_words_is_utf_8_on_one_line(
