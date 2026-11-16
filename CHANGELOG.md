@@ -31,6 +31,9 @@ and a status.
 
 ### Fixed
 
+- `LocaleMiddleware` reads `LANGUAGE_CODE` and `LANGUAGES` per request,
+  not when the application is built: a test that overrides them is
+  served in the new ones (user report I5).
 - `makemessages` extracts the texts marked with `gettext_noop`, as the
   docs said it did (user report I2).
 
