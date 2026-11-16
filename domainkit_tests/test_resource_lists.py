@@ -7,7 +7,7 @@ searched only the aggregate's own fields, so a member could not be found
 by their user's name (ADR 0170).
 """
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Annotated, Any, ClassVar, Final, NewType
 from uuid import UUID, uuid4
 
@@ -21,6 +21,7 @@ from domainkit.ddd import AggregateRoot, InMemoryRepository, MaxLength, UnitOfWo
 from domainkit.ddd.fields import UnknownField
 from domainkit.http import Filter, FilterSet
 from domainkit.http.access import IsAuthenticated
+from domainkit.http.errors import install_exception_handlers
 from domainkit.http.filters import Finder
 from domainkit.resources import FieldPolicy, ResourceRouter
 from domainkit_tests.conftest import Api, UseAuth
@@ -170,15 +171,27 @@ async def one_short(found: Sequence[Gadget], request: HTTPConnection) -> list[Sh
     return [Shown(id=each.id, name=each.name, owner="-") for each in found][1:]
 
 
+async def backwards(found: Sequence[Gadget], request: HTTPConnection) -> list[Shown]:
+    """A ``present_many`` that answers in the wrong order."""
+    return [Shown(id=each.id, name=each.name, owner="-") for each in reversed(found)]
+
+
 def test_present_many_answers_one_schema_per_aggregate(
     store: InMemoryGadgets, use_auth: UseAuth
 ) -> None:
-    """One short is a bug of the project's: refused, never shown misaligned."""
+    """One short, or out of order, is a bug of the project's: refused.
+
+    Never shown misaligned: a schema's ``id`` must be its aggregate's, or
+    links and tags would land on another row.
+    """
     use_auth()
     client = client_of(gadgets(store, schema=Shown, present_many=one_short))
+    turned = client_of(gadgets(store, schema=Shown, present_many=backwards))
 
     with pytest.raises(RuntimeError, match="answered 2 for 3 aggregates"):
         client.get("/gadgets", headers=as_("viewer"))
+    with pytest.raises(RuntimeError, match="not in their order"):
+        turned.get("/gadgets", headers=as_("viewer"))
     with pytest.raises(TypeError, match="not both"):
         gadgets(store, schema=Shown, present=Shown.model_validate, present_many=owned)
 
@@ -226,9 +239,14 @@ async def users_named(word: str, limit: int) -> list[UUID]:
     ][:limit]
 
 
-def everyone_named(word: str, limit: int) -> Iterable[UUID]:
-    """A finder that ignores the limit, sync."""
-    return [*PEOPLE, *PEOPLE]
+def everyone_named(word: str, limit: int) -> Iterator[UUID]:
+    """A finder that ignores the limit, sync: everyone, twice, then a failure.
+
+    Read past what the bound needs, it fails the test.
+    """
+    yield from PEOPLE
+    yield from PEOPLE
+    raise AssertionError("read past the bound")
 
 
 class MemberFilters(FilterSet):
@@ -322,8 +340,10 @@ async def test_searching_through_a_reference_is_bounded(
 ) -> None:
     """At most ``max_reference_matches`` ids a word; a refused search asks nothing.
 
-    By hand, without FastAPI, the set searches its own fields unless given
-    what ``through`` found.
+    Repeats are dropped as the ids come, so no more are read than the bound
+    takes. A word asked in two cases is asked once. By hand, without
+    FastAPI, the set searches its own fields unless given what ``through``
+    found.
     """
 
     class Few(FilterSet):
@@ -332,17 +352,58 @@ async def test_searching_through_a_reference_is_bounded(
         max_reference_matches = 2
         max_search_words = 2
 
+    class Repeated(Few):
+        search_through: ClassVar[Mapping[str, Finder]] = {
+            "user_id": lambda word, limit: [first, first, second]
+        }
+
+    first, second, _ = PEOPLE
     found = await Few.through("ann")
+    repeated = await Repeated.through("ann")
     refused = [await Few.through(each) for each in ("a b c", "x" * 101, None)]
-    once = await MemberFilters.through("ann ann")
+    once = await MemberFilters.through("Ann ann ANN")
 
     assert found == {"ann": {"user_id": tuple(PEOPLE)[:2]}}
+    assert repeated == {"ann": {"user_id": (first, second)}}
     assert refused == [{}, {}, {}]
     assert list(once) == ["ann"]
-    assert FOUND == [("ann", 100)]
+    assert FOUND == [("Ann", 100)]
     assert await memberships.filter(Few(search="ann").query()) == []
-    kept = await memberships.filter(Few(search="ann", _through=found).query())
+    kept = await memberships.filter(Few(search="ANN", _through=found).query())
     assert {each.user_id for each in kept} == set(tuple(PEOPLE)[:2])
+
+
+class Tight(MemberFilters):
+    """Members' filters, of two conditions at most."""
+
+    max_conditions = 2
+
+
+def test_finders_are_asked_only_of_a_query_the_set_accepts(
+    memberships: Memberships,
+) -> None:
+    """An unknown lookup, or too many conditions: refused before any finder runs."""
+    app = FastAPI()
+    install_exception_handlers(app)
+
+    @app.get("/members")
+    async def listing(filters: Annotated[Tight, Depends()]) -> int:
+        return len(await memberships.filter(filters.query()))
+
+    client = TestClient(app)
+    refused = [
+        client.get("/members", params=params)
+        for params in (
+            {"search": "ann", "role__icontains": "own"},
+            {"search": "ann smith", "role": "owner"},
+            {"search": "ann", "role": ["owner", "viewer"]},
+        )
+    ]
+
+    assert [answer.json()["code"] for answer in refused] == ["invalid_filter"] * 3
+    assert FOUND == []
+    assert client.get("/members", params={"search": "ann", "role": "owner"}).json() == 1
+    assert FOUND == [("ann", 100)]
 
 
 def test_a_filter_set_used_as_a_dependency_searches_through_too(

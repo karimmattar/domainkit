@@ -214,7 +214,8 @@ async def documents(
 
     Raises:
         RuntimeError: ``present_many`` answered other than one schema for
-            each aggregate.
+            each aggregate, in their order: a schema with an ``id`` must
+            show the aggregate's.
     """
     many = router.present_many
     if many is None:
@@ -223,10 +224,14 @@ async def documents(
         shown = []
     else:
         shown = list(await many(aggregates, context.request))
-        if len(shown) != len(aggregates):
+        if len(shown) != len(aggregates) or any(
+            str(getattr(each, "id", aggregate.id)) != str(aggregate.id)
+            for aggregate, each in zip(aggregates, shown, strict=False)
+        ):
             raise RuntimeError(
                 f"present_many answered {len(shown)} for {len(aggregates)} "
-                "aggregates: it answers one for each, in their order."
+                "aggregates, or not in their order: it answers one for each, "
+                "in their order."
             )
     return [
         dump(router, context, aggregate, each, hidden, include)

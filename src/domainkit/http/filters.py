@@ -43,7 +43,7 @@ parameters.
 """
 
 import inspect
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
@@ -278,17 +278,13 @@ class FilterSet:
         if _request is not None:
             self._check_names(_request)
         self.found: Found = _through or {}
-        """The ids each search word named through ``search_through``."""
+        """The ids each search word named through ``search_through``, by the
+        word in lowercase."""
         given = {name: value for name, value in values.items() if value is not None}
         ordering: list[str] = list(given.pop(ORDERING, ()))
         search: str = given.pop(SEARCH, "")
         words = search.split()
-        if len(words) > self.max_search_words:
-            raise InvalidFilter(f"Search for at most {self.max_search_words} words.")
-        if len(given) + len(words) > self.max_conditions:
-            raise InvalidFilter(f"Combine at most {self.max_conditions} filters.")
-        if len({item.removeprefix("-") for item in ordering}) != len(ordering):
-            raise InvalidFilter("Name each field once in the ordering.")
+        self._check_bounds(len(given), len(words), ordering)
         unknown = set(given) - set(self.filters)
         if unknown:
             from domainkit.utils.text import did_you_mean
@@ -312,10 +308,12 @@ class FilterSet:
     async def through(cls, search: str | None) -> Found:
         """The ids each word of ``search`` names through ``search_through``.
 
-        Each finder is asked once per distinct word, for at most
-        ``max_reference_matches`` ids, and what it answers past that is
-        left out. A search the set would refuse (too long, too many words)
-        asks nothing.
+        Each finder is asked once per distinct word, whatever its case, for
+        at most ``max_reference_matches`` ids: what it answers past that is
+        left out, unread. A search the set would refuse (too long, too many
+        words) asks nothing; over HTTP, neither does a query string it
+        refuses (an unknown lookup, too many conditions). The answer is
+        keyed by each word in lowercase.
         """
         if not cls.search_through or not search:
             return {}
@@ -323,15 +321,46 @@ class FilterSet:
         if len(search) > cls.max_search_length or len(words) > cls.max_search_words:
             return {}
         limit = cls.max_reference_matches
+        distinct: dict[str, str] = {}
+        for word in words:
+            distinct.setdefault(word.lower(), word)
         found: dict[str, dict[str, tuple[object, ...]]] = {}
-        for word in dict.fromkeys(words):
+        for key, word in distinct.items():
             for name, finder in cls.search_through.items():
                 answer = finder(word, limit)
                 ids = await answer if inspect.isawaitable(answer) else answer
-                found.setdefault(word, {})[name] = tuple(
-                    islice(dict.fromkeys(ids), limit)
-                )
+                found.setdefault(key, {})[name] = tuple(islice(_unique(ids), limit))
         return found
+
+    @classmethod
+    def _check_bounds(cls, conditions: int, words: int, ordering: list[str]) -> None:
+        """Refuse more search words or conditions than allowed, or an ordering twice.
+
+        Raises:
+            InvalidFilter: One of them.
+        """
+        if words > cls.max_search_words:
+            raise InvalidFilter(f"Search for at most {cls.max_search_words} words.")
+        if conditions + words > cls.max_conditions:
+            raise InvalidFilter(f"Combine at most {cls.max_conditions} filters.")
+        if len({item.removeprefix("-") for item in ordering}) != len(ordering):
+            raise InvalidFilter("Name each field once in the ordering.")
+
+    @classmethod
+    async def _through_accepted(cls, request: Request) -> Found:
+        """``through`` the search of a query string the set accepts.
+
+        The finders run only once the names and the bounds are checked.
+
+        Raises:
+            InvalidFilter: The set refuses the query string.
+        """
+        cls._check_names(request)
+        parameters = request.query_params
+        search = parameters.get(SEARCH) or ""
+        given = {name for name in parameters if name in cls.filters}
+        cls._check_bounds(len(given), len(search.split()), parameters.getlist(ORDERING))
+        return await cls.through(search)
 
     def _criteria(self) -> Criteria | None:
         """The conditions the parameters and search words ask for.
@@ -372,7 +401,7 @@ class FilterSet:
 
     def _searched(self, word: str) -> Criteria:
         """Rows that hold ``word`` in a search field, or refer to a row it names."""
-        named = self.found.get(word, {})
+        named = self.found.get(word.lower(), {})
         alternatives = [
             *(F(name).icontains(word) for name in self.search_fields),
             *(F(name).in_(ids) for name, ids in named.items() if ids),
@@ -402,7 +431,8 @@ class FilterSet:
         )
         return Within(relation, criteria) if relation else criteria
 
-    def _check_names(self, request: Request) -> None:
+    @classmethod
+    def _check_names(cls, request: Request) -> None:
         """Refuse lookups this set does not offer, and filters given twice.
 
         Messages name only the filters the set declares, never what the
@@ -411,11 +441,11 @@ class FilterSet:
         fields the set does not filter.
         """
         offered: dict[str, list[str]] = {}
-        for name in self.filters:
+        for name in cls.filters:
             offered.setdefault(name.partition(SEPARATOR)[0], []).append(name)
         for name in request.query_params:
             base, separator, _ = name.partition(SEPARATOR)
-            if name in self.filters:
+            if name in cls.filters:
                 if len(request.query_params.getlist(name)) > 1 and not name.endswith(
                     f"{SEPARATOR}{Lookup.IN}"
                 ):
@@ -424,6 +454,15 @@ class FilterSet:
                 raise InvalidFilter(
                     f"Unknown lookup on {base}; it offers {', '.join(offered[base])}."
                 )
+
+
+def _unique(ids: Iterable[object]) -> Iterator[object]:
+    """``ids`` without repeats, as they come: a bound cuts it after reading no more."""
+    seen: set[object] = set()
+    for each in ids:
+        if each not in seen:
+            seen.add(each)
+            yield each
 
 
 def _currency_parameters(
@@ -565,7 +604,7 @@ def _parameters(cls: type[FilterSet]) -> list[Parameter]:
     if cls.search_through:
 
         async def through(request: Request) -> Found:
-            return await cls.through(request.query_params.get(SEARCH))
+            return await cls._through_accepted(request)
 
         parameters.append(
             Parameter(
