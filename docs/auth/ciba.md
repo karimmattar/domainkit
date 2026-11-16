@@ -134,7 +134,16 @@ A sign-in request starts on one of two channels:
   gets a notification. Its text is `PUSH_TITLE` and `PUSH_BODY`; its data
   is `{"type": "domainkit.sign_in", "request_id": "..."}`. It holds no
   personal data, since it goes through Apple's or Google's servers: the
-  app fetches the details itself.
+  app fetches the details itself. The text is translated on the server
+  (*new in 2.4*), into the user's language where the user model names it
+  (`LANGUAGE_FIELD`), else the language of the request that started the
+  sign-in, else `LANGUAGE_CODE`
+  ([The language of codes](logging-in.md#the-language-of-codes)).
+  domainkit's catalogs have the defaults in Arabic (`هل توافق على تسجيل
+  الدخول؟`). A `PUSH_TITLE` of your own goes out as you set it, unless
+  your catalogs translate it. The push holds no localization keys
+  (FCM's `title_loc_key`, APNs's `title-loc-key`), so the app needs no
+  strings of its own for it.
 - **QR code.** The initiator names nobody (`/app-sign-in/qr`). Its page
   renders `qr` as a QR code. The phone that scans it sends it to
   `/app-sign-in/requests/claim`, and the request becomes its user's. A
@@ -759,7 +768,7 @@ other, not `unknown_user_id`.
 | `ACCESS_TOKEN_TTL` | 10 minutes (at most 1 hour) | How long a CIBA client's access token works. |
 | `ID_TOKEN_TTL` | 5 minutes (at most 1 hour) | How long its ID token works. |
 | `ASSERTION_MAX_AGE` | 5 minutes (at most 1 hour) | The furthest a `private_key_jwt` assertion may expire. |
-| `PUSH_TITLE`, `PUSH_BODY` | `"Approve sign-in?"`, `"Open the app to approve or deny it."` | The notification's text. Keep personal data out of it. |
+| `PUSH_TITLE`, `PUSH_BODY` | `"Approve sign-in?"`, `"Open the app to approve or deny it."` | The notification's text, translated by the catalogs into the user's or the request's language. Keep personal data out of it. |
 
 `DEVICES.DEVICE_LOGIN` and `DEVICES.ENROLLMENT` (both `False`) are the
 devices app's ([above](#the-mobile-app-as-identity)).

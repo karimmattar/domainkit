@@ -73,6 +73,7 @@ from domainkit.contrib.auth.integration import (
     auth_settings,
     end_device_logins,
     issue_login,
+    language_argument,
     pass_login_gates,
     record_step_up,
     step_up_answer,
@@ -514,7 +515,9 @@ async def ask_for_enrollment_code(body: EnrollCodeIn, request: Request) -> None:
         action="devices.enroll",
         detail=LOGIN_THROTTLED,
     )
-    await enqueue(send_enrollment_code, identifier=body.identifier)
+    await enqueue(
+        send_enrollment_code, identifier=body.identifier, **language_argument()
+    )
 
 
 @router.post(

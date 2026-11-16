@@ -49,6 +49,11 @@ revoked or expired token, or a deactivated user, does not keep it open;
 nor does a login that idled out, as the check writes no last use.
 The check reads through the principal cache, as requests do: it sees a
 change as soon as requests of this process do (``principals``).
+
+An HTTP request with credentials memoises what backends answer about
+objects (``backends.memoised``): a grant on one object is read once per
+request, however many rules and use cases ask. WebSockets do not, nor
+event streams once they stream: they outlast any request.
 """
 
 import logging
@@ -83,6 +88,7 @@ from .authentication import (
     Credentials,
     get_authenticators,
 )
+from .backends import close_memo, open_memo
 from .models import AnonymousUser
 from .settings import auth_settings
 
@@ -169,21 +175,30 @@ class AuthenticationMiddleware:
     async def _serve(
         self, scope: Scope, receive: Receive, send: Send, credentials: Credentials
     ) -> None:
-        """Serve the request as its user: the actor its context names."""
-        context = current_request()
-        if context is None:
-            await self.app(scope, receive, send)
-            return
-        # An impersonation acts for its staff member: the trail names them,
-        # and events name the user they act as too (ADR 0147).
-        acting = credentials.impersonator or credentials.user.id
-        impersonating = (
-            None if credentials.impersonator is None else str(credentials.user.id)
-        )
-        with bind_request(
-            replace(context, actor=str(acting), impersonating=impersonating)
-        ):
-            await self.app(scope, receive, send)
+        """Serve the request as its user: the actor its context names.
+
+        An HTTP request memoises what backends answer about objects until
+        it ends (``backends.memoised``); a WebSocket does not.
+        """
+        memo = open_memo(scope) if scope["type"] == "http" else None
+        try:
+            context = current_request()
+            if context is None:
+                await self.app(scope, receive, send)
+                return
+            # An impersonation acts for its staff member: the trail names them,
+            # and events name the user they act as too (ADR 0147).
+            acting = credentials.impersonator or credentials.user.id
+            impersonating = (
+                None if credentials.impersonator is None else str(credentials.user.id)
+            )
+            with bind_request(
+                replace(context, actor=str(acting), impersonating=impersonating)
+            ):
+                await self.app(scope, receive, send)
+        finally:
+            if memo is not None:
+                close_memo(memo)
 
     async def reauthenticate(self, scope: Scope) -> bool:
         """Whether the credentials of ``scope`` still hold, for the same user.

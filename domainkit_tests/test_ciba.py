@@ -12,6 +12,7 @@ from sqlalchemy import select
 
 from domainkit import clock
 from domainkit.conf import override_settings
+from domainkit.contrib.auth import User
 from domainkit.contrib.ciba.services import PUSH_KIND
 from domainkit.contrib.ciba.tables import sign_in_requests
 from domainkit.db import connections
@@ -19,6 +20,7 @@ from domainkit.management.base import run_async
 from domainkit_tests.conftest import (
     IDENTITY,
     IDENTITY_DOMAINS,
+    MIDDLEWARE,
     ExitStackClients,
     Migrated,
     Shape,
@@ -26,6 +28,7 @@ from domainkit_tests.conftest import (
 from domainkit_tests.support.auth import PASSWORD, audited, bearer, create_user
 from domainkit_tests.test_auth_cookies import TRUSTED
 from domainkit_tests.test_auth_login_origins import origins
+from domainkit_tests.test_auth_reset_codes import LOCALE
 from domainkit_tests.test_devices import Device, bind, queued_pushes
 
 CIBA = Shape(
@@ -175,6 +178,47 @@ def sign_in_pushes() -> list[dict[str, Any]]:
 
 
 # Push.
+
+
+def test_the_push_is_written_in_the_users_language_or_the_requests(
+    app: App, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Arabic for a user whose language is Arabic, or a page asking in Arabic.
+
+    A project's own ``PUSH_TITLE`` stays as it set it, unless its catalogs
+    translate it (user report A11).
+    """
+    monkeypatch.setattr(User, "LANGUAGE_FIELD", "last_name")
+    arabic = {"User-Agent": AGENT, "Accept-Language": "ar"}
+    with override_settings(MIDDLEWARE=[LOCALE, *MIDDLEWARE]):
+        web = app()
+        Phone(app(PHONE))
+        Phone(app(PHONE), "rana", last_name="ar")
+
+        def push_to(username: str, headers: dict[str, str]) -> dict[str, Any]:
+            answer = web.post(
+                "/auth/app-sign-in/push", json={"identifier": username}, headers=headers
+            )
+            assert answer.status_code == 200, answer.json()
+            return sign_in_pushes()[-1]
+
+        in_arabic = push_to("alice", arabic)
+        for_rana = push_to("rana", {"User-Agent": AGENT})
+        in_english = push_to("alice", {"User-Agent": AGENT})
+        web = app(PUSH_TITLE="Sign in to Example?")
+        project_title = push_to("alice", arabic)
+
+    title, body = "هل توافق على تسجيل الدخول؟", "افتح التطبيق لتوافق عليه أو ترفضه."
+    assert (in_arabic["title"], in_arabic["body"]) == (title, body)
+    assert (for_rana["title"], for_rana["body"]) == (title, body)
+    assert (in_english["title"], in_english["body"]) == (
+        "Approve sign-in?",
+        "Open the app to approve or deny it.",
+    )
+    assert (project_title["title"], project_title["body"]) == (
+        "Sign in to Example?",
+        body,
+    )
 
 
 def test_a_push_sign_in_is_approved_from_the_phone_with_the_number(app: App) -> None:

@@ -778,7 +778,10 @@ address. New accounts are audited as `auth.user_signed_up`; refusals as
 The worker renders the mail from the templates
 `auth/password_reset_code`, `auth/email_verification_code`,
 `auth/signup_code`, `auth/signup_code_held`, and `auth/signup_exists`
-(plain text). Replace them from `MAIL.TEMPLATE_DIRS`.
+(plain text), each in English and in Arabic. Replace them from
+`MAIL.TEMPLATE_DIRS`: your `auth/password_reset_code.txt` there replaces
+both languages, and `auth/password_reset_code.ar.txt` beside it is your
+Arabic one ([mail.md](../mail.md#templates-in-other-languages)).
 
 | Template | Its variables |
 | --- | --- |
@@ -790,6 +793,41 @@ The worker renders the mail from the templates
 `check` reports these routes mounted without messaging and mail
 (`auth.E103`), or with a user model without `EMAIL_FIELD` and
 `email_verified` (`auth.E104`).
+
+### The language of codes
+
+*New in 2.4.* Codes go out in the language of the person who gets them,
+as far as domainkit knows it, and always in one of `LANGUAGES`
+([ADR 0149](../adr/0149-write-codes-and-pushes-in-their-readers-language.md)):
+
+1. **The user's own**, where the user model names the field that holds
+   it: `LANGUAGE_FIELD = "language"`
+   ([users.md](users.md#a-custom-user-model)). A value `LANGUAGES` does
+   not list is passed over; `ar-eg` is `ar` where only `ar` is listed.
+2. **Else the request's**, which `LocaleMiddleware` reads from
+   `Accept-Language` ([i18n.md](../i18n.md#answering-in-the-callers-language)).
+   The worker sends the code, so the request hands its language to the
+   task, as its `language` argument, when it is not `LANGUAGE_CODE`. A
+   signup has no user yet: its code is always in the request's language.
+3. **Else `LANGUAGE_CODE`.**
+
+Text messages come from domainkit's catalogs, which have them in English
+and Arabic, and so does `valid_for` (`10 دقائق`). In Arabic, the reset
+code above reads:
+
+```text
+482913 هو رمزك لإعادة تعيين كلمة المرور. يعمل لمدة 10 دقائق. لا تُعطه لأحد.
+```
+
+Mail comes from the language's template, where there is one, and from
+the template itself otherwise. An app that sends its own codes with
+`send_code(user, identifier, purpose=..., wording="enroll your phone",
+template=...)` gets the same: `wording` is looked up in the catalogs in
+the `code` context (`msgctxt "code"`), so add your own wording there, and
+your template in each language beside it. `language_of(user, requested)`
+in `domainkit.contrib.auth.integration` says which language a message to
+a user is written in, and `language_argument()` gives a task the
+request's.
 
 ## Captcha
 

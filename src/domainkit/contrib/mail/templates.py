@@ -14,6 +14,21 @@ of mappings, and attributes of other objects, never names that start with
 ``_`` nor methods. Values are escaped in HTML and left as they are in
 text. A name the context lacks is an error, so no message goes out with a
 hole in it. There are no loops or conditions: compute such text in Python.
+
+A template is written in other languages beside it, in the directory that
+holds its text body, with the language before the suffix (Rails's
+localized views)::
+
+    auth/password_reset_code.ar.subject.txt
+    auth/password_reset_code.ar.txt
+
+The active language's files are used where they are (``domainkit.i18n``:
+``override("ar")`` around ``render_mail``), its primary subtag's next
+(``pt`` for ``pt-br``), and the template's own otherwise. A language's
+files stand for the whole template: its subject and HTML body are its own,
+or none. A directory searched first that has only the template's own files
+wins all the same, so a project that overrides a template is never
+replaced by a translation of the one it overrides.
 """
 
 import html
@@ -24,6 +39,7 @@ from typing import Final
 
 from domainkit.apps import registry
 from domainkit.exceptions import DomainkitError
+from domainkit.i18n import get_language
 
 from .delivery import mail_settings
 from .message import EmailMessage
@@ -68,6 +84,20 @@ def find_template(name: str) -> Path:
     raise TemplateDoesNotExist(f"No mail template {name!r} (looked for {name}.txt).")
 
 
+def localized(base: Path) -> Path:
+    """``base`` in the active language, where its directory has that text body.
+
+    The language's own files (``password_reset_code.pt-br``), its primary
+    subtag's next (``password_reset_code.pt``), and ``base`` otherwise.
+    """
+    language = get_language()
+    for code in dict.fromkeys((language, language.partition("-")[0])):
+        written = base.with_name(f"{base.name}.{code}")
+        if written.with_name(f"{written.name}.txt").is_file():
+            return written
+    return base
+
+
 def render_string(
     template: str, context: Mapping[str, object], *, escape: bool = False
 ) -> str:
@@ -106,10 +136,13 @@ def render_mail(
     The subject is the subject file's text on one line; the HTML body is
     left out when the template has none.
 
+    In the active language, where the template's directory has it
+    (``localized``).
+
     Raises:
         TemplateError: The template is missing, malformed, or lacks a value.
     """
-    base = find_template(template)
+    base = localized(find_template(template))
     subject_file = base.with_name(f"{base.name}.subject.txt")
     html_file = base.with_name(f"{base.name}.html")
     subject = (

@@ -393,6 +393,24 @@ and a status.
   for an authorization, and an act may ask `["phone"]` with devices alone
   ([Confirming one act](docs/auth/devices.md#confirming-one-act), ADR
   0144) (user report A6).
+- Codes and sign-in pushes go out in their reader's language: auth's
+  text messages and mails, the time a code works for, and ciba's
+  `PUSH_TITLE` and `PUSH_BODY` are written in the user's language where
+  the user model names its field (`LANGUAGE_FIELD`), else in the language
+  of the request that asked, which the request hands to the task, else
+  in `LANGUAGE_CODE`. domainkit's catalogs and auth's mail templates have
+  them in Arabic; a project's own templates and push text are used as
+  before. `language_of` and `language_argument` are in
+  `auth.integration`. They were in English whatever `LANGUAGES` listed
+  ([The language of codes](docs/auth/logging-in.md#the-language-of-codes),
+  ADR 0149) (user report A11).
+- Mail templates in other languages: `auth/password_reset_code.ar.txt`
+  beside `auth/password_reset_code.txt`, with its own subject and HTML
+  body, is what `render_mail` uses while Arabic is active; `pt` serves
+  `pt-br`. A directory searched first with only the template's own files
+  still wins, so a project's override is never replaced by a translation
+  ([Templates in other languages](docs/mail.md#templates-in-other-languages))
+  (user report A11).
 - `domainkit docs docs/live.md` (or `python manage.py docs`) prints the
   link of a page that a docstring, a message, a `check` hint, or a
   generated note names, for the release installed, under its tag;
@@ -405,6 +423,16 @@ and a status.
 
 ### Changed
 
+- A request reads a user's grants on one object once: within an HTTP
+  request with credentials, `ObjectPermissionBackend` answers every
+  permission of a user on an object with one query, however many rules
+  and use cases ask, where each `has_perm` ran it again. A commit in the
+  request drops what it kept, so a grant or a revocation is seen at once;
+  WebSockets, event streams once they stream, and work outside a request
+  keep nothing. `memoised(key, compute)` lets a project's backend do the
+  same, and `memoised_permissions()` gives a task one for a block
+  ([Checking permissions](docs/auth/users.md#checking-permissions)) (user
+  report A11).
 - `POLL_INTERVAL_IDLE` applies to the relay too while commits publish
   themselves to the broker (`PUBLISH_ON_COMMIT`): it polled the outbox
   every `POLL_INTERVAL` for what commits had already published (user

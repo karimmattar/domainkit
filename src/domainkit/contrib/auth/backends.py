@@ -26,17 +26,27 @@ holding a grant they lack (AUTH-14).
 being served (``TENANCY.MEMBER_PERMISSIONS``, ADR 0150). Such grants hold
 there only (``tenant_scoped``): ``has_perm`` counts them, but
 ``get_all_permissions``, which every ceiling reads, leaves them out.
+
+Within a request, a backend that reads its grants from the database
+answers each user and object once (``memoised``): ``AuthenticationMiddleware``
+opens the memo for each HTTP request with credentials, and
+``memoised_permissions()`` opens one for a block of other work. A commit
+in it drops what it kept, so a grant or a revocation made there is seen
+at once.
 """
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Awaitable, Callable, Hashable, Iterable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from functools import cache
-from typing import ClassVar
+from typing import Any, ClassVar, Final, cast
 from uuid import UUID
 
 from domainkit.conf import settings
 from domainkit.ddd import PermissionDenied
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.http.live import LONG_LIVED
 from domainkit.tenancy import member_permissions
 from domainkit.utils.module_loading import import_string
 
@@ -53,12 +63,18 @@ __all__ = [
     "ObjectGrant",
     "authenticate",
     "backends_without_object_grants",
+    "forget_permissions",
     "get_all_permissions",
     "get_user",
     "has_perm",
     "has_perms",
+    "memoised",
+    "memoised_permissions",
     "object_grants",
 ]
+
+MAX_MEMOISED: Final = 1024
+"""Answers one memo keeps; past it, the rest are worked out each time."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -252,6 +268,104 @@ class MembershipBackend(BaseBackend):
     ) -> frozenset[ObjectGrant]:
         """None: a member's keys are not grants on single objects."""
         return frozenset()
+
+
+class PermissionMemo:
+    """What backends answered within one request, or one block (``memoised``).
+
+    Current from when it is made (``open_memo``) until it is closed
+    (``close_memo``), once the request or the block ends: a task that
+    inherited it and outlives them works its answers out again.
+    """
+
+    __slots__ = ("answers", "scope", "token")
+
+    def __init__(self, scope: Mapping[str, Any] | None = None) -> None:
+        """Keep nothing yet, and be current (``scope``: the request's)."""
+        self.answers: dict[Hashable, object] | None = {}
+        """The answers, by key; None once closed."""
+        self.scope = scope
+        """The ASGI scope of the request it belongs to, if any."""
+        self.token: Token[PermissionMemo | None] = _memo.set(self)
+        """What makes the memo current before this one current again."""
+
+    def kept(self) -> dict[Hashable, object] | None:
+        """The answers to read and add to; None once closed or long-lived.
+
+        An event stream (``LONG_LIVED``) outlasts any request: what it asks
+        while it streams is worked out each time, as before 2.4.
+        """
+        scope = self.scope
+        if scope is not None and scope.get(LONG_LIVED):
+            return None
+        return self.answers
+
+
+_memo: ContextVar[PermissionMemo | None] = ContextVar("permission_memo", default=None)
+
+
+def open_memo(scope: Mapping[str, Any] | None = None) -> PermissionMemo:
+    """Memoise backends' answers until ``close_memo`` closes the memo it gives.
+
+    ``AuthenticationMiddleware`` calls it for each HTTP request with
+    credentials, with the request's ``scope``. Five calls open and close
+    one: every such request pays them (``benchmarks``, rung ``me``).
+    """
+    return PermissionMemo(scope)
+
+
+def close_memo(memo: PermissionMemo) -> None:
+    """Drop what ``memo`` kept, and keep none; make the one before it current."""
+    memo.answers = None
+    _memo.reset(memo.token)
+
+
+@contextmanager
+def memoised_permissions() -> Iterator[None]:
+    """Answer each question about a user and an object once, inside the block.
+
+    For work outside a request: a task, a command. Requests with
+    credentials get one from ``AuthenticationMiddleware``. A commit inside
+    drops what was kept (``forget_permissions``).
+    """
+    memo = open_memo()
+    try:
+        yield
+    finally:
+        close_memo(memo)
+
+
+def forget_permissions() -> None:
+    """Drop what the current request or block kept; it keeps answers again.
+
+    Auth calls it after each unit of work commits, so a grant or a
+    revocation is seen at once. Call it after changing grants some other way.
+    """
+    memo = _memo.get()
+    if memo is not None and memo.answers:
+        memo.answers.clear()
+
+
+async def memoised[T](key: Hashable, compute: Callable[[], Awaitable[T]]) -> T:
+    """``compute()``'s answer for ``key``, once per request or block.
+
+    Outside one, ``compute()`` runs each time, as before 2.4. ``key`` names
+    everything the answer depends on, starting with something of the
+    caller's own (its class), so two backends never read each other's
+    answers. For answers that depend only on stored rows, not on the
+    object's fields: those may change within a request. ``MAX_MEMOISED``
+    answers are kept at most.
+    """
+    memo = _memo.get()
+    answers = None if memo is None else memo.kept()
+    if answers is None:
+        return await compute()
+    if key in answers:
+        return cast(T, answers[key])
+    answer = await compute()
+    if len(answers) < MAX_MEMOISED:
+        answers[key] = answer
+    return answer
 
 
 @cache

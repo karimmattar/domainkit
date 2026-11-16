@@ -20,9 +20,12 @@ from domainkit.apps import registry
 from domainkit.conf import UNSET, override_settings
 from domainkit.contrib import mail
 from domainkit.contrib.auth import AbstractBaseUser, AuthUnitOfWork, UserId
+from domainkit.contrib.auth.apps import _user_model
 from domainkit.contrib.auth.onetime import email_of
 from domainkit.contrib.auth.recovery import (
     describe,
+    language_argument,
+    language_of,
     send_email_verification,
     send_password_reset_code,
 )
@@ -33,6 +36,7 @@ from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 from domainkit.http.application import application_problems
+from domainkit.i18n import override
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import IDENTITY_DOMAINS, Api
 from domainkit_tests.sample_domains.members.models import Member
@@ -296,6 +300,44 @@ def test_email_of_reads_the_email_field() -> None:
 def test_durations_in_words(duration: timedelta, words: str) -> None:
     """Days, hours, or minutes, whichever divides it, rounded up."""
     assert describe(duration) == words
+
+
+def test_the_language_of_a_message() -> None:
+    """The user's, if ``LANGUAGES`` lists it; else the request's; else the active one.
+
+    User report A11.
+    """
+
+    def user(language: object) -> AbstractBaseUser:
+        named = SimpleNamespace(LANGUAGE_FIELD="language", language=language)
+        return cast(AbstractBaseUser, named)
+
+    plain = cast(AbstractBaseUser, SimpleNamespace(LANGUAGE_FIELD=None))
+
+    assert [language_of(None), language_of(None, "ar"), language_of(None, "fr")] == [
+        "en",
+        "ar",
+        "en",
+    ]
+    assert [language_of(plain, "ar-sa"), language_of(user("AR"), "en")] == ["ar", "ar"]
+    assert [language_of(user(""), "ar"), language_of(user(None))] == ["ar", "en"]
+    assert language_of(user("fr"), "ar") == "ar"
+    assert language_argument() == {}  # LANGUAGE_CODE's: the task needs none.
+    with override("ar"):
+        assert (language_of(user("fr")), language_argument()) == (
+            "ar",
+            {"language": "ar"},
+        )
+
+
+def test_the_language_field_must_be_a_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ``LANGUAGE_FIELD`` the model lacks stops startup."""
+    path = "domainkit_tests.sample_domains.members.models.Member"
+    monkeypatch.setattr(Member, "LANGUAGE_FIELD", "language")
+    with pytest.raises(ImproperlyConfigured, match="LANGUAGE_FIELD names a field"):
+        _user_model(path)
+    monkeypatch.setattr(Member, "LANGUAGE_FIELD", "email")
+    assert _user_model(path) is Member
 
 
 def test_mailing_routes_need_mail_and_an_address(

@@ -1,22 +1,39 @@
 """Object permissions: grants on single objects, their ceilings, and ``VisibleTo``."""
 
+import asyncio
 import io
-from collections.abc import Awaitable, Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final, NewType
 from uuid import UUID, uuid4
 
 import pytest
+from fastapi import FastAPI, Request, WebSocket
+from fastapi.testclient import TestClient
 from sqlalchemy import Column, Integer, MetaData, String, Table, select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from domainkit import setup
 from domainkit.apps import registry
 from domainkit.conf import override_settings
-from domainkit.contrib.auth import AbstractBaseUser, AnonymousUser, AnyUser, Group
-from domainkit.contrib.auth.backends import has_perm
+from domainkit.contrib.auth import (
+    AbstractBaseUser,
+    AnonymousUser,
+    AnyUser,
+    Group,
+    backends,
+)
+from domainkit.contrib.auth.authentication import get_authenticators
+from domainkit.contrib.auth.backends import (
+    close_memo,
+    forget_permissions,
+    has_perm,
+    memoised_permissions,
+    open_memo,
+)
 from domainkit.contrib.auth.exceptions import UnknownPermission
+from domainkit.contrib.auth.middleware import AuthenticationMiddleware
 from domainkit.contrib.auth.uow import AuthUnitOfWork
 from domainkit.contrib.objectpermissions import (
     InMemoryObjectPermissions,
@@ -45,8 +62,11 @@ from domainkit.ddd import (
 )
 from domainkit.ddd.fields import InvalidQuery
 from domainkit.ddd.query import F
+from domainkit.http.live import LONG_LIVED
+from domainkit.http.middleware import RequestContextMiddleware
 from domainkit.management import call_command
 from domainkit.management.base import run_async
+from domainkit.testing.queries import CapturedQueries
 from domainkit_tests.conftest import (
     ALPHA,
     AUTH,
@@ -630,9 +650,6 @@ def test_grants_live_where_their_objects_do(use_auth: UseAuth) -> None:
 
 def test_scoped_credentials_see_only_what_their_scopes_cover(project: str) -> None:
     """A token not scoped to the permission sees nothing, model's or granted."""
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
     from domainkit.http.access import AllowScoped
     from domainkit.http.errors import install_exception_handlers
     from domainkit.resources import ResourceRouter
@@ -842,3 +859,219 @@ def test_staff_change_what_holds_object_grants_only_holding_them(
         admin.set_user_groups(peer.id, admin.GroupsIn(groups=["keepers"]), peer)
     )
     assert joined.groups == ["keepers"]
+
+
+# Memoised per request (user report A11) ---------------------------------------------
+
+
+async def asked(user: AnyUser, product: Product) -> list[bool]:
+    """Ask about ``product`` as a rule and a use case would: four times."""
+    return [
+        await has_perm(user, CHANGE, product),
+        await has_perm(user, VIEW, product),
+        await user.ahas_perms([CHANGE, VIEW], product),
+        await has_perm(user, CHANGE, product),
+    ]
+
+
+def counted[T](awaitable: Awaitable[T]) -> tuple[T, int]:
+    """What ``awaitable`` gives, and how many SQL statements it ran."""
+    with CapturedQueries() as queries:
+        answer = run(awaitable)
+    return answer, len(queries)
+
+
+async def in_block[T](make: Callable[[], Awaitable[T]]) -> T:
+    """``make()``'s answer, awaited inside ``memoised_permissions()``."""
+    with memoised_permissions():
+        return await make()
+
+
+def token_for(user: AbstractBaseUser) -> dict[str, str]:
+    """The ``Authorization`` header of a new access token of ``user``."""
+
+    async def issue() -> str:
+        async with AuthUnitOfWork() as uow:
+            issued = await get_authenticators()[0].issue(uow, user)
+            await uow.commit()
+        return issued.access_token
+
+    return {"Authorization": f"Bearer {run(issue())}"}
+
+
+def asking_client(product: Product, root: AbstractBaseUser) -> TestClient:
+    """An application that asks about ``product`` as the caller, and counts.
+
+    ``/ask`` asks four times; ``/change`` asks, has ``root`` grant the
+    caller ``VIEW``, asks, has it revoked, and asks again. ``/live`` is a
+    WebSocket that asks twice.
+    """
+    app = FastAPI()
+
+    @app.get("/ask")
+    async def ask(request: Request) -> dict[str, Any]:
+        with CapturedQueries() as queries:
+            answers = await asked(request.user, product)
+        return {"answers": answers, "queries": len(queries)}
+
+    @app.post("/change")
+    async def change(request: Request) -> list[bool]:
+        user = request.user
+        before = await has_perm(user, VIEW, product)
+        await grant_permission(root, VIEW, product, user=user.id)
+        granted = await has_perm(user, VIEW, product)
+        await revoke_permission(root, VIEW, product, user=user.id)
+        return [before, granted, await has_perm(user, VIEW, product)]
+
+    @app.websocket("/live")
+    async def live(websocket: WebSocket) -> None:
+        await websocket.accept()
+        with CapturedQueries() as queries:
+            await has_perm(websocket.user, CHANGE, product)
+            await has_perm(websocket.user, CHANGE, product)
+        await websocket.send_json({"queries": len(queries)})
+        await websocket.close()
+
+    app.add_middleware(AuthenticationMiddleware)
+    app.add_middleware(RequestContextMiddleware)
+    return TestClient(app)
+
+
+def test_a_request_reads_a_users_grants_on_an_object_once(project: str) -> None:
+    """Four questions, one query; each request asks afresh, for its own user."""
+    (first,) = products("first")
+    root = person("root", is_superuser=True)
+    ada = person("ada")
+    bob = person("bob")
+    run(grant_permission(root, CHANGE, first, user=ada.id))
+    client = asking_client(first, root)
+    as_ada, as_bob = token_for(ada), token_for(bob)
+
+    outside = counted(asked(ada, first))
+    answered = client.get("/ask", headers=as_ada).json()
+    for_bob = client.get("/ask", headers=as_bob).json()
+    run(grant_permission(root, VIEW, first, user=ada.id))
+    later = client.get("/ask", headers=as_ada).json()
+
+    assert outside == ([True, False, False, True], 5)  # Outside a request, as before.
+    assert answered == {"answers": [True, False, False, True], "queries": 1}
+    assert for_bob == {"answers": [False, False, False, False], "queries": 1}
+    assert later == {"answers": [True, True, True, True], "queries": 1}
+
+
+def test_a_grant_or_revocation_in_the_request_is_seen_at_once(project: str) -> None:
+    """A commit drops what the request kept."""
+    (product,) = products("one")
+    root = person("root", is_superuser=True)
+    ada = person("ada")
+    client = asking_client(product, root)
+
+    changed = client.post("/change", headers=token_for(ada))
+
+    assert changed.json() == [False, True, False]
+
+
+def test_websockets_keep_no_answers(project: str) -> None:
+    """A connection outlasts any request: each question is asked again."""
+    (product,) = products("one")
+    root = person("root", is_superuser=True)
+    ada = person("ada")
+    client = asking_client(product, root)
+
+    with client.websocket_connect("/live", headers=token_for(ada)) as socket:
+        assert socket.receive_json() == {"queries": 2}
+
+
+def test_a_block_keeps_answers_per_user_and_object(project: str) -> None:
+    """Users, groups, and objects each get their own answer; outside, none."""
+    first, second = products("first", "second")
+    root = person("root", is_superuser=True)
+    make_group("editors")
+    person("ada")
+    join("ada", "editors")
+    ada = reload("ada")
+    bob = person("bob")
+    editors = next(iter(ada.groups)).id
+    run(grant_permission(root, CHANGE, first, group=editors))
+    run(grant_permission(root, VIEW, second, user=bob.id))
+    alone = person("alone")  # Of no group: ada's answers are not alone's.
+
+    async def everyone() -> list[list[bool]]:
+        return [
+            await asked(ada, first),
+            await asked(bob, first),
+            await asked(ada, second),
+            await asked(bob, second),
+            await asked(alone, first),
+            await asked(ada, first),
+        ]
+
+    answers, queries = counted(in_block(everyone))
+    assert answers == [
+        [True, False, False, True],
+        [False, False, False, False],
+        [False, False, False, False],
+        [False, True, False, False],
+        [False, False, False, False],
+        [True, False, False, True],
+    ]
+    assert queries == 5
+
+
+def test_what_outlives_the_block_or_streams_asks_again(project: str) -> None:
+    """A task that inherited a closed memo, or an event stream, keeps nothing."""
+    (product,) = products("one")
+    ada = person("ada")
+
+    async def leave_a_task_behind() -> tuple[list[bool], int]:
+        release = asyncio.Event()
+
+        async def later() -> tuple[list[bool], int]:
+            await release.wait()
+            return await counting(asked(ada, product))
+
+        with memoised_permissions():
+            await asked(ada, product)
+            task = asyncio.create_task(later())  # It inherits the memo.
+        release.set()
+        return await task
+
+    after = run(leave_a_task_behind())
+
+    async def streaming() -> tuple[int, int]:
+        scope: dict[str, Any] = {"type": "http"}
+        memo = open_memo(scope)
+        try:
+            _, before = await counting(asked(ada, product))
+            scope[LONG_LIVED] = True
+            _, streamed = await counting(asked(ada, product))
+        finally:
+            close_memo(memo)
+        return before, streamed
+
+    assert after == ([False, False, False, False], 4)
+    assert run(streaming()) == (1, 4)
+    forget_permissions()  # Outside a block: nothing to forget.
+
+
+async def counting[T](awaitable: Awaitable[T]) -> tuple[T, int]:
+    """``counted``, in the running loop."""
+    with CapturedQueries() as queries:
+        answer = await awaitable
+    return answer, len(queries)
+
+
+def test_a_memo_keeps_a_bounded_number_of_answers(
+    project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Past ``MAX_MEMOISED`` answers, the rest are worked out each time."""
+    first, second = products("first", "second")
+    ada = person("ada")
+    monkeypatch.setattr(backends, "MAX_MEMOISED", 1)
+
+    async def twice() -> None:
+        for _ in range(2):
+            await has_perm(ada, CHANGE, first)
+            await has_perm(ada, CHANGE, second)
+
+    assert counted(in_block(twice))[1] == 3

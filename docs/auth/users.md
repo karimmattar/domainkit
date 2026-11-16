@@ -177,6 +177,33 @@ an object too, with whatever the backends add. Before 2.4,
 granted on the object, so a "what may I do" route under-reported a
 superuser. Nothing else changed about what a superuser may do.
 
+Within one request, a backend that reads grants from the database
+answers each user and object once (*new in 2.4*). An access rule that
+asks `HasObjectPermissions("shop.change_product")`, then a use case that
+asks `has_perm(user, "shop.view_product", product)`, cost one query, not
+two. Every request with credentials gets its own memo from
+`AuthenticationMiddleware`, and it ends with the request:
+
+- **A commit drops it.** Each unit of work that commits in the request
+  empties the memo, so a grant, a revocation, or a deleted object is seen
+  by the next check. A grant another request commits meanwhile is seen
+  by this one's next commit, or by the next request.
+- **Each answer is for one user, with their groups, and one object.**
+  The same object asked about for another user, or for the same user
+  with other groups, is asked again.
+- **What outlasts a request keeps nothing.** WebSockets keep no memo, nor
+  event streams once they stream, nor a task started in the request that
+  is still running after it.
+- **Outside a request nothing changes**: each call asks the backends.
+  `with memoised_permissions():` gives a task or a command the same
+  memo for a block, and `forget_permissions()` empties it after a change
+  made without a unit of work.
+
+Django keeps a user's model permissions on the user object for as long
+as it lives (`_perm_cache`), and django-guardian keeps a user's object
+permissions in an `ObjectPermissionChecker`; this is the same idea,
+bounded by the request, and emptied by commits.
+
 `user.has_perms(keys)`, `user.get_all_permissions()`,
 `user.get_user_permissions()`, `user.get_group_permissions()`, and
 `user.has_domain_perms("shop")` read the loaded user too.
@@ -387,6 +414,14 @@ Settings files other than the base one extend `AUTH`
 - **`clean_field(name, value)`** tidies a value before it is stored, when
   a user is made and when one is changed. Override it to trim or
   normalize a field.
+- **`LANGUAGE_FIELD`** (*new in 2.4*) names the field that holds the
+  user's language, such as `language: str = ""` with
+  `LANGUAGE_FIELD = "language"`. Codes and pushes sent to the user are
+  written in it, when `LANGUAGES` lists it; without one, in the language
+  of the request that asked for them, or `LANGUAGE_CODE`
+  ([The language of codes](logging-in.md#the-language-of-codes)).
+  Startup refuses a name the model lacks. It is `None` by default: no
+  column is added for you.
 
 The model's links to groups and permissions get tables named after its
 table (`accounts_users_groups`, `accounts_users_permissions`). Startup
@@ -545,6 +580,29 @@ groups' grants, active or not) or for a group. `object_grants(holder)` in
 So the `OwnerBackend` above should leave `object_grants` out, unless the
 invoices it guards can never change owner through the admin API.
 
+A backend whose answers come from the database, and not from the
+object's fields, can keep them for the request
+([Checking permissions](#checking-permissions)) with
+`memoised(key, compute)` from `domainkit.contrib.auth.backends`. The key
+names all that the answer depends on, starting with the backend's class;
+`compute` is called once per request and key, and on every call outside
+a request. At most `MAX_MEMOISED` (1,024) answers are kept per request.
+
+```python
+from domainkit.contrib.auth.backends import BaseBackend, memoised
+
+
+class TeamBackend(BaseBackend):
+    async def get_all_permissions(self, user, obj=None):
+        if obj is None or not user.is_active:
+            return frozenset()
+        key = (TeamBackend, user.id, type(obj).__name__, obj.id)
+        return await memoised(key, lambda: team_grants(user.id, obj))
+```
+
+`OwnerBackend` above must not: an invoice's owner can change within a
+request, and its answer with it.
+
 The [LDAP backend](identity.md#ldap-and-active-directory) checks
 passwords against a directory. `MembershipBackend` grants what a user
 holds as a member of the tenant being served, such as a role's keys
@@ -614,6 +672,11 @@ products = ResourceRouter(
 - **Each grant and revocation is an event** (`ObjectPermissionGranted`,
   `ObjectPermissionRevoked`) that names who gave what to whom, with the
   grant's expiry and role, so the audit trail records it.
+- **One query per object and request.** `ObjectPermissionBackend` reads
+  every permission a user holds on an object, through them or their
+  groups, in one query, and keeps the answer for the request
+  ([Checking permissions](#checking-permissions)). Granting or revoking
+  in the request commits, which drops it.
 - **`visible_scope("view", Product)`** is a resource's `scope`. Callers
   who hold `catalog.view_product` see every product. Others see those
   granted to them or to one of their groups, filtered in SQL with an

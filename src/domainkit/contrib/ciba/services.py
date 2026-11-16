@@ -40,9 +40,10 @@ from typing import Final
 from uuid import UUID, uuid4
 
 from domainkit.contrib.auth import AbstractBaseUser
-from domainkit.contrib.auth.integration import utc_now
+from domainkit.contrib.auth.integration import language_of, utc_now
 from domainkit.contrib.auth.models import UserId
 from domainkit.ddd import event_bus
+from domainkit.i18n import gettext, override
 
 from .events import SignInApproved, SignInDenied, SignInReported
 from .exceptions import (
@@ -224,7 +225,7 @@ async def start_push(
         )
     )
     if asked is not None:
-        await _notify(uow, asked.id, request.id, config)
+        await _notify(uow, asked, request.id, config)
     return Started(
         handle=handle,
         request_id=request.id,
@@ -283,7 +284,7 @@ async def ask_signed_in(
             request_id=request_id,
         )
     )
-    await _notify(uow, user.id, request.id, config)
+    await _notify(uow, user, request.id, config)
     return Started(
         handle=handle,
         request_id=request.id,
@@ -313,16 +314,26 @@ async def _askable(uow: CibaUnitOfWork, user: AbstractBaseUser, now: datetime) -
 
 
 async def _notify(
-    uow: CibaUnitOfWork, user_id: UUID, request_id: UUID, config: CibaSettings
+    uow: CibaUnitOfWork,
+    user: AbstractBaseUser,
+    request_id: UUID,
+    config: CibaSettings,
 ) -> None:
-    """Queue a push to each of the user's apps, naming the request and no one."""
+    """Queue a push to each of the user's apps, naming the request and no one.
+
+    ``PUSH_TITLE`` and ``PUSH_BODY`` are translated into the user's
+    language, or the request's (``language_of``): domainkit's catalogs
+    translate the defaults, a project's its own.
+    """
     from domainkit.contrib.notifications import PushMessage
 
-    for token in await uow.push_tokens.of_user(user_id):
+    with override(language_of(user)):
+        title, body = gettext(config.PUSH_TITLE), gettext(config.PUSH_BODY)
+    for token in await uow.push_tokens.of_user(user.id):
         await PushMessage(
             token=token.token,
-            title=config.PUSH_TITLE,
-            body=config.PUSH_BODY,
+            title=title,
+            body=body,
             data={"type": PUSH_KIND, "request_id": str(request_id)},
             platform=token.platform,
         ).send(uow)

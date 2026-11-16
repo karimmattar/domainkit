@@ -50,6 +50,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from domainkit.contrib.messaging import task
 from domainkit.http.access import Public
 from domainkit.http.errors import APIError, error_responses
+from domainkit.i18n import gettext, override
 
 from ._http import PASSWORD_MAX_LENGTH
 from .captcha import captcha
@@ -71,6 +72,8 @@ from .recovery import (
     EmailAddress,
     InvalidCode,
     code_context,
+    language_argument,
+    language_of,
     text_code,
 )
 from .repositories import PendingSignup
@@ -216,7 +219,7 @@ async def signup(body: SignupIn, request: Request) -> AcceptedOut:
             ttl=config.CODE_TTL,
             fields=given,
         )
-        uow.defer(send_signup_code, signup_id=pending.id)
+        uow.defer(send_signup_code, signup_id=pending.id, **language_argument())
         await uow.commit()
     if texted:
         return AcceptedOut(detail="Check your text messages to finish signing up.")
@@ -277,7 +280,7 @@ async def confirm_signup_code(body: SignupCodeIn, request: Request) -> None:
     raise InvalidCode
 
 
-async def send_signup_code(signup_id: UUID) -> None:
+async def send_signup_code(signup_id: UUID, language: str | None = None) -> None:
     """Send the address, or the number, a code that makes the account.
 
     The ``domainkit.auth.send_signup_code`` task. An address or a number
@@ -285,8 +288,16 @@ async def send_signup_code(signup_id: UUID) -> None:
     pending signup is deleted (an account that never proved the address
     or the number does not hold it against a signup: ADR 0133):
     a text goes with that commit, and a mail before it, so a retry after a
-    failed delivery still tells. One gone or expired is left alone.
+    failed delivery still tells. One gone or expired is left alone. There
+    is no user yet: it is written in ``language``, the request's
+    (``language_of``).
     """
+    with override(language_of(None, language)):
+        await _send_signup_code(signup_id)
+
+
+async def _send_signup_code(signup_id: UUID) -> None:
+    """``send_signup_code``, in the active language."""
     from domainkit.contrib.mail import deliver, render_mail
 
     async with AuthUnitOfWork() as uow:
@@ -324,7 +335,7 @@ async def _text_taken(number: str, uow: AuthUnitOfWork) -> None:
     """Tell ``number`` that an account uses it already."""
     from domainkit.contrib.notifications import send_sms
 
-    body = (
+    body = gettext(
         "Someone tried to sign up with this number, and an account uses it "
         "already. If it was you, log in, or reset your password."
     )

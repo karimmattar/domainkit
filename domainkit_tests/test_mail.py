@@ -41,6 +41,7 @@ from domainkit.contrib.messaging.admin import blanked_dead_letters, retry_dead
 from domainkit.contrib.messaging.tables import BLANKED, DEAD, DONE, messages
 from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.i18n import override
 from domainkit_tests.conftest import MakePackage
 from domainkit_tests.fake_smtp import (
     SmtpServer,
@@ -926,6 +927,9 @@ TEMPLATES = {
         '<p>Dear {{ name }}</p><a href="{{ link }}">pay</a>'
     ),
     "templates/mail/billing/plain.txt": "Only text for {{ name }}.",
+    "templates/mail/billing/invoice.ar.subject.txt": "الفاتورة {{ invoice.number }}",
+    "templates/mail/billing/invoice.ar.txt": "عزيزي {{ name }}،",
+    "templates/mail/billing/invoice.pt.txt": "Caro {{ name }},",
 }
 
 
@@ -999,6 +1003,35 @@ def test_template_dirs_come_first(billing: Install, tmp_path: Path) -> None:
     message = render_mail("billing/plain", {"name": "Ann"}, to=["a@example.com"])
 
     assert message.body == "Ours, Ann."
+
+
+def test_templates_are_written_in_the_active_language(
+    billing: Install, tmp_path: Path
+) -> None:
+    """The language's files, its primary subtag's, or the template's own.
+
+    A language's files are the whole template: no English subject nor HTML
+    body goes with them. A directory searched first that overrides the
+    template wins over the translations of the one it overrides (user
+    report A11).
+    """
+    context = {"name": "Ann", "invoice": Invoice(), "link": "x"}
+
+    def written(language: str) -> tuple[str, str, str | None]:
+        with override(language):
+            message = render_mail("billing/invoice", context, to=["a@example.com"])
+        return message.subject, message.body, message.html
+
+    assert written("ar") == ("الفاتورة 42", "عزيزي Ann،", None)
+    assert written("ar-eg") == written("ar")
+    assert written("pt-br") == ("", "Caro Ann,", None)
+    assert written("en")[0] == "Invoice 42 for Ann"
+    assert written("fr") == written("en")
+    override_dir = tmp_path / "mail"
+    (override_dir / "billing").mkdir(parents=True)
+    (override_dir / "billing" / "invoice.txt").write_text("Ours.", encoding="utf-8")
+    billing(TEMPLATE_DIRS=[str(override_dir)])
+    assert written("ar") == ("", "Ours.", None)
 
 
 @pytest.mark.parametrize(

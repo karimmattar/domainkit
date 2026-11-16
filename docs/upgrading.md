@@ -70,6 +70,18 @@ domainkit.
   that code to offer enrollment offers it on `phone_approval_required`
   when it holds no key. In every mode, a password staff set is changed
   on first use only once the login gates passed.
+- **Codes and sign-in pushes follow the language.** Texts, mails, and
+  ciba's push go out in the user's language where the user model names
+  it (`LANGUAGE_FIELD`), else in the request's: with `LocaleMiddleware`
+  and the default `LANGUAGES`, a client that asks in Arabic gets them in
+  Arabic ([The language of codes](auth/logging-in.md#the-language-of-codes)).
+  To keep them all in one language, list only it in `LANGUAGES`. Your own
+  templates in `MAIL.TEMPLATE_DIRS`, and your own `PUSH_TITLE` and
+  `PUSH_BODY`, are used as before. A request in another language than
+  `LANGUAGE_CODE` hands it to the task that sends its code (`language`):
+  deploy the workers before the web processes, as a 2.3 worker fails on
+  that argument, and retries the message as it retries any task that
+  fails.
 - **`POST /devices/enroll/code` counts per recipient** against
   `AUTH.EMAIL_RATE`, as the other requests that send a code do. A client
   that asked for the same account's code more than five times an hour
