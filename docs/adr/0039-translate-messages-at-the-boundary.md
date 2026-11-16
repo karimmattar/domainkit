@@ -1,6 +1,6 @@
 # 0039. Translate messages at the HTTP boundary, from gettext catalogs compiled in Python
 
-- Status: Accepted
+- Status: Accepted; amended by [0166](0166-let-a-domain-layer-mark-its-texts-extract-the-projects-own-and-add-a-translation-alone.md)
 - Date: 2026-10-19
 
 ## Context

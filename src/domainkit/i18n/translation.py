@@ -1,4 +1,4 @@
-"""Translations: the active language, gettext catalogs, and lazy strings.
+"""Translations: the active language, and gettext catalogs.
 
 The language of the work in progress lives in a ``ContextVar``:
 ``LocaleMiddleware`` sets it per request from ``Accept-Language``, tasks
@@ -16,20 +16,32 @@ that has a message wins:
 
 A catalog is ``<directory>/<locale>/LC_MESSAGES/messages.mo``, where the
 locale of ``pt-br`` is ``pt_BR``; ``pt`` is looked up after it.
+
+Marks and lazy strings (``gettext_noop``, ``gettext_lazy``, ...) are in
+``domainkit.i18n.lazy``, which a domain layer may import. They are still
+imported from here, on first use: a request that shows none loads none.
 """
 
 import gettext as gnu
 import re
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import cache
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from domainkit.apps import registry
 from domainkit.conf import settings, unwrap_settings
 from domainkit.conf.global_settings import LANGUAGE_PATTERN
+from domainkit.utils.module_loading import lazy_names
+
+if TYPE_CHECKING:
+    from domainkit.i18n.lazy import LazyString as LazyString
+    from domainkit.i18n.lazy import gettext_lazy as gettext_lazy
+    from domainkit.i18n.lazy import gettext_noop as gettext_noop
+    from domainkit.i18n.lazy import ngettext_lazy as ngettext_lazy
+    from domainkit.i18n.lazy import pgettext_lazy as pgettext_lazy
 
 DOMAIN: Final = "messages"
 """The name of every catalog file: ``messages.po`` and ``messages.mo``."""
@@ -249,71 +261,16 @@ def npgettext(context: str, singular: str, plural: str, n: int) -> str:
     return catalog().npgettext(context, singular, plural, n)
 
 
-def gettext_noop(message: str) -> str:
-    """Mark ``message`` for translators without translating it now."""
-    return message
-
-
-class LazyString:
-    """A translation made each time the string is used, in the language active then.
-
-    Define messages at import time with ``gettext_lazy``; ``str()`` turns
-    one into text. It compares, hashes, formats, and concatenates as its
-    current translation.
-    """
-
-    __slots__ = ("_arguments", "_function")
-
-    def __init__(self, function: Callable[..., str], *arguments: object) -> None:
-        """Translate with ``function(*arguments)`` when used."""
-        self._function = function
-        self._arguments = arguments
-
-    def __str__(self) -> str:
-        """The translation in the active language."""
-        return self._function(*self._arguments)
-
-    def __repr__(self) -> str:
-        """Show the class and the current translation."""
-        return f"<LazyString {str(self)!r}>"
-
-    def __eq__(self, other: object) -> bool:
-        """Equal to text, or another lazy string, with the same translation."""
-        if isinstance(other, LazyString):
-            other = str(other)
-        return str(self) == other
-
-    def __hash__(self) -> int:
-        """Hash as the current translation."""
-        return hash(str(self))
-
-    def __add__(self, other: str) -> str:
-        """The translation followed by ``other``."""
-        return str(self) + other
-
-    def __radd__(self, other: str) -> str:
-        """``other`` followed by the translation."""
-        return other + str(self)
-
-    def __mod__(self, values: object) -> str:
-        """``%``-format the translation."""
-        return str(self) % values
-
-    def format(self, *args: object, **kwargs: object) -> str:
-        """``str.format`` the translation."""
-        return str(self).format(*args, **kwargs)
-
-
-def gettext_lazy(message: str) -> LazyString:
-    """``gettext`` when the string is used."""
-    return LazyString(gettext, message)
-
-
-def ngettext_lazy(singular: str, plural: str, n: int) -> LazyString:
-    """``ngettext`` when the string is used."""
-    return LazyString(ngettext, singular, plural, n)
-
-
-def pgettext_lazy(context: str, message: str) -> LazyString:
-    """``pgettext`` when the string is used."""
-    return LazyString(pgettext, context, message)
+__getattr__ = lazy_names(
+    __name__,
+    dict.fromkeys(
+        [
+            "LazyString",
+            "gettext_lazy",
+            "gettext_noop",
+            "ngettext_lazy",
+            "pgettext_lazy",
+        ],
+        "domainkit.i18n.lazy",
+    ),
+)

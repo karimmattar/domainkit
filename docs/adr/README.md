@@ -24,7 +24,7 @@ statuses, and the amendments they name.
 | --- | --- | --- |
 | [0001](0001-record-architecture-decisions.md) | Record architecture decisions | Accepted |
 | [0002](0002-django-conventions-for-ddd-services.md) | Django's conventions for domain-driven services | Accepted |
-| [0003](0003-enforced-layer-rules.md) | Layer rules enforced by `check` | Accepted; amended by [0037](0037-one-clock-frozen-per-context.md), and 2026-10-25 and 2026-11-15 (at the end) |
+| [0003](0003-enforced-layer-rules.md) | Layer rules enforced by `check` | Accepted; amended by [0037](0037-one-clock-frozen-per-context.md) and [0166](0166-let-a-domain-layer-mark-its-texts-extract-the-projects-own-and-add-a-translation-alone.md), and 2026-10-25 and 2026-11-15 (at the end) |
 | [0004](0004-async-sqlalchemy-imperative-mapping.md) | Async SQLAlchemy with imperative mapping | Accepted; amended 2026-10-25 (at the end) |
 | [0005](0005-transactional-outbox.md) | A transactional outbox instead of a broker | Accepted; amended by [0118](0118-run-a-keys-messages-in-commit-order-by-holding-the-later-ones-in-the-outbox.md), and 2026-11-01 (at the end) |
 | [0006](0006-environment-prefix-from-project-name.md) | Environment variable prefix from the project name | Accepted |
@@ -60,7 +60,7 @@ statuses, and the amendments they name.
 | [0036](0036-webhooks-through-the-outbox.md) | Send webhooks through the outbox, signed, to checked addresses only | Accepted |
 | [0037](0037-one-clock-frozen-per-context.md) | Read the time from one clock, frozen per context in tests | Accepted |
 | [0038](0038-test-databases-of-their-own.md) | Give the tests PostgreSQL databases of their own | Accepted |
-| [0039](0039-translate-messages-at-the-boundary.md) | Translate messages at the HTTP boundary, from gettext catalogs compiled in Python | Accepted |
+| [0039](0039-translate-messages-at-the-boundary.md) | Translate messages at the HTTP boundary, from gettext catalogs compiled in Python | Accepted; amended by [0166](0166-let-a-domain-layer-mark-its-texts-extract-the-projects-own-and-add-a-translation-alone.md) |
 | [0040](0040-store-files-under-random-names.md) | Store files under random names; trust only their content | Accepted |
 | [0041](0041-privacy-through-personal-markers.md) | Answer privacy requests from Personal markers, through units of work | Accepted |
 | [0042](0042-lease-publications-and-break-the-circuit.md) | Lease publications, and stop publishing on commit while the broker fails | Accepted |
@@ -159,7 +159,7 @@ statuses, and the amendments they name.
 | [0146](0146-show-gates-how-a-login-was-made-and-let-a-login-keep-shorter-limits.md) | Show gates how a login was made, and let a login keep shorter limits | Accepted |
 | [0147](0147-name-who-caused-each-event-and-tell-the-old-address.md) | Name who caused each event, and tell the old address | Accepted |
 | [0148](0148-check-new-passwords-against-breaches-and-let-rules-be-async.md) | Check new passwords against breaches, and let password rules be async | Accepted |
-| [0149](0149-write-codes-and-pushes-in-their-readers-language.md) | Write codes and pushes in their reader's language | Accepted |
+| [0149](0149-write-codes-and-pushes-in-their-readers-language.md) | Write codes and pushes in their reader's language | Accepted; amended by [0166](0166-let-a-domain-layer-mark-its-texts-extract-the-projects-own-and-add-a-translation-alone.md) |
 | [0150](0150-take-the-tenant-from-the-path-and-let-members-hold-permissions.md) | Take the tenant from the path, and let members hold permissions | Accepted |
 | [0151](0151-object-grants-that-expire-roles-and-owners-a-caller-administers.md) | Object grants that expire, roles, and owners a caller administers | Accepted |
 | [0152](0152-link-the-pages-the-code-names-to-the-releases-tag.md) | Link the pages the code names to the release's tag | Accepted |
@@ -171,6 +171,7 @@ statuses, and the amendments they name.
 | [0158](0158-count-outgoing-calls-circuits-fallbacks-and-statements-and-give-requests-a-span.md) | Count outgoing calls, circuits, fallbacks, and statements, and give requests a span | Accepted |
 | [0159](0159-read-a-replica-only-while-it-is-known-to-be-within-its-bound.md) | Read a replica only while it is known to be within its bound | Accepted |
 | [0160](0160-serve-in-production-from-the-settings.md) | Serve in production from the settings | Accepted |
+| [0166](0166-let-a-domain-layer-mark-its-texts-extract-the-projects-own-and-add-a-translation-alone.md) | Let a domain layer mark its texts, extract the project's own, and add a translation alone | Accepted |
 | [0168](0168-render-documents-through-a-port-with-gotenberg-and-fill-them-locally.md) | Render documents through a port with Gotenberg, and fill them locally | Accepted |
 
 ### Decisions still without a record

@@ -538,6 +538,37 @@ def test_one_language_varies_with_nothing() -> None:
     assert response.json()["detail"] == "غير موجود"
 
 
+def test_the_settings_are_read_per_request(client: TestClient) -> None:
+    """An application built before an override serves the override (user report I5).
+
+    ``LANGUAGE_CODE`` answers a caller who asks for nothing we have, and
+    ``LANGUAGES`` decides what may be asked for, as the settings say now.
+    """
+    middleware = LocaleMiddleware(client.app)
+
+    with override_settings(LANGUAGE_CODE="ar"):
+        default = client.get("/nowhere")
+        asked = client.get("/nowhere", headers={"Accept-Language": "en"})
+        assert (middleware.languages, middleware.default) == (("en", "ar"), "ar")
+    with override_settings(LANGUAGES=[("en", "English")]):
+        alone = client.get("/nowhere", headers={"Accept-Language": "ar"})
+        assert middleware.languages == ("en",)
+    after = client.get("/nowhere")
+
+    assert (default.headers["Content-Language"], default.json()["detail"]) == (
+        "ar",
+        "غير موجود",
+    )
+    assert asked.headers["Content-Language"] == "en"
+    assert alone.headers["Content-Language"] == "en"
+    assert "Vary" not in alone.headers
+    assert alone.json()["detail"] == "Not Found"
+    assert (after.headers["Content-Language"], after.headers["Vary"]) == (
+        "en",
+        "Accept-Language",
+    )
+
+
 def test_other_scopes_and_headerless_starts_pass() -> None:
     """Lifespan events pass through; a start without headers gets them."""
     seen: list[Message] = []

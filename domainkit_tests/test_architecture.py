@@ -175,12 +175,14 @@ def test_a_project_lets_its_domain_layers_import_a_shared_kernel(layered: str) -
     [settings] = [v for v in after if v.imported == "arch.billing.settings"]
     assert settings.rule == (
         "the domain layer may import only the standard library, domainkit.ddd, "
-        "domainkit.clock, domainkit.money, sqlalchemy, and its own domain layer"
+        "domainkit.clock, domainkit.money, domainkit.i18n.lazy, sqlalchemy, and "
+        "its own domain layer"
     )
     [default] = [v for v in before if v.imported == "arch.billing.settings"]
     assert default.rule == (
         "the domain layer may import only the standard library, domainkit.ddd, "
-        "domainkit.clock, domainkit.money, and its own domain layer"
+        "domainkit.clock, domainkit.money, domainkit.i18n.lazy, and its own "
+        "domain layer"
     )
 
 
@@ -269,6 +271,7 @@ def test_extending_keeps_every_default_and_adds_each_entry_once() -> None:
         "domainkit.ddd",
         "domainkit.clock",
         "domainkit.money",
+        "domainkit.i18n.lazy",
         "kernel",
     )
     assert rules.forbidden_libraries["application"] == (
@@ -541,3 +544,45 @@ def test_a_project_that_forbids_the_client_by_name_forbids_it(gateway: str) -> N
     assert extended.allowed_modules == LayerRules().allowed_modules
     with pytest.raises(ValidationError, match="Extra inputs"):
         Settings(ARCHITECTURE={"ALLOWED_MODULES": {"application": ["httpx"]}})
+
+
+def test_a_domain_layer_marks_its_texts_but_looks_none_up(
+    make_package: MakePackage,
+) -> None:
+    """``domainkit.i18n.lazy`` is allowed; the rest of ``domainkit.i18n`` is not.
+
+    Marks and lazy strings read no settings and no catalog when called, so
+    the domain layer stays free of them; ``gettext`` reads both (user
+    report I2).
+    """
+    make_package(
+        "arch.texts",
+        {
+            "domain/model.py": """
+                from domainkit.ddd import BusinessRuleViolation, TextChoices
+                from domainkit.i18n.lazy import gettext_lazy, gettext_noop
+
+                class Status(TextChoices):
+                    PAID = "paid", gettext_lazy("Paid in full")
+
+                def pay() -> None:
+                    raise BusinessRuleViolation(gettext_noop("Already paid."))
+            """,
+            "domain/eager.py": """
+                from domainkit.i18n import gettext
+                from domainkit.i18n.translation import override
+            """,
+        },
+    )
+
+    found = {
+        (v.module.removeprefix("arch.texts."), v.imported)
+        for v in check_domain("arch.texts", rules=LayerRules())
+    }
+
+    assert found == {
+        ("domain.eager", "domainkit.i18n"),
+        ("domain.eager", "domainkit.i18n.gettext"),
+        ("domain.eager", "domainkit.i18n.translation"),
+        ("domain.eager", "domainkit.i18n.translation.override"),
+    }
