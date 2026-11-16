@@ -89,6 +89,9 @@ class SignInRequest:
     asked, which redeems it (a device's: the key it binds)."""
     sca_challenge_id: UUID | None = None
     """A transaction's: the ``auth.sca`` transaction it confirms."""
+    same_network: str | None = None
+    """A QR request's: what its page asked of a phone on another network,
+    ``"warn"`` or ``"require"``; None: ``QR_SAME_NETWORK`` (ADR 0155)."""
 
     def __repr__(self) -> str:
         """The id, kind, channel and state: digests, addresses and codes stay out."""

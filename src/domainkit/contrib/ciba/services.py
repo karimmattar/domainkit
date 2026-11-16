@@ -36,7 +36,7 @@ import secrets
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Final
+from typing import Final, Literal
 from uuid import UUID, uuid4
 
 from domainkit.contrib.auth import AbstractBaseUser
@@ -136,6 +136,11 @@ def secret_digest(secret: str) -> str:
     return hashlib.sha256(secret.encode()).hexdigest()
 
 
+def _match_code(match: bool) -> str | None:
+    """Two random digits for the page to show and the phone to type, if ``match``."""
+    return f"{secrets.randbelow(100):02d}" if match else None
+
+
 def _request(
     *,
     channel: str,
@@ -154,6 +159,7 @@ def _request(
     credential_digest: str | None = None,
     sca_challenge_id: UUID | None = None,
     request_id: UUID | None = None,
+    same_network: str | None = None,
 ) -> SignInRequest:
     """A new request, as its row keeps it; its id ``request_id``, or a new one."""
     agent = requester.agent[:AGENT_LENGTH] if requester.agent else None
@@ -184,6 +190,7 @@ def _request(
         kind=kind,
         credential_digest=credential_digest,
         sca_challenge_id=sca_challenge_id,
+        same_network=same_network,
     )
 
 
@@ -208,7 +215,7 @@ async def start_push(
     now = utc_now()
     asked = user if user is not None and await _askable(uow, user, now) else None
     handle = secrets.token_urlsafe(SECRET_BYTES)
-    match_code = f"{secrets.randbelow(100):02d}" if match else None
+    match_code = _match_code(match)
     request = await uow.requests.add(
         _request(
             channel=PUSH,
@@ -265,7 +272,7 @@ async def ask_signed_in(
     if not await _askable(uow, user, now):
         raise PhoneUnavailable()
     handle = secrets.token_urlsafe(SECRET_BYTES)
-    match_code = f"{secrets.randbelow(100):02d}" if match else None
+    match_code = _match_code(match)
     request = await uow.requests.add(
         _request(
             channel=PUSH,
@@ -348,18 +355,24 @@ async def start_qr(
     binding_message: str | None = None,
     kind: str = SIGN_IN,
     credential_digest: str | None = None,
+    match: bool = False,
+    same_network: Literal["warn", "require"] | None = None,
 ) -> Started:
     """A request for whichever phone scans its QR code, within ``QR_TTL``.
 
     The code can be scanned for ``QR_TTL``; the phone that scans it then has
     ``REQUEST_TTL`` to answer, as for a push. ``kind`` is ``sign_in``, or
     ``device`` for a new phone that shows the code to be bound (ADR 0137):
-    only what ``credential_digest`` names (its key) redeems it.
+    only what ``credential_digest`` names (its key) redeems it. With
+    ``match``, the phone must type the two digits the page shows too.
+    ``same_network`` is what a phone on another address than the page's
+    gets when it claims the code (ADR 0155); None: ``QR_SAME_NETWORK``.
     """
     config = ciba_settings()
     now = utc_now()
     handle = secrets.token_urlsafe(SECRET_BYTES)
     code = secrets.token_urlsafe(SECRET_BYTES)
+    match_code = _match_code(match)
     request = await uow.requests.add(
         _request(
             channel=QR,
@@ -373,6 +386,8 @@ async def start_qr(
             ttl=config.QR_TTL + config.REQUEST_TTL,
             kind=kind,
             credential_digest=credential_digest,
+            match_code=match_code,
+            same_network=same_network,
         )
     )
     return Started(
@@ -380,6 +395,7 @@ async def start_qr(
         request_id=request.id,
         expires_in=_seconds(config.QR_TTL + config.REQUEST_TTL),
         interval=request.interval,
+        match_code=match_code,
         qr=config.QR_FORMAT.replace("{code}", code),
         qr_expires_in=_seconds(config.QR_TTL),
     )
@@ -404,16 +420,17 @@ async def claim(
 
     Raises:
         QrCodeExpired: No request has the code: unknown, claimed, or expired.
-        DifferentNetwork: ``QR_SAME_NETWORK = "require"``, and the phone's
-            ``address`` is not the page's. A CIBA client's QR request has
-            no page address, and is not compared.
+        DifferentNetwork: The request's page, or else ``QR_SAME_NETWORK``,
+            asks ``"require"``, and the phone's ``address`` is not the
+            page's. A CIBA client's QR request has no page address, and is
+            not compared.
     """
     now = utc_now()
     request = await uow.requests.by_qr(secret_digest(_code_in(code)))
     if request is None or request.expired(now) or unscanned_too_long(request, now):
         raise QrCodeExpired()
     if (
-        ciba_settings().QR_SAME_NETWORK == "require"
+        (request.same_network or ciba_settings().QR_SAME_NETWORK) == "require"
         and request.requester_ip is not None  # A client's: no page to compare.
         and address != request.requester_ip
     ):
