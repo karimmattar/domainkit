@@ -1,6 +1,6 @@
 # 0163. Authorize admin changes, and a request's steps, as acts
 
-- Status: Accepted
+- Status: Accepted; amended 2026-11-17 (at the end)
 - Date: 2026-11-16
 - Amends: [0144](0144-authorize-one-act-not-a-window-of-time.md),
   [0154](0154-hold-admin-changes-for-approval-and-show-requests-to-those-they-concern.md)
@@ -228,3 +228,69 @@ and lets that code, the admin API's included, pass it.
    <https://github.blog/news-insights/introducing-github-sudo-mode/>
 5. RFC 9396, *OAuth 2.0 Rich Authorization Requests*:
    <https://www.rfc-editor.org/rfc/rfc9396>
+
+## Amendment (2026-11-17): the steps from the project's own code
+
+With a setting on, `submit_request`, `approve_request`, `reject_request`,
+and `cancel_request` refuse a call that no request authorized, from code
+too (`AuthorizationRequired`). That holds for the project's trusted code
+as well: a periodic task that withdraws the requests left waiting, a
+management command, an event handler that withdraws a request when what
+it is about is deleted. Such code has no phone to ask. The functions that
+do the work without asking, `record_submission`, `record_approval`,
+`record_rejection`, and `record_cancellation`, were not public, so the
+project had to turn a setting off, or import a name the version policy
+does not cover (follow-up of 2.5.0).
+
+[ADR 0161](0161-authorize-a-use-case-as-a-copy-and-read-what-is-shown-in-its-unit-of-work.md)
+decided this shape for a use case: the route that asks runs the guarded
+copy, and the use case stays as it was for the routes, tasks, and tests
+that run it without an act. A process engine does the same with its own
+API: Camunda checks authorizations "only if a user is currently
+authenticated", and otherwise leaves them to the application that embeds
+it ([When are authorizations checked](https://docs.camunda.org/manual/latest/user-guide/process-engine/authorization-service/#when-are-authorizations-checked)).
+A service layer is a set of use cases "that can be used by any adapter",
+an API or a command line
+([Architecture Patterns with Python, chapter 4](https://www.cosmicpython.com/book/chapter_04_service_layer.html)):
+what a person must prove is the entrypoint's to ask.
+
+| Option | What it costs |
+| --- | --- |
+| A parameter of the guarded services (`authorized=False`) | One name that asks or not by an argument, which a route could pass as well. |
+| A facade for code that also checks who acts: the approver against the policy through auth, as `_check_maker` checks the maker when the command runs | Four more names beside the services; a check that no service makes, and that can ask only what holds without a request: an approver rule that reads credentials refuses, and a principal of the project's own, or a project without auth, is not checked. |
+| **The four functions, public as they are** | Code that names a person answers for who acts, as it does with every service of approvals. |
+
+- `record_submission`, `record_approval`, `record_rejection`, and
+  `record_cancellation` are public, in `domainkit.contrib.approvals`.
+  Each takes its service's command and unit of work and returns the
+  request. The services run them: with a setting on, behind the spend of
+  the authorization; off, as they are. So they refuse all the services
+  refuse but the missing authorization: a seal that does not hold, a
+  request no longer pending or whose time is up, the maker deciding, a
+  party to the command deciding, a second decision, another fingerprint,
+  a guard or policy gone, arguments that make no command, a reason too
+  long, and anyone but the maker withdrawing. The approval that
+  completes a request queues its command, and each step is an event the
+  trail records with the context's actor (`system` in a periodic task).
+- **Who acts is the caller's**, as for every service of approvals since
+  ADR 0121: the routes take the maker and the approver from the principal
+  and ask their rules (an approver of the policy, the approve rule,
+  acting in one's own name, the model permissions, the guard's permission
+  and `maker_rule` at submission). The functions ask none of them; the
+  maker's are asked again when the command runs (FIN-93). With
+  `APPROVE_ACTION` off, the default, `approve_request` runs this very
+  function, so code already approved in the name it gave. The docs tell
+  code that acts for a person it did not authenticate to check them
+  first (`approvers_of`).
+- **For the project's own code, never for a route a user reaches.**
+  Nothing refuses such a route. A call from a task and a call from a
+  route look the same as they run, and an in-process handler of an event
+  that a route commits runs inside that route's request, as the handler
+  that withdraws a request whose subject is deleted may. A static look at a route's endpoint would not see a call
+  made through the project's own service. What exists stays: a route that
+  asks for the act's authorization and runs one of them leaves it unspent
+  (`500 authorization_unspent` under `DEBUG` and in tests, voided and
+  logged elsewhere), and a `ResourceRouter` route that does so warns when
+  it is declared. The docs and the docstrings state the rule.
+- No setting, behaviour, or table changes. Four public names: a minor
+  release (2.6).

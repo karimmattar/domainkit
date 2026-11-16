@@ -21,6 +21,7 @@ On this page you learn how to:
 - ask approvers for a step-up, or to authorize each approval once;
 - have makers and approvers authorize each submission, rejection, and
   cancellation once;
+- take those steps from the project's own code, which has no phone to ask;
 - choose who reads which requests, and tell the approvers of one;
 - add a staff rule or a step-up to the routes of your choice;
 - know what maker-checker does not stop.
@@ -330,6 +331,11 @@ Six services change requests. Each takes a command and an
 
 `execute_request(request_id, token)` is the task that runs an approved
 command. The worker calls it; you do not.
+
+With an act's setting on (`SUBMIT_ACTION`, `APPROVE_ACTION`,
+`REJECT_ACTION`, `CANCEL_ACTION`), the service of that step asks for an
+authorization, from code too. The project's own code calls the function
+the service runs instead ([From the project's own code](#from-the-projects-own-code)).
 
 A command that needs no approval is refused by `submit_command` with
 `ApprovalNotNeeded` (422, `approval_not_needed`). An action that no guard
@@ -755,7 +761,9 @@ the approval. Sent again, it
 is `403 action_not_authorized`. So is one sent with another fingerprint,
 which also voids it. With the setting on, `approve_request` called from
 code, with no request's authorization, is refused
-(`AuthorizationRequired`, 401): the approval is the approver's own.
+(`AuthorizationRequired`, 401): the approval is the approver's own. Code
+the project trusts approves with `record_approval`
+([From the project's own code](#from-the-projects-own-code)).
 
 **How it combines with the approve rule.** The authorization takes the
 place of the step-up window, and the other rules still apply. A policy's
@@ -824,7 +832,9 @@ POST /api/approvals/requests {"action": "treasury.payout", "arguments": {...}}
   request's commit where the requests share auth's database. With a
   setting on, `submit_request`, `reject_request`, or `cancel_request`
   called from code, with no request's authorization, is refused
-  (`AuthorizationRequired`, 401).
+  (`AuthorizationRequired`, 401). Code the project trusts calls
+  `record_submission`, `record_rejection`, or `record_cancellation`
+  ([below](#from-the-projects-own-code)).
 - **Only `POST /requests` is `approvals.submit`.** A guarded service
   called directly, and a change of the admin API held for approval,
   submit as before: their own routes are the acts
@@ -835,6 +845,100 @@ POST /api/approvals/requests {"action": "treasury.payout", "arguments": {...}}
 
 Off, each step is as it was, and its twin answers `404`, to a caller the
 step's route does not refuse first.
+
+## From the project's own code
+
+With an act's setting on, `submit_request`, `approve_request`,
+`reject_request`, and `cancel_request` refuse a call from code: the act
+is a person's own, and only their request carries its authorization. The
+project's own code takes these steps too, with no phone to ask: a
+periodic task that withdraws the requests left waiting, a management
+command, an event handler that withdraws a request when what it is about
+is deleted. It calls the functions those services run (since 2.6,
+[ADR 0163](../adr/0163-authorize-admin-changes-and-requests-steps-as-acts.md),
+amended):
+
+| Function | Command | What it is |
+| --- | --- | --- |
+| `record_submission` | `SubmitRequest` | `submit_request`, without `SUBMIT_ACTION`'s authorization |
+| `record_approval` | `ApproveRequest` | `approve_request`, without `APPROVE_ACTION`'s |
+| `record_rejection` | `RejectRequest` | `reject_request`, without `REJECT_ACTION`'s |
+| `record_cancellation` | `CancelRequest` | `cancel_request`, without `CANCEL_ACTION`'s |
+
+Each takes the command and an `ApprovalsUnitOfWork`, as its service
+does, returns the request, and asks for no authorization, whatever the
+settings say. A periodic task that withdraws, as their makers, the
+payouts left waiting for a day:
+
+```python
+from contextlib import suppress
+from datetime import timedelta
+
+from domainkit import clock
+from domainkit.contrib.approvals import (
+    ApprovalsUnitOfWork,
+    CancelRequest,
+    RequestNotPending,
+    RequestStatus,
+    record_cancellation,
+)
+from domainkit.contrib.messaging import periodic
+from domainkit.ddd import F
+
+
+@periodic(every=timedelta(hours=1), name="treasury.withdraw_stale")
+async def withdraw_stale() -> None:
+    async with ApprovalsUnitOfWork() as uow:
+        stale = await uow.requests.filter(
+            (F("action") == "treasury.payout")
+            & (F("status") == RequestStatus.PENDING)
+            & (F("submitted_at") < clock.now() - timedelta(days=1))
+        )
+    for request in stale:
+        with suppress(RequestNotPending):  # Decided meanwhile.
+            await record_cancellation(
+                CancelRequest(
+                    request_id=request.id, maker=request.maker, reason="Stale."
+                ),
+                ApprovalsUnitOfWork(),
+            )
+```
+
+- **They refuse what the services refuse**, but for the authorization: a
+  seal that does not hold (`request_tampered`), a request no longer
+  pending or whose time is up (`request_not_pending`), the maker deciding
+  (`maker_cannot_decide`), a party to the command deciding
+  (`interested_party`), a second decision (`already_decided`), another
+  fingerprint (`fingerprint_mismatch`), a guard or policy gone
+  (`policy_removed`), arguments that make no command and a reason too
+  long (`invalid_arguments`), and anyone but the maker withdrawing
+  (`not_the_maker`). The approval that completes a request queues its
+  command, and each step is an event, as from a route.
+- **The trail names who ran the code.** The request names the maker and
+  the approvers the code gives; the audit row of each step names the
+  context's actor: `system` in a periodic task, the actor whose request
+  queued a task or committed an event, the operator of a management
+  command ([audit](audit.md)).
+- **Who acts is the code's to answer for**, as for every service of
+  approvals. The routes' rules are not asked: being an approver of the
+  policy (its permission, its group, or its approver rule), the approve
+  rule, acting in one's own name, the model permissions, and, at
+  submission, the guard's permission and `maker_rule`, which are asked
+  again when the command runs
+  ([What maker-checker does not stop](#what-maker-checker-does-not-stop)).
+  Code that acts for a person it did not authenticate, such as a command
+  given a user's id, checks them first: `approvers_of(request)` lists who
+  may decide a request now.
+- **Never from a route a user reaches.** Such a route would take the
+  step without the phone and without the route's rules. Nothing refuses
+  it as it runs: a call from a task and a call from a route look the
+  same, and a handler of an event that a route commits runs inside that
+  route's request. One mistake does show: a route that asks for the
+  act's authorization (`StepUp(for_="approvals.cancel")`) and runs one of
+  these leaves it unspent, which fails the request under `DEBUG` and in
+  tests (`500 authorization_unspent`), and a `ResourceRouter` route that
+  does so warns when it is declared
+  ([Authorizing one act](../auth/actions.md)). Routes run the services.
 
 ## Over HTTP
 
@@ -1099,6 +1203,10 @@ So do submitting, rejecting, and cancelling with `SUBMIT_ACTION`,
 - **Calling the undecorated function from a route.** It skips approval.
   Guard the service itself, and `guard()` refuses one that is not
   decorated.
+- **Calling `record_approval` (or another `record_*`) from a route.** It
+  skips the act's authorization and the route's rules on who acts. Routes
+  run the services; tasks, commands, and handlers of the project's own
+  call the `record_*` functions.
 - **Letting approvers create users.** One person can then approve with a
   second account. Keep the two rights apart.
 - **A use case that commits twice.** The request is marked with the
