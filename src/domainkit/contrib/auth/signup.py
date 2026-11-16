@@ -126,6 +126,26 @@ TAKEN_ADDRESS: Final = (
     "An account already uses this address or this number; log in, or reset "
     "your password."
 )
+SIGNUP_TAKEN: Final = {
+    (False, True, False): (
+        "An account already uses this address; log in, or reset your password."
+    ),
+    (False, False, True): (
+        "An account already uses this number; log in, or reset your password."
+    ),
+    (False, True, True): TAKEN_ADDRESS,
+    (True, True, False): TAKEN_NAME,
+    (True, False, True): (
+        "An account already uses this username or this number; sign up again "
+        "with another username, or log in."
+    ),
+    (True, True, True): (
+        "An account already uses this username, this address, or this number; "
+        "sign up again with another username, or log in."
+    ),
+}
+"""The detail of ``409 signup_taken``, by whether the signup chose a
+username, and gave an address, and a number: what it gave, and no more."""
 
 router = APIRouter(tags=["auth"])
 
@@ -165,16 +185,20 @@ class SignupCodeIn(BaseModel):
 class SignupTaken(APIError):
     """The username or the address got an account before the code was used (409)."""
 
-    def __init__(self, *, username: bool) -> None:
+    def __init__(self, pending: PendingSignup) -> None:
         """Use status 409 and the code ``signup_taken``.
 
-        Another username is suggested only to a signup that chose one:
-        elsewhere usernames identify no one (``AUTH.IDENTIFIERS``).
+        The detail names what the signup gave (``SIGNUP_TAKEN``); another
+        username is suggested only to a signup that chose one: elsewhere
+        usernames identify no one (``AUTH.IDENTIFIERS``).
         """
+        given = (
+            pending.username is not None,
+            pending.email is not None,
+            pending.mobile_number is not None,
+        )
         super().__init__(
-            status.HTTP_409_CONFLICT,
-            TAKEN_NAME if username else TAKEN_ADDRESS,
-            code="signup_taken",
+            status.HTTP_409_CONFLICT, SIGNUP_TAKEN[given], code="signup_taken"
         )
 
 
@@ -295,7 +319,7 @@ async def confirm_signup_code(body: SignupCodeIn, request: Request) -> None:
             holders = await _unproved_holders(uow, pending)
             if holders is None:
                 await uow.commit()
-                raise SignupTaken(username=pending.username is not None)
+                raise SignupTaken(pending)
             for holder in holders:  # The code proved what they never did.
                 await _release(uow, holder, pending)
             await uow.session.flush()  # A released number is free to insert.

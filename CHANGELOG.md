@@ -15,15 +15,21 @@ and a status.
   and mobile number: it mails, or texts, a code to each at once, not
   through the outbox, and asks for it at the prompt. `createsuperuser
   --promote IDENTIFIER` makes an existing user a superuser and staff,
-  such as one that signed up in the application; an address or a number
-  names the user only if it proved it, or with `--verify`, which proves
-  it first. The change is audited with the operator as its actor, who
-  must be named in staging and production. The command now says on
-  stderr when it leaves a superuser that proved neither an address nor a
-  number: since 2.4 no code reaches it, so under
-  `CIBA.APPROVE_LOGINS = "always"` it could never enroll a phone, nor
-  log in. Nothing changes for a command that gives neither option. ADR
-  0165 (user report A12).
+  such as one that signed up in the application. It takes the user's
+  username, its id, or an address or a number the user proved: a value
+  nobody proved names no one, with or without `--verify`, so that a
+  value Mallory put on her account unproved never names hers; only a
+  superuser already is named by an unproved value, with `--verify`, to
+  prove it. An address names the user that proved it as its address,
+  never one whose username is written as it. The command shows the user
+  and asks before it changes anything (`--noinput`: only a user named by
+  its username, id, or a proved value). The change is audited with the
+  operator as its actor, who must be named in staging and production.
+  The command now says on stderr when it leaves a superuser that proved
+  neither an address nor a number, and how to prove one: since 2.4 no
+  code reaches it, so under `CIBA.APPROVE_LOGINS = "always"` it could
+  never enroll a phone, nor log in. Nothing changes for a command that
+  gives neither option. ADR 0165 (user report A12).
 
 ### Fixed
 
@@ -40,14 +46,16 @@ and a status.
 - A request's `email` not shaped as an address (`/signup`,
   `/password-reset`, `/email-verification`) is refused as `Enter a
   valid email address.`, translated, not with the pattern that checks
-  it. OpenAPI still shows the pattern (user report I8).
-- The `auth/signup_exists` mail, and the `409 signup_taken` of
-  `/signup/code`, suggest signing up with another username only where
-  the signup chose one, which `AUTH.IDENTIFIERS` allows; elsewhere they
-  say what an account uses (the address, or the number given) and to log
-  in or reset the password. The template takes the sentence as `taken`,
-  in the reader's language; a project's own template of it still works
+  it. Its error's `type` is now `value_error`, as for an address with a
+  name, not `string_pattern_mismatch`. OpenAPI still shows the pattern
   (user report I8).
+- The `auth/signup_exists` mail, and the `409 signup_taken` of
+  `/signup/code`, name what the signup gave (the username, the address,
+  the number) and suggest another username only where the signup chose
+  one, which `AUTH.IDENTIFIERS` allows; elsewhere they say to log in or
+  reset the password. The template takes the sentence as `taken`, in the
+  reader's language; a project's own template of it still works (user
+  report I8).
 
 ## [2.4.0] - 2026-11-16
 

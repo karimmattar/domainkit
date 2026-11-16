@@ -6,6 +6,7 @@ import io
 from collections.abc import Callable, Iterable
 from contextlib import AbstractContextManager
 from types import SimpleNamespace
+from typing import cast
 from uuid import uuid4
 
 import pytest
@@ -156,7 +157,7 @@ def test_createsuperuser_asks_for_everything(
         (
             "Note: no code reaches the superuser, to reset its password or enroll "
             "a phone, until it proves its email address: run createsuperuser "
-            "--promote admin@example.com --verify"
+            "--promote admin --verify"
         ),
     ]
 
@@ -591,7 +592,7 @@ def test_createsuperuser_by_email_or_number(
         (
             "Note: no code reaches the superuser, to reset its password or enroll "
             "a phone, until it proves its mobile number: run createsuperuser "
-            "--promote +33612345678 --verify"
+            f"--promote {cast(User, by_number).id} --verify"  # No username: its id.
         ),
     ]
     assert isinstance(by_number, User)

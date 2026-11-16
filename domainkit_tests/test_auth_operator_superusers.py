@@ -18,8 +18,11 @@ from domainkit.conf import override_settings
 from domainkit.conf.env import project_prefix
 from domainkit.contrib import mail
 from domainkit.contrib.auth import AuthUnitOfWork, User
+from domainkit.contrib.auth.codes import EMAIL_VERIFICATION, target_of
 from domainkit.contrib.auth.management.commands import createsuperuser
 from domainkit.contrib.auth.models import AbstractUser, UserId
+from domainkit.contrib.auth.repositories import StaffMatch
+from domainkit.contrib.mail.backends import MailDeliveryFailed
 from domainkit.contrib.notifications.backends import sms_outbox
 from domainkit.management import CommandError, call_command, operators
 from domainkit.management.base import run_async
@@ -45,7 +48,11 @@ WRONG: Final = "Error: That is not the code sent, or it no longer works."
 UNREACHED: Final = (
     "Note: no code reaches the superuser, to reset its password or enroll a "
     "phone, until it proves its email address: run createsuperuser --promote "
-    "boss@example.com --verify"
+    "boss --verify"
+)
+UNKNOWN: Final = (
+    "No user proved {!r}: name the user by its username or its id, or by an "
+    "email address or mobile number it proved."
 )
 
 
@@ -94,6 +101,20 @@ def password(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(f"{project_prefix()}SUPERUSER_PASSWORD", PASSWORD)
 
 
+def code_works(user_id: UUID, address: str, code: str) -> bool:
+    """Whether ``code`` still proves ``address`` for the user."""
+
+    async def check() -> bool:
+        async with AuthUnitOfWork() as uow:
+            proven = await uow.verification_codes.check(
+                EMAIL_VERIFICATION, target_of(address), code
+            )
+            await uow.rollback()
+        return proven is not None and proven.user_id == user_id
+
+    return run_async(check())
+
+
 @pytest.mark.usefixtures("password")
 def test_the_superuser_the_command_made_enrolls_its_phone_once_proved(
     app: App, prompts: Prompts
@@ -118,10 +139,11 @@ def test_the_superuser_the_command_made_enrolls_its_phone_once_proved(
         unsent = list(mail.outbox)
 
         def replies() -> Iterator[str]:
+            yield "y"
             yield mailed()  # Mailed before the prompt: no worker runs.
 
         asked = prompts(createsuperuser.Command, plain=replies())
-        proved, found = run("--promote", "boss@example.com", "--verify")
+        proved, found = run("--promote", "boss", "--verify")
         ask_code(phone, "boss@example.com")
         enrolled = enroll(
             phone, Device(), identifier="boss@example.com", code=mailed_code()
@@ -131,13 +153,22 @@ def test_the_superuser_the_command_made_enrolls_its_phone_once_proved(
     assert made == "Superuser created successfully.\n"
     assert warned == f"{UNREACHED}\n"
     assert unsent == []
-    assert asked == ["Code sent to boss@example.com: "]
+    assert asked == [
+        "Make this user a superuser? [y/N]: ",
+        "Code sent to boss@example.com: ",
+    ]
     assert mail.outbox[0].subject == "Your code to verify your email address"
     assert proved.splitlines() == [
         "The email address boss@example.com is proved.",
-        "'boss@example.com' is a superuser already.",
+        "'boss' is a superuser already.",
     ]
-    assert found == f"'boss@example.com' is user {boss.id}, by its email.\n"
+    assert found.splitlines() == [
+        f"'boss' is user {boss.id}, by its username.",
+        (
+            f"User {boss.id}: username 'boss', email address 'boss@example.com' "
+            f"(not proved), no mobile number, joined {boss.date_joined.date()}."
+        ),
+    ]
     assert boss.email_verified
     assert enrolled.status_code == 201, enrolled.json()
 
@@ -181,7 +212,11 @@ def test_verify_proves_a_new_superusers_address_and_number(
 
 
 def test_wrong_codes_leave_the_superuser_unproved(app: App, prompts: Prompts) -> None:
-    """``AUTH.CODE_ATTEMPTS`` tries, a blank one too; then the way to try again."""
+    """``AUTH.CODE_ATTEMPTS`` tries, a blank one too; then the way to try again.
+
+    A cancelled prompt ends the same way, and the code it was waiting for
+    stops working.
+    """
     app()
     asked = prompts(
         createsuperuser.Command,
@@ -200,20 +235,21 @@ def test_wrong_codes_leave_the_superuser_unproved(app: App, prompts: Prompts) ->
             stdout=io.StringIO(),
             stderr=(notes := io.StringIO()),
         )
+    boss = find("boss")
+    prompts(createsuperuser.Command, plain=["y", "^C"])
+    with pytest.raises(CommandError) as cancelled:
+        run("--promote", "boss", "--verify")
 
     assert asked[3:] == ["Code sent to boss@example.com: "] * 5  # CODE_ATTEMPTS
     assert str(refused.value) == (
         "The email address boss@example.com is not proved. Try again with: "
-        "createsuperuser --promote boss@example.com --verify"
+        "createsuperuser --promote boss --verify"
     )
     assert notes.getvalue().splitlines() == [WRONG] * 5
-    boss = find("boss")
     assert (boss.is_superuser, boss.email_verified) == (True, False)
-    prompts(createsuperuser.Command, plain=["^C"])
-    with pytest.raises(CommandError) as cancelled:
-        run("--promote", "boss", "--verify")
     assert str(cancelled.value) == str(refused.value)
     assert not find("boss").email_verified
+    assert not code_works(boss.id, "boss@example.com", mailed())
 
 
 def test_promote_makes_an_account_that_proved_its_address_a_superuser(
@@ -223,12 +259,14 @@ def test_promote_makes_an_account_that_proved_its_address_a_superuser(
     app()
     ann = create_user("ann", email="ann@example.com", proved=True)
 
-    now, found = run("--promote", "Ann@Example.com", "--operator", "bob")
-    again, _ = run("--promote", "ann", "--operator", "bob")
+    now, found = run("--promote", "Ann@Example.com", "--noinput", "--operator", "bob")
+    again, _ = run("--promote", str(ann), "--noinput", "--operator", "bob")
 
     assert now == "'Ann@Example.com' is a superuser now.\n"
-    assert again == "'ann' is a superuser already.\n"
-    assert found == f"'Ann@Example.com' is user {ann}, by its email.\n"
+    assert again == f"{str(ann)!r} is a superuser already.\n"
+    assert found.splitlines()[0] == (
+        f"'Ann@Example.com' is user {ann}, by its email address."
+    )
     promoted = stored(ann)
     assert (promoted.is_superuser, promoted.is_staff) == (True, True)
     changes = audited("auth.user_status_changed")
@@ -238,41 +276,162 @@ def test_promote_makes_an_account_that_proved_its_address_a_superuser(
     ]
 
 
-def test_promote_names_an_account_only_by_what_it_proved(
+def test_a_value_put_on_an_account_unproved_never_names_it(
     app: App, prompts: Prompts
 ) -> None:
-    """An address the account never proved might be anyone's: ``--verify`` it.
+    """Mallory put the operator's number on her account, unproved.
 
-    Its username names it as it is, as other commands take it; the
-    command then says that no code reaches it.
+    The operator's code would prove only that the operator reads the
+    number, not that the account is theirs: ``--verify`` names by such a
+    value only a user that is a superuser already. No code is sent.
     """
     app()
-    mallory = create_user("mallory", email="ceo@example.com")
+    mallory = create_user(
+        None, email="mallory@evil.test", email_verified=True, mobile_number=NUMBER
+    )
+    prompts(createsuperuser.Command, plain=["y", "123456"])
+
+    with pytest.raises(CommandError) as refused:
+        run("--promote", NUMBER, "--verify", "--operator", "ops")
+    with pytest.raises(CommandError) as unverified:
+        run("--promote", NUMBER, "--noinput")
+
+    assert str(refused.value) == str(unverified.value) == UNKNOWN.format(NUMBER)
+    assert sms_outbox == []
+    assert not stored(mallory).is_superuser
+
+
+def test_an_address_names_the_user_that_proved_it_not_a_username(
+    app: App,
+) -> None:
+    """Mallory chose the username ``ceo@example.com``; usernames are tried first.
+
+    By the address, the command finds the CEO, who proved it; Mallory's
+    username names no one by an address.
+    """
+    app()
+    ceo = create_user("ceo", email="ceo@example.com", proved=True)
+    mallory = create_user("ceo@example.com", email="mallory@evil.test", proved=True)
+    nobody = create_user("nobody@example.com", email="x@evil.test", proved=True)
+
+    promoted, found = run("--promote", "ceo@example.com", "--noinput")
+    with pytest.raises(CommandError) as refused:
+        run("--promote", "nobody@example.com", "--noinput")
+
+    assert promoted == "'ceo@example.com' is a superuser now.\n"
+    assert found.splitlines()[0] == (
+        f"'ceo@example.com' is user {ceo}, by its email address."
+    )
+    assert (stored(ceo).is_superuser, stored(mallory).is_superuser) == (True, False)
+    assert str(refused.value) == UNKNOWN.format("nobody@example.com")
+    assert not stored(nobody).is_superuser
+
+
+def test_promote_shows_the_user_and_asks_first(app: App, prompts: Prompts) -> None:
+    """Any answer but ``y`` changes nothing; ``--noinput`` asks nothing."""
+    app()
+    ann = create_user("ann", email="ann@example.com", mobile_number=NUMBER)
+    asked = prompts(createsuperuser.Command, plain=["", "n"])
+
+    for _ in range(2):
+        with pytest.raises(CommandError, match=r"^Operation cancelled\.$"):
+            run("--promote", "ann")
+    _, shown = run("--promote", "ann", "--noinput")
+
+    assert asked == ["Make this user a superuser? [y/N]: "] * 2
+    assert shown.splitlines()[1] == (
+        f"User {ann}: username 'ann', email address 'ann@example.com' (not "
+        f"proved), mobile number '{NUMBER}' (not proved), joined "
+        f"{stored(ann).date_joined.date()}."
+    )
+    assert stored(ann).is_superuser
+
+
+def test_noinput_promotes_only_a_user_named_exactly(
+    app: App, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """By another field of ``AUTH.IDENTIFIERS``, the operator is asked."""
+    app()
+    ann = create_user("ann", email="ann@example.com", proved=True)
+
+    async def by_badge(users: object, value: str, write: object) -> StaffMatch:
+        async with AuthUnitOfWork() as uow:
+            user = await uow.users.get(UserId(ann))
+        return StaffMatch(user, "badge")
+
+    monkeypatch.setattr(createsuperuser, "match_for_staff", by_badge)
+    with pytest.raises(CommandError) as refused:
+        run("--promote", "B-77", "--noinput")
+
+    assert str(refused.value) == (
+        "--noinput promotes a user named by its username, its id, or a value "
+        "it proved, not by its badge: run it without --noinput to be asked."
+    )
+    assert not stored(ann).is_superuser
+
+
+def test_promote_refuses_inactive_unknown_and_shared_values(app: App) -> None:
+    """An inactive user, an id nobody has, a value two users proved."""
+    app()
     create_user("gone", email="gone@example.com", proved=True, is_active=False)
+    with override_settings(AUTH={**AUTH, "IDENTIFIERS": ("username",)}):
+        create_user("twin1", email="twin@example.com", proved=True)
+        create_user("twin2", email="twin@example.com", proved=True)
+        with pytest.raises(CommandError) as shared:
+            run("--promote", "twin@example.com", "--noinput")
+    missing = "00000000-0000-4000-8000-000000000000"
 
-    with pytest.raises(CommandError) as unproved:
-        run("--promote", "ceo@example.com")
     with pytest.raises(CommandError) as inactive:
-        run("--promote", "gone@example.com")
+        run("--promote", "gone@example.com", "--noinput")
     with pytest.raises(CommandError) as unknown:
-        run("--promote", "nobody@example.com")
-    by_name, warned = run("--promote", "mallory")
+        run("--promote", missing, "--noinput")
 
-    assert str(unproved.value) == (
-        "The user never proved the email address 'ceo@example.com': add "
-        "--verify to prove it with a code, or name the user by a value it proved."
+    assert str(inactive.value) == (
+        "User 'gone@example.com' is inactive: it cannot log in."
     )
-    assert (
-        str(inactive.value) == "User 'gone@example.com' is inactive: it cannot log in."
+    assert str(unknown.value) == f"No user has the id {missing}."
+    assert str(shared.value) == (
+        "Several users proved 'twin@example.com': name the user by its username "
+        "or its id."
     )
-    assert str(unknown.value) == "User 'nobody@example.com' does not exist."
-    assert by_name == "'mallory' is a superuser now.\n"
-    assert warned.splitlines()[-1] == (
-        "Note: no code reaches the superuser, to reset its password or enroll a "
-        "phone, until it proves its email address: run createsuperuser "
-        "--promote ceo@example.com --verify"
-    )
-    assert stored(mallory).is_superuser
+
+
+def test_the_note_names_the_user_by_what_promote_takes(
+    app: App, prompts: Prompts
+) -> None:
+    """Its username; its id where it has none, or one written as an address.
+
+    Usernames alone identify users by default, so the address the note
+    named was refused; and a username written as an address would be read
+    as one.
+    """
+    app()
+    with override_settings(AUTH={**AUTH, "IDENTIFIERS": None}):
+        prompts(
+            createsuperuser.Command,
+            plain=["admin", "admin@example.com"],
+            secret=[PASSWORD, PASSWORD],
+        )
+        _, by_name = run()
+
+        def replies() -> Iterator[str]:
+            yield "y"
+            yield mailed()
+
+        prompts(createsuperuser.Command, plain=replies())
+        proved, _ = run("--promote", "admin", "--verify")
+    with override_settings(AUTH={**AUTH, "IDENTIFIERS": ("email", "mobile_number")}):
+        prompts(
+            createsuperuser.Command,
+            plain=["", "", NUMBER],  # No username, no address.
+            secret=[PASSWORD, PASSWORD],
+        )
+        _, by_id = run()
+        numbered = find(NUMBER)
+
+    assert by_name.endswith("run createsuperuser --promote admin --verify\n")
+    assert proved.splitlines()[0] == "The email address admin@example.com is proved."
+    assert by_id.endswith(f"run createsuperuser --promote {numbered.id} --verify\n")
 
 
 def test_promote_takes_the_identifier_alone(app: App) -> None:
@@ -301,8 +460,8 @@ def test_promote_needs_a_named_operator_where_deployed(
     )
 
     with pytest.raises(CommandError) as unnamed:
-        run("--promote", "ann")
-    named, _ = run("--promote", "ann", "--operator", "bob")
+        run("--promote", "ann", "--noinput")
+    named, _ = run("--promote", "ann", "--noinput", "--operator", "bob")
 
     assert str(unnamed.value) == (
         "Name the operator who runs createsuperuser --promote in production: "
@@ -312,38 +471,88 @@ def test_promote_needs_a_named_operator_where_deployed(
 
 
 @pytest.mark.usefixtures("password")
-def test_the_note_says_when_no_code_could_ever_reach(app: App) -> None:
-    """No address nor number; and nothing to say where codes go unproved."""
+def test_the_note_says_when_no_code_could_ever_reach(
+    app: App, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No address nor number; nothing to say where codes go unproved.
+
+    The address is the model's ``EMAIL_FIELD``: a model that names none
+    has no address codes go to, whatever its ``email`` holds.
+    """
     app()
 
     _, bare = run("--noinput", "--username", "robot")
     with override_settings(AUTH={**AUTH, "CODES_TO_UNPROVED": True}):
         _, unproved = run("--noinput", "--username", "boss", "--email", "b@example.com")
+    monkeypatch.setattr(User, "EMAIL_FIELD", None)
+    _, no_field = run("--noinput", "--username", "carl", "--email", "c@example.com")
 
-    assert bare == (
+    none = (
         "Note: the superuser has no email address nor mobile number: no code "
         "reaches it, to reset its password or enroll a phone.\n"
     )
+    assert bare == none
     assert unproved == ""
+    assert no_field == none
 
 
 def test_a_code_needs_the_app_that_sends_it(
-    app: App, monkeypatch: pytest.MonkeyPatch
+    app: App, prompts: Prompts, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Mail for an address, notifications for a number."""
-    app()
-    create_user("ann", email="ann@example.com")
-    monkeypatch.setattr(
-        createsuperuser, "registry", SimpleNamespace(is_installed=lambda name: False)
-    )
+    """Checked before the user is made; a failed delivery is a plain refusal.
 
-    with pytest.raises(CommandError) as missing:
-        run("--promote", "ann@example.com", "--verify")
+    The code that could not go stops working, and the refusal says how to
+    try again.
+    """
+    app()
+    prompts(createsuperuser.Command, plain=[""], secret=[PASSWORD, PASSWORD])
+    with monkeypatch.context() as patched:
+        patched.setattr(
+            createsuperuser,
+            "registry",
+            SimpleNamespace(is_installed=lambda name: False),
+        )
+        with pytest.raises(CommandError) as missing:
+            run("--username", "boss", "--email", "boss@example.com", "--verify")
+    made = run_async(_count())
+
+    async def refuse(messages: object) -> int:
+        raise MailDeliveryFailed("The relay is down.")
+
+    monkeypatch.setattr(mail, "deliver", refuse)
+    prompts(createsuperuser.Command, plain=[""], secret=[PASSWORD, PASSWORD])
+    with pytest.raises(CommandError) as undelivered:
+        run("--username", "boss", "--email", "boss@example.com", "--verify")
 
     assert str(missing.value) == (
         "Sending the code needs domainkit.contrib.mail in INSTALLED_DOMAINS."
     )
-    assert mail.outbox == []
+    assert made == 0
+    assert str(undelivered.value) == (
+        "The code could not be sent (MailDeliveryFailed). The email address "
+        "boss@example.com is not proved. Try again with: createsuperuser "
+        "--promote boss --verify"
+    )
+    assert run_async(_codes()) == 0
+
+
+async def _count() -> int:
+    """How many users are stored."""
+    async with AuthUnitOfWork() as uow:
+        page = await uow.users.page(limit=100)
+    return len(page.items)
+
+
+async def _codes() -> int:
+    """How many codes are stored."""
+    from sqlalchemy import func, select
+
+    from domainkit.contrib.auth.tables import auth_codes
+
+    async with AuthUnitOfWork() as uow:
+        return int(
+            await uow.session.scalar(select(func.count()).select_from(auth_codes)) or 0
+        )
 
 
 def test_verify_sends_codes_only_where_the_user_proved_nothing(
@@ -356,12 +565,13 @@ def test_verify_sends_codes_only_where_the_user_proved_nothing(
     )
 
     def replies() -> Iterator[str]:
+        yield "y"
         yield texted()
 
     asked = prompts(createsuperuser.Command, plain=replies())
     promoted, _ = run("--promote", "nora@example.com", "--verify")
 
-    assert asked == [f"Code sent to {NUMBER}: "]
+    assert asked == ["Make this user a superuser? [y/N]: ", f"Code sent to {NUMBER}: "]
     assert mail.outbox == []
     assert promoted.splitlines() == [
         f"The mobile number {NUMBER} is proved.",
@@ -378,7 +588,69 @@ def test_a_user_model_without_staff_is_made_a_superuser_alone(
     ann = create_user("ann", email="ann@example.com", proved=True)
     monkeypatch.delattr(AbstractUser, "set_staff")
 
-    promoted, _ = run("--promote", "ann")
+    promoted, _ = run("--promote", "ann", "--noinput")
 
     assert promoted == "'ann' is a superuser now.\n"
     assert (stored(ann).is_superuser, stored(ann).is_staff) == (True, False)
+
+
+@pytest.mark.usefixtures("password")
+def test_a_superuser_is_named_by_its_unproved_address_to_prove_it(
+    app: App, prompts: Prompts
+) -> None:
+    """The way out for a superuser made before 2.5: ``--verify`` by the address.
+
+    Not by any other holder of it, nor without ``--verify``; a cancelled
+    question changes nothing.
+    """
+    app()
+    run("--noinput", "--username", "boss", "--email", "boss@example.com")
+    with override_settings(AUTH={**AUTH, "IDENTIFIERS": ("username",)}):
+        create_user("other", email="boss@example.com")  # Unproved there too.
+
+    def replies() -> Iterator[str]:
+        yield "y"
+        yield mailed()
+
+    prompts(createsuperuser.Command, plain=["^C"])
+    with pytest.raises(CommandError, match=r"^Operation cancelled\.$"):
+        run("--promote", "boss@example.com", "--verify")
+    with pytest.raises(CommandError) as unverified:
+        run("--promote", "boss@example.com", "--noinput")
+    prompts(createsuperuser.Command, plain=replies())
+    proved, found = run("--promote", "boss@example.com", "--verify")
+
+    boss = find("boss")
+    assert str(unverified.value) == UNKNOWN.format("boss@example.com")
+    assert found.splitlines()[0] == (
+        f"'boss@example.com' is user {boss.id}, by its email address."
+    )
+    assert proved.splitlines() == [
+        "The email address boss@example.com is proved.",
+        "'boss@example.com' is a superuser already.",
+    ]
+    assert boss.email_verified
+
+
+def test_only_an_id_as_printed_names_by_id(app: App) -> None:
+    """32 hex digits are a username to look for, not an id."""
+    app()
+    ann = create_user("ann", email="ann@example.com", proved=True)
+
+    with pytest.raises(CommandError) as unknown:
+        run("--promote", ann.hex, "--noinput")
+    named, _ = run("--promote", str(ann).upper(), "--noinput")
+
+    assert str(unknown.value) == f"User {ann.hex!r} does not exist."
+    assert named == f"{str(ann).upper()!r} is a superuser now.\n"
+
+
+def test_the_user_shown_may_have_nothing_to_show() -> None:
+    """A user model with no username, address, number, or date joined."""
+    bare = SimpleNamespace(
+        id="u1", USERNAME_FIELD="username", EMAIL_FIELD=None, username=None
+    )
+
+    assert createsuperuser._described(cast(User, bare)) == (
+        "User u1: no username, no email address, no mobile number."
+    )

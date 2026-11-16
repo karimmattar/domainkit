@@ -572,7 +572,7 @@ enroll the phone, and run `createsuperuser --promote` with the address
 ([commands](../reference/commands.md#createsuperuser-make-a-user-who-may-do-everything),
 *new in 2.5*). A superuser made without either could never enroll, and
 so never log in; the command says so when it makes one. `createsuperuser
---promote <address> --verify` proves the address of one made before.
+--promote <its username> --verify` proves the address of one made before.
 
 ### Managing logins from the phone
 

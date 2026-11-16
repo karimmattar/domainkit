@@ -960,7 +960,7 @@ python manage.py createsuperuser --noinput --email admin@example.com
 | `--noinput`, `--no-input` | Asks nothing. It reads the missing values from `<PREFIX>SUPERUSER_<FIELD>`, the password from `<PREFIX>SUPERUSER_PASSWORD`. |
 | `--temporary`, `--no-temporary` | Whether the user must change the password at the first login. By default: with `--noinput`, under `AUTH.PASSWORD_CHANGE_ON_FIRST_USE`. |
 | `--verify` | Proves the user's email address and mobile number: sends a code to each now, and asks for it. Not with `--noinput`. |
-| `--promote IDENTIFIER` | Makes an existing user a superuser, and staff, instead of creating one. With `--verify` only, no field option. |
+| `--promote IDENTIFIER` | Makes an existing user a superuser, and staff, instead of creating one: the user named by its username, its id, or a value it proved. No field option: only `--verify` or `--noinput`. |
 | `--operator` | Who runs it. With `--promote`, required in staging and production. |
 
 A password that the validators refuse is kept on request only without
@@ -989,17 +989,26 @@ The email address boss@example.com is proved.
 
 `--promote` (*new in 2.5*) makes a user that exists a superuser, such as
 one that signed up in the application, which proved its address there.
-An email address or a mobile number names the user only if the user
-proved it, so that a value someone put on their own account, unproved,
-never names theirs; add `--verify` to prove it with a code first. A
-username names its user, as in the commands below. The change is audited
-as `auth.user_status_changed`, with the operator as its actor:
+It takes the user's username, its id, or an email address or a mobile
+number the user proved. A value nobody proved names no one, with or
+without `--verify`: one someone put on their own account, unproved, would
+name theirs, and a code you type proves that you read it, not that the
+account is yours. Only a superuser already, made before it proved its
+address, is named by that address with `--verify`, to prove it. An
+address names the user that proved it as its address, never one whose
+username is written as that address. The command shows the user and
+asks before it changes anything; with `--noinput` it goes on only for a
+user named by its username, its id, or a value it proved. The change is
+audited as `auth.user_status_changed`, with the operator as its actor:
 
 ```bash
 python manage.py createsuperuser --promote ann@example.com --operator alice
 ```
 
 ```text
+'ann@example.com' is user 3f6c1d2e-..., by its email address.
+User 3f6c1d2e-...: username 'ann', email address 'ann@example.com' (proved), no mobile number, joined 2026-11-02.
+Make this user a superuser? [y/N]: y
 'ann@example.com' is a superuser now.
 ```
 

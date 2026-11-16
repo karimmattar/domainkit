@@ -63,7 +63,7 @@ phone modes where no superuser could bind.
 | --- | --- |
 | `createsuperuser --proved`: mark what the operator typed as proved (Mastodon, Discourse) | One flag. A typo in the address hands the superuser's password resets to whoever owns the typo: the hole ADR 0141 closed, opened for the account that matters most. |
 | **`createsuperuser --verify`: send a code to each address and number, now, and ask for it at the prompt** | The operator reads the mail or the text, as any user proves an address (NIST 4.2). Mail and texts go at once, not through the outbox: no worker may run yet. Interactive only. |
-| **`createsuperuser --promote IDENTIFIER`: make an existing account a superuser** | No new way to prove anything: the account proved its address at signup, in the app, as every user does. An address or a number names the account only once proved, or a value Mallory put on her account, unproved, would name hers. |
+| **`createsuperuser --promote IDENTIFIER`: make an existing account a superuser** | No new way to prove anything: the account proved its address at signup, in the app, as every user does. An address or a number names the account only once proved, or a value Mallory put on her account, unproved, would name hers; a code the operator types proves the operator reads it, not that the account is theirs. |
 | A `check` that reads the database in the phone modes | `check` reads settings and code, and runs in CI and deployment pipelines before any database exists; Django keeps such checks opt-in. A new `check --database` is a mechanism of its own, for one finding. |
 | **The command says so where it leaves a superuser no code reaches** | One line on stderr, at the moment the operator can act, in every mode: no password reset reaches such a superuser either. |
 | `AUTH.CODES_TO_UNPROVED` for the first superuser | Exists already, and texts every unproved number again. |
@@ -80,22 +80,45 @@ phone modes where no superuser could bind.
    with `--noinput`. A code that does not come back leaves the superuser
    made, and unproved; the command says how to try again.
 2. **`createsuperuser --promote IDENTIFIER`** makes an existing, active
-   user a superuser, and staff where the model has `is_staff`. It takes
-   what the operator commands take (`match_for_staff`), and says whom it
-   found. An email address or a mobile number names the user only if the
-   user proved it; with `--verify` the command proves it first, by a code
-   as above, and promotes only once every code came back. A username
-   names its user as it does in the other commands. `UserStatusChanged`
-   is recorded with the actor `operator:<name>`. In staging and
-   production the operator must be named (`--operator` or
-   `DOMAINKIT_OPERATOR`), as for `loaddata`. With `--verify`, an
-   existing superuser gets its address proved: the way out for one made
-   before 2.5.
+   user a superuser, and staff where the model has `is_staff`. What names
+   the user:
+   - its id, as the command prints it;
+   - an email address or a mobile number the user **proved**, in its
+     address or number field, whatever field another user holds it in.
+     A username written as an address (`ceo@example.com`, which
+     `validate_username` allows) never names its account by that
+     address, even where usernames are tried first;
+   - its username, or another field of `AUTH.IDENTIFIERS`, as the other
+     operator commands take them (`match_for_staff`), for a value written
+     as neither an address nor a number.
+
+   **A value nobody proved names no one, with or without `--verify`.** A
+   code proves that the operator reads the value, not that the account
+   holding it is the operator's: Mallory, who put the operator's number on
+   her account unproved, would be promoted once the operator typed the
+   code from their own phone. The one exception is a superuser already,
+   holding the value unproved, with `--verify`: a superuser made by an
+   operator before 2.5, proving its address. Otherwise the command says
+   to name the user by its username or its id, or by a value it proved.
+
+   Before anything changes, the command prints the user (its id,
+   username, address and number, each proved or not, and when it
+   joined), and asks `[y/N]`. With `--noinput` it asks nothing, and goes
+   on only for a user named by its username, its id, or a value it
+   proved. With `--verify` it proves the user's unproved values by codes,
+   as above, and promotes only once every code came back.
+   `UserStatusChanged` is recorded with the actor `operator:<name>`. In
+   staging and production the operator must be named (`--operator` or
+   `DOMAINKIT_OPERATOR`), as for `loaddata`.
 3. **The command tells the operator** on stderr, after making or
    promoting a superuser that proved neither an address nor a number,
    unless `CODES_TO_UNPROVED` is set: no code reaches it, to reset its
    password or enroll a phone, until it proves one, and the command line
-   that does.
+   that does, naming the superuser by its username, or by its id where it
+   has none (or one written as an address or a number). The address is
+   the model's `EMAIL_FIELD`. A code that cannot be sent, or does not come
+   back, stops working, and the command says how to try again; the apps
+   that send the codes are checked before the user is made.
 4. **No `check` reads the database.** The note above is said where the
    superuser is made. A project in strict mode makes its first superuser
    with `--verify`, or signs up in the app and runs `--promote`.
@@ -115,8 +138,12 @@ superusers without approvals ([contrib/approvals](../contrib/approvals.md)).
 - **`--verify` needs mail (or notifications, for a number) configured on
   the machine the operator runs it on**, as the worker needs them.
 - **A superuser whose address staff change later** is unproved again
-  (ADR 0153); nothing checks for it. `createsuperuser --promote <it>
-  --verify` proves the new one.
+  (ADR 0153); nothing checks for it. `createsuperuser --promote <its
+  username or id> --verify` proves the new one.
+- **A review of the first version found two ways to promote Mallory**: by
+  `--promote <the operator's number> --verify` where her account held
+  that number unproved, and by an address that was her username. Both are
+  closed by naming users only by what they proved (Decision 2).
 - ADR 0141's consequence for staff-made accounts stands for other users:
   they log in and prove their address, or get a password from staff.
 

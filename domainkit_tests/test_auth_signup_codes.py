@@ -528,6 +528,58 @@ def test_the_taken_mail_and_answer_speak_the_signups_language(texting: App) -> N
     ]
     assert (late.status_code, late.json()["code"]) == (409, "signup_taken")
     assert late.json()["detail"] == (
-        "An account already uses this address or this number; log in, or reset "
-        "your password."
+        "An account already uses this address; log in, or reset your password."
     )
+
+
+@pytest.mark.parametrize(
+    ("identifiers", "body", "identifier", "detail"),
+    [
+        (
+            ("email", "mobile_number"),
+            {"mobile_number": NUMBER},
+            NUMBER,
+            "An account already uses this number; log in, or reset your password.",
+        ),
+        (
+            ("username", "mobile_number"),
+            {"username": "dave", "mobile_number": NUMBER},
+            NUMBER,
+            (
+                "An account already uses this username or this number; sign up "
+                "again with another username, or log in."
+            ),
+        ),
+        (
+            ("username", "email", "mobile_number"),
+            {"username": "dave", "email": "dave@example.com", "mobile_number": NUMBER},
+            "dave@example.com",
+            (
+                "An account already uses this username, this address, or this "
+                "number; sign up again with another username, or log in."
+            ),
+        ),
+    ],
+)
+def test_a_signup_taken_meanwhile_is_told_only_what_it_gave(
+    texting: App,
+    identifiers: tuple[str, ...],
+    body: dict[str, str],
+    identifier: str,
+    detail: str,
+) -> None:
+    """The 409 names what this signup gave, as the mail does (user report I8)."""
+    client = texting(SIGNUP_ENABLED=True, IDENTIFIERS=identifiers)
+    assert ask(client, **body).status_code == 202
+    drain()
+    sent = mail.outbox[-1].body if "@" in identifier else sms_outbox[-1].body
+    # The name and the number, taken meanwhile.
+    create_user("dave", mobile_number=NUMBER, mobile_number_verified=True)
+
+    late = client.post(
+        "/auth/signup/code",
+        json={"identifier": identifier, "code": code_in(sent), "password": PASSWORD},
+    )
+
+    assert (late.status_code, late.json()["code"]) == (409, "signup_taken")
+    assert late.json()["detail"] == detail

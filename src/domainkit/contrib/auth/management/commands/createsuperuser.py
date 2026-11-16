@@ -22,16 +22,19 @@ which it needs to log in under ``CIBA.APPROVE_LOGINS = "always"``; the
 command says so when it leaves one (ADR 0165). ``--verify`` proves the
 user's address and number: it sends a code to each, now, and asks for it.
 ``--promote IDENTIFIER`` makes an existing user a superuser instead, such
-as one that signed up in the application; an address or a number names
-the user only once it proved it, as codes go. In staging and production
+as one that signed up in the application. It takes the user's username,
+its id, or an address or a number the user proved: one it never proved
+might be anyone's, and names a superuser only, for ``--verify``. It shows
+the user and asks before it changes anything; in staging and production
 it needs a named operator.
 """
 
 import getpass
 from argparse import ArgumentParser, BooleanOptionalAction
 from collections.abc import Callable
+from datetime import datetime
 from types import SimpleNamespace
-from typing import Final
+from typing import Final, cast
 from uuid import UUID
 
 from domainkit import setup
@@ -39,6 +42,7 @@ from domainkit.apps import registry
 from domainkit.conf import settings
 from domainkit.conf.env import Env
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
+from domainkit.exceptions import DomainkitError
 from domainkit.i18n import override
 from domainkit.management.base import BaseCommand, CommandError, run_async
 from domainkit.management.operators import require_named
@@ -54,7 +58,8 @@ from ...exceptions import (
     MobileNumberTaken,
     UsernameTaken,
 )
-from ...models import AbstractBaseUser, UserId
+from ...models import AbstractBaseUser, UserId, as_mobile_number
+from ...onetime import email_of
 from ...recovery import code_context, code_text, language_of
 from ...settings import auth_settings, identifier_fields
 from ...uow import AuthUnitOfWork
@@ -63,17 +68,23 @@ from .. import check_password_rules, match_for_staff
 
 MAIL: Final = "domainkit.contrib.mail"
 NOTIFICATIONS: Final = "domainkit.contrib.notifications"
+EMAIL: Final = "email"
+NUMBER: Final = "mobile_number"
 PROOFS: Final = {
-    "email": ("email_verified", "verify_email", EMAIL_VERIFICATION),
-    "mobile_number": (
+    EMAIL: ("email_verified", "verify_email", EMAIL_VERIFICATION, MAIL),
+    NUMBER: (
         "mobile_number_verified",
         "verify_mobile_number",
         MOBILE_VERIFICATION,
+        NOTIFICATIONS,
     ),
 }
-"""For each field codes go to: its proof's flag, the method that sets it, and
-the purpose of the code that proves it."""
-LABELS: Final = {"email": "email address", "mobile_number": "mobile number"}
+"""For each kind of value codes go to: its proof's flag, the method that
+sets it, the purpose of the code that proves it, and the app that sends it.
+The address is the model's ``EMAIL_FIELD``."""
+LABELS: Final = {EMAIL: "email address", NUMBER: "mobile number"}
+EXACT: Final = frozenset({"username", "id", "proved"})
+"""How a user may be named for ``--promote --noinput``, asked nothing."""
 
 
 def _may_bypass() -> bool:
@@ -106,18 +117,60 @@ def _username_identifies() -> bool:
     return model.USERNAME_FIELD in identifier_fields(model)
 
 
-def _reached(user: AbstractBaseUser) -> list[tuple[str, str, bool]]:
-    """Each address or number codes would go to: the field, the value, proved.
+def _value(user: AbstractBaseUser, kind: str) -> str | None:
+    """The user's address (``EMAIL_FIELD``), or number, if it has one."""
+    if kind == EMAIL:
+        return email_of(user)
+    number = getattr(user, NUMBER, None)
+    return str(number) if number else None
 
-    A user model without a field's ``*_verified`` flag counts it proved, as
+
+def _reached(user: AbstractBaseUser) -> list[tuple[str, str, bool]]:
+    """Each address or number codes would go to: its kind, the value, proved.
+
+    A user model without a kind's ``*_verified`` flag counts it proved, as
     ``reaches_proved`` does.
     """
     found = []
-    for field, (flag, _, _) in PROOFS.items():
-        value = getattr(user, field, None)
-        if value:
-            found.append((field, str(value), bool(getattr(user, flag, True))))
+    for kind, (flag, *_) in PROOFS.items():
+        if value := _value(user, kind):
+            found.append((kind, value, bool(getattr(user, flag, True))))
     return found
+
+
+def _shaped(value: str) -> str | None:
+    """The kind of value ``value`` is written as: an address, a number, or None."""
+    if "@" in value:
+        return EMAIL
+    return NUMBER if as_mobile_number(value) is not None else None
+
+
+def _name_of(user: AbstractBaseUser) -> str:
+    """What ``--promote`` names the user by, surely: its username, else its id.
+
+    A username written as an address or a number would be read as one.
+    """
+    username = getattr(user, user.USERNAME_FIELD, None)
+    if isinstance(username, str) and username and _shaped(username) is None:
+        return username
+    return str(user.id)
+
+
+def _retry(user: AbstractBaseUser) -> str:
+    """The command that proves the user's address and number later."""
+    return f"createsuperuser --promote {_name_of(user)} --verify"
+
+
+def _check_senders(kinds: list[str]) -> None:
+    """Refuse before anything changes when a code of ``kinds`` cannot be sent.
+
+    Raises:
+        CommandError: The app that sends one is not installed.
+    """
+    for kind in kinds:
+        sender = PROOFS[kind][3]
+        if not registry.is_installed(sender):
+            raise CommandError(f"Sending the code needs {sender} in INSTALLED_DOMAINS.")
 
 
 class Command(BaseCommand):
@@ -182,7 +235,7 @@ class Command(BaseCommand):
                     "--promote changes no field: give the identifier alone, "
                     "with --verify if it is to be proved."
                 )
-            self._promote(promote, verify=verify)
+            self._promote(promote, verify=verify, interactive=interactive)
             return
         if temporary is None:
             temporary = not interactive and auth_settings().PASSWORD_CHANGE_ON_FIRST_USE
@@ -195,6 +248,10 @@ class Command(BaseCommand):
             )
         except (KeyboardInterrupt, EOFError):
             raise CommandError("Operation cancelled.") from None
+        if verify:
+            model = get_user_model()
+            given = {EMAIL: model.EMAIL_FIELD, NUMBER: NUMBER}
+            _check_senders([kind for kind, f in given.items() if values.get(f or "")])
         try:
             user_id = run_async(self._create(values, password, temporary=temporary))
         except (
@@ -328,43 +385,133 @@ class Command(BaseCommand):
             await uow.commit()
         return user.id
 
-    def _promote(self, identifier: str, *, verify: bool) -> None:
+    def _promote(self, identifier: str, *, verify: bool, interactive: bool) -> None:
         """Make the user ``identifier`` names a superuser, and staff.
 
-        Its address or number, when that is what names it, must be proved,
-        or proved now with ``verify``: a value names the user who proved it
-        (ADR 0141). It is made a superuser once every code asked for came
-        back.
+        The user is shown, and the operator asked, before anything changes;
+        with ``--noinput`` only a user named exactly goes on (``EXACT``).
+        With ``verify``, it is made a superuser once every code asked for
+        came back.
+
+        Raises:
+            CommandError: No user is named so (``_named``), the user is
+                inactive, the operator says no, or a code does not come
+                back.
         """
         require_named(self.operator, "createsuperuser --promote")
-        user_id, field = run_async(self._named(identifier))
-        if field is not None and not verify:
+        user, by = run_async(self._named(identifier, verify=verify))
+        if not user.is_active:
+            raise CommandError(f"User {identifier!r} is inactive: it cannot log in.")
+        unproved = [kind for kind, _, proved in _reached(user) if not proved]
+        if verify:
+            _check_senders(unproved)
+        self.note(_described(user))
+        if interactive:
+            self._confirm()
+        elif by not in EXACT:
             raise CommandError(
-                f"The user never proved the {LABELS[field]} {identifier!r}: "
-                "add --verify to prove it with a code, or name the user by "
-                "a value it proved."
+                f"--noinput promotes a user named by its username, its id, or "
+                f"a value it proved, not by its {by}: run it without --noinput "
+                "to be asked."
             )
         if verify:
-            self._prove(user_id)
-        if run_async(self._make_superuser(user_id)):
+            self._prove(user.id)
+        if run_async(self._make_superuser(user.id)):
             self.write(f"{identifier!r} is a superuser now.")
         else:
             self.write(f"{identifier!r} is a superuser already.")
-        self._tell_unreached(user_id)
+        self._tell_unreached(user.id)
 
-    async def _named(self, identifier: str) -> tuple[UUID, str | None]:
-        """The user ``identifier`` names, and its field, if the user never proved it.
+    async def _named(
+        self, identifier: str, *, verify: bool
+    ) -> tuple[AbstractBaseUser, str]:
+        """The user ``identifier`` names for ``--promote``, and how it names it.
+
+        A user id names its user (``id``). An address or a number names the
+        one user that proved it in its address or number field (``proved``),
+        whatever field another user holds it in, such as a username written
+        as an address; one nobody proved names nothing, so that a value put
+        on an account unproved never names that account. With ``verify``,
+        it names the one superuser that holds it unproved (``superuser``):
+        a superuser made before 2.5, proving it. Anything else names its
+        user as the other operator commands take it (``match_for_staff``):
+        the username, or another field of ``AUTH.IDENTIFIERS``.
 
         Raises:
-            CommandError: No user has it, or the user is inactive.
+            CommandError: Nothing names one user so.
         """
+        unknown = CommandError(
+            f"No user proved {identifier!r}: name the user by its username or "
+            "its id, or by an email address or mobile number it proved."
+        )
         async with AuthUnitOfWork() as uow:
-            user, field = await match_for_staff(uow.users, identifier, self.note)
-        if not user.is_active:
-            raise CommandError(f"User {identifier!r} is inactive: it cannot log in.")
-        flag = PROOFS[field][0] if field in PROOFS else None
-        unproved = flag is not None and not getattr(user, flag, True)
-        return user.id, field if unproved else None
+            kind = _shaped(identifier)
+            if kind is None:
+                user = await self._by_id(uow, identifier)
+                if user is not None:
+                    return user, "id"
+                user, field = await match_for_staff(uow.users, identifier, self.note)
+                name = get_user_model().USERNAME_FIELD
+                return user, "username" if field == name else field
+            if kind == EMAIL:
+                holders = await uow.users.find_by_email(identifier)
+            else:
+                number = as_mobile_number(identifier)
+                found = await uow.users.find_by_mobile_number(cast(str, number))
+                holders = [] if found is None else [found]
+        flag = PROOFS[kind][0]
+        proved = [user for user in holders if getattr(user, flag, True)]
+        if len(proved) > 1:
+            raise CommandError(
+                f"Several users proved {identifier!r}: name the user by its "
+                "username or its id."
+            )
+        if proved:
+            how = "proved"
+            (user,) = proved
+        else:
+            supers = [user for user in holders if user.is_superuser]
+            if not verify or len(supers) != 1:
+                raise unknown
+            how = "superuser"
+            (user,) = supers
+        self.note(f"{identifier!r} is user {user.id}, by its {LABELS[kind]}.")
+        return user, how
+
+    async def _by_id(
+        self, uow: AuthUnitOfWork, identifier: str
+    ) -> AbstractBaseUser | None:
+        """The user whose id ``identifier`` is, if it is one; say so.
+
+        Only an id as the command prints it (``3f6c...-...``) is read as one.
+
+        Raises:
+            CommandError: It is an id, and no user has it.
+        """
+        try:
+            user_id = UUID(identifier)
+        except ValueError:
+            return None
+        if str(user_id) != identifier.lower():
+            return None
+        user = await uow.users.find(UserId(user_id))
+        if user is None:
+            raise CommandError(f"No user has the id {identifier}.")
+        self.note(f"{identifier!r} is user {user.id}, by its id.")
+        return user
+
+    def _confirm(self) -> None:
+        """Ask the operator to go on.
+
+        Raises:
+            CommandError: Any answer but ``y``, or none.
+        """
+        try:
+            answer = self.ask("Make this user a superuser? [y/N]: ")
+        except (KeyboardInterrupt, EOFError):
+            answer = ""
+        if answer.strip().lower() != "y":
+            raise CommandError("Operation cancelled.")
 
     async def _make_superuser(self, user_id: UUID) -> bool:
         """Give the user every permission, and staff; False if it had them.
@@ -386,38 +533,42 @@ class Command(BaseCommand):
 
         Raises:
             CommandError: A code did not come back right within
-                ``AUTH.CODE_ATTEMPTS`` tries, or cannot be sent.
+                ``AUTH.CODE_ATTEMPTS`` tries, or could not be sent.
         """
         user = run_async(_user(user_id))
-        for field, value, proved in _reached(user):
+        for kind, value, proved in _reached(user):
             if not proved:
-                self._prove_one(user_id, field, value)
+                self._prove_one(user, kind, value)
 
-    def _prove_one(self, user_id: UUID, field: str, value: str) -> None:
+    def _prove_one(self, user: AbstractBaseUser, kind: str, value: str) -> None:
         """Send a code to ``value`` now, and ask for it until it comes back.
 
-        A cancelled prompt leaves ``value`` unproved, as wrong codes do.
+        A cancelled prompt leaves ``value`` unproved, as wrong codes do, and
+        the code no longer works.
         """
-        run_async(_send_proof(user_id, field))
+        failed = (
+            f"The {LABELS[kind]} {value} is not proved. Try again with: {_retry(user)}"
+        )
+        if (sent := run_async(_send_proof(user.id, kind))) is not None:
+            raise CommandError(f"The code could not be sent ({sent}). {failed}")
         for _ in range(auth_settings().CODE_ATTEMPTS):
             try:
                 code = self.ask(f"Code sent to {value}: ").strip()
             except (KeyboardInterrupt, EOFError):
                 break
-            if code and run_async(_take_proof(user_id, field, code)):
-                self.write(f"The {LABELS[field]} {value} is proved.")
+            if code and run_async(_take_proof(user.id, kind, code)):
+                self.write(f"The {LABELS[kind]} {value} is proved.")
                 return
             self._error("That is not the code sent, or it no longer works.")
-        raise CommandError(
-            f"The {LABELS[field]} {value} is not proved. Try again with: "
-            f"createsuperuser --promote {value} --verify"
-        )
+        run_async(_forget(user.id, value))
+        raise CommandError(failed)
 
     def _tell_unreached(self, user_id: UUID) -> None:
         """Say so on stderr when no code can reach the superuser (ADR 0141)."""
         if auth_settings().CODES_TO_UNPROVED:
             return
-        reached = _reached(run_async(_user(user_id)))
+        user = run_async(_user(user_id))
+        reached = _reached(user)
         if any(proved for _, _, proved in reached):
             return
         if not reached:
@@ -426,11 +577,11 @@ class Command(BaseCommand):
                 "no code reaches it, to reset its password or enroll a phone."
             )
             return
-        field, value, _ = reached[0]
+        kind, _, _ = reached[0]
         self.note(
             f"Note: no code reaches the superuser, to reset its password or "
-            f"enroll a phone, until it proves its {LABELS[field]}: run "
-            f"createsuperuser --promote {value} --verify"
+            f"enroll a phone, until it proves its {LABELS[kind]}: run "
+            f"{_retry(user)}"
         )
 
     def _error(self, message: str) -> None:
@@ -444,48 +595,78 @@ async def _user(user_id: UUID) -> AbstractBaseUser:
         return await uow.users.get(UserId(user_id))
 
 
-async def _send_proof(user_id: UUID, field: str) -> None:
-    """Issue a code that proves the user's ``field``, and send it now.
+def _described(user: AbstractBaseUser) -> str:
+    """The user, for the operator to check before promoting it."""
+    username = getattr(user, user.USERNAME_FIELD, None)
+    parts = [f"username {username!r}" if username else "no username"]
+    for kind, (flag, *_) in PROOFS.items():
+        value = _value(user, kind)
+        proved = "proved" if getattr(user, flag, True) else "not proved"
+        parts.append(
+            f"{LABELS[kind]} {value!r} ({proved})" if value else f"no {LABELS[kind]}"
+        )
+    joined = getattr(user, "date_joined", None)
+    if isinstance(joined, datetime):
+        parts.append(f"joined {joined.date().isoformat()}")
+    return f"User {user.id}: {', '.join(parts)}."
+
+
+async def _send_proof(user_id: UUID, kind: str) -> str | None:
+    """Issue a code that proves the user's ``kind`` of value, and send it now.
 
     Mailed, or texted, at once, not through the outbox: the operator waits
-    for it, and no worker may run yet. In the user's language.
-
-    Raises:
-        CommandError: The app that sends it is not installed.
+    for it, and no worker may run yet. In the user's language. None once
+    sent; else the delivery's error, by its class, and the code is
+    forgotten.
     """
-    sender = MAIL if field == "email" else NOTIFICATIONS
-    if not registry.is_installed(sender):
-        raise CommandError(f"Sending the code needs {sender} in INSTALLED_DOMAINS.")
     async with AuthUnitOfWork() as uow:
         user = await uow.users.get(UserId(user_id))
-        value = str(getattr(user, field))
+        value = cast(str, _value(user, kind))
         code = await uow.verification_codes.issue(
-            PROOFS[field][2], target_of(value), user_id=user.id
+            PROOFS[kind][2], target_of(value), user_id=user.id
         )
         await uow.commit()
-    with override(language_of(user)):
-        if field == "email":
-            from domainkit.contrib.mail import deliver, render_mail
-
-            context = code_context(code, user)
-            mail = render_mail("auth/email_verification_code", context, to=[value])
-            await deliver([mail])
-        else:
-            from domainkit.contrib.notifications import SmsMessage, deliver_sms
-
-            body = code_text(code, "verify your number")
-            await deliver_sms([SmsMessage(to=value, body=body)])
+    try:
+        with override(language_of(user)):
+            await _deliver(user, kind, value, code)
+    except DomainkitError as exc:  # The mail or text backend's refusal.
+        await _forget(user.id, value)
+        return type(exc).__name__
+    return None
 
 
-async def _take_proof(user_id: UUID, field: str, code: str) -> bool:
-    """Whether ``code`` is the one sent to the user's ``field``: then it is proved.
+async def _deliver(user: AbstractBaseUser, kind: str, value: str, code: str) -> None:
+    """Mail, or text, ``code`` to ``value``, now."""
+    if kind == EMAIL:
+        from domainkit.contrib.mail import deliver, render_mail
+
+        context = code_context(code, user)
+        await deliver(
+            [render_mail("auth/email_verification_code", context, to=[value])]
+        )
+    else:
+        from domainkit.contrib.notifications import SmsMessage, deliver_sms
+
+        body = code_text(code, "verify your number")
+        await deliver_sms([SmsMessage(to=value, body=body)])
+
+
+async def _forget(user_id: UUID, value: str) -> None:
+    """Make the codes sent to ``value`` for the user stop working."""
+    async with AuthUnitOfWork() as uow:
+        await uow.verification_codes.forget(user_id, [target_of(value)])
+        await uow.commit()
+
+
+async def _take_proof(user_id: UUID, kind: str, code: str) -> bool:
+    """Whether ``code`` is the one sent to the user's ``kind``: then it is proved.
 
     A wrong code counts as a try (``AUTH.CODE_ATTEMPTS``).
     """
-    _, verify, purpose = PROOFS[field]
+    _, verify, purpose, _ = PROOFS[kind]
     async with AuthUnitOfWork() as uow:
         user = await uow.users.get(UserId(user_id))
-        value = str(getattr(user, field))
+        value = cast(str, _value(user, kind))
         proven = await uow.verification_codes.check(purpose, target_of(value), code)
         right = proven is not None and proven.user_id == user.id
         if right:
