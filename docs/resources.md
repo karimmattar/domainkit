@@ -604,7 +604,9 @@ Content-Type: application/pdf
   file name and SHA-256), never by the name the storage gave it, which
   is new on every request: the authorization the twin asked for is spent
   on the same file, and refused for another. An upload inside a list, a
-  mapping or a model of the command is bound the same way. Declare
+  set (its items sorted once their names are out), a mapping (whatever
+  its keys, an enum's too) or a model of the command is bound the same
+  way. Declare
   nothing about the upload; an `Action` that ignores its field binds no
   file at all.
 - OpenAPI shows the body as `application/octet-stream` or a form, with

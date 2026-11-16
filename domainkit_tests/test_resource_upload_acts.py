@@ -9,6 +9,7 @@ by the act on the same file, and refused for another (ADR 0167).
 import sys
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
+from enum import Enum
 from typing import Any, Final
 from urllib.parse import quote
 
@@ -17,6 +18,7 @@ from fastapi.testclient import TestClient
 
 from domainkit.clock import FrozenClock
 from domainkit.conf import override_settings
+from domainkit.contrib.auth import actions
 from domainkit.contrib.auth.actions import Action, Shown, register_action
 from domainkit.ddd import Command
 from domainkit.storage import StoredUpload
@@ -164,12 +166,20 @@ class Signed:
     file: StoredUpload
 
 
+class Role(Enum):
+    """Who a file is for: a mapping's key, dumped as its value."""
+
+    BUYER = "buyer"
+    SELLER = "seller"
+
+
 class AttachInside(Command):
     """Uploads held deep in a command."""
 
     product_id: str
     signed: Signed
-    by_role: dict[str, StoredUpload]
+    by_role: dict[Role, StoredUpload]
+    kept: frozenset[StoredUpload] = frozenset()
 
 
 def test_an_upload_anywhere_is_bound_by_content_one_without_a_digest_by_name() -> None:
@@ -189,7 +199,7 @@ def test_an_upload_anywhere_is_bound_by_content_one_without_a_digest_by_name() -
 
     def command(file: StoredUpload) -> AttachInside:
         return AttachInside(
-            product_id="p", signed=Signed("me", file), by_role={"buyer": file}
+            product_id="p", signed=Signed("me", file), by_role={Role.BUYER: file}
         )
 
     blank = replace(stored, sha256="")
@@ -198,3 +208,64 @@ def test_an_upload_anywhere_is_bound_by_content_one_without_a_digest_by_name() -
         command(replace(blank, name="a/2.pdf"))
     )
     assert inside.arguments(command(blank))["signed"]["file"]["name"] == "a/1.pdf"
+
+
+def test_an_upload_under_an_enum_key_or_in_a_set_is_bound_by_content() -> None:
+    """A key was matched as ``str(key)``, and a set was not walked (third review).
+
+    The twin's digest never equalled the act's. A set's items, named by
+    the storage, came in their hashes' order: they are sorted without
+    their names.
+    """
+    inside = Action(
+        "shop.attach_inside_sets",
+        command=AttachInside,
+        subject=lambda command: f"shop.product:{command.product_id}",
+        show=lambda command: Shown("Attach", {}),
+    )
+    files = [
+        StoredUpload(f"a/{n}.pdf", "application/pdf", n, f"{n}.pdf", f"{n}" * 64)
+        for n in range(1, 9)
+    ]
+
+    def command(*each: StoredUpload) -> AttachInside:
+        return AttachInside(
+            product_id="p",
+            signed=Signed("me", each[0]),
+            by_role={Role.SELLER: each[1], Role.BUYER: each[0]},
+            kept=frozenset(each),
+        )
+
+    twin = command(*(replace(file, name="") for file in files))
+    act = command(*files)
+    other = command(*files[:-1], replace(files[-1], size=99))
+
+    assert inside.digest_of(twin) == inside.digest_of(act) != inside.digest_of(other)
+    kept = inside.arguments(act)["kept"]
+    assert [item["size"] for item in kept] == sorted(item["size"] for item in kept)
+    assert "name" not in inside.arguments(act)["by_role"]["buyer"]
+
+
+class AttachColliding(Command):
+    """Two keys that dump to one: ``1`` and ``"1"``."""
+
+    files: dict[int | str, StoredUpload]
+
+
+def test_items_that_do_not_pair_with_their_json_keep_their_names() -> None:
+    """Two keys dumped to one, a list dumped shorter: bound as dumped, by name."""
+    colliding = Action(
+        "shop.attach_colliding",
+        command=AttachColliding,
+        subject=lambda command: "shop.product:p",
+        show=lambda command: Shown("Attach", {}),
+    )
+    stored = StoredUpload("a/1.pdf", "application/pdf", 3, "a.pdf", "1" * 64)
+    unstored = replace(stored, name="")
+
+    act = AttachColliding(files={1: stored, "1": stored})
+    twin = AttachColliding(files={1: unstored, "1": unstored})
+
+    assert colliding.arguments(act)["files"]["1"]["name"] == "a/1.pdf"
+    assert colliding.digest_of(twin) != colliding.digest_of(act)
+    assert actions._by_content([stored], []) == []

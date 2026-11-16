@@ -428,11 +428,16 @@ class Action:
 def _by_content(value: object, dumped: Any) -> Any:  # noqa: ANN401 - JSON values.
     """``dumped``, the JSON of ``value``, without the storage's name of an upload.
 
-    Wherever the upload is: a field, a list, a mapping, a model or a
-    dataclass inside. One without its SHA-256 has no content to be bound
-    by, and keeps its name: it matches no other request. The upload's
-    class exists only once its module is loaded: a process that never
-    loaded it holds none, and loads nothing here.
+    Wherever the upload is: a field, a list, a set, a mapping (its keys
+    whatever they dump to: an enum's value), a model or a dataclass
+    inside. A set's items come in the order of their hashes, which hold
+    the storage's name: they are sorted once the names are out, so the
+    twin's and the act's agree. One without its SHA-256 has no content to
+    be bound by, and keeps its name: it matches no other request. Where
+    ``value`` and ``dumped`` do not pair up item by item (two keys dumped
+    to one), the names stay. The upload's class exists only once its
+    module is loaded: a process that never loaded it holds none, and
+    loads nothing here.
     """
     module = sys.modules.get("domainkit.storage.base")
     upload: type | None = getattr(module, "StoredUpload", None)
@@ -442,13 +447,22 @@ def _by_content(value: object, dumped: Any) -> Any:  # noqa: ANN401 - JSON value
         if not getattr(value, "sha256", ""):
             return dumped
         return {key: item for key, item in dumped.items() if key != "name"}
-    if isinstance(dumped, list) and isinstance(value, list | tuple):
-        return [_by_content(*pair) for pair in zip(value, dumped, strict=True)]
+    if isinstance(dumped, list) and isinstance(value, list | tuple | set | frozenset):
+        if len(value) != len(dumped):
+            return dumped
+        items = [_by_content(*pair) for pair in zip(value, dumped, strict=True)]
+        if isinstance(value, set | frozenset):
+            return sorted(items, key=lambda item: json.dumps(item, sort_keys=True))
+        return items
     if isinstance(dumped, dict):
         if isinstance(value, Mapping):
-            inside = {str(key): item for key, item in value.items()}
-            return {
-                key: _by_content(inside.get(key), item) for key, item in dumped.items()
+            if len(value) != len(dumped):
+                return dumped
+            return {  # In the order the model dumped them: the mapping's own.
+                key: _by_content(item, inner)
+                for item, (key, inner) in zip(
+                    value.values(), dumped.items(), strict=True
+                )
             }
         return {
             key: _by_content(getattr(value, key, None), item)
