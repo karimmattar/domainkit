@@ -87,7 +87,7 @@ from .throttling import (
     audit_refusal,
     on_refusal,
 )
-from .tokens import LoginMethod, note_login_device, utc_now
+from .tokens import LoginMethod, note_login_device, note_login_sign_in, utc_now
 
 __all__ = [
     "MANAGES_LOGINS",
@@ -139,6 +139,7 @@ __all__ = [
     "mail_user",
     "needs_second_factor",
     "note_login_device",
+    "note_login_sign_in",
     "on_action_confirmation",
     "on_login_gate",
     "on_manage_logins",
