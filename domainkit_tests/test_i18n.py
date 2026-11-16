@@ -338,6 +338,22 @@ def test_lazy_strings_translate_when_used() -> None:
     assert gettext_noop("Not translated now.") == "Not translated now."
 
 
+def test_a_lazy_string_names_its_lookup() -> None:
+    """``source``: what makes the same string again, in a process with no settings.
+
+    A check's process sends it for a refusal it cannot make text (follow-up
+    of 2.5.0); a string of another function names none.
+    """
+    assert gettext_lazy("Invoices").source() == ("gettext", ("Invoices",))
+    assert ngettext_lazy("{n} box", "{n} boxes", 2).source() == (
+        "ngettext",
+        ("{n} box", "{n} boxes", 2),
+    )
+    assert pgettext_lazy("menu", "Open").source() == ("pgettext", ("menu", "Open"))
+    assert LazyString(str.upper, "open").source() is None
+    assert LazyString(["Open"].pop).source() is None  # A list's method has no hash.
+
+
 # Validation messages -----------------------------------------------------------------
 
 
