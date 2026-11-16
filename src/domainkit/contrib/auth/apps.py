@@ -392,7 +392,8 @@ class AuthConfig(DomainConfig):
         processes of changes, a captcha without ``HOSTNAMES``
         (``auth.W008``), and a worker that may send codes once they expired
         (``auth.W009``). Anywhere, a backend that does not list its grants
-        on objects (``auth.W007``).
+        on objects (``auth.W007``), and members' keys without the list of a
+        user's tenants (``auth.W010``): only superusers then change users.
         """
         unlisted: list[str] = [
             CheckMessage(
@@ -404,6 +405,20 @@ class AuthConfig(DomainConfig):
             )
             for backend in backends_without_object_grants()
         ]
+        tenancy = settings.TENANCY
+        if (
+            tenancy is not None
+            and tenancy.MEMBER_PERMISSIONS is not None
+            and tenancy.MEMBER_TENANTS is None
+        ):
+            unlisted.append(
+                CheckMessage(
+                    "auth.W010",
+                    "TENANCY.MEMBER_PERMISSIONS is set without MEMBER_TENANTS, so "
+                    "only superusers change users through the admin API: name "
+                    "the function that lists the tenants a user belongs to.",
+                )
+            )
         if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
             return unlisted
         config = auth_settings()

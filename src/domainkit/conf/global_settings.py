@@ -667,6 +667,16 @@ class TenancyConfig(BaseModel):
     MEMBERSHIP: str | None = None
     """Dotted path to a function of the user and a tenant id (async or not):
     whether the user may act in that tenant (``403 not_a_member`` if not)."""
+    MEMBER_PERMISSIONS: str | None = None
+    """Dotted path to a function of the user and a tenant id (async or not):
+    the permission keys the user holds as a member of that tenant, or None
+    for one who is not a member. It replaces ``MEMBERSHIP``, and
+    ``MembershipBackend`` answers ``has_perm`` with it (ADR 0150)."""
+    MEMBER_TENANTS: str | None = None
+    """Dotted path to a function of the user (async or not): the ids of the
+    tenants the user belongs to. Staff then change through the admin API
+    only users who hold nothing beyond them in any tenant; with
+    ``MEMBER_PERMISSIONS`` and without it, only superusers change users."""
     REQUIRED: bool = True
     """Refuse a request that names no tenant (``400 tenant_not_named``)."""
     EXEMPT_PATHS: tuple[str, ...] = ("/health",)
@@ -681,9 +691,21 @@ class TenancyConfig(BaseModel):
 
     @model_validator(mode="after")
     def _one_way(self) -> Self:
-        """``SUBDOMAIN_OF`` and ``HEADER`` are two ways: one at most."""
+        """One way to name the tenant, and one to say who belongs to it."""
         if self.SUBDOMAIN_OF is not None and self.HEADER is not None:
             raise ValueError("name the tenant by SUBDOMAIN_OF or by HEADER, not both")
+        if self.MEMBERSHIP is not None and self.MEMBER_PERMISSIONS is not None:
+            raise ValueError(
+                "say who belongs to a tenant by MEMBERSHIP or by "
+                "MEMBER_PERMISSIONS, not both"
+            )
+        if self.MEMBER_TENANTS is not None and (
+            self.MEMBERSHIP is None and self.MEMBER_PERMISSIONS is None
+        ):
+            raise ValueError(
+                "MEMBER_TENANTS lists the tenants MEMBERSHIP or "
+                "MEMBER_PERMISSIONS admits to: set one of them"
+            )
         return self
 
 

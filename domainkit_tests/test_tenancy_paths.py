@@ -1,0 +1,882 @@
+"""A tenant a route's path names, 404 for non-members, and members' permissions.
+
+A project reported (D2) that tenancy fitted one tenant per request,
+chosen before routing: no tenant from a path parameter, no ``404`` for
+those who do not belong, and no memberships that carry permissions, so it
+wrote its own ``MembershipBackend`` (ADR 0150).
+"""
+
+import io
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Annotated, Any, Final, NewType
+from uuid import UUID, uuid4
+
+import pytest
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    Request,
+    Response,
+    WebSocket,
+)
+from fastapi.testclient import TestClient
+from pydantic import ValidationError
+from sqlalchemy import insert
+from starlette.datastructures import Headers
+from starlette.testclient import WebSocketDenialResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
+
+from domainkit import setup
+from domainkit.apps import registry
+from domainkit.conf import TenancyConfig, override_settings
+from domainkit.contrib.auth import AbstractBaseUser, AuthUnitOfWork
+from domainkit.contrib.auth.backends import MembershipBackend, ObjectGrant, has_perm
+from domainkit.contrib.objectpermissions import ObjectPermission, grant_permission
+from domainkit.db import connections
+from domainkit.ddd import AggregateRoot, InMemoryRepository, PermissionDenied
+from domainkit.ddd.tenancy import TenantOwned
+from domainkit.exceptions import ImproperlyConfigured
+from domainkit.http.access import AnonymousPrincipal, HasPermissions, Require
+from domainkit.http.application import application_problems
+from domainkit.http.errors import install_exception_handlers
+from domainkit.http.live import reauthorize
+from domainkit.management import call_command
+from domainkit.management.base import run_async
+from domainkit.tenancy import (
+    PathTenant,
+    TenantMiddleware,
+    current_tenant,
+    member_permissions,
+    path_tenant_problems,
+    tenant,
+    tenants_beyond,
+)
+from domainkit_tests import sample_tenant_orgs
+from domainkit_tests.conftest import (
+    ALPHA,
+    API,
+    AUTH,
+    CONTENTTYPES,
+    FAST_HASHER,
+    MIDDLEWARE,
+    SHOP,
+    Api,
+    UseAuth,
+)
+from domainkit_tests.sample_domains.shop.models import Product, ProductId
+from domainkit_tests.support.auth import PASSWORD, bearer, create_user, grant, login
+from domainkit_tests.test_auth_access import user
+from domainkit_tests.test_auth_admin import ADMIN, staff, token_for
+
+pytestmark = pytest.mark.anyio
+
+TENANT_MIDDLEWARE: Final = [
+    *MIDDLEWARE[:3],
+    "domainkit.tenancy.TenantMiddleware",
+    *MIDDLEWARE[3:],
+]
+"""Authentication first, then the tenant, as docs/tenancy.md orders them."""
+
+HERE: Final = "domainkit_tests.test_tenancy_paths"
+OBJECTPERMISSIONS: Final = "domainkit.contrib.objectpermissions"
+PEOPLE: Final = {
+    "ann": user(username="ann"),
+    "bob": user(username="bob"),
+    "idle": user(username="idle", is_active=False),
+}
+"""Who the ``X-User`` header names; anyone else is anonymous."""
+MEMBERS: set[tuple[str, str]] = {("ann", "acme"), ("ann", "globex"), ("bob", "globex")}
+"""``(username, tenant)`` of each membership."""
+ROLES: Final = {"acme": frozenset({"notes.view_note", "notes.add_note"})}
+"""The keys a member of each tenant holds (a role's)."""
+ASKED: list[tuple[str, str]] = []
+"""Each time ``keys`` was asked, for whom and which tenant."""
+LATER: list[str | None] = []
+"""The tenant each background task ran as."""
+
+
+def belongs(user: Any, tenant_id: str) -> bool:  # noqa: ANN401
+    """``MEMBERSHIP``: whether ``user`` is one of ``tenant_id``'s members."""
+    return (getattr(user, "username", None), tenant_id) in MEMBERS
+
+
+async def keys(user: Any, tenant_id: str) -> frozenset[str] | None:  # noqa: ANN401
+    """``MEMBER_PERMISSIONS``: a member's keys in ``tenant_id``, or None."""
+    ASKED.append((getattr(user, "username", "-"), tenant_id))
+    if not belongs(user, tenant_id):
+        return None
+    return ROLES.get(tenant_id, frozenset())
+
+
+def one_key(user: Any, tenant_id: str) -> str:  # noqa: ANN401
+    """A hook that answers one key as text, which reads as its letters."""
+    return "notes.view_note"
+
+
+class Users:
+    """Put the person ``X-User`` names in ``scope["user"]`` (anonymous if none)."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        """Wrap ``app``."""
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Name the user, then serve."""
+        if scope["type"] in {"http", "websocket"}:
+            name = Headers(scope=scope).get("x-user", "")
+            scope["user"] = PEOPLE.get(name, AnonymousPrincipal())
+        await self.app(scope, receive, send)
+
+
+NoteId = NewType("NoteId", UUID)
+
+
+class Note(TenantOwned, AggregateRoot[NoteId]):
+    """One tenant's note."""
+
+    text: str = ""
+
+
+class Notes(InMemoryRepository[Note, NoteId]):
+    """Notes, in memory."""
+
+
+BY_PATH: Final = PathTenant("org_id")
+
+
+def app(*, middleware: bool = False) -> FastAPI:
+    """Routes under ``/orgs/{org_id}``, served as that tenant, behind ``Users``.
+
+    With ``middleware``, ``TenantMiddleware`` runs after ``Users``.
+    """
+    notes = Notes()
+    orgs = APIRouter(prefix="/orgs/{org_id}", dependencies=[Depends(BY_PATH)])
+
+    @orgs.get("/whoami")
+    async def whoami(
+        request: Request, named: Annotated[str, Depends(BY_PATH)]
+    ) -> dict[str, Any]:
+        held = await member_permissions(request.scope["user"])
+        return {"tenant": current_tenant(), "named": named, "keys": sorted(held)}
+
+    @orgs.post("/notes")
+    async def add(body: dict[str, str], tasks: BackgroundTasks) -> dict[str, Any]:
+        await notes.add(Note(id=NoteId(uuid4()), text=body["text"]))
+        tasks.add_task(lambda: LATER.append(current_tenant()))
+        return {"texts": sorted(note.text for note in await notes.filter())}
+
+    @orgs.get("/still")
+    async def still(request: Request) -> dict[str, bool]:
+        before = await reauthorize(request.scope)
+        MEMBERS.discard(("ann", "acme"))
+        try:
+            return {"before": before, "after": await reauthorize(request.scope)}
+        finally:
+            MEMBERS.add(("ann", "acme"))
+
+    @orgs.websocket("/live")
+    async def live(socket: WebSocket) -> None:
+        await socket.accept()
+        await socket.send_json({"tenant": current_tenant()})
+        await socket.close()
+
+    served = FastAPI()
+    install_exception_handlers(served)
+    served.include_router(orgs)
+    if middleware:
+        served.add_middleware(TenantMiddleware)
+    served.add_middleware(Users)  # Added last, so it runs first.
+    return served
+
+
+@pytest.fixture
+def client() -> Iterator[TestClient]:
+    """A client of ``app``, with ``MEMBERSHIP`` saying who belongs."""
+    with override_settings(TENANCY={"MEMBERSHIP": f"{HERE}.belongs"}):
+        yield TestClient(app())
+
+
+def as_(name: str) -> dict[str, str]:
+    """Headers that make ``name`` the caller."""
+    return {"X-User": name}
+
+
+def body(answer: Any) -> tuple[int, dict[str, Any]]:  # noqa: ANN401
+    """An answer's status and body, without its request id."""
+    found = dict(answer.json())
+    found.pop("request_id", None)
+    return answer.status_code, found
+
+
+def test_a_router_takes_its_tenant_from_the_path(client: TestClient) -> None:
+    """``/orgs/acme/...`` is served as acme, and the dependency names it."""
+    answer = client.get("/orgs/acme/whoami", headers=as_("ann"))
+    other = client.get("/orgs/globex/whoami", headers=as_("ann"))
+
+    assert answer.json() == {"tenant": "acme", "named": "acme", "keys": []}
+    assert other.json()["tenant"] == "globex"
+    assert current_tenant() is None
+
+
+def test_a_path_tenants_rows_and_tasks_are_its_own(client: TestClient) -> None:
+    """Rows added under one tenant's path are not another's; its tasks run as it."""
+    LATER.clear()
+    client.post("/orgs/acme/notes", json={"text": "a"}, headers=as_("ann"))
+    theirs = client.post("/orgs/globex/notes", json={"text": "g"}, headers=as_("ann"))
+    mine = client.post("/orgs/acme/notes", json={"text": "b"}, headers=as_("ann"))
+
+    assert theirs.json() == {"texts": ["g"]}
+    assert mine.json() == {"texts": ["a", "b"]}
+    assert LATER == ["acme", "globex", "acme"]
+
+
+def test_a_non_member_gets_the_404_of_a_route_that_does_not_exist(
+    client: TestClient,
+) -> None:
+    """Not a member, no such tenant, or no tenant id: all answer as no route does.
+
+    So a caller cannot tell a tenant that exists from one that does not
+    (RFC 9110 section 15.5.4; OWASP's IDOR prevention cheat sheet).
+    """
+    nowhere = body(client.get("/no/such/route", headers=as_("bob")))
+    refused = [
+        body(client.get(path, headers=as_("bob")))
+        for path in (
+            "/orgs/acme/whoami",  # exists; bob is not a member
+            "/orgs/initech/whoami",  # no such tenant
+            "/orgs/a.b/whoami",  # not a tenant id
+        )
+    ]
+    sent = [
+        body(client.post(f"/orgs/{name}/notes", json={"text": "x"}, headers=as_("bob")))
+        for name in ("acme", "initech")
+    ]
+
+    assert nowhere == (404, {"detail": "Not Found", "code": "not_found"})
+    assert refused == [nowhere] * 3
+    assert sent == [nowhere] * 2
+
+
+def test_an_anonymous_caller_is_asked_to_log_in(client: TestClient) -> None:
+    """401, as ``Require`` answers, for any id: it tells no tenant apart."""
+    answers = [client.get(f"/orgs/{name}/whoami") for name in ("acme", "initech")]
+
+    assert [body(answer) for answer in answers] == [
+        (
+            401,
+            {
+                "detail": "Authentication credentials were not provided.",
+                "code": "not_authenticated",
+            },
+        )
+    ] * 2
+    assert answers[0].headers["WWW-Authenticate"] == 'Bearer realm="api"'
+
+
+def test_a_websocket_takes_its_tenant_from_the_path(client: TestClient) -> None:
+    """A member's handshake is served as the tenant; another's gets the 404."""
+    with client.websocket_connect("/orgs/acme/live", headers=as_("ann")) as socket:
+        assert socket.receive_json() == {"tenant": "acme"}
+    with (
+        pytest.raises(WebSocketDenialResponse) as denied,
+        client.websocket_connect("/orgs/acme/live", headers=as_("bob")),
+    ):
+        pass
+    assert denied.value.status_code == 404
+
+
+def test_membership_is_checked_again_while_a_connection_stays_open(
+    client: TestClient,
+) -> None:
+    """The re-check of a live connection asks afresh: a removed member fails it."""
+    assert client.get("/orgs/acme/still", headers=as_("ann")).json() == {
+        "before": True,
+        "after": False,
+    }
+
+
+def test_openapi_documents_the_path_parameter_once(client: TestClient) -> None:
+    """The dependency declares the parameter; the route may declare it too."""
+    operation = client.get("/openapi.json").json()["paths"]["/orgs/{org_id}/whoami"]
+    parameters = operation["get"]["parameters"]
+
+    assert [(p["name"], p["in"], p["required"]) for p in parameters] == [
+        ("org_id", "path", True)
+    ]
+
+
+def test_a_path_must_agree_with_the_tenant_the_request_is_served_as() -> None:
+    """With ``TenantMiddleware`` too: another tenant in the path is 404.
+
+    The prefix is in ``EXEMPT_PATHS``, so a request that names no tenant
+    before routing takes the path's.
+    """
+    with override_settings(
+        TENANCY={
+            "HEADER": "X-Tenant",
+            "MEMBERSHIP": f"{HERE}.belongs",
+            "EXEMPT_PATHS": ["/orgs/"],
+        }
+    ):
+        client = TestClient(app(middleware=True))
+        both = {**as_("ann"), "X-Tenant": "acme"}
+        same = client.get("/orgs/acme/whoami", headers=both)
+        other = client.get("/orgs/globex/whoami", headers=both)
+        unnamed = client.get("/orgs/globex/whoami", headers=as_("ann"))
+
+    assert same.json()["tenant"] == "acme"
+    assert body(other) == (404, {"detail": "Not Found", "code": "not_found"})
+    assert unnamed.json()["tenant"] == "globex"
+
+
+def test_a_path_tenant_needs_someone_to_say_who_belongs() -> None:
+    """No ``TENANCY``, or no ``MEMBERSHIP``: refused, since any id can be typed."""
+    unsaid: tuple[dict[str, str] | None, ...] = (None, {})
+    for tenancy in unsaid:
+        with override_settings(TENANCY=tenancy):
+            client = TestClient(app())
+            with pytest.raises(ImproperlyConfigured, match="MEMBERSHIP"):
+                client.get("/orgs/acme/whoami", headers=as_("ann"))
+
+
+@pytest.mark.parametrize("name", ["org-id", "class", "", "domainkit_connection"])
+def test_a_path_tenant_names_a_parameter(name: str) -> None:
+    """What cannot be a path parameter's name is refused at once."""
+    with pytest.raises(ImproperlyConfigured, match="path parameter"):
+        PathTenant(name)
+
+
+def test_check_finds_a_path_tenant_that_cannot_serve_its_route() -> None:
+    """``tenancy.E001``: no such parameter; ``tenancy.E002``: a rule before it.
+
+    A router's own dependencies come before its routes', and those given to
+    ``include_router`` before both, so the router below passes.
+    """
+    rule = Depends(Require(HasPermissions("notes.view_note")))
+    good = APIRouter(prefix="/orgs/{org_id}", dependencies=[Depends(BY_PATH)])
+    late = APIRouter(dependencies=[rule])
+    served = FastAPI()
+
+    @good.get("/fine", dependencies=[rule])
+    async def fine() -> None: ...
+
+    @late.get("/late/{org_id}", dependencies=[Depends(BY_PATH)])
+    async def after_a_rule() -> None: ...
+
+    @served.get("/nowhere", dependencies=[Depends(BY_PATH)])
+    async def nowhere() -> None: ...
+
+    @served.get("/typed/{org_id:str}")
+    async def typed(org: Annotated[str, Depends(BY_PATH)]) -> None: ...
+
+    async def named(org: Annotated[str, Depends(BY_PATH)]) -> str:
+        return org
+
+    @served.get("/deep/{tenant}")
+    async def deep(org: Annotated[str, Depends(named)]) -> None: ...
+
+    served.include_router(good)
+    served.include_router(late)
+    served.include_router(late, prefix="/first", dependencies=[Depends(BY_PATH)])
+    served.add_route("/starlette", lambda request: Response())  # No dependencies.
+    problems = [
+        problem
+        for problem in application_problems(served)
+        if getattr(problem, "id", "").startswith("tenancy.")
+    ]
+
+    assert [(getattr(p, "id", None), p.split(" ")[1]) for p in problems] == [
+        ("tenancy.E001", "/nowhere"),
+        ("tenancy.E001", "/deep/{tenant}"),
+        ("tenancy.E002", "/late/{org_id}"),
+    ]
+    assert path_tenant_problems(served) == problems
+    assert "add {org_id} to the path" in problems[0]
+
+
+def test_member_permissions_are_asked_once_per_request() -> None:
+    """``MEMBER_PERMISSIONS`` admits a member, and its keys serve the request.
+
+    The hook is asked once for the request, however often the keys are
+    read in it.
+    """
+    ASKED.clear()
+    with override_settings(TENANCY={"MEMBER_PERMISSIONS": f"{HERE}.keys"}):
+        client = TestClient(app())
+        mine = client.get("/orgs/acme/whoami", headers=as_("ann"))
+        asked = list(ASKED)
+        refused = client.get("/orgs/acme/whoami", headers=as_("bob"))
+
+    assert mine.json()["keys"] == ["notes.add_note", "notes.view_note"]
+    assert asked == [("ann", "acme")]
+    assert refused.status_code == 404
+
+
+async def test_member_permissions_outside_a_request() -> None:
+    """Asked afresh for a tenant named in code; none without a tenant or the setting."""
+    ann = PEOPLE["ann"]
+    with override_settings(TENANCY={"MEMBER_PERMISSIONS": f"{HERE}.keys"}):
+        assert await member_permissions(ann) == frozenset()
+        with tenant("acme"):
+            assert "notes.view_note" in await member_permissions(ann)
+            assert await member_permissions(PEOPLE["bob"]) == frozenset()
+    with override_settings(TENANCY={"MEMBERSHIP": f"{HERE}.belongs"}), tenant("acme"):
+        assert await member_permissions(ann) == frozenset()
+    with override_settings(TENANCY=None), tenant("acme"):
+        assert await member_permissions(ann) == frozenset()
+
+
+async def test_member_permissions_must_be_keys() -> None:
+    """A hook that answers one string, or a bool, is refused, not read as letters."""
+    with (
+        override_settings(TENANCY={"MEMBER_PERMISSIONS": f"{HERE}.one_key"}),
+        tenant("acme"),
+        pytest.raises(ImproperlyConfigured, match="returned a str"),
+    ):
+        await member_permissions(PEOPLE["ann"])
+    with (
+        override_settings(TENANCY={"MEMBER_PERMISSIONS": f"{HERE}.belongs"}),
+        tenant("acme"),
+        pytest.raises(ImproperlyConfigured, match="returned a bool"),
+    ):
+        await member_permissions(PEOPLE["ann"])
+
+
+def test_the_middleware_admits_members_by_their_permissions() -> None:
+    """``TenantMiddleware`` with ``MEMBER_PERMISSIONS``: 403 for one with none."""
+    ASKED.clear()
+    inner = FastAPI()
+
+    @inner.get("/keys")
+    async def held(request: Request) -> dict[str, Any]:
+        found = await member_permissions(request.scope["user"])
+        return {"tenant": current_tenant(), "keys": sorted(found)}
+
+    with override_settings(
+        TENANCY={"HEADER": "X-Tenant", "MEMBER_PERMISSIONS": f"{HERE}.keys"}
+    ):
+        client = TestClient(Users(TenantMiddleware(inner)))
+        mine = client.get("/keys", headers={**as_("ann"), "X-Tenant": "acme"})
+        asked = list(ASKED)
+        theirs = client.get("/keys", headers={**as_("bob"), "X-Tenant": "acme"})
+
+    assert mine.json() == {
+        "tenant": "acme",
+        "keys": ["notes.add_note", "notes.view_note"],
+    }
+    assert asked == [("ann", "acme")]
+    assert (theirs.status_code, theirs.json()["code"]) == (403, "not_a_member")
+
+
+def test_membership_is_said_one_way() -> None:
+    """``MEMBERSHIP`` and ``MEMBER_PERMISSIONS`` together are refused."""
+    with pytest.raises(ValidationError, match="not both"):
+        TenancyConfig(MEMBERSHIP="a.b", MEMBER_PERMISSIONS="a.c")
+
+
+async def test_the_membership_backend_grants_a_members_keys() -> None:
+    """In the tenant, what the member holds; none on objects, nor for the inactive."""
+    with override_settings(TENANCY={"MEMBER_PERMISSIONS": f"{HERE}.keys"}):
+        backend = MembershipBackend()
+        ann = PEOPLE["ann"]
+        assert not await backend.has_perm(ann, "notes.view_note")
+        with tenant("acme"):
+            assert await backend.has_perm(ann, "notes.view_note")
+            assert not await backend.has_perm(ann, "notes.delete_note")
+            assert not await backend.has_perm(ann, "notes.view_note", object())
+            assert not await backend.has_perm(PEOPLE["idle"], "notes.view_note")
+        assert await backend.object_grants(ann) == frozenset[ObjectGrant]()
+
+
+def test_the_membership_backend_needs_member_permissions() -> None:
+    """Listed without ``MEMBER_PERMISSIONS``, it would grant nothing: refused."""
+    for tenancy in (None, {"MEMBERSHIP": f"{HERE}.belongs"}):
+        with (
+            override_settings(TENANCY=tenancy),
+            pytest.raises(ImproperlyConfigured, match="MEMBER_PERMISSIONS"),
+        ):
+            MembershipBackend()
+
+
+ORGS: Final = "domainkit_tests.sample_tenant_orgs"
+MEMBERSHIP_BACKENDS: Final = [
+    "domainkit.contrib.auth.backends.ModelBackend",
+    "domainkit.contrib.auth.backends.MembershipBackend",
+]
+
+
+def seed(*rows: tuple[UUID, str, str]) -> None:
+    """Store the project's memberships: ``(user id, organisation, role)``."""
+
+    async def store() -> None:
+        async with connections.engine().begin() as connection:
+            await connection.run_sync(sample_tenant_orgs.MEMBERS.metadata.create_all)
+            await connection.execute(
+                insert(sample_tenant_orgs.MEMBERS),
+                [{"user_id": who, "org": org, "role": role} for who, org, role in rows],
+            )
+
+    run_async(store())
+
+
+def test_roles_the_project_stores_answer_has_perm(api: Api) -> None:
+    """Memberships in the project's table, a role each, decide its routes.
+
+    ``MembershipBackend`` grants a role's keys in the path's tenant, so
+    ``HasPermissions`` reads them: an owner changes, a viewer only reads,
+    one who belongs elsewhere gets the 404, and no one is asked to write a
+    backend of their own. On SQLite, and on PostgreSQL where it is set.
+    """
+    ann, bob, cy = (create_user(name) for name in ("ann", "bob", "cy"))
+    with override_settings(
+        ROOT_ROUTER=f"{ORGS}.router",
+        TENANCY={"MEMBER_PERMISSIONS": f"{ORGS}.role_permissions"},
+        AUTH={**API.settings["AUTH"], "BACKENDS": MEMBERSHIP_BACKENDS},
+    ):
+        client = api()
+        seed((ann, "acme", "owner"), (bob, "acme", "viewer"), (cy, "globex", "owner"))
+        owner, viewer, outsider = (token_for(name) for name in ("ann", "bob", "cy"))
+        answers = {
+            "owner reads": client.get("/orgs/acme/products", headers=owner),
+            "owner changes": client.patch("/orgs/acme/products", headers=owner),
+            "viewer reads": client.get("/orgs/acme/products", headers=viewer),
+            "viewer changes": client.patch("/orgs/acme/products", headers=viewer),
+            "outsider reads": client.get("/orgs/acme/products", headers=outsider),
+            "no such org": client.get("/orgs/initech/products", headers=outsider),
+            "in their own": client.get("/orgs/globex/products", headers=outsider),
+            "anonymous": client.get("/orgs/acme/products"),
+        }
+
+    assert {name: answer.status_code for name, answer in answers.items()} == {
+        "owner reads": 200,
+        "owner changes": 200,
+        "viewer reads": 200,
+        "viewer changes": 403,
+        "outsider reads": 404,
+        "no such org": 404,
+        "in their own": 200,
+        "anonymous": 401,
+    }
+    assert answers["owner changes"].json() == {"tenant": "acme", "changed": True}
+    assert body(answers["outsider reads"]) == body(answers["no such org"])
+
+
+def test_a_members_role_raises_no_ceiling(api: Api) -> None:
+    """A role's keys count inside the tenant, and toward no ceiling.
+
+    Staff who are owners in acme, while acme is served, use its role's
+    keys there, but grant them to no one through the admin API, and scope
+    no personal token with them: either would carry them beyond acme.
+    What they hold everywhere still bounds both, and ``/auth/me`` lists
+    the role's keys with the rest.
+    """
+    boss = create_user("boss", is_staff=True)
+    bob = create_user("bob")
+    grant("boss", "auth.change_user", "auth.view_user")
+    with override_settings(
+        ROOT_ROUTER=f"{ORGS}.everything",
+        MIDDLEWARE=TENANT_MIDDLEWARE,
+        TENANCY={
+            "HEADER": "X-Tenant",
+            "REQUIRED": False,
+            "MEMBER_PERMISSIONS": f"{ORGS}.role_permissions",
+            "MEMBER_TENANTS": f"{ORGS}.role_tenants",
+        },
+        AUTH={**API.settings["AUTH"], "BACKENDS": MEMBERSHIP_BACKENDS},
+    ):
+        client = api()
+        seed((boss, "acme", "owner"))
+        acme = {**bearer(login(client, "boss")["access_token"]), "X-Tenant": "acme"}
+
+        def token(*scopes: str) -> Any:  # noqa: ANN401 - a response.
+            body = {"name": "ci", "password": PASSWORD, "scopes": list(scopes)}
+            return client.post("/auth/tokens", json=body, headers=acme)
+
+        uses = client.patch("/orgs/acme/products", headers=acme)
+        grants = client.put(
+            f"/admin/auth/users/{bob}/permissions",
+            json={"permissions": ["shop.change_product"]},
+            headers=acme,
+        )
+        scopes = token("shop.view_product")
+        own = token("auth.view_user")
+        listed = client.get("/auth/me", headers=acme).json()["permissions"]
+
+    assert {
+        "uses the role": uses.status_code,
+        "grants the role's key": grants.status_code,
+        "scopes a token with it": scopes.status_code,
+        "scopes a token with its own": own.status_code,
+    } == {
+        "uses the role": 200,
+        "grants the role's key": 403,
+        "scopes a token with it": 403,
+        "scopes a token with its own": 201,
+    }
+    assert grants.json()["detail"] == (
+        "You can only grant permissions you have; you lack shop.change_product."
+    )
+    assert scopes.json()["code"] == "scope_not_held"
+    assert sorted(listed) == [
+        "auth.change_user",
+        "auth.view_user",
+        "shop.change_product",
+        "shop.view_product",
+    ]
+
+
+@contextmanager
+def admin_with_roles(api: Api, **tenancy: Any) -> Iterator[TestClient]:  # noqa: ANN401
+    """A client of ``everything``, roles from the project's table, ``tenancy`` more."""
+    with override_settings(
+        ROOT_ROUTER=f"{ORGS}.everything",
+        TENANCY={"MEMBER_PERMISSIONS": f"{ORGS}.role_permissions", **tenancy},
+        AUTH={**API.settings["AUTH"], "BACKENDS": MEMBERSHIP_BACKENDS},
+    ):
+        yield api()
+
+
+def test_staff_cannot_take_over_a_tenants_owner(api: Api) -> None:
+    """Staff who hold ``auth.change_user`` and no role in acme cannot become its owner.
+
+    A password set or a logout is as good as becoming the user, and with
+    them their role in every tenant they belong to. The function that
+    names a member's keys answers one tenant at a time, so without
+    ``MEMBER_TENANTS`` nothing can rule a user out as a member: only
+    superusers change users.
+    """
+    ann = create_user("ann")
+    helpdesk = staff("helpdesk", "auth.change_user", "auth.view_user")
+    root = staff("root", is_superuser=True)
+    with admin_with_roles(api) as client:
+        seed((ann, "acme", "owner"))
+        password = client.post(
+            f"{ADMIN}/users/{ann}/password", json={"password": None}, headers=helpdesk
+        )
+        logout = client.post(f"{ADMIN}/users/{ann}/logout", headers=helpdesk)
+        rooted = client.post(f"{ADMIN}/users/{ann}/logout", headers=root)
+
+    assert [password.status_code, logout.status_code] == [403, 403]
+    assert password.json()["detail"] == (
+        "Only superusers may change users while TENANCY.MEMBER_TENANTS does not "
+        "say which tenants a user belongs to."
+    )
+    assert rooted.status_code == 204
+
+
+def test_staff_change_only_those_who_hold_no_more_in_their_tenants(api: Api) -> None:
+    """With ``MEMBER_TENANTS``, a tenant's members are changed by its own staff.
+
+    Staff change a user only in tenants they belong to themselves, holding
+    there (or everywhere) every key the user holds: acme's owner logs out
+    acme's viewer and its other owner; its viewer, though staff, not its
+    owner; neither reaches globex's owner. A user of no tenant is anyone's.
+    """
+    ann, dee, cy, bob = (create_user(name) for name in ("ann", "dee", "cy", "bob"))
+    helpdesk = staff("helpdesk", "auth.change_user", "auth.view_user")
+    owner = staff("owner", "auth.change_user", "auth.view_user")
+    viewer = staff("viewer", "auth.change_user", "auth.view_user")
+    with admin_with_roles(api, MEMBER_TENANTS=f"{ORGS}.role_tenants") as client:
+        seed(
+            (ann, "acme", "owner"),
+            (dee, "acme", "viewer"),
+            (cy, "globex", "owner"),
+            (stored_id("owner"), "acme", "owner"),
+            (stored_id("viewer"), "acme", "viewer"),
+        )
+
+        def logout(target: UUID, by: dict[str, str]) -> Any:  # noqa: ANN401
+            return client.post(f"{ADMIN}/users/{target}/logout", headers=by)
+
+        answers = {
+            "helpdesk logs out one of no tenant": logout(bob, helpdesk),
+            "helpdesk logs out acme's owner": logout(ann, helpdesk),
+            "acme's owner logs out its viewer": logout(dee, owner),
+            "acme's owner logs out its other owner": logout(ann, owner),
+            "acme's viewer logs out its owner": logout(ann, viewer),
+            "acme's owner logs out globex's owner": logout(cy, owner),
+        }
+
+    assert {name: answer.status_code for name, answer in answers.items()} == {
+        "helpdesk logs out one of no tenant": 204,
+        "helpdesk logs out acme's owner": 403,
+        "acme's owner logs out its viewer": 204,
+        "acme's owner logs out its other owner": 204,
+        "acme's viewer logs out its owner": 403,
+        "acme's owner logs out globex's owner": 403,
+    }
+    assert answers["acme's viewer logs out its owner"].json()["detail"] == (
+        "You can only change users whose permissions you have; you lack what "
+        "they hold in 1 of their tenants."
+    )
+
+
+def stored_id(username: str) -> UUID:
+    """The id of the stored user ``username``."""
+
+    async def find() -> UUID:
+        async with AuthUnitOfWork() as uow:
+            found = await uow.users.get_by_natural_key(username)
+        assert found is not None
+        return UUID(str(found.id))
+
+    return run_async(find())
+
+
+def tenants_listed(user: Any) -> set[str]:  # noqa: ANN401
+    """``MEMBER_TENANTS`` over ``MEMBERS``."""
+    return {org for name, org in MEMBERS if name == getattr(user, "username", None)}
+
+
+def every_tenant(user: Any) -> list[str]:  # noqa: ANN401
+    """``MEMBER_TENANTS`` that lists tenants a user may not belong to."""
+    return ["acme", "globex", "initech"]
+
+
+def no_tenant_list(user: Any) -> str:  # noqa: ANN401
+    """``MEMBER_TENANTS`` that answers one id as text."""
+    return "acme"
+
+
+async def test_tenants_beyond_counts_memberships_and_keys() -> None:
+    """Belonging counts with ``MEMBERSHIP``; keys too with ``MEMBER_PERMISSIONS``."""
+    ann, bob = PEOPLE["ann"], PEOPLE["bob"]
+    belonging = {"MEMBERSHIP": f"{HERE}.belongs"}
+    with override_settings(
+        TENANCY={**belonging, "MEMBER_TENANTS": f"{HERE}.tenants_listed"}
+    ):
+        assert await tenants_beyond(bob, ann, ()) == frozenset({"acme"})
+        assert await tenants_beyond(ann, bob, ()) == frozenset()
+    with override_settings(
+        TENANCY={
+            "MEMBER_PERMISSIONS": f"{HERE}.keys",
+            "MEMBER_TENANTS": f"{HERE}.every_tenant",
+        }
+    ):
+        # Both list initech, where neither belongs; bob holds nothing in acme.
+        assert await tenants_beyond(ann, bob, ()) == frozenset()
+        assert await tenants_beyond(bob, ann, ()) == frozenset({"acme"})
+        assert await tenants_beyond(bob, ann, ROLES["acme"]) == frozenset({"acme"})
+    with override_settings(TENANCY={"MEMBER_PERMISSIONS": f"{HERE}.keys"}):
+        assert await tenants_beyond(bob, ann, ()) is None
+    with override_settings(TENANCY=belonging):
+        assert await tenants_beyond(bob, ann, ()) == frozenset()
+    with override_settings(TENANCY=None):
+        assert await tenants_beyond(bob, ann, ()) == frozenset()
+    with (
+        override_settings(
+            TENANCY={**belonging, "MEMBER_TENANTS": f"{HERE}.no_tenant_list"}
+        ),
+        pytest.raises(ImproperlyConfigured, match="returned a str"),
+    ):
+        await tenants_beyond(bob, ann, ())
+
+
+def test_member_tenants_need_someone_to_say_who_belongs() -> None:
+    """``MEMBER_TENANTS`` lists what ``MEMBERSHIP`` or ``MEMBER_PERMISSIONS`` admits."""
+    with pytest.raises(ValidationError, match="set one of them"):
+        TenancyConfig(MEMBER_TENANTS="a.b")
+
+
+def test_check_warns_that_only_superusers_change_users(use_auth: UseAuth) -> None:
+    """``auth.W010``: members' keys, and no list of a user's tenants."""
+    use_auth()
+    config = registry.get_domain_config("auth")
+
+    def warnings() -> list[str]:
+        return [found.id for found in config.weak_settings()]  # type: ignore[attr-defined]
+
+    assert warnings() == []
+    with override_settings(TENANCY={"MEMBER_PERMISSIONS": f"{HERE}.keys"}):
+        assert warnings() == ["auth.W010"]
+    with override_settings(
+        TENANCY={
+            "MEMBER_PERMISSIONS": f"{HERE}.keys",
+            "MEMBER_TENANTS": f"{HERE}.tenants_listed",
+        }
+    ):
+        assert warnings() == []
+
+
+async def shop_roles(user: Any, tenant_id: str) -> frozenset[str] | None:  # noqa: ANN401
+    """The shopkeeper of acme changes its products; no one else is a member."""
+    if (getattr(user, "username", None), tenant_id) != ("keeper", "acme"):
+        return None
+    return frozenset({"shop.change_product"})
+
+
+@pytest.fixture
+def granting(database_url: str, tmp_path: Path) -> Iterator[None]:
+    """Auth, object permissions, and the shop, migrated; roles from ``shop_roles``."""
+    registry.clear()
+    with override_settings(
+        INSTALLED_DOMAINS=[CONTENTTYPES, AUTH, OBJECTPERMISSIONS, SHOP, ALPHA],
+        DATABASES={"default": {"URL": database_url}},
+        MIGRATIONS_DIR=tmp_path / "migrations",
+        AUTH={
+            "PASSWORD_HASHERS": [FAST_HASHER],
+            "BACKENDS": [
+                *MEMBERSHIP_BACKENDS,
+                "domainkit.contrib.objectpermissions.ObjectPermissionBackend",
+            ],
+        },
+        TENANCY={"MEMBER_PERMISSIONS": f"{HERE}.shop_roles"},
+    ):
+        setup()
+        call_command("makemigrations", "-m", "init", stdout=io.StringIO())
+        call_command("migrate", stdout=io.StringIO())
+        yield
+    registry.clear()
+
+
+def loaded(username: str, *keys: str) -> AbstractBaseUser:
+    """Store ``username``, granted ``keys``; return them as a request loads them."""
+    create_user(username)
+    if keys:
+        grant(username, *keys)
+
+    async def load() -> AbstractBaseUser:
+        async with AuthUnitOfWork() as uow:
+            found = await uow.users.get_by_natural_key(username)
+        assert found is not None
+        return found
+
+    return run_async(load())
+
+
+def test_a_member_grants_on_objects_only_what_they_hold_everywhere(
+    granting: None,
+) -> None:
+    """A role's key changes acme's products, and is handed out on none.
+
+    Granting on an object is a ceiling, as the admin API's are: a key held
+    only through a membership would leave the tenant with the grant.
+    """
+    manage = "objectpermissions.add_objectpermission"
+    change = "shop.change_product"
+    keeper = loaded("keeper", manage)
+    holder = loaded("holder", manage, change)
+    ada = loaded("ada")
+    product = Product(id=ProductId(uuid4()), name="one")
+
+    async def in_acme(actor: AbstractBaseUser) -> tuple[bool, object]:
+        with tenant("acme"):
+            holds = await has_perm(actor, change)
+            try:
+                return holds, await grant_permission(
+                    actor, change, product, user=ada.id
+                )
+            except PermissionDenied as refused:
+                return holds, str(refused)
+
+    assert run_async(in_acme(keeper)) == (
+        True,
+        "You may grant or revoke only permissions you hold on the object.",
+    )
+    holds, granted = run_async(in_acme(holder))
+    assert holds
+    assert isinstance(granted, ObjectPermission)

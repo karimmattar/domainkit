@@ -142,6 +142,7 @@ How requests prove who sent them (Django REST framework's authentication).
 Who a user is, and what they may do (Django's authentication backends).
 
 - `BaseBackend`: A backend that knows no one and grants nothing; override what you need.
+- `MembershipBackend`: What a user holds as a member of the tenant being served.
 - `ModelBackend`: Passwords from the user table; permissions of users and their groups.
 - `ObjectGrant`: `permission` granted on one object: its content type and its id.
 - `authenticate`: The user the credentials prove, by the first backend that accepts them.

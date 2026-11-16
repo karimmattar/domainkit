@@ -120,6 +120,8 @@ application logs them as a warning and starts.
 | --- | --- |
 | `security.E101` | a route that no rule guards, while `REQUIRE_ROUTE_RULES` is on ([Deny by default](../auth/routes.md#deny-by-default)) |
 | `openapi.E001` | two routes with one operation id ([Operation ids](responses.md#operation-ids)) |
+| `tenancy.E001` | a route whose `PathTenant` names a path parameter its path does not have ([A tenant from the path](../tenancy.md#a-tenant-from-the-path)) |
+| `tenancy.E002` | a route whose own dependencies check callers (`Require`) before `PathTenant` serves the path's tenant |
 | `auth.E101` | routes that check users, but `MIDDLEWARE` lacks `AuthenticationMiddleware` |
 | `auth.E102` | auth's cookie routes mounted, but `AUTH.AUTHENTICATION_CLASSES` lacks `CookieAuthentication` |
 | `auth.E103` | auth's routes that send mail, without the apps they need in `INSTALLED_DOMAINS` |
@@ -190,6 +192,7 @@ everywhere.
 | `auth.W006` | `AUTH.ACCOUNT_LOGIN_RATE` set to `None`, or to more than 100 wrong passwords a day at one account: past NIST SP 800-63B 5.2.2 ([auth.md](../auth/logging-in.md#wrong-passwords-and-device-proofs)) |
 | `ciba.W001` | in every environment: `CIBA.APPROVE_LOGINS` on with `AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS = "end"`, so a password change or reset signs the phone out too ([Credential changes and the phone](../auth/logging-in.md#credential-changes-and-the-phone)) |
 | `auth.W007` | in every environment: a backend of `AUTH.BACKENDS` other than `ModelBackend` that does not answer `object_grants`. Only superusers then change users and groups through the admin API ([auth.md](../auth/routes.md#the-admin-api)) |
+| `auth.W010` | in every environment: `TENANCY.MEMBER_PERMISSIONS` without `MEMBER_TENANTS`. Only superusers then change users through the admin API ([tenancy.md](../tenancy.md#members-permissions)) |
 | `audit.W001` to `audit.W005` | for the parts `AUDIT.REQUIRE` leaves out (all, with `REQUIRE_BASELINE = False`): what `audit.E001` to `audit.E005` refuse |
 | `accounting.W001`, `accounting.W002` | with `ACCOUNTING.REQUIRE_PROTECTION = False` only, logged at startup: what `accounting.E001` and `accounting.E002` refuse |
 | `accounting.W003` | the ledger without `domainkit.contrib.messaging`: no worker releases expired holds, which keep counting against what is available. Silence it once `manage.py accounting expireholds` runs on the project's own schedule ([accounting.md](../contrib/accounting.md#holds)) |

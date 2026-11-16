@@ -11,6 +11,35 @@ and a status.
 
 ### Added
 
+- A route can take its tenant from its path, once routed:
+  `Depends(PathTenant("org_id"))` on a router prefixed `/orgs/{org_id}`
+  serves each of its routes as that tenant, as `TenantMiddleware` serves
+  one, and OpenAPI documents the parameter. A caller who does not belong
+  gets the `404` of a route that does not exist, whether the tenant
+  exists or not, so none is told apart; an anonymous one gets `401`.
+  `MEMBERSHIP` or `MEMBER_PERMISSIONS` must say who belongs. `check`
+  refuses a route whose path lacks the parameter (`tenancy.E001`), or
+  that checks callers before `PathTenant` (`tenancy.E002`). Tenancy chose
+  one tenant per request before routing, and answered strangers `403`.
+  ADR 0150 (user report D2).
+- `TENANCY.MEMBER_PERMISSIONS` names a function of the user and a tenant
+  that returns the permission keys a member holds there, such as their
+  role's, or None for one who is not a member; it replaces `MEMBERSHIP`.
+  It is asked once per request, and `MembershipBackend`
+  (`domainkit.contrib.auth.backends`) grants the keys in the tenant being
+  served, so `HasPermissions` counts a member's role;
+  `member_permissions(user)` returns them. The keys count toward no
+  ceiling: `get_all_permissions` leaves out backends whose grants hold in
+  one tenant (`BaseBackend.tenant_scoped`), so staff grant none of them
+  through the admin API, nor on objects (`contrib.objectpermissions`),
+  and no personal token or sign-in approval is scoped with them;
+  `/auth/me` lists them. Staff change, log out, or act as a user only in
+  tenants they belong to, holding there every key the user holds:
+  `TENANCY.MEMBER_TENANTS` names the function that lists a user's
+  tenants (`tenants_beyond`), and while `MEMBER_PERMISSIONS` is set
+  without it only superusers change users (`auth.W010`). A project wrote
+  memberships and a backend of its own for this. ADR 0150 (user report
+  D2).
 - `AUTH.BREACHED_PASSWORDS = {"ENABLED": True}` checks every new password
   (signup, change, reset, the admin API, a change at the first login or
   at enrollment, the commands) against Have I Been Pwned's Pwned

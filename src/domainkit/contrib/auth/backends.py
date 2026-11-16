@@ -21,15 +21,23 @@ A backend that stores grants on single objects also says which it holds
 for a user or a group (``object_grants``), so the admin API bounds staff
 by them as by model permissions: staff change no one, and join no group,
 holding a grant they lack (AUTH-14).
+
+``MembershipBackend`` grants what a user holds as a member of the tenant
+being served (``TENANCY.MEMBER_PERMISSIONS``, ADR 0150). Such grants hold
+there only (``tenant_scoped``): ``has_perm`` counts them, but
+``get_all_permissions``, which every ceiling reads, leaves them out.
 """
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from functools import cache
+from typing import ClassVar
 from uuid import UUID
 
+from domainkit.conf import settings
 from domainkit.ddd import PermissionDenied
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.tenancy import member_permissions
 from domainkit.utils.module_loading import import_string
 
 from .hashers import amake_password, averify_password
@@ -40,6 +48,7 @@ from .users import get_user_model
 
 __all__ = [
     "BaseBackend",
+    "MembershipBackend",
     "ModelBackend",
     "ObjectGrant",
     "authenticate",
@@ -70,6 +79,15 @@ class ObjectGrant:
 
 class BaseBackend:
     """A backend that knows no one and grants nothing; override what you need."""
+
+    tenant_scoped: ClassVar[bool] = False
+    """Whether what it grants holds only in the tenant being served.
+
+    ``has_perm`` counts such grants there. ``get_all_permissions``, which
+    every ceiling reads (what staff may grant, change, or touch through the
+    admin API; the scopes a token may carry), leaves them out, so they never
+    reach beyond the tenant (ADR 0150).
+    """
 
     async def authenticate(
         self, credentials: Mapping[str, object]
@@ -191,6 +209,51 @@ class ModelBackend(BaseBackend):
             await uow.commit()
 
 
+class MembershipBackend(BaseBackend):
+    """What a user holds as a member of the tenant being served.
+
+    ``TENANCY.MEMBER_PERMISSIONS`` names the keys, such as a role's, for
+    the user and the current tenant; the request asked it once, when it
+    was admitted (``domainkit.tenancy.member_permissions``). With no
+    tenant current, the backend grants nothing. Inactive users have
+    nothing. Object permissions (``obj``) are left to other backends, as
+    ``ModelBackend`` leaves them, and so it grants on no object.
+
+    Its grants hold in the tenant only (``tenant_scoped``): ``has_perm``
+    counts them, and no ceiling does, so a member hands out none of them,
+    and scopes no token with them, beyond what they hold everywhere.
+    """
+
+    tenant_scoped: ClassVar[bool] = True
+
+    def __init__(self) -> None:
+        """Refuse to be configured where nothing names a member's permissions.
+
+        Raises:
+            ImproperlyConfigured: ``TENANCY.MEMBER_PERMISSIONS`` is not set.
+        """
+        config = settings.TENANCY
+        if config is None or config.MEMBER_PERMISSIONS is None:
+            raise ImproperlyConfigured(
+                "MembershipBackend grants what TENANCY.MEMBER_PERMISSIONS "
+                "names: set it to the function that says what a member holds."
+            )
+
+    async def get_all_permissions(
+        self, user: AnyUser, obj: object | None = None
+    ) -> frozenset[str]:
+        """The keys an active ``user`` holds in the current tenant (none on ``obj``)."""
+        if obj is not None or not user.is_active:
+            return frozenset()
+        return await member_permissions(user)
+
+    async def object_grants(
+        self, holder: AbstractBaseUser | Group
+    ) -> frozenset[ObjectGrant]:
+        """None: a member's keys are not grants on single objects."""
+        return frozenset()
+
+
 @cache
 def load_backends(paths: tuple[str, ...]) -> tuple[BaseBackend, ...]:
     """Instantiate the backend classes named in ``paths``."""
@@ -232,9 +295,18 @@ async def get_user(user_id: UUID) -> AbstractBaseUser | None:
 
 
 async def get_all_permissions(
-    user: AnyUser, obj: object | None = None
+    user: AnyUser, obj: object | None = None, *, tenant_scoped: bool = False
 ) -> frozenset[str]:
     """Keys of every permission any backend grants ``user`` (on ``obj``).
+
+    What the user holds beyond any one tenant, which every ceiling reads:
+    what staff may grant, change, or touch through the admin API, and the
+    scopes a personal token or a sign-in approval may carry. A backend
+    whose grants hold only in the tenant being served (``tenant_scoped``,
+    such as ``MembershipBackend``) is left out, so a member's role never
+    raises a ceiling (ADR 0150). ``tenant_scoped=True`` adds its keys, as
+    ``has_perm`` counts them, for a listing of what the user may do in the
+    current request (``/auth/me``).
 
     For an active superuser they are every permission, on an object too,
     as ``has_perm`` answers before any backend is asked, and whatever the
@@ -245,6 +317,8 @@ async def get_all_permissions(
         async with AuthUnitOfWork() as uow:
             granted |= await uow.permissions.keys()
     for backend in get_backends():
+        if backend.tenant_scoped and not tenant_scoped:
+            continue
         granted |= await backend.get_all_permissions(user, obj)
     return frozenset(granted)
 

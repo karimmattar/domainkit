@@ -11,7 +11,9 @@ On this page you learn how to:
 
 - name the tenant of each request, from a subdomain, a header, or a
   function of your own;
-- check that the caller belongs to the tenant;
+- take the tenant from a route's path, such as `/orgs/{org_id}/...`;
+- check that the caller belongs to the tenant, and give members
+  permissions in it;
 - keep each tenant's rows apart with `TenantOwned`;
 - give a tenant its own database, or its own PostgreSQL schema;
 - serve a tenant outside a request, and read every tenant's rows on
@@ -133,6 +135,190 @@ A WebSocket is closed with code 1008 instead.
 `TenantMiddleware` refuses to start without `TENANCY`
 (`ImproperlyConfigured`). Put `IdempotencyMiddleware` after it, so an
 `Idempotency-Key` is the tenant's own.
+
+## A tenant from the path
+
+A route can take its tenant from its path (since 2.4), once it is routed:
+`/orgs/acme/invoices` is served as `acme`. Put `PathTenant` on a router,
+as the first of its dependencies:
+
+```python
+from fastapi import APIRouter, Depends
+
+from domainkit.http.access import HasPermissions, Require
+from domainkit.tenancy import PathTenant
+
+router = APIRouter(
+    prefix="/orgs/{org_id}",
+    dependencies=[Depends(PathTenant("org_id"))],
+)
+
+
+@router.get(
+    "/invoices",
+    dependencies=[Depends(Require(HasPermissions("billing.view_invoice")))],
+)
+async def invoices() -> list[InvoiceOut]: ...
+```
+
+```python
+TENANCY = {"MEMBERSHIP": "accounts.tenancy.is_member"}
+```
+
+Every route of the router, and of the routers it includes, is then served
+as the path's tenant, as `TenantMiddleware` serves one: rows, databases,
+caches, rate limits, logs, and background tasks are the tenant's.
+OpenAPI documents the path parameter. The dependency returns the tenant
+id: name the `PathTenant` (`by_org = PathTenant("org_id")`), and a route
+takes the id as `org: Annotated[str, Depends(by_org)]`, which FastAPI
+does not run twice.
+
+`PathTenant` needs `MEMBERSHIP` or `MEMBER_PERMISSIONS`: a caller can type
+any id in a path. Without either, it raises `ImproperlyConfigured`. It
+answers:
+
+| Request | Answer |
+| --- | --- |
+| From a member of the tenant | Served as the tenant. |
+| From a caller who proved who they are, and does not belong | `404 not_found` |
+| Naming a tenant that does not exist, or an id that is not a tenant id | `404 not_found` |
+| Naming a tenant other than the one `TenantMiddleware` already serves | `404 not_found` |
+| From an anonymous caller who does not belong | `401 not_authenticated` |
+
+The `404` is the answer a route that does not exist gives, word for word.
+So a caller who does not belong cannot tell a tenant that exists from one
+that does not. [RFC 9110](https://www.rfc-editor.org/rfc/rfc9110#section-15.5.4)
+lets a server answer `404` to hide that a resource it refuses exists, as
+GitHub does for private repositories. An anonymous caller gets `401`, as
+`Require` answers it, whichever tenant the path names: logging in may
+help, and the answer tells no tenant apart. A WebSocket handshake gets
+the same answers. While a WebSocket or an event stream
+stays open, membership is checked again with the route's rules
+(`LIVE_REAUTH_INTERVAL`), and a member removed meanwhile is disconnected.
+
+Put `PathTenant` first. A rule that runs before it sees no tenant: it
+would answer a member's request `403`, and a stranger's `403` rather than
+`404`. `check`, and the application as it starts, refuse a route whose
+own dependencies put a rule before `PathTenant` (`tenancy.E002`), and one
+whose path lacks the parameter `PathTenant` names (`tenancy.E001`), which
+would refuse every request with `422`.
+
+**With `TenantMiddleware` too.** A project may name some tenants before
+routing and others by path. `TenantMiddleware` then refuses a request
+that names no tenant before routing, unless its path is exempt. List the
+prefix in `EXEMPT_PATHS`:
+
+```python
+TENANCY = {
+    "SUBDOMAIN_OF": "example.com",
+    "MEMBERSHIP": "accounts.tenancy.is_member",
+    "EXEMPT_PATHS": ["/health", "/orgs/"],
+}
+```
+
+## Members' permissions
+
+A member's role in a tenant often decides what they may do there: an
+owner changes invoices, a viewer reads them. `MEMBER_PERMISSIONS` (since
+2.4) names a function of the user and a tenant id (async or not). It returns
+the permission keys the user holds as a member of that tenant, or `None`
+for one who is not a member. It replaces `MEMBERSHIP`; set one of them.
+Your project keeps the memberships, in its own table:
+
+```python
+# accounts/tenancy.py
+from domainkit.ddd import F
+
+ROLES = {
+    "owner": {"billing.view_invoice", "billing.change_invoice"},
+    "viewer": {"billing.view_invoice"},
+}
+
+
+async def member_permissions(user, tenant_id: str) -> set[str] | None:
+    if not user.is_authenticated:
+        return None
+    async with AccountsUnitOfWork() as uow:
+        membership = await uow.memberships.first(
+            (F("user_id") == user.id) & (F("tenant") == tenant_id)
+        )
+    return None if membership is None else ROLES[membership.role]
+```
+
+```python
+TENANCY = {
+    "SUBDOMAIN_OF": "example.com",
+    "MEMBER_PERMISSIONS": "accounts.tenancy.member_permissions",
+}
+AUTH = {
+    "BACKENDS": [
+        "domainkit.contrib.auth.backends.ModelBackend",
+        "domainkit.contrib.auth.backends.MembershipBackend",
+    ]
+}
+```
+
+`MembershipBackend` grants a user the keys they hold in the tenant being
+served. So `HasPermissions("billing.change_invoice")`, `ModelPermissions`,
+and `has_perm` count a member's role, beside what `ModelBackend` grants
+everywhere. With no tenant current it grants nothing. It grants on no
+object: object permissions stay with other backends. Listed without
+`MEMBER_PERMISSIONS`, it raises `ImproperlyConfigured`.
+
+The function is asked once per request: `TenantMiddleware` and
+`PathTenant` ask it when they admit the caller, and every permission
+check of the request reuses the answer. `member_permissions(user)` in
+`domainkit.tenancy` returns it. In code outside a request, inside
+`tenant(...)`, it asks the function each time. On a WebSocket or an event
+stream, each re-check asks afresh, as the principal is loaded again. A
+project that authenticates its own way calls `member_permissions` from
+its principal's `ahas_perms`.
+
+**A role never reaches beyond its tenant.** Keys a member holds through
+`MEMBER_PERMISSIONS` answer the checks of requests served as that tenant,
+and count toward no ceiling. `get_all_permissions`, which every ceiling
+reads, leaves out the backends whose grants hold in one tenant only
+(`tenant_scoped`, as `MembershipBackend` is). So, while a tenant is served:
+
+- staff grant through the admin API, directly or through a group, only
+  what they hold everywhere, and change or touch only users and groups
+  within that (`You can only grant permissions you have`);
+- a personal token, and a sign-in approval's access token, carry only
+  scopes the user holds everywhere (`403 scope_not_held`). A scope only
+  bounds a token anyway: each request still needs the permission itself.
+
+`/auth/me` lists a member's keys in the tenant with the rest, as the
+checks count them.
+
+**Staff change no one who holds more than they do in a tenant.** Setting
+a user's password, logging them out, or acting as them hands over their
+memberships too. So, as Microsoft Entra keeps a helpdesk administrator
+from resetting the password of an administrator, the admin API lets
+staff change a user only in tenants the staff member belongs to, holding
+there, or everywhere, every key the user holds there. To know a user's
+tenants, name a function of the user (async or not) that returns their
+ids in `MEMBER_TENANTS`:
+
+```python
+async def member_tenants(user) -> list[str]:
+    async with AccountsUnitOfWork() as uow:
+        rows = await uow.memberships.values(F("user_id") == user.id, "tenant")
+    return [row["tenant"] for row in rows]
+
+
+TENANCY = {
+    "MEMBER_PERMISSIONS": "accounts.tenancy.member_permissions",
+    "MEMBER_TENANTS": "accounts.tenancy.member_tenants",
+}
+```
+
+Without it, nothing rules a user out as a member, so only superusers
+change users through the admin API while `MEMBER_PERMISSIONS` is set, and
+`check` warns (`auth.W010`). A refusal says in how many of the user's
+tenants staff lack what the user holds, not which. Impersonation tokens
+are checked the same way on every request. With `MEMBERSHIP` alone, staff
+are held to the user's tenants once `MEMBER_TENANTS` is set; without it,
+as before 2.4, the admin API does not count memberships.
 
 ## Outside a request
 
@@ -315,6 +501,8 @@ it, and so do formats that name it (`%(tenant)s`).
 | Function | Answers |
 | --- | --- |
 | `current_tenant()` | The tenant being served, or None. |
+| `member_permissions(user)` | The keys `user` holds as a member of the current tenant (`MEMBER_PERMISSIONS`); async. |
+| `tenants_beyond(actor, user, held)` | The tenants where `user` holds what `actor` does not (`MEMBER_TENANTS`), or None when no one can be ruled out; async. The admin API's `may_change` asks it. |
 | `row_tenant()` | The tenant `TenantOwned` rows are scoped to; None inside `all_tenants()`. With no tenant current, it raises `TenantRequired`. |
 | `tenant_schema(tenant_id)` | The PostgreSQL schema of a tenant. |
 | `scoped_key(key)` | The key, made the current tenant's own. |
@@ -341,6 +529,8 @@ None
 | `HEADER` | `None` | A header that names the tenant (`X-Tenant`). Not with `SUBDOMAIN_OF`. |
 | `RESOLVER` | `None` | Dotted path to a function of the request (async or not) that returns its tenant, or None. It replaces the two above. |
 | `MEMBERSHIP` | `None` | Dotted path to a function of the user and a tenant id (async or not): whether the user may act in it. |
+| `MEMBER_PERMISSIONS` | `None` | Dotted path to a function of the user and a tenant id (async or not): the keys the user holds as a member, or None for one who is not. Not with `MEMBERSHIP`. |
+| `MEMBER_TENANTS` | `None` | Dotted path to a function of the user (async or not): the ids of the tenants the user belongs to. With `MEMBERSHIP` or `MEMBER_PERMISSIONS`. |
 | `REQUIRED` | `True` | Refuse a request that names no tenant. |
 | `EXEMPT_PATHS` | `("/health",)` | Paths that may name no tenant. |
 | `SCHEMA` | `"tenant_{tenant}"` | A tenant's schema on `SCHEMA_DATABASES`: lowercase letters and `_` around `{tenant}`. |
@@ -358,8 +548,10 @@ None
 | (middleware) | No tenant named, where one is required. | `400 tenant_not_named` |
 | (middleware) | A malformed tenant id. | `400 invalid_tenant` |
 | (middleware) | The caller does not belong to the tenant. | `403 not_a_member` |
+| (`PathTenant`) | The caller does not belong to the path's tenant, or it is not one. | `404 not_found` |
+| (`PathTenant`) | An anonymous caller does not belong to the path's tenant. | `401 not_authenticated` |
 | `ValueError` | `tenant()` or `check_tenant_id()` with a malformed id. | |
-| `ImproperlyConfigured` | `TenantMiddleware` without `TENANCY`, or both `SUBDOMAIN_OF` and `HEADER`. | |
+| `ImproperlyConfigured` | `TenantMiddleware` without `TENANCY`; both `SUBDOMAIN_OF` and `HEADER`, or both `MEMBERSHIP` and `MEMBER_PERMISSIONS`, or `MEMBER_TENANTS` without either; `PathTenant` without either; `MembershipBackend` without `MEMBER_PERMISSIONS`; a hook that answers one string or a bool. | |
 
 ## Common mistakes
 
@@ -367,6 +559,12 @@ None
   user. Put it after `AuthenticationMiddleware`.
 - **A header without `MEMBERSHIP`.** Anyone can send any tenant's name.
   Always pair `HEADER` with `MEMBERSHIP`.
+- **A rule before `PathTenant`.** It runs with no tenant: members get
+  `403`, and so do strangers, where they should get `404`. Put
+  `PathTenant` first in the router's dependencies (`tenancy.E002`).
+- **A path tenant's prefix that is not exempt.** With `TenantMiddleware`
+  and `REQUIRED`, a request that names no tenant before routing gets
+  `400 tenant_not_named`. Add the prefix to `EXEMPT_PATHS`.
 - **A unique constraint without `tenant_id`.** Two tenants then cannot
   use the same invoice number. Put `tenant_id` first in it.
 - **Plain `migrate` for a schema per tenant.** It leaves those databases

@@ -203,11 +203,11 @@ unique constraint may name its own code
 | `no_open_period` | 422 | `NoOpenPeriod` (contrib.accounting.exceptions): No accounting period covers the entry's date (``REQUIRE_PERIOD``). |
 | `no_second_factor` | 409 | contrib.auth.stepup: Turn on a second factor first: confirming it is you needs one. |
 | `no_session` | 400 | contrib.auth.cookies: This request has no browser session. |
-| `not_a_member` | 403 | domainkit.tenancy: `TENANCY.MEMBERSHIP` says the caller does not belong to the tenant. |
+| `not_a_member` | 403 | domainkit.tenancy: `TENANCY.MEMBERSHIP` (or `MEMBER_PERMISSIONS`) says the caller does not belong to the tenant `TenantMiddleware` serves. |
 | `not_acceptable` | 406 | resources.renderers: This resource cannot answer in a media type the request accepts. |
 | `not_applied` | 424 | resources.batches: Another item of the batch failed, so nothing was applied. |
 | `not_authenticated` | 401 | http.access: Authentication credentials were not provided. |
-| `not_found` | 404 | `NotFound` (ddd.exceptions): The requested aggregate does not exist. contrib.auth.signup: Not Found. contrib.flags.dependencies: Not found. Starlette or FastAPI. |
+| `not_found` | 404 | `NotFound` (ddd.exceptions): The requested aggregate does not exist. contrib.auth.signup: Not Found. contrib.flags.dependencies: Not found. domainkit.tenancy: `PathTenant`, to a caller who does not belong to the path's tenant, as to a route that does not exist. Starlette or FastAPI. |
 | `not_the_maker` | 403 | `NotTheMaker` (contrib.approvals.exceptions): Only whoever submitted a request may cancel it. |
 | `overloaded` | 503 | http.shedding: The server is busy; try again shortly. |
 | `passkey_not_found` | 404 | `PasskeyNotFound` (contrib.devices.exceptions): The user has no passkey with that id. |

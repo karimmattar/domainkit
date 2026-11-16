@@ -35,6 +35,7 @@ from domainkit.http.servers import unix_socket_warnings
 from domainkit.http.versioning import DeprecationHeadersMiddleware
 from domainkit.http.websockets import server_warnings
 from domainkit.lifecycle import serving
+from domainkit.tenancy import path_tenant_problems
 from domainkit.utils.module_loading import import_string
 
 __all__ = [
@@ -235,7 +236,9 @@ def application_problems(app: FastAPI) -> list[str]:
     """What is wrong with ``app``: clashing ids, open routes, what domains find.
 
     Every route must declare who may call it (``REQUIRE_ROUTE_RULES``),
-    whatever authenticates requests. Domains report through
+    whatever authenticates requests; a route that takes its tenant from
+    its path must name a parameter it has, before its rules
+    (``tenancy.E001``, ``tenancy.E002``). Domains report through
     ``domainkit.apps.hooks.on_check_application``.
     """
     problems: list[str] = [
@@ -247,6 +250,7 @@ def application_problems(app: FastAPI) -> list[str]:
             CheckMessage("security.E101", problem)
             for problem in route_rule_problems(app)
         )
+    problems.extend(path_tenant_problems(app))
     problems.extend(
         problem for hook in on_check_application for problem in hook.call(app)
     )

@@ -26,6 +26,7 @@ from domainkit.conf.global_settings import (
     Settings,
     ShardConfig,
     StorageConfig,
+    TenancyConfig,
 )
 from domainkit.contrib.accounting import AccountingSettings
 from domainkit.contrib.approvals import ApprovalsSettings
@@ -102,6 +103,7 @@ def documented(pages: str) -> set[str]:
         (CacheConfig, REFERENCE),
         (BrokerConfig, REFERENCE),
         (StorageConfig, REFERENCE),
+        (TenancyConfig, REFERENCE),
         (DebugToolbarConfig, REFERENCE),
         (HttpClientConfig, REFERENCE),
         (LiveFanoutConfig, "live.md"),
@@ -526,6 +528,7 @@ SETTINGS_TABLES: tuple[tuple[type[BaseModel], str, str], ...] = (
     (CacheConfig, REFERENCE, "CACHES"),
     (StorageConfig, REFERENCE, "STORAGES"),
     (BrokerConfig, REFERENCE, "BROKERS"),
+    (TenancyConfig, REFERENCE, "TENANCY"),
     (HttpClientConfig, REFERENCE, "HTTP_CLIENT"),
     (LiveFanoutConfig, "live.md", "LIVE_FANOUT"),
     (DebugToolbarConfig, REFERENCE, "DEBUG_TOOLBAR"),

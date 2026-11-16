@@ -486,11 +486,12 @@ async def me(request: Request, user: AuthenticatedUser) -> UserOut:
     """The user who sent the request, and what these credentials may do.
 
     Credentials limited to scopes list only the permissions both the user
-    and the scopes allow, as the rules check them.
+    and the scopes allow, as the rules check them. A member's keys in the
+    tenant being served are listed too (``MembershipBackend``).
     """
     field = user.EMAIL_FIELD
     email = getattr(user, field, None) if field else None
-    permissions = await get_all_permissions(user)
+    permissions = await get_all_permissions(user, tenant_scoped=True)
     scopes = credentials_of(request).scopes
     return UserOut(
         id=user.id,
