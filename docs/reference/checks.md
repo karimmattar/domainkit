@@ -78,6 +78,7 @@ the baseline below do not load. So startup and every command fail on:
 | `deploy.E007` | `SEARCH` with `MemorySearchBackend`: its index lives in one process |
 | `security.E019` | no `EVIDENCE.SUBJECT_KEY` (or `SUBJECT_KEYS`), with `domainkit.contrib.evidence` installed: the development key is public ([evidence](../contrib/evidence.md#evidence-records-that-provably-never-change)) |
 | `security.E020` | an `IDENTITY.LDAP` directory reached by `ldap://` without `START_TLS`, with `domainkit.contrib.identity` installed: every password a login checks would cross the network in clear. Use an `ldaps://` URL, or set `START_TLS`. |
+| `documents.E001` | a `DOCUMENTS["RENDERER"]` `URL` of plain `http://` to another host: documents, and Gotenberg's password, would cross the network unencrypted. A renderer on `localhost` or a loopback address may keep http, and `ALLOW_HTTP = True` accepts a network that encrypts by itself, such as a service mesh ([documents.md](../documents.md#hardening-gotenberg)). New in 2.5. |
 
 `migrate --downgrade` also needs `--allow-data-loss` in staging and
 production ([commands](commands.md)).
@@ -204,6 +205,7 @@ everywhere.
 | `limits.W001` | limits without `domainkit.contrib.messaging`: no worker purges old usage, and its table grows with every movement. Silence it once `manage.py limits purge` runs on the project's own schedule ([limits.md](../contrib/limits.md#settings)) |
 | `idempotency.W001` | with `IDEMPOTENCY.REQUIRE_DEADLINE = False` only: what `idempotency.E002` refuses |
 | `keys.W001` | from `manage.py keys status --check`, not `check`: values, blind indexes, or subjects' keys are still sealed under a retired key. `manage.py keys reencrypt` moves them; then remove the key ([keys.md](../contrib/keys.md#rotating)) |
+| `documents.W001` | a `DOCUMENTS["RENDERER"]` without `USERNAME` and `PASSWORD` (in staging and production): Gotenberg renders, and fetches what a page links, for anyone who reaches it. Start it with `--api-enable-basic-auth`, or silence the warning where only the service reaches it ([documents.md](../documents.md#hardening-gotenberg)). New in 2.5 |
 
 The production settings that `init` writes avoid the first three
 warnings, and ask for `TRUSTED_PROXIES`: leave it empty only when callers
@@ -235,6 +237,7 @@ in `SILENCED_CHECKS`, it silences nothing.
 | --- | --- |
 | `security.I001` | in staging and production: where a request's scheme comes from ([below](#information-https)) |
 | `keys.I001` | in every environment: `KEYS.DATA_KEYS` keeps retired keys, as a rotation does until `keys reencrypt` moved what they seal; `keys status --check` says when they can go ([keys.md](../contrib/keys.md#rotating)) |
+| `documents.I001` | in staging and production, with `DOCUMENTS["RENDERER"]` set: Gotenberg's flags are not checked, since they are set where it runs and its API does not show them; the hint names those to set ([documents.md](../documents.md#hardening-gotenberg)). New in 2.5 |
 
 A domain's own infos (`<label>.I001`, from `on_deployment_warnings`) are
 listed the same way: never a failure, and nothing to silence.

@@ -20,6 +20,7 @@ On this page you find:
 | --- | --- |
 | Core settings, layer rules, languages and time zones, the debug toolbar | this page |
 | Databases, ledgers, shards, caches, storages, search, tenancy, brokers | [backends.md](backends.md) |
+| `DOCUMENTS`: the Gotenberg server that renders documents (new in 2.5) | [backends.md](backends.md#documents) |
 | HTTP, security headers, CORS, outgoing calls, live connections, middleware | [http.md](http.md) |
 | Each optional app's settings (`AUTH`, `MESSAGING`, `AUDIT`, ...) | the app's own page ([contrib.md](../contrib.md)) |
 | `AUTH`'s keys, `AUTH["BREACHED_PASSWORDS"]` (new passwords checked against data breaches) among them | [auth.md](../auth.md#settings) |
