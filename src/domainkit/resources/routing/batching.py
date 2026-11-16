@@ -47,7 +47,7 @@ from ..schemas import PatchModel
 from . import presenting, reach
 from .context import BATCH, DEFAULT, MODELS, Returns, RouteContext, RouteSpec, Service
 from .declaring import add_route
-from .values import changes, check_given, summary_of
+from .values import changes, check_given, instances, summary_of
 
 if TYPE_CHECKING:
     from domainkit.ddd.uow import Retry
@@ -93,8 +93,11 @@ class BatchRoute:
         """Check the command against what gives its fields.
 
         Raises:
-            TypeError: The path, the bound, or the body does not fit the command.
+            TypeError: The path, the bound, or the body does not fit the
+                command; or the batch acts on a tenants' collection without
+                naming its action (``reach.named_action``).
         """
+        reach.named_action(router, path, action)
         if not path.startswith("/") or max_items < 1:
             raise TypeError(
                 "A batch's path starts with /, and it takes 1 item or more."
@@ -122,6 +125,8 @@ class BatchRoute:
             )
         self.provided = dict(provide or {})
         check_given(command, given, self.provided, self.from_path | ({lookup} & names))
+        self.instances = instances(command, body)
+        """The body's fields that give the command its dataclasses as validated."""
         verb = action or (CHANGE if self.detail else ADD)
         if returns is DEFAULT and verb == DELETE:
             returns = None
@@ -304,7 +309,7 @@ class BatchRoute:
         takes it out (``reach.pinned``).
         """
         router = self.router
-        arguments = changes(each)
+        arguments = changes(each, self.instances)
         id_ = arguments.pop(router.lookup, None)
         own = dataclasses.replace(
             context,

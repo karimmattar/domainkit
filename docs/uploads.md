@@ -15,11 +15,15 @@ On this page you learn how to:
 - receive an upload safely with `save_upload`, and serve a file with
   `serve`;
 - give an upload route its own body limit with `body_limit`;
-- let a client send or fetch a file directly, with presigned URLs;
-- scan uploads for viruses, and make thumbnails of images.
+- let a client send or fetch a file directly, with presigned URLs, and
+  check that the store keeps them create only;
+- scan uploads for viruses, over TLS where clamd is on another host, and
+  make thumbnails of images;
+- remove the files a committed change dropped, once no row keeps them.
 
 The decisions are in
-[ADR 0040](adr/0040-store-files-under-random-names.md).
+[ADR 0040](adr/0040-store-files-under-random-names.md) and
+[ADR 0169](adr/0169-granians-http-versions-failed-starts-fcm-dry-runs-write-once-probes-clamd-over-tls-and-dropped-files.md).
 
 ## A first example
 
@@ -234,7 +238,7 @@ deadline), with no cloud SDK. Install the `cloud` extra.
 
 | Backend | Stores | Credentials |
 | --- | --- | --- |
-| `domainkit.storage.s3.S3Storage` | AWS S3, and with `endpoint` the stores that speak its API: MinIO (`path_style=True`), Cloudflare R2 (`region="auto"`), Huawei OBS, Alibaba OSS | `access_key_id` and `secret_access_key`, else the environment as AWS's tools read it (variables, EKS's web identity, the container's) |
+| `domainkit.storage.s3.S3Storage` | AWS S3, and with `endpoint` the stores that speak its API: Cloudflare R2 (`region="auto"`), SeaweedFS, RustFS, Versity's gateway (usually `path_style=True`), Huawei OBS, Alibaba OSS. MinIO speaks it too, but its community edition is no longer maintained, and is published as source only | `access_key_id` and `secret_access_key`, else the environment as AWS's tools read it (variables, EKS's web identity, the container's) |
 | `domainkit.storage.gcs.GCSStorage` | Google Cloud Storage | `credentials_file` (a service account's key), else the metadata server (GKE, Compute Engine) |
 | `domainkit.storage.azure.AzureBlobStorage` | Azure Blob storage | `account_key` (Shared Key), or `credential`: an Entra ID application or the host's managed identity (`domainkit.cloud.azure`) |
 
@@ -251,7 +255,7 @@ The options of each backend:
 
 | Backend | Options |
 | --- | --- |
-| `S3Storage` | `bucket`, `region` (both required), `endpoint`, `path_style`, `access_key_id`, `secret_access_key`, `credentials` (an async callable that returns them), `prefix`, `public_url`, `timeout` |
+| `S3Storage` | `bucket`, `region` (both required), `endpoint`, `path_style`, `access_key_id`, `secret_access_key`, `credentials` (an async callable that returns them), `prefix`, `public_url`, `timeout`, `check_write_once` ([below](#a-store-that-ignores-create-only)) |
 | `GCSStorage` | `bucket` (required), `credentials_file`, `account`, `endpoint`, `prefix`, `public_url`, `timeout` |
 | `AzureBlobStorage` | `account`, `container` (both required), `account_key`, `credential`, `endpoint`, `prefix`, `public_url`, `timeout` |
 
@@ -296,7 +300,8 @@ client is done.
 - **Create only.** An upload's URL only creates its name. S3 is sent
   `If-None-Match: *` and GCS `x-goog-if-generation-match: 0`, both signed,
   and Azure's SAS grants create only (`c`). So once the file is there and
-  checked, the same URL cannot replace it.
+  checked, the same URL cannot replace it, where the store honours the
+  header ([below](#a-store-that-ignores-create-only)).
 - **Signing keys.** GCS signs with the service account's key (the
   metadata server cannot sign), and Azure with the account key. Without
   one, Azure raises `CloudAuthError: A SAS needs the storage account's
@@ -307,6 +312,59 @@ client is done.
     finds its type from its bytes or scans it, as `save_upload` does.
     Before the application trusts the file, read it back and check it, or
     upload through the application instead.
+
+### A store that ignores create only
+
+*New in 2.5.* Some stores that speak S3's API ignore `If-None-Match` on
+`PutObject`, without an error: a second `PUT` to the URL then replaces
+the file the application checked, and nothing says so.
+
+| Store | `If-None-Match: *` on `PutObject` |
+| --- | --- |
+| AWS S3 | refuses a second write with `412` (since August 2024) |
+| Cloudflare R2 | refuses it with `412` |
+| SeaweedFS, RustFS, Versity's gateway, MinIO | read the header on `PutObject` |
+| Garage 2.5, Scality CloudServer 9.5 | read no condition on `PutObject`: the file is replaced |
+| Huawei OBS, Alibaba OSS, GCS's interoperability API | not known: probe them |
+
+`S3Storage(check_write_once=True)` asks the store before the first
+presigned upload of each storage, in each process, once however many
+uploads ask at once: it writes a probe object under the prefix
+(`write-once-probes/`) twice, expects the second write refused (`412`,
+or `409`), and deletes it. Its verdict is kept. Where the store took the
+second write, `presigned_upload` raises `WriteOnceIgnored`, a
+`StorageError` that the HTTP layer answers `503
+direct_upload_unavailable`, so the client uploads through the API
+instead:
+
+```text
+domainkit.storage.s3.WriteOnceIgnored: Write-once probe: the S3 store at http://garage:3900 replaced an object written with If-None-Match: *. It ignores the header, so a presigned upload's URL could replace the file it made: use a store that honours it, or upload through the application.
+```
+
+A probe that cannot tell (the store refused the first write, or was
+unreachable) raises a `StorageError` that starts `Write-once probe:`,
+and is made again at the next upload.
+
+```python
+STORAGES = {
+    "default": {
+        "BACKEND": "domainkit.storage.s3.S3Storage",
+        "OPTIONS": {
+            "bucket": "files",
+            "region": "us-east-1",
+            "endpoint": "http://seaweedfs:8333",
+            "path_style": True,
+            "check_write_once": True,
+        },
+    },
+}
+```
+
+The probe needs `PutObject` and `DeleteObject` on the prefix; a probe the
+store will not delete stays, logged, and the answer stands. Without
+`check_write_once`, as before, `presigned_upload` sends no request. A
+deployment job can ask once instead: `await storage.probe_write_once()`
+raises the same errors.
 
 ## Receiving uploads
 
@@ -444,9 +502,64 @@ UPLOAD_SCANNER = {
   clamd's size limit), refuses the upload with 503 `scanner_unavailable`.
   An upload is never kept unscanned.
 - `ClamAVScanner` speaks clamd's `INSTREAM`. Its options are `host`
-  (`localhost`), `port` (3310), and `timeout` (30 seconds for each step).
+  (`localhost`), `port` (3310), and `timeout` (30 seconds for each step),
+  and those of TLS, below.
 - `configured_scanner()` returns the scanner that `UPLOAD_SCANNER` names,
   made once per configuration, or `None`.
+
+### clamd on another host
+
+clamd speaks no TLS, and asks no one who they are: on another host,
+every upload crosses the network in clear, and anyone who reaches its
+port can use it. In staging and production, `check` warns
+(`security.W007`) when `UPLOAD_SCANNER` reaches clamd on a host other
+than this one (`localhost`, `127.0.0.1`, `::1`) without TLS, through
+`ClamAVScanner` or a subclass of it.
+
+*New in 2.5.* Put a proxy that ends TLS in front of clamd, such as
+stunnel, and turn TLS on in the scanner. It checks the proxy's
+certificate, which must name `host`, against the system's CAs or
+`tls_ca`, and can show a certificate of its own (`tls_cert`, `tls_key`,
+and `tls_key_password` if the key is encrypted) for the proxy to
+require, which clamd itself cannot:
+
+```python
+UPLOAD_SCANNER = {
+    "BACKEND": "domainkit.storage.scanning.ClamAVScanner",
+    "OPTIONS": {
+        "host": "clamav",
+        "port": 3311,
+        "tls": True,
+        "tls_ca": "/run/secrets/clamav-ca.pem",
+        "tls_cert": "/run/secrets/api.pem",
+        "tls_key": "/run/secrets/api.key",
+    },
+}
+```
+
+And on clamd's host, stunnel in server mode, in front of clamd on
+`127.0.0.1:3310` (`TCPAddr 127.0.0.1` in `clamd.conf`):
+
+```ini
+[clamd]
+accept = 3311
+connect = 127.0.0.1:3310
+cert = /etc/stunnel/clamav.pem
+key = /etc/stunnel/clamav.key
+CAfile = /etc/stunnel/api-ca.pem
+verifyChain = yes
+```
+
+The scanner speaks TLS 1.2 or later. A certificate it cannot trust, or
+a proxy that refuses its own, makes the upload fail as an unreachable
+scanner does (503 `scanner_unavailable`). A TLS file without `tls`, a
+certificate without its key, an encrypted key without its password, or
+a file TLS cannot read is refused when the scanner is made
+(`ImproperlyConfigured`). Where clamd runs on a
+network only the service reaches, add `security.W007` to
+`SILENCED_CHECKS` instead.
+
+### A scanner of your own
 
 Another scanner subclasses `domainkit.storage.scanning.Scanner`. Its
 `scan` passes the chunks on as they come, and raises `Infected` (or
@@ -466,6 +579,74 @@ class EicarScanner(Scanner):
                 raise Infected("Eicar-Test-Signature")
             yield chunk
 ```
+
+## Removing files a change dropped
+
+*New in 2.5.* A storage never deletes a file by itself. When a change
+replaces an aggregate's file, or deletes the aggregate, the old file
+stays, unless something removes it. Not in the use case: its
+transaction may still roll back, and another row may hold the same name.
+Defer the removal, to run once the change has committed:
+
+```python
+from datetime import timedelta
+
+from domainkit.storage.cleanup import remove_unreferenced
+
+
+async def replace_file(uow: DocumentsUnitOfWork, document_id: str, name: str) -> None:
+    document = await uow.documents.get(document_id)
+    uow.defer(
+        remove_unreferenced,
+        names=[document.file],  # None, where there was none, is passed over
+        delay=timedelta(minutes=5),
+    )  # storage="default"
+    document.file = name
+    await uow.commit()
+```
+
+And, beside the tables, in the infrastructure layer, declare each column
+that holds names of a storage's files, one name per row. In the
+framework's layout, where `table_for` makes the tables and
+`start_mappers()` maps the entities later, declare the tables' own
+columns, a link table's with no class included: the entities'
+attributes are no columns until they are mapped.
+
+```python
+from domainkit.db import table_for
+from domainkit.storage.cleanup import keeps_files
+
+documents = table_for(Document, "documents", domain="documents")
+keeps_files(documents.c.file, attachments.c.file)  # storage="default"
+```
+
+With declarative models, the mapped attributes will do:
+`keeps_files(DocumentRow.file, TemplateRow.preview)`.
+
+- The worker runs it after the commit, and again after a failure (it is
+  a task of `domainkit.contrib.messaging`, registered as
+  `domainkit.storage.remove_unreferenced`). A change that rolls back
+  queues nothing, so its file stays.
+- Before it deletes a name, it asks each declared column whether a row
+  holds it, on the primary database of the column's table (its domain's,
+  by `table_for(domain=...)` or `info={"domain": ...}`; untagged, its
+  mapped class's domain, else `default`), never a replica that may not
+  have seen the commit. A name a row still holds stays; one already
+  gone, and an empty one (`None`), are passed over.
+- With no column declared for the storage, it refuses
+  (`ImproperlyConfigured`) and deletes nothing.
+- A transaction still open as it reads, which copies the name into a
+  row, is not seen: copy the file (`save` it again) rather than its name.
+  A `delay` on the deferral, longer than any request takes, narrows the
+  window further: a request that read the old name has committed, or
+  failed, by then.
+- Without messaging, call `await remove_unreferenced([...])` yourself
+  once the commit is done; nothing then runs it again after a failure.
+
+`forget_files()` forgets the declared columns (tests). Like
+django-cleanup, this removes a file once the change commits; unlike it,
+it checks the other rows first, as Active Storage's attachments keep a
+blob that another record holds.
 
 ## Thumbnails
 
@@ -643,6 +824,8 @@ More in [testing.md](testing.md).
 
 - [Backends reference](reference/backends.md#storages): the `STORAGES`
   and `UPLOAD_SCANNER` rows.
+- [Documents](documents.md): filling uploaded Word templates, and laying
+  text over uploaded PDFs.
 - [Resources](resources.md): body limits for the routes of a
   `ResourceRouter`.
 - [Security](security.md): deny by default, and what every answer

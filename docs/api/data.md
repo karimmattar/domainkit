@@ -311,7 +311,9 @@ REST resources over aggregates: routes, schemas, conditional writes, policies.
 - `ExportTooLarge`: `422`: an export would hold more rows than the resource allows.
 - `FieldNotEditable`: A partial change sets a field the caller may not change.
 - `FieldPolicy`: Who sees and who changes each field of a resource (see the module).
+- `HasMemberModelPermission`: Members granted `<domain>.<action>_<model>` in the tenant being served.
 - `HasModelPermission`: Users granted `<domain>.<action>_<model>`, the model resolved per request.
+- `MemberActions`: Members' permissions by each route's action, after any `rules` given.
 - `ModelActions`: Model permissions by each route's action, after any `rules` given.
 - `NotAcceptable`: `406`: the request accepts none of the media types offered.
 - `Operation`: One route of a resource, as its rules and a generic client see it.
@@ -322,6 +324,7 @@ REST resources over aggregates: routes, schemas, conditional writes, policies.
 - `RecordDeleted`: An aggregate was deleted through a generic route.
 - `ResourceRouter`: The routes of one aggregate type (see the module).
 - `Unset`: The type of `UNSET`: a field the request left out, as opposed to None.
+- `asking_authorization`: Whether the request is to a twin: it asks for an authorization of an act.
 - `entity_tag`: The weak tag of one aggregate at `version`, sent as `representation`.
 - `expected_versions`: The versions an `If-Match` value accepts; None for `*` (any).
 - `schema_for`: A pydantic schema of `model`'s fields (see the module).
@@ -346,6 +349,15 @@ Files: a storage port, on the file system or in memory.
 `AzureBlobStorage`: files in an Azure Blob Storage container.
 
 - `AzureBlobStorage`: Files in one container of an Azure Storage account.
+
+## `domainkit.storage.cleanup`
+
+Removing the stored files a committed change dropped, once no row keeps them.
+
+- `REMOVE_TASK`: The name `domainkit.contrib.messaging` registers `remove_unreferenced` under.
+- `forget_files`: Forget the columns declared for `storage`, or for every storage (tests).
+- `keeps_files`: Declare that `columns` hold names of `storage`'s files, one per row.
+- `remove_unreferenced`: Delete each of `names` from `storage` that no row keeps.
 
 ## `domainkit.storage.gcs`
 
@@ -372,6 +384,7 @@ What object stores share: ranged reads, parts, presigned URLs.
 `S3Storage`: files in an S3 bucket, or any store that speaks S3's API.
 
 - `S3Storage`: Files in one bucket of S3, or of a store that speaks its API.
+- `WriteOnceIgnored`: The S3 store ignores `If-None-Match: *`: presigned uploads are refused.
 
 ## `domainkit.storage.scanning`
 
@@ -425,6 +438,7 @@ The tenant being served, and the aggregates that belong to one.
 - `all_tenants`: Read and change every tenant's rows inside the block, on purpose.
 - `check_tenant_id`: `value` as a tenant id.
 - `current_tenant`: The tenant being served, if any.
+- `no_tenant`: Serve no tenant inside the block, whatever one is served outside it.
 - `row_tenant`: The tenant `TenantOwned` rows are scoped to; None inside `all_tenants`.
 - `scoped_key`: `key`, the current tenant's own: caches and rate limits use it.
 - `shared_keys`: Cache and rate-limit keys inside the block are every tenant's.

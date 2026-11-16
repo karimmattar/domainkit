@@ -1,6 +1,6 @@
 # 0144. Authorize one act, not a window of time
 
-- Status: Accepted
+- Status: Accepted; amended 2026-11-16 (at the end); amended by [0162](0162-twins-name-their-method-and-skip-the-acts-own-dependencies.md), [0163](0163-authorize-admin-changes-and-requests-steps-as-acts.md) and [0164](0164-let-the-asker-withdraw-a-phone-request-count-sessions-per-user-and-word-each-kind.md)
 - Date: 2026-11-15
 
 ## Context
@@ -476,3 +476,14 @@ pins, on the code before this decision, the facts questions 1, 3, 4, and
    <https://www.w3.org/TR/2019/REC-webauthn-1-20190304/>
 6. W3C, *Web Authentication, Level 2*:
    <https://www.w3.org/TR/webauthn-2/>
+
+## Amendment (2026-11-16): built-in acts for the admin API and approvals
+
+[ADR 0163](0163-authorize-admin-changes-and-requests-steps-as-acts.md)
+adds built-in actions beside `approvals.approve`, each opt-in:
+`auth.admin_change` for every change of the admin API
+(`AUTH.ADMIN_ACTION`), and `approvals.submit`, `approvals.reject`, and
+`approvals.cancel` (`SUBMIT_ACTION`, `REJECT_ACTION`, `CANCEL_ACTION`).
+`check` accepts a route whose act code spends with
+`spend_authorization`, once that code says so with
+`spent_in_code(action)` (`auth.E110`).

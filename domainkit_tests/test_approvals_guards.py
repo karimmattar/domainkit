@@ -496,7 +496,8 @@ def test_the_routes_rules_by_action() -> None:
     """View and add by model permission; cancel by add; deciding by the policy.
 
     Approving asks ``ApproveAction`` last: with ``APPROVE_ACTION`` on, an
-    authorization of the approval (user report A6).
+    authorization of the approval (user report A6). Rejecting and cancelling
+    ask theirs last too, each under its own setting (ADR 0163).
     """
     from domainkit.contrib.approvals.models import ApprovalRequest
     from domainkit.contrib.approvals.rules import IsApprover, MayApprove, RequestActions
@@ -514,12 +515,16 @@ def test_the_routes_rules_by_action() -> None:
         ("MayApprove", None),
         ("ApproveAction", None),
     ]
-    assert described("reject") == [own, ("IsApprover", None)]
-    assert described("cancel") == [own, ("HasModelPermission", "add")]
+    assert described("reject") == [own, ("IsApprover", None), ("RejectAction", None)]
+    assert described("cancel") == [
+        own,
+        ("HasModelPermission", "add"),
+        ("CancelAction", None),
+    ]
     assert described("view") == [("HasModelPermission", "view")]
     assert described("add") == [("HasModelPermission", "add")]
-    for action in ("cancel", "view"):
-        rule = RequestActions().rules_for(action)[-1]
+    for action, index in (("cancel", 1), ("view", 0)):
+        rule = RequestActions().rules_for(action)[index]
         assert getattr(rule, "model", None) is ApprovalRequest
     assert IsApprover.bounds_scopes
     assert not MayApprove.bounds_scopes

@@ -37,6 +37,8 @@ from .context import (
 from .reach import check_parent, rules_of
 
 if TYPE_CHECKING:
+    from fastapi.routing import APIRoute
+
     from . import ResourceRouter
 
 IF_NONE_MATCH: Final = "The ETag you hold: 304 if it is current."
@@ -64,8 +66,8 @@ MAX_HEADER: Final = 4096
 """The longest ``If-Match`` or ``If-None-Match`` a route reads."""
 
 
-def add_route(router: "ResourceRouter", spec: RouteSpec, handle: Handle) -> None:
-    """Add the route ``spec`` describes to ``router``, answered by ``handle``."""
+def add_route(router: "ResourceRouter", spec: RouteSpec, handle: Handle) -> "APIRoute":
+    """Add the route ``spec`` describes to ``router``, and return it."""
     name = f"{router.name_prefix}{spec.name}"
     rules = spec.rules
     if rules is None:
@@ -73,6 +75,7 @@ def add_route(router: "ResourceRouter", spec: RouteSpec, handle: Handle) -> None
     endpoint = _endpoint(router, spec, handle, name)
     if spec.body_limit is not None:
         body_limit(spec.body_limit)(endpoint)
+    served = router.serves_tenant(spec.path)  # The router puts it first.
     router.add_api_route(
         spec.path,
         endpoint,
@@ -83,8 +86,12 @@ def add_route(router: "ResourceRouter", spec: RouteSpec, handle: Handle) -> None
         response_model=(
             None if spec.returns is None or spec.returns is DEFAULT else spec.returns
         ),
-        responses=_responses(router, spec, rules),
-        dependencies=[Depends(Require(*rules))] if rules else None,
+        responses=_responses(router, spec, rules, served=served),
+        dependencies=[
+            *([Depends(Require(*rules))] if rules else []),
+            *spec.dependencies,
+        ]
+        or None,
         openapi_extra=_extra(router, spec),
     )
     router.operations.append(
@@ -100,6 +107,7 @@ def add_route(router: "ResourceRouter", spec: RouteSpec, handle: Handle) -> None
             parameters=spec.asked,
         )
     )
+    return cast("APIRoute", router.routes[-1])  # add_api_route appends it.
 
 
 def _endpoint(
@@ -247,11 +255,21 @@ def _read_headers(
 
 
 def _responses(
-    router: "ResourceRouter", spec: RouteSpec, rules: tuple[Rule, ...]
+    router: "ResourceRouter",
+    spec: RouteSpec,
+    rules: tuple[Rule, ...],
+    *,
+    served: bool = False,
 ) -> dict[int | str, dict[str, Any]]:
-    """The answers OpenAPI documents for the route, errors first."""
+    """The answers OpenAPI documents for the route, errors first.
+
+    A route ``served`` as a tenant answers ``401`` and ``404`` to callers
+    who do not belong to it.
+    """
     codes = [status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN] if rules else []
-    if spec.detail:
+    if served and not rules:
+        codes.append(status.HTTP_401_UNAUTHORIZED)
+    if spec.detail or served:
         codes.append(status.HTTP_404_NOT_FOUND)
     if spec.writes:
         codes += [status.HTTP_409_CONFLICT, status.HTTP_422_UNPROCESSABLE_CONTENT]

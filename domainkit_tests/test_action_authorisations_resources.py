@@ -5,7 +5,9 @@ A ``ResourceRouter`` command route declared with
 project, with no stand-in rule: its twin asks for an authorization, built
 and shown by the server; a code of the user's authenticator confirms it;
 the act passes with it once, and refuses it again, and refuses it for
-other arguments (ADR 0144).
+other arguments (ADR 0144). A ``@use_case`` is authorized through the
+copy ``requires_authorization`` makes, and the test helpers do the round
+trip (ADR 0161, user reports A13 and A17).
 """
 
 from collections.abc import Iterator
@@ -16,12 +18,21 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+from domainkit.apps import registry
 from domainkit.clock import FrozenClock, freeze_time
 from domainkit.conf import override_settings
-from domainkit.contrib.auth.actions import register_action
+from domainkit.contrib.auth.actions import AuthorizationNotFound, register_action
 from domainkit.contrib.auth.tables import authorizations
 from domainkit.db import connections
 from domainkit.management.base import run_async
+from domainkit.testing import (
+    Authenticator,
+    UnexpectedResponse,
+    authorize_act,
+    confirm_authorization,
+)
+from domainkit.testing.authenticators import AuthorizationConfirmer
+from domainkit_tests import sample_action_resources as shop
 from domainkit_tests.conftest import Api
 from domainkit_tests.sample_action_resources import RENAME_PRODUCT, ShopUnitOfWork
 from domainkit_tests.sample_domains.shop.models import Product, ProductId
@@ -87,11 +98,14 @@ def frozen() -> Iterator[FrozenClock]:
 @pytest.fixture
 def alice(identity: Api, frozen: FrozenClock) -> Iterator[Shopper]:
     """Alice's session at the products, the action registered."""
+    shop.SHOWN_IN.clear()
     with override_settings(ROOT_ROUTER=ROUTES):
         register_action(RENAME_PRODUCT, domain="shop")
+        register_action(shop.RELABEL_PRODUCT, domain="shop")
         create_user("alice")
         grant("alice", "shop.view_product", "shop.change_product")
         yield Shopper(identity(), frozen)
+    shop.SHOWN_IN.clear()
 
 
 def stock(name: str) -> UUID:
@@ -158,8 +172,9 @@ def test_a_resources_act_is_asked_confirmed_and_spent_once(alice: Shopper) -> No
     assert 'purpose="shop.rename_product"' in bare.headers["WWW-Authenticate"]
     assert asked.status_code == 201, asked.json()
     assert asked.headers["Cache-Control"] == "no-store"
-    assert set(asked.json()) == {"id", "purpose", "shown", "expires_at"}
+    assert set(asked.json()) == {"id", "purpose", "shown", "expires_at", "methods"}
     assert asked.json()["purpose"] == "shop.rename_product"
+    assert asked.json()["methods"] == ["otp"]  # As GET /authorizations/{id} says.
     assert asked.json()["shown"] == {
         "title": "Rename a product",
         "details": [
@@ -204,3 +219,103 @@ def test_a_resources_act_refuses_an_authorization_of_other_arguments(
     assert ended(authorization)
     assert ended(elsewhere)
     assert audited("auth.action_authorization_used") == []
+
+
+def test_a_use_case_is_authorized_through_its_copy_and_stays_as_it_was(
+    alice: Shopper,
+) -> None:
+    """The copy spends it with its commit; the use case itself asks nothing (A13).
+
+    The action takes the use case as its command, and shows the stored
+    name, read in the route's own unit of work, which the twin lends it.
+    The route that runs the use case itself, as the phone's does, needs no
+    authorization.
+    """
+    lamp = stock("Lamp")
+    act = f"/products/{lamp}/relabel"
+
+    bare = alice.client.post(act, json={"name": "Desk lamp"}, headers=alice.headers)
+    asked = alice.client.post(
+        f"{act}/authorization", json={"name": "Desk lamp"}, headers=alice.headers
+    )
+    confirmed = alice.confirm(asked.json()["id"])
+    authorization = confirmed.json()["authorization"]
+    with_it = {**alice.headers, "Action-Authorization": authorization}
+    relabelled = alice.client.post(act, json={"name": "Desk lamp"}, headers=with_it)
+    replayed = alice.client.post(act, json={"name": "Desk lamp"}, headers=with_it)
+    named = name_of(lamp)
+    directly = alice.client.post(
+        f"/products/{lamp}/relabel-directly",
+        json={"name": "Floor lamp"},
+        headers=alice.headers,
+    )
+
+    assert code_of(bare) == (401, "authorization_required")
+    assert asked.status_code == 201, asked.json()
+    assert asked.json()["purpose"] == "shop.relabel_product"
+    assert asked.json()["shown"] == {
+        "title": "Relabel a product",
+        "details": [
+            {"label": "Product", "value": "Lamp"},
+            {"label": "New label", "value": "Desk lamp"},
+        ],
+    }
+    assert asked.json()["methods"] == ["otp"]
+    [lent] = shop.SHOWN_IN  # The route's unit of work, lent to read in.
+    assert isinstance(lent.products, shop.Products)
+    assert lent.committed == 0  # Read in, never written through.
+    assert relabelled.status_code == 200, relabelled.json()
+    assert named == "Desk lamp"
+    assert ended(authorization)
+    assert code_of(replayed) == (403, "action_not_authorized")
+    assert directly.status_code == 200, directly.json()
+    assert name_of(lamp) == "Floor lamp"
+    assert len(audited("auth.action_authorization_used")) == 1
+
+
+def test_the_helpers_authorize_an_act_with_a_code_or_as_its_phone_would(
+    alice: Shopper,
+) -> None:
+    """``authorize_act`` asks the twin and confirms; ``confirm_authorization`` too.
+
+    With the user's app, through the confirm route; without, as proving
+    what the act asks, in the test. Each answer is spent by the act once.
+    """
+    lamp = stock("Lamp")
+    act = f"/products/{lamp}/relabel"
+    client = alice.client
+    client.headers.update(alice.headers)
+    alice.clock.tick(30)  # The enrolment used this step's code.
+    app = Authenticator(alice.secret)
+
+    with_a_code = authorize_act(client, act, app, json={"name": "Desk lamp"})
+    first = client.post(
+        act, json={"name": "Desk lamp"}, headers={"Action-Authorization": with_a_code}
+    )
+    without = authorize_act(client, act, json={"name": "Floor lamp"})
+    second = client.post(
+        act, json={"name": "Floor lamp"}, headers={"Action-Authorization": without}
+    )
+    asked = client.post(f"{act}/authorization", json={"name": "Wall lamp"})
+    confirmed = confirm_authorization(client, asked.json()["id"])
+    third = client.post(
+        act, json={"name": "Wall lamp"}, headers={"Action-Authorization": confirmed}
+    )
+    with pytest.raises(UnexpectedResponse, match=r"^Reading the authorization: 404"):
+        confirm_authorization(client, str(uuid4()))
+    with pytest.raises(UnexpectedResponse, match=r"^Asking for an authorization"):
+        authorize_act(client, f"/products/{uuid4()}/relabel", json={"name": "x"})
+    [confirmer] = [
+        each for each in registry if isinstance(each, AuthorizationConfirmer)
+    ]
+    with pytest.raises(AuthorizationNotFound):
+        run_async(confirmer.confirm_test_authorization(uuid4(), ["otp"]))
+
+    assert [first.status_code, second.status_code, third.status_code] == [200] * 3
+    assert name_of(lamp) == "Wall lamp"
+    assert all(map(ended, (with_a_code, without, confirmed)))
+    assert [row["details"]["methods"] for row in audited("auth.action_authorized")] == [
+        ["otp"],
+        ["otp"],
+        ["otp"],
+    ]

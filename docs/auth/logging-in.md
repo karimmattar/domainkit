@@ -353,11 +353,14 @@ def recent_second_factor(request: Request) -> bool:
 ```
 
 The login gates see the login they judge with `login_origin(request)`:
-[Login gates](ciba.md#login-gates). A login route of your own names its
-proof as it names its method: `pass_login_gates(request, user,
-method=..., amr={"pwd"})`, then `issue_login(user, method=...,
-amr={"pwd"})`. `Credentials.auth_time` and `amr` stay those of the last
-step-up.
+[Login gates](ciba.md#login-gates). A sign-in approved on the phone
+also names, while its login is made, the request it redeems
+(`sign_in_request_id`) and its `binding_message` (since 2.5); the login
+does not keep them, so `request.auth.origin` has neither. A login route
+of your own names its proof as it names its method:
+`pass_login_gates(request, user, method=..., amr={"pwd"})`, then
+`issue_login(user, method=..., amr={"pwd"})`. `Credentials.auth_time`
+and `amr` stay those of the last step-up.
 
 #### Shorter sessions for some users
 
@@ -392,7 +395,7 @@ class AccountsConfig(DomainConfig):
 - **Asked once, when the login is made**, past the gates, with the user
   and how the login is made. It may read the database. Decide by the
   user (`is_staff`, a group) or by the login (`origin.amr`,
-  `origin.device_id`).
+  `origin.device_id`, a phone sign-in's `origin.binding_message`).
 - **The login keeps its limits.** `lifetime` shortens its expiry: the
   login token's (its `expires_in` says so), the browser session's and its
   cookies' `Max-Age`, a JSON Web Token login's refresh tokens.
@@ -752,6 +755,11 @@ verified already. `/mobile-verification/code` with the code sets
 code. A number staff set clears the mark. Verifications are audited as
 `auth.mobile_number_verified`; refusals as `auth.mobile_verification`.
 
+Since 2.5 a verification code is its user's own: two users who ask to
+prove one number, or one address, each get a code, and neither replaces
+the other's. Asking again with no body counts against `EMAIL_RATE` per
+the number (or address) the code goes to, a held one too.
+
 ### Changing your address or number
 
 The same routes change the address or the number. The new one is held
@@ -853,6 +861,41 @@ POST /auth/signup
 {"detail": "Check your text messages to finish signing up."}
 ```
 
+A signup that gives an address and a number proves each by a code of
+its own (*new in 2.5*,
+[ADR 0171](../adr/0171-prove-a-number-given-at-signup-by-its-own-code.md)).
+The signup's code goes to the address; or to the number where neither
+the address nor a username given identifies users (`AUTH.IDENTIFIERS`
+without `email`), since an account made with the address alone could
+not log in there. The code makes the account with the value it proved.
+The other is then held, as a user's new value is
+([Changing your address or number](#changing-your-address-or-number)),
+and the worker sends it a code: a text to the number, or a mail to the
+address. The user logs in and sends it to `POST
+/mobile-verification/code` (or `/email-verification/code`); only then is
+the value on the account, proved, or `409 mobile_number_taken`
+(`email_taken`) where another account proved it first. Until then the
+held value takes nothing from an account that holds it, and plays no
+part in which mail or text the signup gets.
+
+Holding it counts against `EMAIL_RATE` per value among signups (apart
+from the owner's own requests to verify it), and runs no
+`on_manage_logins` check: the account was just made, and has no login
+for one to guard. Past the rate the account is made without it, and
+nothing says so: `/signup/code` answers `204` either way. What the code
+proves is where it went: a change of `AUTH.IDENTIFIERS` while it is out
+does not make it prove the other value. A held value lasts as long as its last code
+(`AUTH.CODE_TTL`). Once it lapses, the user asks again with the value in
+the body (`POST /mobile-verification` `{"mobile_number": ...}`): with no
+body, the route answers `202` and sends nothing, as for a number proved
+already. A `mobile_number` that `REQUIRED_FIELDS` names comes this way
+too, never under `fields`:
+
+```http
+POST /auth/signup
+{"email": "nina@example.com", "mobile_number": "+33 6 12 34 56 78"}
+```
+
 How signing up works:
 
 1. **The request is checked, then kept.** `fields` holds the user model's
@@ -863,9 +906,10 @@ How signing up works:
    password is taken. The request is kept as a pending signup, and the
    route answers `202`, doing the same work whatever accounts exist.
 2. **The worker sends the code.** When neither the username (in any
-   case) nor the address or number has an account, it sends a code, which
-   works for `AUTH.CODE_TTL`. Otherwise it sends word that an account uses
-   the address or the username, and drops the pending signup.
+   case) nor what the code proves (the address, or a number given alone)
+   has an account, it sends a code, which works for `AUTH.CODE_TTL`.
+   Otherwise it sends word that an account uses the address (or the
+   number) or the username, and drops the pending signup.
 3. **Your app asks for a password**, and posts it with the address or
    number and the code:
 
@@ -906,7 +950,9 @@ Why the password comes last:
   uses it takes the address, verified. The holder loses it
   (`auth.email_released` in the audit trail), and its codes sent there
   stop working. A number held unproved moves the same way
-  (`auth.mobile_number_released`).
+  (`auth.mobile_number_released`) to a signup by that number alone, or
+  to a user whose code proves it later; a number given with an address
+  moves only then (since 2.5: before, the address's code took it too).
   - The code's mail warns the reader (`auth/signup_code_held`): an
     account that is theirs keeps the address if they log in and prove
     it instead. Reset codes go only to proved addresses since 2.4
@@ -946,7 +992,7 @@ Arabic one ([mail.md](../mail.md#templates-in-other-languages)).
 | `auth/password_reset_code`, `auth/email_verification_code` | `user`, `username`, `code`, and `valid_for` (`10 minutes`). |
 | `auth/signup_code` | `code` and `valid_for` only: the username was chosen by whoever asked, who may not be the address's owner. |
 | `auth/signup_code_held` | The same, sent instead when an account holds the address unproved: it says what using the code does to that account. |
-| `auth/signup_exists` | `email` only. |
+| `auth/signup_exists` | `email`, and `taken` (*new in 2.5*): a sentence, in the reader's language, that says what an account uses already, and what to do. It names the username only where the signup chose one, which `AUTH.IDENTIFIERS` allows, and suggests another username only then. A number given with the address plays no part. |
 
 `check` reports these routes mounted without messaging and mail
 (`auth.E103`), or with a user model without `EMAIL_FIELD` and

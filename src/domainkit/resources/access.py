@@ -12,7 +12,16 @@ Django's model permission of each route's action, so a command posted to
 
 The permission keys name installed models (``domainkit.db.models``); the
 principal answers them (``Principal.ahas_perms``), whatever authenticates
-requests.
+requests. ``MemberActions`` asks for the same keys among those a member
+holds in the tenant being served, and no others (ADR 0170). On a
+resource whose items are tenants, its collection's routes serve none:
+``outside`` says who may list and create there, and a ``scope`` of the
+project's keeps each caller to the tenants they belong to, as no member
+rule narrows a list::
+
+    ResourceRouter("/companies", ..., tenant=PathTenant("company_id"),
+                   rule=MemberActions(Company, outside=IsAuthenticated()),
+                   scope=companies_of_caller)
 """
 
 from collections.abc import Callable, Sequence
@@ -21,7 +30,15 @@ from typing import ClassVar, Final, Protocol, runtime_checkable
 from starlette.requests import HTTPConnection
 
 from domainkit.db.models import model_key
-from domainkit.http.access import BasePermission, HasPermissions, Principal, Rule
+from domainkit.http.access import (
+    AllOf,
+    BasePermission,
+    HasPermissions,
+    Principal,
+    Rule,
+    scopes_of,
+)
+from domainkit.tenancy import HasMemberPermissions, path_tenant
 
 VIEW: Final = "view"
 ADD: Final = "add"
@@ -83,6 +100,101 @@ class ModelActions:
     def rules_for(self, action: str) -> Sequence[Rule]:
         """``rules``, then the model permission of ``action``."""
         return (*self.rules, HasModelPermission(action, self.model))
+
+
+class HasMemberModelPermission(HasModelPermission):
+    """Members granted ``<domain>.<action>_<model>`` in the tenant being served.
+
+    It asks ``HasMemberPermissions`` for the key: what the caller holds as a
+    member of the tenant counts, and what they hold everywhere does not.
+    """
+
+    async def has_permission(self, request: HTTPConnection, user: Principal) -> bool:
+        """The member holds the permission in the tenant."""
+        return await HasMemberPermissions(self.permission()).has_permission(
+            request, user
+        )
+
+
+class _ByPath(HasMemberModelPermission):
+    """A member's key, on a route whose path named the tenant (``PathTenant``).
+
+    Beside ``outside``, a member's keys count only where the resource's
+    tenant was taken from the path: on its collection, a tenant a
+    middleware serves (a header's, a subdomain's) decides nothing.
+    """
+
+    async def has_permission(self, request: HTTPConnection, user: Principal) -> bool:
+        """The path named the tenant, and the member holds the key there."""
+        return path_tenant() is not None and await super().has_permission(request, user)
+
+
+class _ServedAsNone(AllOf):
+    """``outside``'s rules, on a route whose path named no tenant; refused else.
+
+    It asks only those rules about an object, and checks scopes: credentials
+    limited to scopes pass it only where those rules check them. So, beside
+    a member's rule (``|``), it neither refuses every object nor keeps
+    scoped credentials from a tenant's routes. A tenant a middleware serves
+    does not count: the collection's routes are the resource's, whatever
+    the request's tenant.
+    """
+
+    async def has_permission(self, request: HTTPConnection, user: Principal) -> bool:
+        """No path named a tenant, and every rule allows the request, scopes too."""
+        if path_tenant() is not None:
+            return False
+        if scopes_of(request) is not None and not super().checks_scopes():
+            return False
+        return await super().has_permission(request, user)
+
+    def checks_scopes(self) -> bool:
+        """Always: it refuses scoped credentials that its rules do not check."""
+        return True
+
+
+class MemberActions:
+    """Members' permissions by each route's action, after any ``rules`` given.
+
+    On a route served as a tenant, ``MemberActions(Company)`` needs
+    ``companies.view_company`` to read, ``companies.change_company`` to run
+    a command, and so on, among the keys the caller holds as a member of
+    the tenant (``TENANCY.MEMBER_PERMISSIONS``) alone: a member who is also
+    staff acts there with their role, not their staff permissions (ADR
+    0170). A route served as no tenant is refused, unless ``outside`` says
+    who may call it. A ``ResourceRouter`` with ``tenant=`` serves no tenant
+    on its collection's routes. A rule given as ``outside`` decides only
+    the ``view`` and ``add`` routes there (the list, queries on the
+    collection, creation); a route of any other action there (a command
+    that changes or deletes from the collection) is refused, unless
+    ``outside`` is ``Actions``, such as ``ModelActions``, which names the
+    rules of each action itself. With ``outside``, a member's keys count
+    only where the path named the tenant (``path_tenant``), and ``outside``
+    rules wherever it did not, whatever tenant a middleware serves.
+    """
+
+    def __init__(
+        self, model: ModelLike, *rules: Rule, outside: "Rule | Actions | None" = None
+    ) -> None:
+        """Ask for ``model``'s permissions among a member's keys, after ``rules``."""
+        self.model = model
+        self.rules = rules
+        self.outside = outside
+
+    def rules_for(self, action: str) -> Sequence[Rule]:
+        """``rules``, then the member's permission of ``action``, or ``outside``'s."""
+        given = self.outside
+        if given is None:
+            return (*self.rules, HasMemberModelPermission(action, self.model))
+        member = _ByPath(action, self.model)
+        outside = (
+            rules_for(given, action)
+            if isinstance(given, Actions) or action in {VIEW, ADD}
+            else ()
+        )
+        if not outside:
+            return (*self.rules, member)
+        return (*self.rules, member | _ServedAsNone(*outside))
 
 
 def rules_for(rule: Rule | Actions | None, action: str) -> tuple[Rule, ...]:

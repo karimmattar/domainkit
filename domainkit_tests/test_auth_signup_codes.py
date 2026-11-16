@@ -2,9 +2,10 @@
 
 from datetime import timedelta
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, Final, cast
 from uuid import UUID, uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
 from domainkit.conf import override_settings
@@ -12,9 +13,15 @@ from domainkit.contrib import mail
 from domainkit.contrib.auth import AuthUnitOfWork, User
 from domainkit.contrib.auth.codes import EMAIL_VERIFICATION, target_of
 from domainkit.contrib.auth.models import PasswordHash, UserId
-from domainkit.contrib.auth.recovery import _prove_reached
-from domainkit.contrib.auth.signup import send_signup_code
+from domainkit.contrib.auth.recovery import (
+    EMAIL_PATTERN,
+    NewEmailIn,
+    PasswordResetIn,
+    _prove_reached,
+)
+from domainkit.contrib.auth.signup import SignupIn, send_signup_code
 from domainkit.contrib.notifications.backends import sms_outbox
+from domainkit.i18n import gettext, override
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import MIDDLEWARE, Api
 from domainkit_tests.support.auth import PASSWORD, audited, create_user
@@ -273,22 +280,6 @@ def test_a_number_held_unproved_moves_too(texting: App) -> None:
     assert run_async(_number_taken(NUMBER)) is True
 
 
-def test_one_holder_of_both_loses_both(texting: App) -> None:
-    """The address and the number, held by one account unproved, both move."""
-    client = texting(**BY_TEXT)
-    holder = create_user(None, email="max@example.com", mobile_number=NUMBER)
-
-    ask(client, email="max@example.com", mobile_number=NUMBER)
-    drain()
-    (message,) = mail.outbox
-    assert finish(client, "max@example.com", code_in(message.body)) == (204, None)
-
-    ended = _user(holder)
-    assert (ended.email, ended.mobile_number, ended.is_active) == ("", None, False)
-    made = stored("max@example.com")
-    assert (made.email_verified, made.mobile_number) == (True, NUMBER)
-
-
 def test_what_a_user_proved_is_never_released() -> None:
     """``release_email`` and ``release_mobile_number`` leave proof alone."""
     user = User.create(
@@ -387,3 +378,192 @@ def test_signup_codes_go_out_in_the_language_of_the_request(texting: App) -> Non
 def ask_in_arabic(client: TestClient, body: dict[str, str]) -> Any:  # noqa: ANN401 - a response.
     """Ask for an account, in Arabic."""
     return client.post("/auth/signup", json=body, headers=ARABIC)
+
+
+# What a refusal says (user report I8) ------------------------------------------------
+
+
+def test_a_value_shaped_as_no_address_is_refused_in_words(identity: Api) -> None:
+    """Not with the pattern that checks it, which reached clients translated.
+
+    ``/signup``, ``/password-reset`` and ``/email-verification`` take
+    addresses the same way. OpenAPI still shows the pattern.
+    """
+    with override_settings(MIDDLEWARE=[LOCALE, *MIDDLEWARE]):
+        client = identity(**BY_MAIL)
+        english = ask(client, email="not-an-email")
+        arabic = client.post(
+            "/auth/signup", json={"email": "not-an-email"}, headers=ARABIC
+        )
+        reset = client.post(
+            "/auth/password-reset", json={"email": "a b@example.com"}, headers=ARABIC
+        )
+
+    def refusal(response: Any) -> tuple[int, list[str], str]:  # noqa: ANN401 - a response.
+        (error,) = response.json()["errors"]
+        return response.status_code, error["loc"], error["msg"]
+
+    assert refusal(english) == (
+        422,
+        ["body", "email"],
+        "Value error, Enter a valid email address.",
+    )
+    assert refusal(arabic) == (
+        422,
+        ["body", "email"],
+        "قيمة غير صالحة: أدخل عنوان بريد إلكتروني صالحًا.",
+    )
+    assert refusal(reset)[2] == refusal(arabic)[2]
+    for model in (SignupIn, PasswordResetIn, NewEmailIn):
+        (shown, _) = model.model_json_schema()["properties"]["email"]["anyOf"]
+        assert shown["pattern"] == EMAIL_PATTERN
+
+
+SIGNED_UP_WITH: Final = "Someone tried to sign up with this email address"
+
+
+@pytest.mark.parametrize(
+    ("identifiers", "body", "taken"),
+    [
+        (
+            ("email",),
+            {"email": "ann@example.com"},
+            (
+                "An account already uses this address. If it was you, log in, or "
+                "reset your password."
+            ),
+        ),
+        (
+            ("email", "mobile_number"),
+            {"email": "ann@example.com", "mobile_number": NUMBER},
+            (  # The number counts for nothing: its own code proves it (ADR 0171).
+                "An account already uses this address. If it was you, log in, or "
+                "reset your password."
+            ),
+        ),
+        (
+            ("username", "email"),
+            {"username": "dave", "email": "ann@example.com"},
+            (
+                "An account already uses this address, or the username chosen. If "
+                "it was you, log in, reset your password, or sign up again with "
+                "another username."
+            ),
+        ),
+        (
+            ("username", "email", "mobile_number"),
+            {"username": "dave", "email": "ann@example.com", "mobile_number": NUMBER},
+            (
+                "An account already uses this address, or the username chosen. If "
+                "it was you, log in, reset your password, or sign up again with "
+                "another username."
+            ),
+        ),
+    ],
+)
+def test_a_taken_signup_is_told_only_what_it_gave(
+    texting: App, identifiers: tuple[str, ...], body: dict[str, str], taken: str
+) -> None:
+    """Another username is suggested only where usernames identify users.
+
+    Elsewhere a signup cannot choose one (``422 unknown_user_field``), yet
+    the mail told everyone to sign up again with another username.
+    """
+    client = texting(SIGNUP_ENABLED=True, IDENTIFIERS=identifiers)
+    create_user("ann", email="ann@example.com", email_verified=True)
+
+    assert ask(client, **body).status_code == 202
+    drain()
+
+    (message,) = mail.outbox
+    assert message.subject == "Your sign-up"
+    with override("ar"):
+        assert gettext(taken) != taken  # Each is in Arabic too.
+    assert message.body.startswith(
+        f"Hello,\n\n{SIGNED_UP_WITH} (ann@example.com).\n\n{taken}\n\n"
+    )
+    assert ("username" in message.body) is ("username" in identifiers)
+
+
+def test_the_taken_mail_and_answer_speak_the_signups_language(texting: App) -> None:
+    """In Arabic for a request in Arabic; the 409 suggests no username either."""
+    with override_settings(MIDDLEWARE=[LOCALE, *MIDDLEWARE]):
+        client = texting(**BY_MAIL)
+        create_user("ann", email="ann@example.com", email_verified=True)
+        assert ask_in_arabic(client, {"email": "ann@example.com"}).status_code == 202
+        assert ask(client, email="rue@example.com").status_code == 202
+        drain()
+        (sent,) = [m for m in mail.outbox if m.to == ("rue@example.com",)]
+        code = code_in(sent.body)  # The worker runs the two in either order.
+        create_user("rue", email="rue@example.com", email_verified=True)
+        late = client.post(
+            "/auth/signup/code",
+            json={"identifier": "rue@example.com", "code": code, "password": PASSWORD},
+        )
+
+    told = next(m for m in mail.outbox if m.to == ("ann@example.com",))
+    assert told.body.split("\n\n")[:3] == [
+        "مرحبًا،",
+        "حاول أحدهم التسجيل بعنوان البريد الإلكتروني هذا (ann@example.com).",
+        (
+            "يستخدم حسابٌ هذا العنوان بالفعل. إن كنت أنت، فسجّل الدخول، أو أعد "
+            "تعيين كلمة المرور."
+        ),
+    ]
+    assert (late.status_code, late.json()["code"]) == (409, "signup_taken")
+    assert late.json()["detail"] == (
+        "An account already uses this address; log in, or reset your password."
+    )
+
+
+@pytest.mark.parametrize(
+    ("identifiers", "body", "identifier", "detail"),
+    [
+        (
+            ("email", "mobile_number"),
+            {"mobile_number": NUMBER},
+            NUMBER,
+            "An account already uses this number; log in, or reset your password.",
+        ),
+        (
+            ("username", "mobile_number"),
+            {"username": "dave", "mobile_number": NUMBER},
+            NUMBER,
+            (
+                "An account already uses this username or this number; sign up "
+                "again with another username, or log in."
+            ),
+        ),
+        (
+            ("username", "email", "mobile_number"),
+            {"username": "dave", "email": "dave@example.com", "mobile_number": NUMBER},
+            "dave@example.com",
+            (  # The number, given with an address, is not the signup's to lose.
+                "An account already uses this username or this address; sign up "
+                "again with another username, or log in."
+            ),
+        ),
+    ],
+)
+def test_a_signup_taken_meanwhile_is_told_only_what_it_gave(
+    texting: App,
+    identifiers: tuple[str, ...],
+    body: dict[str, str],
+    identifier: str,
+    detail: str,
+) -> None:
+    """The 409 names what this signup gave, as the mail does (user report I8)."""
+    client = texting(SIGNUP_ENABLED=True, IDENTIFIERS=identifiers)
+    assert ask(client, **body).status_code == 202
+    drain()
+    sent = mail.outbox[-1].body if "@" in identifier else sms_outbox[-1].body
+    # The name and the number, taken meanwhile.
+    create_user("dave", mobile_number=NUMBER, mobile_number_verified=True)
+
+    late = client.post(
+        "/auth/signup/code",
+        json={"identifier": identifier, "code": code_in(sent), "password": PASSWORD},
+    )
+
+    assert (late.status_code, late.json()["code"]) == (409, "signup_taken")
+    assert late.json()["detail"] == detail

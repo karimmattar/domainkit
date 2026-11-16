@@ -20,7 +20,7 @@ from .gates import session_limits
 from .models import AbstractBaseUser
 from .settings import auth_settings
 from .throttling import Attempt, Limit, Window, account_key, attempt
-from .tokens import Issuing, LoginOrigin, signed_by_device, utc_now
+from .tokens import Issuing, LoginOrigin, noted, utc_now
 
 LOGIN_THROTTLED = "Too many login attempts; try again later."
 """The detail of a throttled login."""
@@ -91,12 +91,13 @@ async def made_by(
 ) -> Issuing:
     """How a login of ``user`` is made, now, and the limits it keeps.
 
-    The bound device that signed the request counts (``signed_by_device``);
-    the limits are what ``on_session_limits`` gives (ADR 0146). Issue the
-    login inside ``logging_in`` with them.
+    The bound device that signed the request counts, and the sign-in
+    request the login redeems (``noted``); the limits are what
+    ``on_session_limits`` gives (ADR 0146). Issue the login inside
+    ``logging_in`` with them.
     """
     request = current_request()
-    origin = signed_by_device(
+    origin = noted(
         LoginOrigin(method, device_id, frozenset(amr), utc_now()),
         getattr(request, "scope", {}),
     )

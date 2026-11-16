@@ -9,7 +9,7 @@ from dataclasses import dataclass, fields, replace
 from datetime import datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import and_, delete, func, insert, select, update
+from sqlalchemy import and_, delete, func, insert, or_, select, update
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -206,6 +206,27 @@ class SignInRequestStore:
             or 0
         )
 
+    async def unanswered_asks(
+        self, user_id: UUID, kinds: frozenset[str], since: datetime
+    ) -> int:
+        """How many of the user's requests of ``kinds`` since ``since`` are unanswered.
+
+        Live or ended: what its session withdrew counts too.
+        """
+        columns = sign_in_requests.c
+        return int(
+            await self.session.scalar(
+                select(func.count()).where(
+                    columns.user_id == user_id,
+                    columns.kind.in_(sorted(kinds)),
+                    columns.created_at > since,
+                    columns.approved_at.is_(None),
+                    columns.denied_at.is_(None),
+                )
+            )
+            or 0
+        )
+
     async def reported_since(self, user_id: UUID, since: datetime) -> bool:
         """Whether the user reported a request after ``since``."""
         found = await self.session.scalar(
@@ -256,15 +277,27 @@ class SignInRequestStore:
         return bool(result.rowcount)  # type: ignore[attr-defined]
 
     async def deny(
-        self, request_id: UUID, user_id: UUID, now: datetime, *, reported: bool
+        self,
+        request_id: UUID,
+        user_id: UUID,
+        now: datetime,
+        *,
+        reported: bool,
+        since: datetime | None = None,
     ) -> bool:
-        """Deny the user's request; whether this answer won."""
+        """Deny the user's request; whether this answer won.
+
+        Live, or, with ``since``, created after it: a withdrawn push the
+        user reports.
+        """
+        columns = sign_in_requests.c
+        live = columns.expires_at > now
         result = await self.session.execute(
             update(sign_in_requests)
             .where(
-                sign_in_requests.c.id == request_id,
-                sign_in_requests.c.user_id == user_id,
-                sign_in_requests.c.expires_at > now,
+                columns.id == request_id,
+                columns.user_id == user_id,
+                live if since is None else or_(live, columns.created_at > since),
                 _answerable(),  # type: ignore[arg-type]
             )
             .values(denied_at=now, reported=reported)
@@ -283,6 +316,27 @@ class SignInRequestStore:
             .values(denied_at=now)
         )
         return int(result.rowcount or 0)  # type: ignore[attr-defined]
+
+    async def end(self, request_id: UUID, now: datetime) -> None:
+        """End the request at ``now``, unless scanned, answered, or ended already.
+
+        Its initiator withdrew it: the phone can no longer answer it, nor
+        anyone redeem it, and it is forgotten as an expired request is. An
+        approved request stays redeemable: the phone answered first. A QR
+        request a phone claimed stays for that phone to answer or report.
+        """
+        await self.session.execute(
+            update(sign_in_requests)
+            .where(
+                sign_in_requests.c.id == request_id,
+                sign_in_requests.c.claimed_at.is_(None),
+                sign_in_requests.c.approved_at.is_(None),
+                sign_in_requests.c.denied_at.is_(None),
+                sign_in_requests.c.redeemed_at.is_(None),
+                sign_in_requests.c.expires_at > now,
+            )
+            .values(expires_at=now)
+        )
 
     async def polled(self, request_id: UUID, now: datetime, interval: int) -> bool:
         """Record a poll at ``now``; False if the last came within ``interval`` s."""
@@ -308,13 +362,18 @@ class SignInRequestStore:
         )
 
     async def redeem(self, request_id: UUID, now: datetime) -> bool:
-        """Spend the approved request; whether this poll is the one that did."""
+        """Spend the approved request; whether this poll is the one that did.
+
+        Not once it ended: a poll that read it before it expired, or before
+        its initiator withdrew it, redeems nothing after.
+        """
         result = await self.session.execute(
             update(sign_in_requests)
             .where(
                 sign_in_requests.c.id == request_id,
                 sign_in_requests.c.approved_at.is_not(None),
                 sign_in_requests.c.redeemed_at.is_(None),
+                sign_in_requests.c.expires_at > now,
             )
             .values(redeemed_at=now)
         )

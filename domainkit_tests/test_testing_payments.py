@@ -1,9 +1,10 @@
 """The test plugin's tools for money-moving projects, and its per-test resets.
 
 TEST-21: authenticator codes, step-up, SCA, approvals, the audit trail as
-records, and fake key services. TEST-14: hooks a test adds are dropped.
-TEST-19: the ``settings`` fixture reads settings read-only. TEST-13: the
-application's own role on the test databases.
+records, and fake key services; acts authorized one at a time (user report
+A17). TEST-14: hooks a test adds are dropped. TEST-19: the ``settings``
+fixture reads settings read-only. TEST-13: the application's own role on
+the test databases.
 """
 
 import base64
@@ -13,6 +14,7 @@ from contextlib import ExitStack
 from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import Any
+from uuid import uuid4
 
 import httpx2
 import pytest
@@ -23,7 +25,7 @@ from pydantic import SecretStr
 from domainkit.apps import registry
 from domainkit.apps.hooks import hooks_kept, on_deployment_warnings
 from domainkit.clock import FrozenClock, freeze_time
-from domainkit.conf import DatabaseConfig
+from domainkit.conf import DatabaseConfig, override_settings
 from domainkit.contrib.audit.testing import RecordedEntry, audit_entries
 from domainkit.contrib.auth import totp
 from domainkit.exceptions import ImproperlyConfigured
@@ -34,12 +36,16 @@ from domainkit.testing import (
     SettingsOverrides,
     UnexpectedResponse,
     approve_request,
+    authorize_act,
+    confirm_authorization,
     confirm_sca,
     enrol_totp,
     step_up,
     totp_code,
 )
+from domainkit.testing import TestClient as DomainkitTestClient
 from domainkit.testing import _read_only as read_only
+from domainkit.testing.authenticators import AuthorizationConfirmer
 from domainkit.testing.databases import application_role, grant_application_roles
 from domainkit.testing.kms import SECRETS, FakeKms, FakeVault
 from domainkit_tests.conftest import Api, UseAuth
@@ -165,10 +171,12 @@ def test_the_trail_is_read_as_records(alice: TestClient) -> None:
 def answering(**statuses: int) -> TestClient:
     """A client of an application answering each route with its status.
 
-    ``enrol``, ``confirm``, ``step_up``, ``sca``, ``read``, and ``approve``;
-    200 unless given. The enrolment answers ``RFC_SECRET``.
+    ``enrol``, ``confirm``, ``step_up``, ``sca``, ``read``, ``approve``,
+    ``ask``, ``confirm_act``, and ``read_act``; 200 (201 to ask) unless
+    given. The enrolment answers ``RFC_SECRET``.
     """
     app = FastAPI()
+    app.state.confirmed = []
 
     def answer(name: str, body: dict[str, Any]) -> dict[str, Any]:
         if (status := statuses.get(name, 200)) != 200:
@@ -188,6 +196,18 @@ def answering(**statuses: int) -> TestClient:
     def approve(body: dict[str, str]) -> dict[str, Any]:
         return answer("approve", {"status": "approved", **body})
 
+    @app.post("/act/authorization", status_code=201)
+    def ask(body: dict[str, str]) -> dict[str, Any]:
+        return answer("ask", {"id": "a-1", "methods": ["otp", "pwd"]})
+
+    @app.post("/auth/authorizations/a-1/confirm")
+    def confirm_act(body: dict[str, str]) -> dict[str, Any]:
+        app.state.confirmed.append(body)
+        return answer("confirm_act", {"authorization": "a-1.ok"})
+
+    app.get("/auth/authorizations/a-1")(
+        lambda: answer("read_act", {"methods": ["phone"]})
+    )
     return TestClient(app)
 
 
@@ -207,6 +227,9 @@ def test_an_approval_reads_the_fingerprint_first(frozen: FrozenClock) -> None:
         ("sca", "Confirming the SCA challenge"),
         ("read", "Reading the approval request"),
         ("approve", "Approving the request"),
+        ("ask", "Asking for an authorization of the act"),
+        ("confirm_act", "Confirming the authorization"),
+        ("read_act", "Reading the authorization"),
     ],
 )
 def test_a_refused_step_names_itself_and_the_answer(
@@ -223,6 +246,9 @@ def test_a_refused_step_names_itself_and_the_answer(
         "sca": lambda: confirm_sca(client, "c-1", app),
         "read": lambda: approve_request(client, "/requests/1"),
         "approve": lambda: approve_request(client, "/requests/1"),
+        "ask": lambda: authorize_act(client, "/act", app, json={}),
+        "confirm_act": lambda: confirm_authorization(client, "a-1", app),
+        "read_act": lambda: confirm_authorization(client, "a-1"),
     }
 
     with pytest.raises(UnexpectedResponse) as caught:
@@ -231,6 +257,60 @@ def test_a_refused_step_names_itself_and_the_answer(
     assert str(caught.value) == f'{step}: 403 {{"detail":"{refused} refused"}}'
     assert caught.value.response.status_code == 403
     assert isinstance(caught.value, AssertionError)
+
+
+def test_an_act_is_authorized_with_a_code_and_the_password_it_asks(
+    frozen: FrozenClock,
+) -> None:
+    """The twin's answer names the authorization; a code, and the password, confirm.
+
+    The password goes only where given, as the confirm route takes it.
+    """
+    client = answering()
+    app = Authenticator(RFC_SECRET)
+
+    with_password = authorize_act(client, "/act", app, json={}, password="pw")
+    without = confirm_authorization(client, "a-1", app)
+
+    assert (with_password, without) == ("a-1.ok", "a-1.ok")
+    assert [set(body) for body in client.app.state.confirmed] == [  # type: ignore[attr-defined]
+        {"code", "password"},
+        {"code"},
+    ]
+    assert client.app.state.confirmed[0]["password"] == "pw"  # type: ignore[attr-defined]
+
+
+def test_an_act_confirmed_in_the_test_needs_an_entered_client_and_a_confirmer(
+    frozen: FrozenClock,
+) -> None:
+    """Without an app, the act is confirmed in the client's event loop, by auth.
+
+    A client not entered has no loop (domainkit's tells it); with no
+    domain that keeps authorizations installed, nothing can confirm it.
+    """
+    registry.clear()
+    not_entered = DomainkitTestClient(answering().app)
+    with pytest.raises(RuntimeError, match="Enter the client first"):
+        confirm_authorization(not_entered, "a-1")
+    with (
+        answering() as client,
+        pytest.raises(ImproperlyConfigured, match=r"such as domainkit\.contrib\.auth"),
+    ):
+        authorize_act(client, "/act", json={})
+
+
+def test_auth_confirms_acts_in_tests_only(use_auth: UseAuth) -> None:
+    """Elsewhere, an act confirmed without its second factor is refused (SEC-12a-2)."""
+    use_auth()
+    [confirmer] = [
+        each for each in registry if isinstance(each, AuthorizationConfirmer)
+    ]
+
+    with (
+        override_settings(ENVIRONMENT="local"),
+        pytest.raises(ImproperlyConfigured, match="confirms acts without a second"),
+    ):
+        run_async(confirmer.confirm_test_authorization(uuid4(), ["otp"]))
 
 
 def test_the_routes_may_be_elsewhere(frozen: FrozenClock) -> None:

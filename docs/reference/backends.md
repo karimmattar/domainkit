@@ -13,6 +13,7 @@ On this page you find:
   `MIGRATIONS_DIR`, and how to size connection pools;
 - `CACHES`;
 - `STORAGES`, `UPLOAD_SCANNER`, `SEARCH`, and `TENANCY`;
+- `DOCUMENTS`, the server that renders documents;
 - `BROKERS`;
 - how a package offers a backend by name.
 
@@ -226,7 +227,7 @@ Each `STORAGES` entry:
 | `UPLOAD_SCANNER` key | Default | Meaning |
 | --- | --- | --- |
 | `BACKEND` | `domainkit.storage.scanning.ClamAVScanner` | A `domainkit.storage.scanning.Scanner` class, by dotted path or by name. |
-| `OPTIONS` | `{}` | Its keyword arguments. `ClamAVScanner` takes `host`, `port` (3310), and `timeout` (30 seconds). |
+| `OPTIONS` | `{}` | Its keyword arguments. `ClamAVScanner` takes `host`, `port` (3310), `timeout` (30 seconds), and, for a TLS proxy in front of clamd, `tls` (`False`), `tls_ca`, `tls_cert`, `tls_key`, and `tls_key_password` ([uploads.md](../uploads.md#virus-scanning); *new in 2.5*). |
 
 | `SEARCH` key | Default | Meaning |
 | --- | --- | --- |
@@ -250,6 +251,38 @@ Each `STORAGES` entry:
 TENANCY = {
     "SUBDOMAIN_OF": "example.com",
     "MEMBERSHIP": "domains.accounts.application.tenants.is_member",
+}
+```
+
+## Documents
+
+The Gotenberg server that turns HTML and Office documents into PDFs;
+see [documents.md](../documents.md). *New in 2.5.*
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `DOCUMENTS` | see below | How `domainkit.documents` renders documents: the server `renderer()` calls. |
+
+| `DOCUMENTS` key | Default | Meaning |
+| --- | --- | --- |
+| `RENDERER` | `None` | The Gotenberg server (below). `None`: no renderer, and `renderer()` refuses. |
+
+| `DOCUMENTS["RENDERER"]` key | Default | Meaning |
+| --- | --- | --- |
+| `URL` | required | Gotenberg's address, as `https://gotenberg.internal:3000`: http or https, a host, and a path if its `--api-root-path` sets one. Not empty, at most 2048 characters, with no login, query, or fragment. Staging and production refuse plain http to another host (`documents.E001`). |
+| `USERNAME` | `None` | The user of Gotenberg's basic auth (`--api-enable-basic-auth`): printable ASCII without a space or a colon, up to 256 characters. Set with `PASSWORD`. Staging and production warn without one (`documents.W001`). |
+| `PASSWORD` | `None` | The password of its basic auth: not empty, at most 1024 characters. Set with `USERNAME`. Shown as `**********`. |
+| `TIMEOUT` | `30.0` | Seconds a rendering may take, its retries included, at most 3600, and never past the deadline of the work it serves. Gotenberg's own `--api-timeout` is 30 seconds by default. |
+| `TRACE_HEADER` | `"Gotenberg-Trace"` | The header that carries the request's id to Gotenberg, which logs the call under it and answers with it: Gotenberg's `--api-correlation-id-header` (since 8.29; `--api-trace-header` before, which Gotenberg 9 removed). Letters, digits, and `-`, up to 64. |
+| `ALLOW_HTTP` | `False` | Lets staging and production call Gotenberg over plain http on another host, for a network that encrypts by itself, such as a service mesh. A renderer on `localhost` or a loopback address may use http without it. |
+
+```python
+DOCUMENTS = {
+    "RENDERER": {
+        "URL": "https://gotenberg.internal:3000",
+        "USERNAME": "shop",
+        "PASSWORD": env.str("GOTENBERG_PASSWORD"),
+    },
 }
 ```
 

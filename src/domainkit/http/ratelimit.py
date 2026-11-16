@@ -50,7 +50,7 @@ from domainkit.clock import monotonic
 from domainkit.conf import settings
 from domainkit.conf.global_settings import REDIS_SCHEMES
 from domainkit.context import current_request
-from domainkit.ddd.tenancy import scoped_key
+from domainkit.ddd.tenancy import scoped_key, shared_keys
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.errors import APIError, error_response
 from domainkit.http.middleware import (
@@ -641,6 +641,13 @@ class Throttle:
     ``rate_limited`` with ``Retry-After``; a refused WebSocket handshake is
     closed with 1013 (try again later).
 
+    While a tenant is served, the count is the tenant's own, as every
+    rate-limit key is (``scoped_key``). ``per_tenant=False`` keeps one
+    count for every tenant: a member of ten tenants then gets ``rate``,
+    not ten times it, on routes that serve each tenant from its path, as
+    for what costs the same whichever tenant asks (mails, messages)
+    (ADR 0170).
+
     A throttle is not an access rule: the route still needs ``Require(...)``
     or ``Public``.
     """
@@ -652,8 +659,12 @@ class Throttle:
         key: ThrottleKey = "user",
         scope: str | None = None,
         backend: Backend | None = None,
+        per_tenant: bool = True,
     ) -> None:
-        """Allow ``rate`` (``"10/minute"``) per caller, counted in ``backend``."""
+        """Allow ``rate`` (``"10/minute"``) per caller, counted in ``backend``.
+
+        ``per_tenant=False`` counts the caller once across every tenant.
+        """
         self.limit, self.period = parse_rate(rate)
         if not callable(key) and key not in {"user", "address"}:
             raise ValueError(
@@ -666,6 +677,7 @@ class Throttle:
         self.key = key
         self.scope = scope
         self.backend = backend
+        self.per_tenant = per_tenant
 
     async def __call__(self, connection: HTTPConnection) -> None:
         """Count the request; refuse it over the rate.
@@ -677,7 +689,8 @@ class Throttle:
         backend = self.backend or _app_backend(connection)
         key = f"throttle:{self.scope or _view(connection)}:"
         key += await self._caller(connection)
-        decision = await backend.hit(key, self.limit, self.period)
+        with contextlib.nullcontext() if self.per_tenant else shared_keys():
+            decision = await backend.hit(key, self.limit, self.period)
         if decision.allowed:
             return
         if connection.scope["type"] == "websocket":

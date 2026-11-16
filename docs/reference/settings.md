@@ -20,10 +20,13 @@ On this page you find:
 | --- | --- |
 | Core settings, layer rules, languages and time zones, the debug toolbar | this page |
 | Databases, ledgers, shards, caches, storages, search, tenancy, brokers | [backends.md](backends.md) |
+| `DOCUMENTS`: the Gotenberg server that renders documents (new in 2.5) | [backends.md](backends.md#documents) |
 | HTTP, security headers, CORS, outgoing calls, live connections, middleware | [http.md](http.md) |
 | Each optional app's settings (`AUTH`, `MESSAGING`, `AUDIT`, ...) | the app's own page ([contrib.md](../contrib.md)) |
 | `AUTH`'s keys, `AUTH["BREACHED_PASSWORDS"]` (new passwords checked against data breaches) among them | [auth.md](../auth.md#settings) |
+| `AUTH["ADMIN_ACTION"]`, and `APPROVALS["SUBMIT_ACTION"]`, `["REJECT_ACTION"]`, and `["CANCEL_ACTION"]`: the admin API's changes and a request's steps, each authorized as one act | [auth.md](../auth.md#settings), [approvals.md](../contrib/approvals.md#settings) |
 | `DEVICES`'s keys, `DEVICES["PUSH_TOKEN_CHECK"]` (push tokens checked with their service when registered) among them | [devices.md](../auth/devices.md#settings) |
+| `CIBA`'s keys, `CIBA["PUSH_TEXTS"]` (each kind of request's push text) among them | [ciba.md](../auth/ciba.md#settings) |
 
 Each table has a Default column. A default in backticks is the value
 itself. A row also states its bounds, such as "at most 3600".
@@ -207,7 +210,7 @@ domains' own models keep those keys as secrets.
 | `ASGI_APPLICATION` | `None` | The `module:attribute` that `runserver` serves. |
 | `EVENT_LOOP` | `"auto"` | The event loop of `runserver` and of commands with an `async` handle (`runworker` among them). `auto`: uvloop when the `uvloop` extra is installed. `asyncio`: always asyncio's own. `uvloop`: uvloop, or a configuration error. |
 | `RUNSERVER_SERVER` | `"uvicorn"` | The server `runserver` starts when its `--server` names none: `uvicorn` or `granian` (the `granian` extra). Set it in the development settings to serve with Granian every time. |
-| `SERVE` | see [The `serve` command](servers.md#the-serve-command) | The production server `manage.py serve` starts (`SERVER`: Granian where installed, else uvicorn), and its limits: `WORKERS`, `MAX_CONNECTIONS`, `BACKLOG`, `KEEP_ALIVE`, `GRACEFUL_TIMEOUT`, `MAX_HEADER_SIZE`, `WEBSOCKETS`. The defaults are the options of [Server limits](servers.md). |
+| `SERVE` | see [The `serve` command](servers.md#the-serve-command) | The production server `manage.py serve` starts (`SERVER`: Granian where installed, else uvicorn), and its limits: `WORKERS`, `MAX_CONNECTIONS`, `BACKLOG`, `KEEP_ALIVE`, `GRACEFUL_TIMEOUT`, `MAX_HEADER_SIZE`, `WEBSOCKETS`; under Granian, its HTTP versions (`HTTP`) and whether a worker that fails as it starts stops it (`EXIT_ON_FAILED_START`). The defaults are the options of [Server limits](servers.md). |
 | `LOGGING` | minimal | A `logging.config.dictConfig` mapping, applied by `setup()`. `domainkit.log.build_logging_config(log_format="json", level="INFO")` makes one that writes from a thread, through a bounded queue ([runtime.md](../runtime.md#logging-and-error-reports)). The settings `init` writes use it. |
 | `ERROR_REPORTERS` | `()` | Callables `(exc, context) -> None` by dotted path, called for every unexpected error (500s, dead-lettered messages), on a reporting thread and in the caller's context. 100 reports may wait; more are dropped and counted. A reporter that raises is logged and skipped. |
 | `EVENT_HANDLER_TIMEOUT` | `10.0` | Seconds an in-process event handler may run after a commit, up to 3600. A handler still running then is cancelled, logged, and reported (`HandlerTimedOut`), and the request goes on. `event_bus.subscribe(..., timeout=30)` sets one handler's limit. `durable=True` runs a handler from the outbox instead ([runtime.md](../runtime.md#event-handlers)). |
