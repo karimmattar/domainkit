@@ -133,11 +133,9 @@ granian --interface asgi config.asgi:application --host 0.0.0.0 --port 8000 \
 where Granian is installed. Tests hold the lines to what it starts.
 [Granian](#granian) says why each option is there.
 
-`init` writes a `Dockerfile` that runs the first, with `--app-dir src`,
-`--host 0.0.0.0`, and `--port 8000`, and sets the number of processes
-with `WEB_CONCURRENCY`, not `--workers`. `init --server granian` writes
-one that runs the second, with `--working-dir src`, and sets them with
-`GRANIAN_WORKERS`.
+The `Dockerfile` that `init` writes runs `python manage.py serve`:
+uvicorn, or Granian with `init --server granian`, which installs it.
+`WEB_CONCURRENCY` sets the number of processes.
 
 ## What each option limits
 

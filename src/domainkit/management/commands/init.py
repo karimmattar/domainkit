@@ -24,11 +24,12 @@ audit trail and evidence, required idempotency keys, messaging, encrypted
 fields under a key service, the ledger, maker-checker approvals, and
 limits, with a sample transfer that goes through all of them and its tests.
 
-``--server granian`` writes an image that serves with Granian, not
-uvicorn, with the options of "Server limits" (``docs/reference/servers.md``)
-and ``LOGGING`` for Granian's own process, and depends on the ``granian``
-and ``uvloop`` extras. The Dockerfile's notes link to the documentation
-of the release that wrote them (``docs_url``); the other notes name pages
+Either image runs ``manage.py serve``, which starts Granian where it is
+installed, else uvicorn, with the options of "Server limits"
+(``docs/reference/servers.md``). ``--server granian`` depends on the
+``granian`` and ``uvloop`` extras, so its image serves with Granian, and
+its notes say so. The Dockerfile's notes link to the documentation of
+the release that wrote them (``docs_url``); the other notes name pages
 as ``docs/<page>.md``, which ``manage.py docs`` links (ADR 0152).
 """
 

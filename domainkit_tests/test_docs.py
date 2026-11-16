@@ -849,64 +849,27 @@ def test_the_upgrade_entries_are_read_from_their_sections() -> None:
     ) == ["**Breaking:** a security fix (S-1).\n", "Old (D-2).\n"]
 
 
-def test_the_projects_image_runs_uvicorn_with_the_limits_the_reference_gives() -> None:
-    """The ``Dockerfile`` ``init`` writes keeps "Server limits" (INFRA-09).
+def test_the_projects_images_run_serve() -> None:
+    """Both ``Dockerfile``s ``init`` writes run ``manage.py serve`` (INFRA-09).
 
-    Its own processes are the image's ``WEB_CONCURRENCY``, not ``--workers``.
+    Its processes are the image's ``WEB_CONCURRENCY``, said up top; its
+    limits are ``SERVE``'s, which the tests below hold to "Server limits".
+    The Granian image's notes link to its section (user report S1).
     """
-    reference = (DOCS / "reference/servers.md").read_text(encoding="utf-8")
-    block = reference.split("uvicorn, one process per core:\n\n```bash\n", 1)[1]
-    given = shlex.split(block.split("```", 1)[0].replace("\\\n", " "))
-    workers = given.index("--workers")
-    dockerfile = (
-        ROOT / "src/domainkit/management/templates/project/Dockerfile-tpl"
-    ).read_text(encoding="utf-8")
-    command = json.loads(dockerfile.split("CMD ", 1)[1].replace("\\\n", " "))
+    templates = ROOT / "src/domainkit/management/templates"
+    images = {
+        "uvicorn": templates / "project/Dockerfile-tpl",
+        "Granian": templates / "servers/granian/Dockerfile-tpl",
+    }
+    for server, path in images.items():
+        dockerfile = path.read_text(encoding="utf-8")
+        command = json.loads(dockerfile.split("CMD ", 1)[1])
+        header = dockerfile.split("FROM", 1)[0]
 
-    assert given[:2] == command[:2] == ["uvicorn", "config.asgi:application"]
-    assert command[2:8] == [
-        "--app-dir",
-        "src",
-        "--host",
-        "0.0.0.0",  # noqa: S104 - in the container, behind the proxy.
-        "--port",
-        "8000",
-    ]
-    assert command[8:] == given[2:workers] + given[workers + 2 :]
-    assert "WEB_CONCURRENCY" in dockerfile.split("FROM", 1)[0]  # Said up top.
-
-
-def test_the_granian_image_runs_the_commands_the_reference_gives() -> None:
-    """``init --server granian``'s ``Dockerfile`` keeps "Server limits" too.
-
-    ``logconfig`` first, then Granian, from ``src``; its processes are
-    ``GRANIAN_WORKERS``, not ``--workers``. Its notes link to the section
-    (user report S1).
-    """
-    reference = (DOCS / "reference/servers.md").read_text(encoding="utf-8")
-    assert "\n## Granian\n" in reference
-    block = reference.split("written for its own process first:\n\n```bash\n", 1)[1]
-    written, served = block.split("```", 1)[0].split("\n", 1)
-    given = shlex.split(served.replace("\\\n", " "))
-    workers = given.index("--workers")
-    dockerfile = (
-        ROOT / "src/domainkit/management/templates/servers/granian/Dockerfile-tpl"
-    ).read_text(encoding="utf-8")
-    shell, run, command = json.loads(
-        dockerfile.split("CMD ", 1)[1].replace("\\\n", " ")
-    )
-    first, then = command.split(" && ")
-    granian = shlex.split(then)
-
-    assert (shell, run) == ("sh", "-c")
-    assert first == written
-    application = ["granian", "--interface", "asgi", "config.asgi:application"]
-    assert granian[0] == "exec"
-    assert granian[1:5] == given[:4] == application
-    assert granian[5:7] == ["--working-dir", "src"]
-    assert granian[7:] == given[4:workers] + given[workers + 2 :]
-    assert "GRANIAN_WORKERS" in dockerfile.split("FROM", 1)[0]
-    assert "{{ docs }}/reference/servers.md#granian" in dockerfile
+        assert command == ["python", "manage.py", "serve"], server
+        assert f"WEB_CONCURRENCY sets {server}'s worker processes" in header
+    granian = images["Granian"].read_text(encoding="utf-8")
+    assert "{{ docs }}/reference/servers.md#granian" in granian
 
 
 APPLICATION = "config.asgi:application"

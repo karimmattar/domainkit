@@ -188,7 +188,7 @@ billing/
   manage.py
   .env                    selects config.settings.local on this machine
   .gitignore
-  Dockerfile              the image: uvicorn, as a user without privileges
+  Dockerfile              the image: manage.py serve, as a user without privileges
   .dockerignore
   .github/workflows/ci.yml   ruff, check, migrations, tests, and the image
   src/config/settings/    base, local, test, and production settings
@@ -210,8 +210,9 @@ also turn the API docs off, send HSTS for a year, and limit each caller to
 `BILLING_API_SECURE_HSTS_SECONDS`, and `BILLING_API_RATE_LIMIT` change that.
 
 Serve it with one worker process per core, each on its own event loop:
-`uvicorn config.asgi:application --workers 4 --loop uvloop`, or Granian
-(`pip install 'domainkit[granian]'`). [docs/reference/servers.md](https://github.com/karimmattar/domainkit/blob/main/docs/reference/servers.md)
+`python manage.py serve` starts Granian where it is installed
+(`pip install 'domainkit[granian]'`), else uvicorn, with the limits of
+`SERVE`. [docs/reference/servers.md](https://github.com/karimmattar/domainkit/blob/main/docs/reference/servers.md)
 gives the whole command with its limits, and [docs/performance.md](https://github.com/karimmattar/domainkit/blob/main/docs/performance.md)
 how many cores a load needs.
 

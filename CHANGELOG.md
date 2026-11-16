@@ -420,12 +420,12 @@ and a status.
   ([The server header](docs/reference/http.md#the-server-header)) (user
   report S3).
 - `init --server granian`: a project whose image serves with Granian,
-  with the options of "Server limits" and `LOGGING` written for
-  Granian's main process as it starts; it depends on the `granian` and
-  `uvloop` extras. The notes the templates write link to the
-  documentation of the release that wrote them, where they named a path
-  of domainkit's repository
-  ([Granian](docs/reference/servers.md#granian)) (user report S1).
+  with the options of "Server limits" and `LOGGING` for Granian's main
+  process (`manage.py serve`); it depends on the `granian` and `uvloop`
+  extras. The notes the templates write link to the documentation of
+  the release that wrote them, where they named a path of domainkit's
+  repository ([Granian](docs/reference/servers.md#granian)) (user
+  report S1).
 - `manage.py serve`: the production server for `ASGI_APPLICATION`.
   Granian where the `granian` extra is installed, else uvicorn, started
   through its Python API with the options of "Server limits", read from
@@ -661,6 +661,12 @@ and a status.
   connections open 60 seconds, as the proxy's idle timeout must be
   shorter ([Granian](docs/reference/servers.md#granian)) (user report
   S1).
+- The image `init` writes runs `python manage.py serve`, which starts
+  uvicorn there with the options its command line gave; its processes
+  are still `WEB_CONCURRENCY`. A project's own `Dockerfile` keeps its
+  command; `CMD ["python", "manage.py", "serve"]` replaces it
+  ([The `serve` command](docs/reference/servers.md#the-serve-command))
+  (user report S1).
 - "Server limits" says that uvicorn's `--h11-max-incomplete-event-size`
   holds with its h11 parser only, for a header block still arriving:
   its httptools parser, which `uvicorn[standard]` installs and prefers,

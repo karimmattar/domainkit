@@ -580,7 +580,7 @@ ROOT = Path(__file__).parents[1]
 
 
 def test_the_image_runs_as_a_user_who_cannot_change_the_code(tmp_path: Path) -> None:
-    """Dependencies in a build stage; code owned by root; uvicorn on port 8000.
+    """Dependencies in a build stage; code owned by root; ``serve`` on port 8000.
 
     CI's build job builds the image of a new project with the wheel, and
     runs it: id, a write refused, check, and /health (INFRA-09).
@@ -606,9 +606,8 @@ def test_the_image_runs_as_a_user_who_cannot_change_the_code(tmp_path: Path) -> 
     ]
     assert all(stage.index(line) < user for line in stage if line.startswith("COPY "))
     assert "    BILLING_API_SETTINGS_MODULE=config.settings.production" in stage
-    cmd = image_command(dockerfile)
-    assert cmd[:4] == ["uvicorn", "config.asgi:application", "--app-dir", "src"]
-    assert cmd[4:8] == ["--host", "0.0.0.0", "--port", "8000"]  # noqa: S104
+    # serve: uvicorn, as Granian is not installed, on 0.0.0.0:8000 (user report S1).
+    assert image_command(dockerfile) == ["python", "manage.py", "serve"]
     # A lock, when the project keeps one, is installed by its hashes (A7-2).
     assert "COPY pyproject.toml requirements.loc[k] ./" in lines
     assert (
@@ -651,11 +650,12 @@ def image_command(dockerfile: str) -> list[str]:
 def test_init_writes_an_image_that_serves_with_granian(tmp_path: Path) -> None:
     """``--server granian``: the same project, its image served by Granian.
 
-    The image writes ``LOGGING`` for Granian's main process, then runs
-    Granian with the options of "Server limits", its notes linking to
-    this release's documentation. The project depends on Granian's extra,
-    and uvloop's for the loop it runs; all else is the uvicorn image's
-    (user report S1).
+    The image runs ``serve``, as the uvicorn image does: with Granian's
+    extra installed, it starts Granian with the options of "Server
+    limits", and ``LOGGING`` for its main process, with no file to write
+    first. Its notes link to this release's documentation. The project
+    depends on Granian's extra, and uvloop's for the loop it runs; all
+    else is the uvicorn image's (user report S1).
     """
     project, other = tmp_path / "billing", tmp_path / "uvicorn"
 
@@ -671,34 +671,15 @@ def test_init_writes_an_image_that_serves_with_granian(tmp_path: Path) -> None:
     dockerfile = (project / "Dockerfile").read_text(encoding="utf-8")
     uvicorn = (other / "Dockerfile").read_text(encoding="utf-8")
     assert "{{" not in dockerfile
-    shell, run, command = image_command(dockerfile)
-    assert (shell, run) == ("sh", "-c")
-    written, served = command.split(" && ")
-    assert written == "python manage.py logconfig --output /tmp/logging.json"
-    granian = shlex.split(served)
-    assert granian[:5] == [
-        "exec",
-        "granian",
-        "--interface",
-        "asgi",
-        "config.asgi:application",
-    ]
-    assert granian[5:11] == [
-        "--working-dir",
-        "src",
-        "--host",
-        "0.0.0.0",  # noqa: S104 - in the container, behind the proxy.
-        "--port",
-        "8000",
-    ]
-    log_config = granian[granian.index("--log-config") + 1]
-    assert log_config == "/tmp/logging.json"  # noqa: S108 - the container's own.
+    assert image_command(dockerfile) == image_command(uvicorn)
+    assert image_command(dockerfile) == ["python", "manage.py", "serve"]
+    assert "/tmp" not in dockerfile  # noqa: S108 - no file to write as it starts.
     header = dockerfile.split("FROM", 1)[0]
     assert "with Granian" in header
-    assert "GRANIAN_WORKERS" in header
+    assert "WEB_CONCURRENCY sets Granian's worker processes" in header
     docs = docs_url(domainkit.__version__)
     assert f"({docs}/reference/servers.md#granian)" in dockerfile
-    assert f"({docs}/reference/servers.md);" in uvicorn
+    assert f"({docs}/reference/servers.md#the-serve-command)" in uvicorn
     assert "docs/reference/servers.md" not in dockerfile.replace(f"{docs}/", "")
 
     def stages(text: str) -> str:

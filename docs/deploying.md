@@ -25,8 +25,8 @@ On this page you learn how to:
 ### The image
 
 The `Dockerfile` builds an image that serves `config.asgi:application`
-with uvicorn, as a user without privileges who can write nothing in
-`/app`:
+with `python manage.py serve`, as a user without privileges who can
+write nothing in `/app`:
 
 ```bash
 docker build -t shop .
@@ -50,18 +50,17 @@ It is built in two stages:
    code is owned by root, and the process runs as uid 10001, so the
    application reads its code and cannot change it. The stage sets
    `DOMAINKIT_PROJECT_ROOT=/app` and
-   `<PREFIX>SETTINGS_MODULE=config.settings.production`, and runs uvicorn
-   with the limits of [Server limits](reference/servers.md).
-   `WEB_CONCURRENCY` sets uvicorn's worker processes: one per core (one
+   `<PREFIX>SETTINGS_MODULE=config.settings.production`, and runs
+   `python manage.py serve`: uvicorn, with the limits of
+   [Server limits](reference/servers.md#the-serve-command) from `SERVE`.
+   `WEB_CONCURRENCY` sets its worker processes: one per core (one
    unless set).
 
-`init --server granian` writes the same image, run by Granian instead,
-with the options of [Granian](reference/servers.md#granian).
-`GRANIAN_WORKERS` sets its worker processes. As it starts, it writes
-`LOGGING` to `/tmp/logging.json` (`manage.py logconfig`) for Granian's
-main process: with a read-only root file system, mount a writable
-`/tmp`. Its notes, like the uvicorn image's, link to the documentation of
-the release that wrote them.
+`init --server granian` writes the same image, whose project depends on
+the `granian` extra: `serve` then starts Granian, with the options of
+[Granian](reference/servers.md#granian), and gives its main process
+`LOGGING` with no file to write first. Its notes, like the uvicorn
+image's, link to the documentation of the release that wrote them.
 
 `docker build --build-context wheels=<directory> .` offers the wheels in
 `<directory>` (a fork, a release candidate) ahead of the package index,
@@ -177,10 +176,9 @@ fails, and names the variable, when one is missing.
 - [ ] **Then the web processes and the workers**, from the same image:
   `python manage.py runworker` for the outbox, at least one per outbox
   database ([The worker](operations.md#the-worker)).
-- [ ] **The grace period** of the orchestrator is above uvicorn's
-  graceful timeout (10 seconds in the image) plus `SHUTDOWN_TIMEOUT`
-  (15), or Granian's `--workers-kill-timeout` (25, both together, in
-  its image), and 45 seconds for workers
+- [ ] **The grace period** of the orchestrator is above the server's
+  graceful timeout (`SERVE["GRACEFUL_TIMEOUT"]`, 10 seconds) plus
+  `SHUTDOWN_TIMEOUT` (15), and 45 seconds for workers
   ([Running the web processes](operations.md#running-the-web-processes)).
 - [ ] **Roll forward, not back.** To undo a schema change, write a new
   revision. A downgrade in staging and production needs

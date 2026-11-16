@@ -73,7 +73,7 @@ module:
 
 | Process | Command | How many |
 | --- | --- | --- |
-| Web | `uvicorn config.asgi:application ...` or Granian ([Running the web processes](#running-the-web-processes)) | One worker process per core, and as many replicas as the load needs |
+| Web | `python manage.py serve`: Granian or uvicorn ([Running the web processes](#running-the-web-processes)) | One worker process per core, and as many replicas as the load needs |
 | Worker | `python manage.py runworker` | At least one per outbox database, more for throughput ([The worker](#the-worker)) |
 | Migrations | `python manage.py migrate` | One job per rollout, before the new code serves ([Migrations in a rollout](#migrations-in-a-rollout)) |
 
@@ -141,25 +141,32 @@ shows up before a rollout.
 
 ## Running the web processes
 
-Run uvicorn or Granian with one worker process per core, behind a
+Run `python manage.py serve` with one worker process per core, behind a
 reverse proxy or load balancer that limits header sizes and slow
-clients. The image that `init` writes runs uvicorn, and
-`WEB_CONCURRENCY` sets its worker processes (one unless set); with
-`init --server granian` it runs Granian, and `GRANIAN_WORKERS` sets them.
-The whole command, with each limit, is on
-[reference/servers.md](reference/servers.md). The two settings that
-matter most:
+clients. It starts Granian where the `granian` extra is installed, else
+uvicorn, with the limits of `SERVE`. The image that `init` writes runs
+it, and `WEB_CONCURRENCY` sets its worker processes (one unless set);
+with `init --server granian` it runs Granian. Each limit, and the
+servers' own command lines, are on
+[reference/servers.md](reference/servers.md#the-serve-command). The
+settings that matter most:
 
 - **Shutdown.** The server's graceful timeout
-  (`--timeout-graceful-shutdown`) plus `SHUTDOWN_TIMEOUT` (15 seconds)
-  must fit in the orchestrator's grace period (30 seconds on
+  (`SERVE["GRACEFUL_TIMEOUT"]`, 10 seconds) plus `SHUTDOWN_TIMEOUT` (15
+  seconds) must fit in the orchestrator's grace period (30 seconds on
   Kubernetes). Otherwise a stop ends in `SIGKILL`
   ([runtime.md](runtime.md#shutting-down-within-a-budget)). Granian's
-  `--workers-kill-timeout` counts both, and kills a worker past it.
-- **Proxies.** Run uvicorn with `--no-proxy-headers`, and list the
-  proxies in `TRUSTED_PROXIES`, so that domainkit, not uvicorn, decides
-  each caller's address. Rate limits, audit records, and logs depend on
-  it. Have the proxy set `X-Request-ID` too ([request ids](#request-ids)).
+  workers are killed past both together.
+- **Idle connections.** The server must keep an idle connection open
+  longer than the proxy does, or the proxy answers some requests 502.
+  Set `PROXY_IDLE_TIMEOUT` to the proxy's, and `check` warns where the
+  server's is not longer (`servers.W003`,
+  [The proxy in front](reference/servers.md#the-proxy-in-front)).
+- **Proxies.** `serve` reads no proxy header (uvicorn run by hand needs
+  `--no-proxy-headers`). List the proxies in `TRUSTED_PROXIES`, so that
+  domainkit, not the server, decides each caller's address. Rate limits,
+  audit records, and logs depend on it. Have the proxy set
+  `X-Request-ID` too ([request ids](#request-ids)).
 
 ## Health checks
 

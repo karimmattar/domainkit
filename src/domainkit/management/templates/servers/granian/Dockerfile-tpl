@@ -10,10 +10,8 @@
 # project, as above, or better in a secret store: nothing secret is built
 # in. .dockerignore lets in only manage.py, pyproject.toml,
 # requirements.lock, src/, and migrations/, and keeps env files, keys, and
-# databases out even there. GRANIAN_WORKERS sets Granian's worker processes
-# (one per core; one unless set). As it starts, it writes LOGGING to
-# /tmp/logging.json (manage.py logconfig), for Granian's own process: with a
-# read-only root file system, mount a writable /tmp.
+# databases out even there. WEB_CONCURRENCY sets Granian's worker processes
+# (one per core; one unless set), unless SERVE["WORKERS"] does.
 #
 # Lock what the image installs, each file by its hash, and commit the lock:
 #
@@ -59,14 +57,8 @@ COPY --from=build /opt/venv /opt/venv
 COPY . .
 USER 10001
 EXPOSE 8000
-# The limits of "Server limits" ({{ docs }}/reference/servers.md#granian).
-# Granian reads no proxy header (TRUSTED_PROXIES does), writes its own lines
-# through LOGGING (--log-config), and Server: granian unless SERVER_HEADER
-# is set.
-CMD ["sh", "-c", "python manage.py logconfig --output /tmp/logging.json && \
-     exec granian --interface asgi config.asgi:application --working-dir src \
-     --host 0.0.0.0 --port 8000 --loop uvloop \
-     --backpressure 1200 --backlog 2048 \
-     --http1-header-read-timeout 60000 --http1-buffer-size 16384 \
-     --workers-kill-timeout 25 --respawn-failed-workers --no-ws \
-     --log-config /tmp/logging.json"]
+# python manage.py serve starts Granian, with the limits of "Server limits"
+# ({{ docs }}/reference/servers.md#granian) from SERVE. Granian reads no proxy
+# header (TRUSTED_PROXIES does), writes its own lines through LOGGING, and
+# Server: granian unless SERVER_HEADER is set.
+CMD ["python", "manage.py", "serve"]
