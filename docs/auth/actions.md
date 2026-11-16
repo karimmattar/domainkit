@@ -222,7 +222,8 @@ POST /auth/app-sign-in/authorizations/token {"request"}  400 authorization_pendi
   withdraws it (`POST /auth/app-sign-in/authorizations/cancel
   {"request"}`, since 2.5): unanswered, the phone no longer lists it,
   and the authorization stays to be confirmed; approved, it stays to be
-  redeemed.
+  redeemed. A user's unanswered asks of the last `REQUEST_TTL`,
+  withdrawn ones too, are at most twice `MAX_PENDING`.
 - The phone lists it with an `authorization` object: the purpose, the
   kept title and details, and the digest, read from the row.
 - It approves with the digest, in a request its device signs: another

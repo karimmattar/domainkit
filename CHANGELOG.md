@@ -14,15 +14,20 @@ and a status.
 - `…/authorizations/cancel` and `…/transactions/cancel` (under
   `/auth/app-sign-in`) withdraw what a signed-in session asked the
   phone, from that session alone, and `POST /auth/app-sign-in/cancel
-  {"request"}` a page's QR sign-in. An unanswered request ends now: the
-  phone no longer lists it nor can answer it, a session's ask no longer
-  counts against `CIBA.MAX_PENDING`, nobody redeems it, and nothing is
-  reported, so the user's pushes go on. A request the phone answered
-  stays as it is. A page's push sign-in is never withdrawn: anyone who
-  knows an identifier starts one, so it stays counted and reportable
-  until it expires. `cancel(handle, ...)` (`domainkit.contrib.ciba`)
-  does it without HTTP. A page could only let the request expire, or
-  have the user deny it as "Not me", which stopped their pushes for
+  {"request"}` a page's QR sign-in no phone scanned yet. An unanswered
+  request ends now: the phone no longer lists it nor can answer it, a
+  session's ask no longer counts against `CIBA.MAX_PENDING`, nobody
+  redeems it, and nothing is reported, so the user's pushes go on. A
+  request the phone answered or scanned stays as it is; the phone
+  approves an act and auth confirms it in one transaction
+  (`confirm_action_with(..., uow=...)`). A page's push sign-in is never
+  withdrawn: anyone who knows an identifier starts one, so it stays
+  counted and reportable until it expires. A user's unanswered asks of
+  the last `REQUEST_TTL`, withdrawn ones too, are at most twice
+  `MAX_PENDING`, and the phone reports a withdrawn one from its push
+  until then. `cancel(handle, ...)` (`domainkit.contrib.ciba`) does it
+  without HTTP. A page could only let the request expire, or have the
+  user deny it as "Not me", which stopped their pushes for
   `REPORT_COOLDOWN`. ADR 0164 (user report A16).
 - A login a page redeems at `/auth/app-sign-in/token` or `/session`
   names the sign-in request in its origin, for login gates

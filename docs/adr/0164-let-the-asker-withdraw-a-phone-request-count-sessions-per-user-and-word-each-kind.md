@@ -91,7 +91,20 @@ What may be withdrawn:
 | --- | --- |
 | Every request its initiator holds | A push sign-in is started by whoever knows an identifier. Withdrawn, it frees the user's `MAX_PENDING` place at once: start, withdraw, start pushes `START_RATE` a minute from each address, and each push leaves the phone's list before the user can report it, so `REPORT_COOLDOWN` never starts. ADR 0128's bounds on push bombing are gone. |
 | Every request, a withdrawn push sign-in still counted and reportable until it would have expired | The page gains nothing from it, and the phone lists a request no one can approve: a state, and an answer, of its own. |
-| **QR sign-ins and a session's asks; never a push sign-in** | A page's push stays until it is answered or expires, as before. A QR request pushes nothing, and counts against nothing; a session's asks come from the user's own sessions, bounded by `START_RATE` per user. |
+| **Unscanned QR sign-ins and a session's asks; never a push sign-in** | A page's push stays until it is answered or expires, as before. An unscanned QR request pushes nothing, and counts against nothing; once a phone scanned it, it is that phone's, to answer or report. A session's asks need the bounds below. |
+
+A session's asks, withdrawn, would leave the same hole on the session's
+side: ask, withdraw, ask again, each push gone before it can be
+reported, bounded by `START_RATE` per user alone, and by nothing with
+`None`. A password session is all it takes where the phone does not
+approve logins (`APPROVE_LOGINS` off, the default): the attacker the
+phone's approval of an act stands against.
+
+| Option | What it costs |
+| --- | --- |
+| `START_RATE` per user alone | 10 pushes a minute by default, none of them reportable; no bound with `START_RATE = None`. |
+| Count withdrawn asks against `MAX_PENDING` until they would have expired | Closing two dialogs blocks the third act for two minutes: the report's own case. |
+| **Count the unanswered asks of `REQUEST_TTL`, withdrawn ones too, against twice `MAX_PENDING`; and let "Not me" reach a withdrawn ask until then** | A dialog or two closed still asks again at once; a loop stops at six pushes in two minutes, whatever `START_RATE` says, and the push names a request the user can report, which starts `REPORT_COOLDOWN`. |
 
 What withdrawing does to a request the phone answered:
 
@@ -99,6 +112,15 @@ What withdrawing does to a request the phone answered:
 | --- | --- |
 | End it too | An approved act's authorization is confirmed in auth, and nobody can redeem it: asking the phone again is `409 authorization_confirmed`. |
 | **Nothing: it is answered** | The page may still redeem an approval; a denial stays one. |
+
+The phone's approval of an act was two transactions: auth confirmed the
+authorization, then ciba approved the request. A withdrawal between the
+two left the authorization confirmed and the request ended. Auth's
+`confirm_action_with` takes the caller's unit of work (ciba's is
+auth's, on the same database), so the approval and the confirmation
+commit together, the request's guarded update first: a withdrawal
+either ends it before, and nothing is confirmed, or finds it approved,
+and changes nothing.
 
 A17, which refusals deny:
 
@@ -134,10 +156,10 @@ I8, where a kind's text comes from:
 - **The initiator withdraws an unanswered request.** `cancel(handle, *,
   client_id, kind="sign_in", credential_digest=None)` checks the handle
   as `poll` does, and ends the request now, unless the phone answered
-  it, or it ended: the phone no longer lists it nor can answer it, a
-  session's ask no longer counts against `MAX_PENDING`, nobody redeems
-  it, and nothing is reported or audited. The routes: `POST
-  /app-sign-in/cancel` (a page's QR sign-in, public),
+  it, scanned it, or it ended: the phone no longer lists it nor can
+  answer it, a session's ask no longer counts against `MAX_PENDING`,
+  nobody redeems it, and nothing is reported or audited. The routes:
+  `POST /app-sign-in/cancel` (a page's unscanned QR sign-in, public),
   `/app-sign-in/authorizations/cancel` and
   `/app-sign-in/transactions/cancel` (the session that asked). They
   answer `204`, also for a request answered or ended already, which
@@ -147,11 +169,22 @@ I8, where a kind's text comes from:
   already reports nothing.
 - **A push sign-in is never withdrawn.** It stays on the phone, counted
   against `MAX_PENDING` and reportable, until it is answered or
-  expires. ADR 0128's bounds on push bombing hold.
-- **A redeem needs a live request.** The poll's guarded redeem also
-  checks that the request has not ended, so a poll that read it before
-  it ended redeems nothing after. A wait checks the expiry before the
-  approval, as the poll does.
+  expires. ADR 0128's bounds on push bombing hold. A scanned QR sign-in
+  stays for its phone to answer or report too.
+- **A session's withdrawn asks stay bounded and reportable.**
+  `ask_signed_in` also refuses (`409 phone_unavailable`) once the user
+  has twice `MAX_PENDING` asks of the last `REQUEST_TTL` the phone did
+  not answer, withdrawn ones included. `deny(..., report=True)` takes a
+  withdrawn, unanswered push of the user until `REQUEST_TTL` after it
+  was asked: "Not me" from the notification reports it, and starts
+  `REPORT_COOLDOWN`.
+- **An act is approved and confirmed at once.** `confirm_action_with(...,
+  uow=...)` confirms in the caller's unit of work; ciba approves the
+  request, then confirms the act, in one transaction.
+- **A redeem reads the time when it writes.** The poll's guarded redeem
+  checks, with the time of its own update, that the request has not
+  expired. A wait checks the expiry before the approval, as the poll
+  does.
 - **A refusal denies.** An `on_approve` hook that raises
   `PermissionDenied`, or an HTTP error of 403, denies the request,
   unreported (`SignInDenied`), before its refusal is answered: the poll
@@ -190,11 +223,13 @@ I8, where a kind's text comes from:
   closes, until it expires, as in 2.4: the price of the bound on push
   bombing. Its QR sign-in, withdrawn, can no longer be claimed, from a
   copy of the code either.
-- A session's asks are bounded by `START_RATE` per user, not by
-  `MAX_PENDING`, since the session frees its place: a stolen session
-  pushes the user's phone up to that rate. Number matching, and the act
-  the phone reads from auth's record, stand against a tired tap; ending
-  the session stops it.
+- A session's asks are bounded by twice `MAX_PENDING` unanswered asks
+  in `REQUEST_TTL`, withdrawn ones too, and by `START_RATE` per user: a
+  stolen session pushes the phone six times in two minutes at most, and
+  each push can be reported, which stops the next for
+  `REPORT_COOLDOWN`. Number matching, and the act the phone reads from
+  auth's record, stand against a tired tap; ending the session stops
+  it.
 - A withdrawn request reads as expired: its row keeps when it was
   withdrawn, not when it would have expired, and is forgotten a day
   later, as any.
