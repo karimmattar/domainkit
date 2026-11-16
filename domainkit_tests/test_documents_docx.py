@@ -5,11 +5,17 @@ placeholder spread over runs by a spelling mark, text boxes kept twice
 (``mc:Choice`` and ``mc:Fallback``), headers, footers, and footnotes.
 """
 
+import contextlib
 import io
+import os
+import struct
 import sys
+import tracemalloc
+import unicodedata
 import warnings
 import zipfile
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from pathlib import Path
 from typing import Any, Final
 
 import pytest
@@ -23,6 +29,7 @@ from domainkit.documents import (
     fill_docx,
     overlay_pdf,
 )
+from domainkit.documents import docx as docx_module
 
 W: Final = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 NAMESPACES: Final = (
@@ -370,6 +377,46 @@ def test_only_a_word_document_is_filled(
         fill_docx(make(), {})
 
 
+class Pipe:
+    """A named pipe nobody writes to: whatever opens it to read waits for good.
+
+    So does a parse that opens it, as one of ``/dev/stdin`` would: its test
+    then ends by its timeout, and fails. No thread watches it, so nothing
+    else that opens the pipe meanwhile is taken for the parser.
+    """
+
+    def __init__(self, path: Path) -> None:
+        """Make the pipe at ``path``."""
+        self.path = path
+        os.mkfifo(path)
+
+    def close(self) -> None:
+        """Free a reader that waits, if any, and remove the pipe.
+
+        A pipe left behind would hold whatever reads the temporary files.
+        """
+        with contextlib.suppress(OSError):  # ENXIO: no reader waits.
+            os.close(os.open(self.path, os.O_WRONLY | os.O_NONBLOCK))
+        self.path.unlink()
+
+
+@pytest.fixture
+def pipe(tmp_path: Path) -> Iterator[Pipe]:
+    """A named pipe that holds whatever opens it."""
+    made = Pipe(tmp_path / "pipe")
+    yield made
+    made.close()
+
+
+OUTSIDE: Final = (
+    '<!DOCTYPE w:document [<!ENTITY % p SYSTEM "file://{pipe}"> %p;]>',
+    '<!DOCTYPE w:document [<!ENTITY % p SYSTEM "{pipe}"> %p;]>',
+    '<!DOCTYPE w:document SYSTEM "file://{pipe}">',
+)
+"""DTDs that name an outside file: a parameter entity, by URL and by path,
+and an outside subset."""
+
+
 @pytest.mark.parametrize(
     ("doctype", "text"),
     [
@@ -379,6 +426,8 @@ def test_only_a_word_document_is_filled(
             '<!DOCTYPE w:document [<!ENTITY a "aaaaaaaaaa"><!ENTITY b "&a;&a;&a;">]>',
             "&b;&b;&b;",
         ),
+        ("<!doctype w:document>", "{{a}}"),
+        ('<!-- <!ENTITY x "y"> -->', "{{a}}"),
     ],
 )
 def test_a_part_with_a_dtd_is_refused_unread(doctype: str, text: str) -> None:
@@ -387,8 +436,58 @@ def test_a_part_with_a_dtd_is_refused_unread(doctype: str, text: str) -> None:
     xml = body.replace("?>\n", f"?>\n{doctype}\n", 1)
     template = replaced(docx(""), "word/document.xml", xml.encode())
 
-    with pytest.raises(DocumentError, match="declares a DTD"):
+    with pytest.raises(DocumentError, match="declares a DTD or an entity"):
         fill_docx(template, {"a": "1"})
+
+
+@pytest.mark.timeout(10, method="signal")
+@pytest.mark.parametrize("doctype", OUTSIDE)
+@pytest.mark.parametrize("name", ["word/document.xml", "[Content_Types].xml"])
+def test_a_dtd_naming_an_outside_file_is_refused_before_it_is_opened(
+    pipe: Pipe, doctype: str, name: str
+) -> None:
+    """A parser without a DTD still opens an outside subset or parameter entity.
+
+    A pipe that never ends (``/dev/stdin``, ``/proc/self/fd/1``) would hold
+    the parse, and its thread, for good: the part is refused unread.
+    """
+    template = docx(runs("{{a}}"))
+    original = read(template, name).decode()
+    root = "w:document" if name == "word/document.xml" else "Types"
+    declared = doctype.format(pipe=pipe.path).replace("w:document", root)
+    xml = original.replace("?>\n", f"?>\n{declared}\n", 1)
+    if not xml.startswith("<?xml"):
+        xml = declared + xml
+
+    with pytest.raises(DocumentError, match="declares a DTD or an entity"):
+        fill_docx(replaced(template, name, xml.encode()), {"a": "1"})
+
+
+@pytest.mark.timeout(10, method="signal")
+@pytest.mark.parametrize("doctype", OUTSIDE)
+def test_the_parser_resolves_an_outside_reference_to_nothing(
+    pipe: Pipe, doctype: str
+) -> None:
+    """The second layer, under the check of the bytes: nothing is opened."""
+    xml = doctype.format(pipe=pipe.path).replace("w:document", "r") + "<r/>"
+
+    root = etree.fromstring(xml.encode(), docx_module._parser(etree))
+
+    assert root.tag == "r"  # Parsed, the pipe not waited on.
+
+
+@pytest.mark.timeout(10, method="signal")
+def test_a_part_not_in_utf_8_is_not_read(pipe: Pipe) -> None:
+    """UTF-16 would hide a DTD from the check of the bytes: it is not parsed so."""
+    xml = (
+        f'<?xml version="1.0" encoding="UTF-16"?>'
+        f'<!DOCTYPE w:document SYSTEM "file://{pipe.path}">'
+        f'<w:document xmlns:w="{W}"><w:body/></w:document>'
+    )
+    template = replaced(docx(""), "word/document.xml", xml.encode("utf-16"))
+
+    with pytest.raises(DocumentError, match="is not well-formed XML"):
+        fill_docx(template, {})
 
 
 def test_an_entity_without_a_dtd_is_not_well_formed() -> None:
@@ -484,6 +583,110 @@ def test_each_part_names_the_extra_it_needs(
     assert str(missing.value) == (
         f'domainkit.documents needs {module}: pip install "domainkit[documents]".'
     )
+
+
+def stating(document: bytes, name: str, size: int) -> bytes:
+    """``document`` whose central directory states ``size`` bytes for ``name``."""
+    data = bytearray(document)
+    entry = data.rindex(name.encode()) - 46
+    assert data[entry : entry + 4] == b"PK\x01\x02"
+    struct.pack_into("<I", data, entry + 24, size)
+    return bytes(data)
+
+
+def test_a_file_is_inflated_no_further_than_its_stated_size() -> None:
+    """A bomb that states 10 bytes costs 10: ``ZipFile.read`` inflated it whole.
+
+    The archive's own sizes pass every limit; the file then fails its
+    checksum, and memory never held what it would have inflated to.
+    """
+    bomb = stating(
+        docx(runs("{{a}}"), extra={"word/media/bomb.bin": bytes(32 * 1024 * 1024)}),
+        "word/media/bomb.bin",
+        10,
+    )
+    tracemalloc.start()
+    try:
+        with pytest.raises(DocumentError, match="archive is damaged"):
+            fill_docx(bomb, {"a": "1"})
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+    assert peak < 4 * 1024 * 1024
+
+
+@pytest.mark.parametrize("method", [zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA])
+def test_only_stored_and_deflated_files_are_read(method: int) -> None:
+    """Word writes no other method; bzip2 and LZMA are refused uninflated."""
+    template = docx(runs("{{a}}"))
+    with zipfile.ZipFile(io.BytesIO(template)) as archive:
+        files = {info.filename: archive.read(info) for info in archive.infolist()}
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as archive:
+        for name, data in files.items():
+            archive.writestr(name, data, compress_type=zipfile.ZIP_DEFLATED)
+        archive.writestr("word/media/a.bin", b"x" * 100, compress_type=method)
+
+    with pytest.raises(DocumentError, match="otherwise than stored or deflated"):
+        fill_docx(out.getvalue(), {"a": "1"})
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "../../etc/cron.d/x",
+        "/abs/x",
+        "word\\..\\x.txt",
+        "C:x",
+        "word//x.xml",
+        "./word/x.xml",
+        "word/./x.xml",
+        "word/\x01.xml",
+        "",
+    ],
+)
+def test_a_file_is_named_by_a_plain_relative_path(name: str) -> None:
+    """What the archive is written back with is never a path that climbs or roots."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # zipfile warns of an odd name.
+        template = replaced(docx(runs("{{a}}")), name, b"x")
+
+    with pytest.raises(DocumentError, match="not a plain relative path"):
+        fill_docx(template, {"a": "1"})
+
+
+def test_folders_are_kept_and_names_compared_as_people_read_them() -> None:
+    """A folder's entry is a plain path; two spellings of one name are refused."""
+    with_folder = replaced(docx(runs("{{a}}")), "word/media/", b"")
+    composed = unicodedata.normalize("NFC", "word/résumé.xml")
+    decomposed = unicodedata.normalize("NFD", "word/résumé.xml")
+    twice = replaced(replaced(docx(""), composed, b"<a/>"), decomposed, b"<b/>")
+
+    with zipfile.ZipFile(io.BytesIO(fill_docx(with_folder, {"a": "1"}))) as archive:
+        assert "word/media/" in archive.namelist()
+    with pytest.raises(DocumentError, match="two files of one name"):
+        fill_docx(twice, {})
+
+
+@pytest.mark.timeout(20, method="signal")
+def test_paragraphs_nested_deep_cost_no_more_than_flat_ones() -> None:
+    """Each text is grouped with its paragraph in one walk.
+
+    Read paragraph by paragraph, 250 nested paragraphs over 100,000 texts
+    took minutes; in one walk, a fraction of a second.
+    """
+    depth, texts = 250, 100_000
+    body = (
+        "<w:p>" * depth + "<w:r>" + "<w:t>x</w:t>" * texts + "</w:r>" + "</w:p>" * depth
+    )
+    template = docx(body + runs("{{a}}"))
+
+    filled = fill_docx(template, {"a": "1"}, limits=ArchiveLimits(max_ratio=10_000))
+
+    body = etree.fromstring(read(filled))[0]
+    assert "".join(body[-1].itertext()) == "1"
+    assert len(body[0].findall(f".//{{{W}}}t")) == texts
 
 
 def zip_of(files: Mapping[str, bytes]) -> bytes:

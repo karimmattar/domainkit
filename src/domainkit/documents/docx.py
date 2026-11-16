@@ -20,17 +20,22 @@ takes (unless ``allow_unused``), and braces that do not make a placeholder
 ``PlaceholderError``. ``{{`` and ``}}`` have no other use.
 
 The archive is read within ``ArchiveLimits``, so a zip bomb costs no
-more than they allow. The XML is read with lxml without entities, DTDs,
-or the network (a part that declares a DTD is refused: a Word document
-has none), and written back with the namespace prefixes it had: Word
-reads ``mc:Ignorable`` by prefix. Values are text, escaped as they are
-written, so a value cannot add markup. Every other part of the archive
-is written back unchanged, in its order.
+more than they allow: its files are stored or deflated, plain relative
+names, each inflated no further than the size the archive states. The
+XML is read as UTF-8 with lxml, without entities, DTDs, or anything
+outside the part: a part that declares a DTD or an entity is refused
+before it is parsed (Word writes none), and the parser resolves any
+outside reference to nothing. It is written back with the namespace
+prefixes it had: Word reads ``mc:Ignorable`` by prefix. Values are text,
+escaped as they are written, so a value cannot add markup. Every other
+part of the archive is written back unchanged, in its order.
 """
 
 import io
 import re
+import unicodedata
 import zipfile
+import zlib
 from bisect import bisect_right
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -64,6 +69,12 @@ FILLED: Final = frozenset(
 """The parts whose text is filled."""
 PLACEHOLDER: Final = re.compile(r"\{\{\s*([^\W\d]\w*(?:\.[^\W\d]\w*)*)\s*\}\}")
 BRACES: Final = re.compile(r"\{\{|\}\}")
+DECLARATION: Final = re.compile(rb"<!(?:DOCTYPE|ENTITY)", re.IGNORECASE)
+"""What declares a DTD or an entity: refused before the XML is parsed."""
+METHODS: Final = frozenset({zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED})
+"""How a file of the archive may be compressed: as Word writes them."""
+NAME_SEGMENT: Final = re.compile(r"[^\x00-\x1f\x7f\\:]+")
+"""A segment of a file's name: no control character, backslash, or colon."""
 NOT_XML: Final = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff￾￿]")
 """Characters XML 1.0 cannot hold."""
 BREAKS: Final = re.compile(r"([\n\t])")
@@ -128,7 +139,7 @@ def fill_docx(
     changed: dict[str, bytes] = {}
     for name in _filled_parts(etree, parts):
         root = _parse(etree, parts[name], name)
-        if _fill(root, given, found, malformed):
+        if _fill(etree, root, given, found, malformed):
             changed[name] = etree.tostring(
                 root.getroottree(),
                 xml_declaration=True,
@@ -171,12 +182,14 @@ def _read(
     """Every file of the archive, in its order, within ``limits``.
 
     The sizes are checked as the archive states them, before anything is
-    inflated: ``zipfile`` inflates a file no further than its stated
-    size, and refuses one whose CRC-32 then differs.
+    inflated; then each file is inflated no further than its stated size,
+    and ``zipfile`` refuses one whose CRC-32 then differs.
 
     Raises:
         DocumentError: It is not a ZIP archive, is past a limit, is
-            damaged, or has an encrypted file or two files of one name.
+            damaged, or has a file encrypted, compressed otherwise than
+            stored or deflated, named other than by a plain relative path,
+            or named as another is.
     """
     if len(document) > limits.max_bytes:
         raise DocumentError(f"The document is larger than {limits.max_bytes:,} bytes.")
@@ -186,26 +199,47 @@ def _read(
         raise DocumentError("The document is not a Word document (.docx).") from None
     with archive:
         infos = archive.infolist()
-        _check_sizes(infos, limits)
+        _check_entries(infos, limits)
         try:
-            return [(info, archive.read(info)) for info in infos]
-        except (zipfile.BadZipFile, EOFError, OSError, NotImplementedError):
+            return [(info, _inflated(archive, info)) for info in infos]
+        except (zipfile.BadZipFile, EOFError, OSError, zlib.error):
             raise DocumentError("The document's archive is damaged.") from None
 
 
-def _check_sizes(infos: list[zipfile.ZipInfo], limits: ArchiveLimits) -> None:
+def _inflated(archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> bytes:
+    """One file of the archive, inflated no further than its stated size.
+
+    ``ZipFile.read`` asks the decompressor for up to 2 GiB at once, and
+    cuts to the stated size only after: a file that states 10 bytes and
+    inflates to gigabytes would be inflated whole. Asked for its stated
+    size, the decompressor stops there, and the CRC-32 is checked.
+    """
+    with archive.open(info) as part:
+        return part.read(info.file_size)
+
+
+def _check_entries(infos: list[zipfile.ZipInfo], limits: ArchiveLimits) -> None:
     """Refuse an archive whose files are too many, too large, or inflate too much.
 
     Raises:
-        DocumentError: One is past ``limits``, encrypted, or named twice.
+        DocumentError: One is past ``limits``, encrypted, compressed
+            otherwise than stored or deflated, oddly named, or named twice.
     """
     if len(infos) > limits.max_parts:
         raise DocumentError(f"The document holds more than {limits.max_parts:,} files.")
-    names = [info.filename.lower() for info in infos]
+    if not all(_plain(info.filename) for info in infos):
+        raise DocumentError(
+            "The document holds a file whose name is not a plain relative path."
+        )
+    names = [unicodedata.normalize("NFKC", info.filename).casefold() for info in infos]
     if len(set(names)) != len(names):
         raise DocumentError("The document holds two files of one name.")
     if any(info.flag_bits & 0x1 for info in infos):
         raise DocumentError("The document holds an encrypted file.")
+    if any(info.compress_type not in METHODS for info in infos):
+        raise DocumentError(
+            "The document holds a file compressed otherwise than stored or deflated."
+        )
     if any(info.file_size > limits.max_part_bytes for info in infos) or (
         sum(info.file_size for info in infos) > limits.max_total_bytes
     ):
@@ -221,6 +255,19 @@ def _check_sizes(infos: list[zipfile.ZipInfo], limits: ArchiveLimits) -> None:
         raise DocumentError(
             f"A file of the document inflates more than {limits.max_ratio} times."
         )
+
+
+def _plain(name: str) -> bool:
+    """Whether ``name`` is a plain relative path: ``word/document.xml``, ``word/``.
+
+    No leading ``/``, no empty, ``.``, or ``..`` segment, and no control
+    character, backslash, or colon (a drive, a stream).
+    """
+    segments = name.removesuffix("/").split("/")
+    return all(
+        segment not in {".", ".."} and NAME_SEGMENT.fullmatch(segment)
+        for segment in segments
+    )
 
 
 def _filled_parts(etree: Any, parts: Mapping[str, bytes]) -> list[str]:  # noqa: ANN401 - lxml has no types.
@@ -253,12 +300,40 @@ def _filled_parts(etree: Any, parts: Mapping[str, bytes]) -> list[str]:  # noqa:
 
 
 def _parse(etree: Any, data: bytes, name: str) -> Any:  # noqa: ANN401 - lxml has no types.
-    """The root element of the part ``name``: no entities, DTD, or network.
+    """The root element of the part ``name``: no entities, DTD, or outside file.
+
+    A DTD or an entity is refused before parsing: lxml without entities or
+    a DTD still opens an outside DTD subset, or an outside parameter
+    entity, a file that may be a pipe that never ends. The parser also
+    resolves any outside reference to nothing, and reads UTF-8 only, as
+    Word writes, so the check above sees what it parses.
 
     Raises:
-        DocumentError: It is not well-formed XML, or declares a DTD.
+        DocumentError: It is not well-formed UTF-8 XML, or declares a DTD
+            or an entity.
     """
+    if DECLARATION.search(data):
+        raise DocumentError(
+            f"{name} in the document declares a DTD or an entity; Word writes none."
+        )
+    try:
+        root = etree.fromstring(data, _parser(etree))
+    except etree.XMLSyntaxError:
+        raise DocumentError(f"{name} in the document is not well-formed XML.") from None
+    return root
+
+
+def _parser(etree: Any) -> Any:  # noqa: ANN401 - lxml has no types.
+    """An lxml parser that reads nothing beyond the bytes it is given."""
+
+    class Nothing(etree.Resolver):  # type: ignore[misc]
+        """Resolves every outside reference to an empty one: nothing is opened."""
+
+        def resolve(self, url: str, public_id: str, context: Any) -> Any:  # noqa: ANN401
+            return self.resolve_string("", context)
+
     parser = etree.XMLParser(
+        encoding="utf-8",
         resolve_entities=False,
         no_network=True,
         load_dtd=False,
@@ -266,16 +341,12 @@ def _parse(etree: Any, data: bytes, name: str) -> Any:  # noqa: ANN401 - lxml ha
         huge_tree=False,
         collect_ids=False,
     )
-    try:
-        root = etree.fromstring(data, parser)
-    except etree.XMLSyntaxError:
-        raise DocumentError(f"{name} in the document is not well-formed XML.") from None
-    if root.getroottree().docinfo.doctype:
-        raise DocumentError(f"{name} in the document declares a DTD; Word writes none.")
-    return root
+    parser.resolvers.add(Nothing())
+    return parser
 
 
 def _fill(
+    etree: Any,  # noqa: ANN401 - lxml has no types.
     root: Any,  # noqa: ANN401 - lxml has no types.
     values: Mapping[str, str],
     found: set[str],
@@ -287,12 +358,7 @@ def _fill(
     braces that make no placeholder to ``malformed``.
     """
     changed = False
-    for paragraph in root.iter(W_P):
-        texts = [
-            text
-            for text in paragraph.iter(W_T)
-            if next(text.iterancestors(W_P), None) is paragraph
-        ]
+    for texts in _paragraphs(etree, root):
         joined = "".join(text.text or "" for text in texts)
         if "{{" not in joined and "}}" not in joined:
             continue
@@ -307,15 +373,37 @@ def _fill(
     return changed
 
 
+def _paragraphs(etree: Any, root: Any) -> list[list[Any]]:  # noqa: ANN401 - lxml.
+    """Each paragraph's own ``w:t``, in one walk of the tree.
+
+    A text belongs to its nearest paragraph: a text box's paragraphs are
+    their own, though they sit inside a run of another. One walk keeps
+    the work linear however deep paragraphs nest.
+    """
+    paragraphs: list[list[Any]] = []
+    open_: list[list[Any]] = []
+    for event, element in etree.iterwalk(root, events=("start", "end"), tag=(W_P, W_T)):
+        if element.tag == W_T:
+            if event == "start" and open_:
+                open_[-1].append(element)
+        elif event == "start":
+            open_.append([])
+            paragraphs.append(open_[-1])
+        else:
+            open_.pop()
+    return paragraphs
+
+
 def _stray(joined: str, matches: list[re.Match[str]]) -> str | None:
     """The text around the first brace of ``joined`` no placeholder holds, if any.
 
     Up to ``SHOWN`` characters, from an opening brace on, or up to a
     closing one.
     """
-    held = [range(match.start(), match.end()) for match in matches]
+    starts = [match.start() for match in matches]
     for brace in BRACES.finditer(joined):
-        if any(brace.start() in span for span in held):
+        held = bisect_right(starts, brace.start()) - 1
+        if held >= 0 and brace.start() < matches[held].end():
             continue
         if brace[0] == "{{":
             return joined[brace.start() : brace.start() + SHOWN]
