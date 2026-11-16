@@ -399,6 +399,44 @@ and a status.
   they never replace; see
   [The fields of an error](docs/reference/responses.md#the-fields-of-an-error)
   (user report P3).
+- `APPROVALS.ADMIN_APPROVALS` holds changes of the admin API for other
+  people's approval: making staff (`auth.set_staff`), adding groups
+  (`auth.set_groups`) or permissions (`auth.set_permissions`), setting a
+  password (`auth.set_password`), impersonating (`auth.impersonate`),
+  each with the approvals it needs. The call answers `403
+  approval_pending` with the request's id; once approved, the same call
+  by the same staff member makes the change, once, through the admin API
+  and its checks. The request holds the change itself (the user, and what
+  it adds and takes away), bound by its fingerprint; never a password.
+  Superusers approve, or the holders of `ADMIN_APPROVERS`, never the
+  user it is about; what only takes away waits for no one
+  ([Changes of the admin API](docs/contrib/approvals.md#changes-of-the-admin-api),
+  ADR 0154) (user report A9).
+- `guard(..., by_maker=True)` leaves an approved command to its maker:
+  approving queues nothing, and the maker's same call, made again, runs
+  it as the approved request, once. A direct call submits it, or names
+  the caller's request for it that waits already
+  ([Run by its maker](docs/contrib/approvals.md#run-by-its-maker))
+  (user report A9).
+- `AdminChange.values` gives the values a change of the admin API sets
+  (`{"is_staff": True}`, an impersonation's `reason`; never a password):
+  a check of `on_admin_change` could not tell making staff from unmaking
+  them (user report A9).
+- `approvers_of(request)` gives the active users who may decide a request
+  now (its permission's holders, its group's members, or the superusers
+  and staff its approver rule lets through; never the maker, a party, or
+  one who decided), and the docs give a durable handler of
+  `RequestSubmitted` that mails them. Nobody was told that a request
+  waited
+  ([Telling the approvers](docs/contrib/approvals.md#telling-the-approvers))
+  (user report P3).
+- A guard's `parties` may be `async def`, to read the database; it is
+  awaited at each decision and at the run (`Guard.aparties_of`). It was a
+  plain function of the command (user report P3).
+- The approvals page shows how to ask staff and a step-up on submitting,
+  rejecting, and cancelling with `select_routes`, tested
+  ([Rules of your own on the routes](docs/contrib/approvals.md#rules-of-your-own-on-the-routes))
+  (user report P3).
 - `table_for` stores a tuple of one kind of JSON scalar
   (`tuple[str, ...]`, and of `int`, `float`, `bool`) in the new
   `JSONTuple` column type (`domainkit.db`): a JSON array, read back as a
@@ -576,6 +614,9 @@ and a status.
 
 ### Changed
 
+- The admin API runs its own checks (the staff member's bounds, the
+  fields, a password's validators) before the `on_admin_change` checks,
+  which now see only changes the API would make (user report A9).
 - `seed`, `privacy export`, and `privacy erase` start the domains first,
   as serving and `runworker` do (`needs_domains`): their `on_startup`
   hooks run before, and their `on_shutdown` hooks after. They run other
@@ -820,6 +861,15 @@ and a status.
 
 ### Security
 
+- **Breaking:** `GET /requests` and `GET /requests/{id}` of approvals
+  show a caller with `approvals.view_approvalrequest` the requests they
+  made and those they may decide, by the request's policy; others are
+  `404`. Every viewer read every request's command: amounts, accounts,
+  and the users staff act for. The new permission
+  `approvals.view_every_approvalrequest` shows every request, as before:
+  give it to auditors ([upgrading.md](docs/upgrading.md#23-to-24),
+  [Who reads which requests](docs/contrib/approvals.md#who-reads-which-requests),
+  ADR 0154) (user report P3).
 - When staff change an address or a number through the admin API, the
   codes sent to the old one stop working. A reset or enrollment code
   mailed there before the change still opened the account until it

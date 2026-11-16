@@ -183,9 +183,16 @@ class ApprovalRequest(AggregateRoot[RequestId]):
     """A command that runs only once enough people other than its maker approve it."""
 
     class Meta:
-        """Its permissions: viewing and submitting; deciding is by policy."""
+        """Its permissions: viewing and submitting; deciding is by policy.
+
+        ``view`` reads the requests one made and those one may decide;
+        ``view_every`` reads every request (user report P3).
+        """
 
         default_permissions = ("view", "add")
+        permissions = (
+            ("view_every_approvalrequest", "Can view every approval request"),
+        )
 
     action: Annotated[str, MaxLength(MAX_ACTION)]
     arguments: dict[str, Any]

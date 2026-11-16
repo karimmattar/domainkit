@@ -463,13 +463,23 @@ what.
 - **Every change to a user passes the project's own checks**:
   `on_admin_change(check)` (`domainkit.contrib.auth.gates`) is called
   with the staff member, the user (None when creating one), and an
-  `AdminChange`, before the change: its `kind` (`create`, `update`,
-  `delete`, `password`, `logout`, `impersonate`, `groups`,
-  `permissions`), the `fields` and flags it sets, and the groups or
-  permissions it `added` and `removed`. Raise `PermissionDenied` to
-  refuse it ("nobody edits their own account here", "making staff needs
-  another permission"). `admin.may_grant` and `admin.may_hold`, the
-  ceilings below, are public for your own routes.
+  `AdminChange`, once the admin API's own checks passed (the bounds below,
+  the fields, a password's validators) and right before the change: its
+  `kind` (`create`, `update`, `delete`, `password`, `logout`,
+  `impersonate`, `groups`, `permissions`), the `fields` and flags it
+  sets, the groups or permissions it `added` and `removed`, and, since
+  2.4, the `values` it sets (`{"is_staff": True}`, the `reason` of an
+  impersonation; never a password). Raise `PermissionDenied` to refuse it
+  ("nobody edits their own account here", "making staff needs another
+  permission"). `admin.may_grant` and `admin.may_hold`, the ceilings
+  below, are public for your own routes.
+- **With `domainkit.contrib.approvals`, changes can wait for a second
+  person** (since 2.4): `APPROVALS.ADMIN_APPROVALS` holds making staff,
+  adding groups or permissions, setting a password, and impersonating
+  for approval. The call answers `403 approval_pending` with the
+  request's id, and, once other people approve it, the same call by the
+  same staff member makes the change, once
+  ([Changes of the admin API](../contrib/approvals.md#changes-of-the-admin-api)).
 - **Other staff cannot grant a permission they lack**, directly or
   through a group (`403`).
 - **Nor can they change a user or a group that holds such a
@@ -582,7 +592,8 @@ See [reference/settings.md](../reference/settings.md) and
 | `401 step_up_required` | `StepUp` refuses ([Stepping up](step-up.md)). |
 | `403 permission_denied` "Impersonation is off (AUTH.IMPERSONATION_TTL)." | Impersonation without the setting. |
 | `409 last_superuser` | The last active superuser would go. |
-| `403 approval_required` | Making a superuser while approvals guard it. |
+| `403 approval_required` | Making a superuser while approvals guard it, or creating a user who is staff while approvals hold making staff. |
+| `403 approval_pending` | A change `APPROVALS.ADMIN_APPROVALS` holds: it waits for approval (`approval_request_id`); send the same call again once it is approved. |
 | `422 unknown_user_field`, `422 invalid_user_field` | A field the admin API may not change, or a value that does not fit. |
 | `404 user_not_found`, `404 group_not_found` | No such id. |
 | `security.E101`: "... declares no access rule ..." | A route without a rule; startup refuses it in staging and production. |

@@ -1748,8 +1748,14 @@ def test_the_project_checks_every_admin_change(api: Api) -> None:
     assert out.status_code == 204
 
     assert seen == [
-        ("bob", AdminChange("update", frozenset({"is_staff"}))),
-        ("bob", AdminChange("update", frozenset({"last_name"}))),
+        (
+            "bob",
+            AdminChange("update", frozenset({"is_staff"}), values={"is_staff": True}),
+        ),
+        (
+            "bob",
+            AdminChange("update", frozenset({"last_name"}), values={"last_name": "B"}),
+        ),
         ("bob", AdminChange("groups", added=frozenset({"viewers"}))),
         ("bob", AdminChange("logout")),
     ]

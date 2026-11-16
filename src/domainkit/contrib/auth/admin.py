@@ -20,8 +20,10 @@ they lack, unless they hold its permission on the whole model (AUTH-14).
 Where ``domainkit.contrib.approvals`` guards making superusers
 (``APPROVALS.SUPERUSER_APPROVALS``), no one makes one here
 (``approval_required``): an approved ``auth.grant_superuser`` request
-does. Changes are recorded as events, so the audit trail shows who
-changed what.
+does. A change passes the admin API's own checks, then the
+``on_admin_change`` checks, which may hold it for approval
+(``APPROVALS.ADMIN_APPROVALS``: ``approval_pending``). Changes are
+recorded as events, so the audit trail shows who changed what.
 """
 
 import dataclasses
@@ -369,10 +371,6 @@ async def create_user(
         _approval_needed()
     model = get_user_model()
     fields = _checked(model, body.fields)
-    flags_set = {name for name in ("is_staff", "is_superuser") if getattr(body, name)}
-    await _admin_change(
-        actor, None, AdminChange("create", frozenset({*fields, *flags_set}))
-    )
     flags: dict[str, bool] = {
         "is_active": body.is_active,
         "is_superuser": body.is_superuser,
@@ -384,6 +382,16 @@ async def create_user(
     if body.password is not None:
         candidate = SimpleNamespace(**{**fields, model.USERNAME_FIELD: body.username})
         await avalidate_password(body.password, candidate)
+    flags_set = {name for name in ("is_staff", "is_superuser") if getattr(body, name)}
+    await _admin_change(
+        actor,
+        None,
+        AdminChange(
+            "create",
+            frozenset({*fields, *flags_set}),
+            values={**fields, **dict.fromkeys(flags_set, True)},
+        ),
+    )
     async with AuthUnitOfWork() as uow:
         user = await uow.users.create_user(
             body.username, body.password, **fields, **flags
@@ -400,40 +408,49 @@ async def create_user(
 async def update_user(
     user_id: UUID, body: AdminUserPatch, actor: Annotated[AnyUser, _users("change")]
 ) -> AdminUserOut:
-    """Change a user's status flags and fields."""
+    """Change a user's status flags and fields.
+
+    What it checks comes first, then the ``on_admin_change`` checks, then
+    the change.
+    """
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
         await may_change(actor, user)
         flags = {
-            name
+            name: value
             for name in ("is_staff", "is_active", "is_superuser")
-            if getattr(body, name) is not None
+            if (value := getattr(body, name)) is not None
         }
-        await _admin_change(
-            actor, user, AdminChange("update", frozenset({*body.fields, *flags}))
-        )
-        was_active = user.is_active
+        fields = _checked(type(user), body.fields)
+        set_staff = getattr(user, "set_staff", None)
+        if body.is_staff is not None and set_staff is None:
+            raise UnknownUserField("This user model has no staff flag.")
         if body.is_superuser is not None and body.is_superuser != user.is_superuser:
             _superusers_only(actor, "Only superusers may make or unmake superusers.")
             if body.is_superuser:
                 _approval_needed()
+        await _admin_change(
+            actor,
+            user,
+            AdminChange(
+                "update", frozenset({*fields, *flags}), values={**fields, **flags}
+            ),
+        )
+        was_active = user.is_active
         if (
             user.is_superuser
             and user.is_active
             and False in (body.is_superuser, body.is_active)
         ):
             await _not_the_last_superuser(uow)  # Before anything is flushed.
-        if body.is_staff is not None:
-            set_staff = getattr(user, "set_staff", None)
-            if set_staff is None:
-                raise UnknownUserField("This user model has no staff flag.")
+        if body.is_staff is not None and set_staff is not None:
             set_staff(body.is_staff)
         if body.is_active is not None:
             user.set_active(body.is_active)
         if body.is_superuser is not None:
             user.set_superuser(body.is_superuser)
         before = {name: getattr(user, name, None) for name in IDENTIFIED}
-        user.update(**_checked(type(user), body.fields))
+        user.update(**fields)
         await _replaced(uow, user, before)
         await may_change(actor, user)  # Not into someone who holds more either.
         if was_active and not user.is_active:  # Their sessions end with them.
@@ -476,9 +493,9 @@ async def set_password(
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
         await may_change(actor, user)
-        await _admin_change(actor, user, AdminChange("password"))
         if body.password is not None:
             await avalidate_password(body.password, user)
+        await _admin_change(actor, user, AdminChange("password"))
         await uow.users.set_password(
             user, body.password, priority=True, temporary=user.id != actor.id
         )
@@ -542,7 +559,9 @@ async def impersonate(
         if not user.is_active:
             raise PermissionDenied("Only active users can be impersonated.")
         await may_change(actor, user)
-        await _admin_change(actor, user, AdminChange("impersonate"))
+        await _admin_change(
+            actor, user, AdminChange("impersonate", values={"reason": body.reason})
+        )
         with logging_in(LoginOrigin(LoginMethod.IMPERSONATION)):
             raw = await uow.tokens.issue(
                 user.id, ttl=ttl, name=IMPERSONATION, family=staff_id
@@ -567,6 +586,8 @@ async def set_user_groups(
         wanted = await uow.groups.get_many_by_name(body.groups)
         added = [group for group in wanted if group not in user.groups]
         removed = [group for group in user.groups if group not in wanted]
+        await may_grant(actor, _keys(*added))
+        await may_hold(actor, await _grants_of(*added))
         await _admin_change(
             actor,
             user,
@@ -576,8 +597,6 @@ async def set_user_groups(
                 removed=frozenset(group.name for group in removed),
             ),
         )
-        await may_grant(actor, _keys(*added))
-        await may_hold(actor, await _grants_of(*added))
         for group in [group for group in user.groups if group not in wanted]:
             user.leave(group)
         for group in added:
@@ -601,6 +620,7 @@ async def set_user_permissions(
             if permission not in user.user_permissions
         ]
         removed = [p for p in user.user_permissions if p not in wanted]
+        await may_grant(actor, {permission.key for permission in added})
         await _admin_change(
             actor,
             user,
@@ -610,7 +630,6 @@ async def set_user_permissions(
                 removed=frozenset(permission.key for permission in removed),
             ),
         )
-        await may_grant(actor, {permission.key for permission in added})
         user.revoke(*[p for p in user.user_permissions if p not in wanted])
         user.grant(*added)
         await uow.commit()

@@ -15,14 +15,19 @@ people approved that fingerprint. Where the guarded use case commits to
 the requests' database, the request is marked executed in the use
 case's own transaction, so the command commits once and the request
 says so with it.
+
+A guard ``by_maker`` queues nothing: its maker's own call runs the
+approved command (``run_by_maker``), spending the request first.
 """
 
+import functools
 import json
 import logging
+import operator
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import fields, replace
 from typing import Any, Final
 from uuid import UUID
 
@@ -33,11 +38,13 @@ from domainkit import clock
 from domainkit.apps import registry
 from domainkit.context import RequestContext, bind_request, current_request
 from domainkit.db import SqlAlchemyUnitOfWork
-from domainkit.ddd import Command, ConcurrentUpdate, DomainError
+from domainkit.ddd import Command, ConcurrentUpdate, Criteria, DomainError, F, Selection
+from domainkit.exceptions import ImproperlyConfigured
 from domainkit.money import MoneyError
 
 from .exceptions import (
     ApprovalNotNeeded,
+    ApprovalPending,
     ApprovalRequired,
     FingerprintMismatch,
     InvalidArguments,
@@ -45,13 +52,14 @@ from .exceptions import (
     RequestNotPending,
     RequestTampered,
 )
-from .guards import Guard, guard_for, policy_of, running
+from .guards import Guard, Running, guard_for, policy_of, running
 from .models import (
     MAX_PERSON,
     MAX_REASON,
     ApprovalRequest,
     RequestId,
     RequestStatus,
+    fingerprint,
 )
 from .rules import rule_instance
 from .settings import ApprovalsSettings
@@ -63,6 +71,8 @@ EXECUTE: Final = "domainkit.approvals.execute"
 """The task that runs an approved request's command (``tasks``)."""
 EXPIRE_BATCH: Final = 500
 """Requests one round of ``expire_requests`` expires at most."""
+STAFF_FLAGS: Final = ("is_superuser", "is_staff")
+"""The flags of the users an approver rule is asked about (``approvers_of``)."""
 MAKER: Final = "A maker's id has 1 to 255 characters."
 APPROVER: Final = "An approver's id has 1 to 255 characters."
 _RUN: Final = HTTPConnection(
@@ -207,11 +217,96 @@ async def submit_directly(guard: Guard, command: object) -> ApprovalRequest:
     Raises:
         ApprovalRequired: No one is acting (an anonymous caller): no maker.
     """
+    return await _submit(guard, command, _actor(), ApprovalsUnitOfWork())
+
+
+def _actor() -> str:
+    """Who is acting: the maker of what a direct call submits.
+
+    Raises:
+        ApprovalRequired: No one is (an anonymous caller).
+    """
     request = current_request()
     actor = None if request is None else request.actor
     if actor is None:
         raise ApprovalRequired("This command needs approval: submit it for approval.")
-    return await _submit(guard, command, actor, ApprovalsUnitOfWork())
+    return actor
+
+
+async def run_by_maker(guard: Guard, command: object) -> Running:
+    """Spend the caller's approved request holding ``command`` (a guard ``by_maker``).
+
+    The request is the oldest approved one of the caller's, of the guard's
+    action, whose fingerprint is that of ``command``, that has not expired.
+    It is checked as the worker checks a run (its seals, its arguments, its
+    approvals, its maker), and marked executed before the call goes on: a
+    call refused after that needs a new approval. A request that fails a
+    check fails, and the next is tried.
+
+    Raises:
+        ApprovalRequired: No one is acting.
+        MakerNotAllowed: The caller may no longer make the command.
+        ApprovalPending: None is approved: the caller's request holding
+            ``command`` that waits, or else one submitted now.
+    """
+    maker = _actor()
+    arguments = guard.dump(command)
+    digest = fingerprint(guard.action, arguments)
+    async with ApprovalsUnitOfWork() as uow:
+        found = await uow.requests.made_by(maker, guard.action, digest)
+    now = clock.now()
+    for request in found:
+        if request.status is RequestStatus.APPROVED:
+            await _check_maker(guard, maker)
+            spent = await _spend(guard, request.id, arguments)
+            if spent is not None:
+                return Running(
+                    spent.id, spent.action, command, spent.maker, spent.required
+                )
+    waiting = next(
+        (
+            request
+            for request in found
+            if request.status is RequestStatus.PENDING and not request.expired(now)
+        ),
+        None,
+    )
+    if waiting is None:
+        waiting = await _submit(guard, command, maker, ApprovalsUnitOfWork())
+    raise ApprovalPending(
+        "This command needs approval: it was submitted for approval.", waiting.id
+    )
+
+
+async def _spend(
+    guard: Guard, request_id: UUID, arguments: object
+) -> ApprovalRequest | None:
+    """Mark the approved request ``request_id`` executed, if it may run now.
+
+    None if it is no longer approved, has expired, or fails the checks of a
+    run (it fails then, with the refusal's code). Its command must read as
+    ``arguments``: the request was found by its fingerprint column, which
+    its seal does not cover, and the arguments its seal covers are what
+    the approvers were shown.
+    """
+    async with ApprovalsUnitOfWork() as uow:
+        request = await uow.locked(request_id)
+        if request.status is not RequestStatus.APPROVED or request.expired(clock.now()):
+            return None
+        try:
+            request.check_sealed()
+            if guard.dump(await _rebuild(guard, request)) != arguments:
+                raise FingerprintMismatch(
+                    "The request holds another command than the one approved."
+                )
+        except DomainError as exc:
+            logger.warning("Approval request %s fails as it is run", request_id)
+            request.failed(exc.code)
+            await uow.commit()
+            return None
+        request.executed()
+        await uow.commit()
+    return request
 
 
 async def approve_request(
@@ -268,7 +363,10 @@ async def record_approval(
     async with uow:
         request = await uow.locked(command.request_id)
         request.check_sealed()
-        if request.approve(approver, command.fingerprint, _parties(request)):
+        parties = await _parties(request)
+        if request.approve(approver, command.fingerprint, parties) and not (
+            policy_of(request)[0].by_maker
+        ):
             uow.defer(execute_request, request_id=request.id, token=request.run_token)
         await uow.commit()
     return request
@@ -294,11 +392,11 @@ async def check_approval(command: ApproveRequest) -> ApprovalRequest:
     async with ApprovalsUnitOfWork() as uow:
         request = await uow.requests.get(RequestId(command.request_id))
     request.check_sealed()
-    request.check_decision(approver, command.fingerprint, _parties(request))
+    request.check_decision(approver, command.fingerprint, await _parties(request))
     return request
 
 
-def _parties(request: ApprovalRequest) -> frozenset[str]:
+async def _parties(request: ApprovalRequest) -> frozenset[str]:
     """The people the request's command is about, who may not decide it.
 
     Raises:
@@ -307,9 +405,10 @@ def _parties(request: ApprovalRequest) -> frozenset[str]:
     """
     guard, _ = policy_of(request)
     try:
-        return guard.parties_of(guard.load(request.arguments))
+        command = guard.load(request.arguments)
     except ValidationError:
         raise InvalidArguments("The arguments do not make the command.") from None
+    return await guard.aparties_of(command)
 
 
 async def reject_request(
@@ -333,7 +432,7 @@ async def reject_request(
     async with uow:
         request = await uow.locked(command.request_id)
         request.check_sealed()
-        request.reject(approver, reason, _parties(request))
+        request.reject(approver, reason, await _parties(request))
         await uow.commit()
     return request
 
@@ -387,7 +486,7 @@ async def expire_requests() -> int:
             return expired
 
 
-def _rebuild(guard: Guard, request: ApprovalRequest) -> object:
+async def _rebuild(guard: Guard, request: ApprovalRequest) -> object:
     """The approved command, if it is what was approved.
 
     Raises:
@@ -409,7 +508,7 @@ def _rebuild(guard: Guard, request: ApprovalRequest) -> object:
         raise InvalidArguments(
             "The command names someone other than its maker as the one who acts."
         )
-    if request.approvals_verified(guard.parties_of(command)) < request.required:
+    if request.approvals_verified(await guard.aparties_of(command)) < request.required:
         raise FingerprintMismatch(
             "The request holds another command than the one approved."
         )
@@ -449,6 +548,62 @@ async def _check_maker(guard: Guard, maker: str) -> None:
         or (rule is not None and not await rule.has_permission(_RUN, user))
     ):
         raise MakerNotAllowed("Whoever submitted this command may no longer make it.")
+
+
+async def approvers_of(request: ApprovalRequest) -> list[Any]:
+    """The active users who may decide ``request`` now: whom to tell of it.
+
+    It needs ``domainkit.contrib.auth``. They are, by the request's policy,
+    the users who hold its permission (``has_perm``: granted to them or to
+    a group of theirs, and superusers), the members of its group, or the
+    superusers and staff its approver rule lets through, asked about the
+    user alone, on a connection without credentials (``_RUN``). Never its
+    maker, a party to its command, or someone who decided it already. A
+    permission only a backend of the project's grants is not looked for:
+    such holders are not found (user report P3).
+
+    Raises:
+        ImproperlyConfigured: ``domainkit.contrib.auth`` is not installed.
+        PolicyRemoved: The request's guard or policy no longer exists.
+    """
+    if not registry.is_installed(AUTH):
+        raise ImproperlyConfigured(f"approvers_of needs {AUTH}: install it.")
+    from domainkit.contrib.auth import AuthUnitOfWork, get_user_model, has_perm
+
+    _, policy = policy_of(request)
+    left_out = {request.maker, *await _parties(request)}
+    left_out |= {each.approver for each in request.decisions}
+    if request.permission is not None:
+        codename = request.permission.partition(".")[2]
+        found: Criteria = (
+            (F("is_superuser") == True)  # noqa: E712 - a condition.
+            | (F("user_permissions.codename") == codename)
+            | (F("groups.permissions.codename") == codename)
+        )
+    elif request.group is not None:
+        found = F("groups.name") == request.group
+    else:
+        stored = {each.name for each in fields(get_user_model())}
+        flags = [F(name) == True for name in STAFF_FLAGS if name in stored]  # noqa: E712
+        found = functools.reduce(operator.or_, flags)
+    async with AuthUnitOfWork() as uow:
+        users = await uow.users.filter(
+            Selection((F("is_active") == True) & found)  # noqa: E712 - a condition.
+        )
+    rule = rule_instance(policy.approver_rule)
+    approvers = []
+    for user in users:
+        if str(user.id) in left_out:
+            continue
+        if request.permission is not None:
+            if not await has_perm(user, request.permission):
+                continue
+        elif request.group is None and (
+            rule is None or not await rule.has_permission(_RUN, user)
+        ):
+            continue
+        approvers.append(user)
+    return approvers
 
 
 async def _read(request_id: UUID) -> ApprovalRequest:
@@ -580,7 +735,9 @@ async def execute_request(request_id: UUID, token: str | None = None) -> None:
     with _as_maker(request.maker):
         try:
             guard, _ = policy_of(request)
-            command = _rebuild(guard, request)
+            if guard.by_maker:  # Its maker's call runs it, never the worker.
+                return
+            command = await _rebuild(guard, request)
             await _check_maker(guard, request.maker)
         except DomainError as exc:
             await _finish(request_id, token, exc.code)

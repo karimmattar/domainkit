@@ -37,7 +37,7 @@ from domainkit.http.errors import APIError
 from domainkit.resources import HasModelPermission
 from domainkit.utils.module_loading import import_string
 
-from .guards import policy_of
+from .guards import Policy, policy_of
 from .models import ApprovalRequest
 from .settings import ApprovalsSettings
 
@@ -120,18 +120,50 @@ class IsApprover(BasePermission):
         """
         assert isinstance(obj, ApprovalRequest)  # noqa: S101 - the resource's model.
         _, policy = policy_of(obj)
-        if obj.permission is not None:
-            return await HasPermissions(obj.permission).has_permission(request, user)
-        if obj.group is not None:
-            names = {
-                getattr(group, "name", group) for group in getattr(user, "groups", ())
-            }
-            return scopes_of(request) is None and user.is_active and obj.group in names
         rule = rule_instance(policy.approver_rule)
-        return rule is not None and (
-            await rule.has_permission(request, user)
-            and await rule.has_object_permission(request, user, obj)
-        )
+        if obj.permission is None and obj.group is None and rule is not None:
+            return await rule.has_permission(
+                request, user
+            ) and await rule.has_object_permission(request, user, obj)
+        return await _named(request, user, obj.permission, obj.group, None)
+
+
+async def names_approver(
+    request: HTTPConnection, user: Principal, policy: Policy
+) -> bool:
+    """Whether ``policy`` names ``user`` among its approvers.
+
+    By its permission, its group, or its approver rule asked about the
+    principal alone (``has_permission``), as ``IsApprover`` asks; the maker
+    and the parties are a request's own, and not asked here.
+    """
+    return await _named(
+        request,
+        user,
+        policy.permission,
+        policy.group,
+        rule_instance(policy.approver_rule),
+    )
+
+
+async def _named(
+    request: HTTPConnection,
+    user: Principal,
+    permission: str | None,
+    group: str | None,
+    rule: BasePermission | None,
+) -> bool:
+    """Whether ``user`` holds ``permission``, is of ``group``, or passes ``rule``.
+
+    A group needs an active principal with credentials not limited to
+    scopes.
+    """
+    if permission is not None:
+        return await HasPermissions(permission).has_permission(request, user)
+    if group is not None:
+        names = {getattr(each, "name", each) for each in getattr(user, "groups", ())}
+        return scopes_of(request) is None and user.is_active and group in names
+    return rule is not None and await rule.has_permission(request, user)
 
 
 class MayApprove(BasePermission):

@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from domainkit.db import SqlAlchemyRepository, SqlAlchemyUnitOfWork
 from domainkit.db.routing import router
-from domainkit.ddd import NotFound
+from domainkit.ddd import F, NotFound, Selection
 
 from .exceptions import RequestNotFound
 from .models import ApprovalRequest, RequestId, RequestStatus
@@ -50,6 +50,26 @@ class RequestRepository(SqlAlchemyRepository[ApprovalRequest, RequestId]):
             .limit(limit)
         )
         return [RequestId(each) for each in found]
+
+    async def made_by(
+        self, maker: str, action: str, digest: str
+    ) -> list[ApprovalRequest]:
+        """The pending and approved requests of ``maker`` holding that command.
+
+        Those of ``action`` whose fingerprint is ``digest``, oldest first.
+        """
+        waiting = (F("status") == RequestStatus.PENDING) | (
+            F("status") == RequestStatus.APPROVED
+        )
+        return await self.filter(
+            Selection(
+                (F("maker") == maker)
+                & (F("action") == action)
+                & (F("fingerprint") == digest)
+                & waiting,
+                ordering=["submitted_at"],
+            )
+        )
 
 
 class ApprovalsUnitOfWork(SqlAlchemyUnitOfWork):

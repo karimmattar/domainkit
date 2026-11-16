@@ -124,6 +124,18 @@ domainkit.
   two instances) shared a key, and workers ran the last one subscribed
   for the messages of both. `subscribe` now raises `ValueError` at
   startup: give each its own `name=`.
+- **Approvals show each viewer their share of the requests.** `GET
+  /requests` and `GET /requests/{id}` show a caller the requests they
+  made and those whose policy names them among its approvers; another
+  request answers `404`. Approvers and makers see what they saw before.
+  Someone who holds `approvals.view_approvalrequest` alone, such as an
+  auditor, sees only their own: give them
+  `approvals.view_every_approvalrequest` (`migrate` creates it) to see
+  every request, as in 2.3
+  ([Who reads which requests](contrib/approvals.md#who-reads-which-requests)).
+- **The admin API's checks come before `on_admin_change`.** A check of
+  yours sees only changes the admin API would make: one that a bound, a
+  field, or a password's validators refuse is refused first.
 - **An async password rule is awaited, or refused.** A rule in
   `PASSWORD_VALIDATORS` whose `validate` is `async def` never ran before
   2.4: the password was taken unchecked. Every route and command now

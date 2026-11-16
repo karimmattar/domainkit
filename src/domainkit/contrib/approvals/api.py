@@ -8,7 +8,10 @@ Mount it where the project's API lives::
 
 Who may do what:
 
-- Reading and listing need ``approvals.view_approvalrequest``.
+- Reading and listing need ``approvals.view_approvalrequest``, and show
+  the requests the caller made and those whose policy names them among
+  its approvers; ``approvals.view_every_approvalrequest`` shows every
+  request (user report P3). Another request is ``404``.
 - Submitting needs ``approvals.add_approvalrequest``, and the permission
   the guard names for its makers (``accounting.add_entry`` for postings).
 - Approving and rejecting need to be one of the approvers the request's
@@ -31,16 +34,17 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.requests import HTTPConnection
 
-from domainkit.ddd import PermissionDenied
+from domainkit.ddd import Criteria, F, PermissionDenied
 from domainkit.http import Filter, FilterSet, Pagination, error_responses
-from domainkit.http.access import HasPermissions, Principal, Require
+from domainkit.http.access import HasPermissions, Principal, Require, current_user
 from domainkit.resources import HasModelPermission, ResourceRouter
 
 from .exceptions import UnknownAction
-from .guards import guard_for
+from .guards import guard_for, guards
 from .models import MAX_REASON, ApprovalRequest, RequestStatus, Verdict
-from .rules import ActsForThemselves, RequestActions, rule_instance
+from .rules import ActsForThemselves, RequestActions, names_approver, rule_instance
 from .services import (
     ApproveRequest,
     CancelRequest,
@@ -60,6 +64,9 @@ __all__ = [
 
 PAGES: Final = Pagination(default_limit=50, max_limit=200)
 TAGS: Final = ["approvals"]
+VIEW_EVERY: Final = "approvals.view_every_approvalrequest"
+"""The permission that shows every request, not only one's own and those one decides."""
+READS: Final = frozenset({"GET", "HEAD"})
 
 
 class RequestFilters(FilterSet):
@@ -174,6 +181,27 @@ async def caller(user: Annotated[Principal, Depends(Require())]) -> str:
     return str(user.id)
 
 
+async def visible(connection: HTTPConnection) -> Criteria | None:
+    """What a caller reads of the requests: theirs, and those they may decide.
+
+    The requests they made, and those of a policy that names them among its
+    approvers (by its permission, its group, or its approver rule); every
+    request with ``approvals.view_every_approvalrequest``. Only reads are
+    narrowed: approving, rejecting, and cancelling ask their own rules.
+    """
+    if connection.scope.get("method") not in READS:
+        return None
+    user = current_user(connection)
+    if await HasPermissions(VIEW_EVERY).has_permission(connection, user):
+        return None
+    shown: Criteria = F("maker") == str(user.id)
+    for action, registered in guards().items():
+        for policy in registered.policies:
+            if await names_approver(connection, user, policy):
+                shown |= (F("action") == action) & (F("policy") == policy.name)
+    return shown
+
+
 requests = ResourceRouter(
     "/requests",
     model=ApprovalRequest,
@@ -185,6 +213,7 @@ requests = ResourceRouter(
     pagination=PAGES,
     lookup="request_id",
     rule=RequestActions(),
+    scope=visible,
     tags=TAGS,
 )
 """Approval requests: list, read, approve, reject, and cancel."""

@@ -1263,3 +1263,10 @@ msgstr "لا يمكن تغيير رقم الجوال لهذا الحساب هن�
 #. domainkit.contrib.devices: DEVICES.PUSH_TOKEN_CHECK
 msgid "The push service does not know this token: ask it for a new one."
 msgstr "لا تعرف خدمة الإشعارات هذا الرمز: اطلب منها رمزًا جديدًا."
+
+#. domainkit.contrib.approvals: changes of the admin API held for approval
+msgid "Making staff needs approval: create the user, then make them staff."
+msgstr "يحتاج ضمّ مستخدم إلى الموظفين إلى موافقة: أنشئ المستخدم، ثم اجعله من الموظفين."
+
+msgid "Requests are made and decided in one's own name only."
+msgstr "تُقدَّم الطلبات ويُبتّ فيها باسم صاحبها فقط."

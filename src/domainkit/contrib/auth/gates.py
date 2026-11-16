@@ -41,10 +41,10 @@ gates to judge, says so with ``gates_passed(user_id)``. Examples are a
 sign-in approved from a phone and a test's session.
 """
 
-from collections.abc import Awaitable, Callable, Iterable, Iterator
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Final, Literal
 from uuid import UUID
 
@@ -179,6 +179,10 @@ class AdminChange:
     """The groups (``groups``), or permissions (``permissions``), it adds."""
     removed: frozenset[str] = frozenset()
     """Those it takes away."""
+    values: Mapping[str, object] = field(default_factory=dict, hash=False)
+    """What it sets: each of ``fields`` with the value it stores (``is_staff``
+    true or false), and the ``reason`` of an ``impersonate`` (since 2.4).
+    Never a password."""
 
 
 type AdminCheck = Callable[[Any, AbstractBaseUser | None, AdminChange], Awaitable[None]]
@@ -189,10 +193,13 @@ on_admin_change: Final[HookPoint[AdminCheck]] = HookPoint(
 )
 """Register a check of every change the admin API makes to a user.
 
-It runs before the change, with the staff member, the user (None for
-``create``), and the ``AdminChange``; raise to refuse it, as
-``PermissionDenied`` ("nobody edits their own account here", "making
-staff needs another permission"). User report A9.
+It runs once the admin API's own checks passed, right before the change,
+with the staff member, the user (None for ``create``), and the
+``AdminChange``; raise to refuse it, as ``PermissionDenied`` ("nobody
+edits their own account here", "making staff needs another
+permission"). User report A9. ``domainkit.contrib.approvals`` registers
+one with ``APPROVALS.ADMIN_APPROVALS``: it holds the changes that setting
+names for approval.
 """
 
 _passed: ContextVar[Any] = ContextVar("login_gates_passed", default=None)

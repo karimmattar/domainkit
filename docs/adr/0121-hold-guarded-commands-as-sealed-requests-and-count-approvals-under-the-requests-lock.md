@@ -1,6 +1,6 @@
 # 0121. Hold guarded commands as sealed requests, and count approvals under the request's lock
 
-- Status: Accepted; amended 2026-10-31 and 2026-11-01 (at the end)
+- Status: Accepted; amended 2026-10-31, 2026-11-01, and 2026-11-16 (at the end); amended by [0154](0154-hold-admin-changes-for-approval-and-show-requests-to-those-they-concern.md)
 - Date: 2026-10-31
 
 ## Context
@@ -208,3 +208,18 @@ decisions; each is closed where it happened.
   id becomes one `erased:` pseudonym, the command and the decisions are
   kept, and the seals are made again for it, but only those that held:
   an erasure launders no row changed around the application.
+
+## Amendment (2026-11-16): run by the maker, and read by those concerned
+
+[ADR 0154](0154-hold-admin-changes-for-approval-and-show-requests-to-those-they-concern.md)
+adds two things to what this record decided.
+
+- **A guard may leave the run to its maker** (`by_maker=True`). Approving
+  queues nothing; the maker's own call, made again, finds the approved
+  request by its maker and its fingerprint, checks it as the worker
+  checks a run, marks it executed, and runs the service as it. The
+  admin API's held changes use it: an impersonation's token goes to the
+  maker, and a password is never stored.
+- **Reads show the requests one made and those one may decide**;
+  `approvals.view_every_approvalrequest` shows every request. `parties`
+  may be a coroutine function.
