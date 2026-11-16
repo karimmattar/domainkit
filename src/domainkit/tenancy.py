@@ -511,11 +511,17 @@ class InTenant(BasePermission):
     """Requests served as a tenant: ``TenantMiddleware``'s, or a ``PathTenant``'s.
 
     ``~InTenant()`` allows those served as none, such as a tenants'
-    resource's collection (``MemberActions(outside=...)``).
+    resource's collection, and the objects reached there.
     """
 
     async def has_permission(self, request: HTTPConnection, user: Principal) -> bool:
         """A tenant is being served."""
+        return current_tenant() is not None
+
+    async def has_object_permission(
+        self, request: HTTPConnection, user: Principal, obj: object
+    ) -> bool:
+        """As for the request: so ``~InTenant()`` allows objects served as none."""
         return current_tenant() is not None
 
 

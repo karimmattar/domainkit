@@ -66,6 +66,7 @@ request from a typed ``RouteContext``; what they share is in ``reach``
 A new kind of route is a module of that shape and a method here (ADR 0025).
 """
 
+import dataclasses
 import re
 from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import datetime
@@ -202,8 +203,9 @@ class ResourceRouter(APIRouter):
         ``company_id``), a parent's, or one in its prefix. A route
         without it (the collection's, for the resource's own id) serves no
         tenant. Routes of your own on the resource are served alike. A
-        nested resource takes its parent's ``tenant`` unless it has one of
-        its own. The ``PathTenant`` reads the id as its type.
+        nested resource takes its parent's ``tenant``; it may have one of
+        its own only where the parent has none. The ``PathTenant`` reads
+        the id as its type.
 
         Raises:
             TypeError: A declaration does not fit the model.
@@ -242,9 +244,18 @@ class ResourceRouter(APIRouter):
         self.parent = parent
         self.parent_field = parent_field
         super().__init__(prefix=self._nested(prefix), **options)
-        self.tenant: PathTenant | None = self._tenant(
-            tenant or (parent.tenant if parent else None)
-        )
+        inherited = parent.tenant if parent is not None else None
+        if (
+            tenant is not None
+            and inherited is not None
+            and tenant.parameter != inherited.parameter
+        ):
+            raise TypeError(
+                f"A resource nested under the tenant {{{inherited.parameter}}} "
+                f"is served as it; PathTenant({tenant.parameter!r}) would leave "
+                "its routes that name no other open to the parent's strangers."
+            )
+        self.tenant: PathTenant | None = self._tenant(tenant or inherited)
         """What serves this resource's routes as a tenant, if its path names one."""
         if (
             isinstance(rule, MemberActions)
@@ -532,9 +543,28 @@ class ResourceRouter(APIRouter):
         route: for services that change nothing outside their unit of
         work, on one whose isolation can fail or whose locks can deadlock.
 
+        On a resource whose items are tenants (``tenant`` names its id), a
+        batch of commands on single items is refused: each item names a
+        tenant of its own, which the batch is not served as, so no member's
+        rule could hold for it. Declare a command route on one item, which
+        is served as it.
+
         Raises:
-            TypeError: The path, the bound, or the body does not fit the command.
+            TypeError: The path, the bound, or the body does not fit the
+                command, or its items name tenants.
         """
+        tenant = self.tenant
+        if (
+            tenant is not None
+            and tenant.parameter == self.lookup
+            and self.lookup in {field.name for field in dataclasses.fields(command)}
+        ):
+            raise TypeError(
+                f"A batch of {command.__name__} names a tenant per item "
+                f"({self.lookup}), which it is not served as: no member's rule "
+                f"holds for it. Declare command_route({command.__name__}, ...), "
+                "served as the tenant its path names."
+            )
         BatchRoute(
             self,
             command,

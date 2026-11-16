@@ -13,10 +13,15 @@ Django's model permission of each route's action, so a command posted to
 The permission keys name installed models (``domainkit.db.models``); the
 principal answers them (``Principal.ahas_perms``), whatever authenticates
 requests. ``MemberActions`` asks for the same keys among those a member
-holds in the tenant being served, and no others (ADR 0170)::
+holds in the tenant being served, and no others (ADR 0170). On a
+resource whose items are tenants, its collection's routes serve none:
+``outside`` says who may list and create there, and a ``scope`` of the
+project's keeps each caller to the tenants they belong to, as no member
+rule narrows a list::
 
     ResourceRouter("/companies", ..., tenant=PathTenant("company_id"),
-                   rule=MemberActions(Company, outside=IsAuthenticated()))
+                   rule=MemberActions(Company, outside=IsAuthenticated()),
+                   scope=companies_of_caller)
 """
 
 from collections.abc import Callable, Sequence
@@ -31,8 +36,9 @@ from domainkit.http.access import (
     HasPermissions,
     Principal,
     Rule,
+    scopes_of,
 )
-from domainkit.tenancy import HasMemberPermissions, InTenant
+from domainkit.tenancy import HasMemberPermissions, current_tenant
 
 VIEW: Final = "view"
 ADD: Final = "add"
@@ -110,6 +116,28 @@ class HasMemberModelPermission(HasModelPermission):
         )
 
 
+class _ServedAsNone(AllOf):
+    """``outside``'s rules, on a request served as no tenant; refused in one.
+
+    It asks only those rules about an object, and checks scopes: credentials
+    limited to scopes pass it only where those rules check them. So, beside
+    a member's rule (``|``), it neither refuses every object nor keeps
+    scoped credentials from a tenant's routes.
+    """
+
+    async def has_permission(self, request: HTTPConnection, user: Principal) -> bool:
+        """No tenant is served, and every rule allows the request, scopes too."""
+        if current_tenant() is not None:
+            return False
+        if scopes_of(request) is not None and not super().checks_scopes():
+            return False
+        return await super().has_permission(request, user)
+
+    def checks_scopes(self) -> bool:
+        """Always: it refuses scoped credentials that its rules do not check."""
+        return True
+
+
 class MemberActions:
     """Members' permissions by each route's action, after any ``rules`` given.
 
@@ -119,9 +147,13 @@ class MemberActions:
     the tenant (``TENANCY.MEMBER_PERMISSIONS``) alone: a member who is also
     staff acts there with their role, not their staff permissions (ADR
     0170). A route served as no tenant is refused, unless ``outside`` says
-    who may call it: a rule, or ``Actions`` such as ``ModelActions``. A
-    ``ResourceRouter`` with ``tenant=`` serves no tenant on its
-    collection's routes (its list, its creation), so ``outside`` rules them.
+    who may call it. A ``ResourceRouter`` with ``tenant=`` serves no tenant
+    on its collection's routes. A rule given as ``outside`` decides only
+    the ``view`` and ``add`` routes there (the list, queries on the
+    collection, creation); a route of any other action there (a command
+    that changes or deletes from the collection) is refused, unless
+    ``outside`` is ``Actions``, such as ``ModelActions``, which names the
+    rules of each action itself.
     """
 
     def __init__(
@@ -135,10 +167,15 @@ class MemberActions:
     def rules_for(self, action: str) -> Sequence[Rule]:
         """``rules``, then the member's permission of ``action``, or ``outside``'s."""
         member = HasMemberModelPermission(action, self.model)
-        outside = rules_for(self.outside, action)
+        given = self.outside
+        outside = (
+            rules_for(given, action)
+            if isinstance(given, Actions) or action in {VIEW, ADD}
+            else ()
+        )
         if not outside:
             return (*self.rules, member)
-        return (*self.rules, member | (~InTenant() & AllOf(*outside)))
+        return (*self.rules, member | _ServedAsNone(*outside))
 
 
 def rules_for(rule: Rule | Actions | None, action: str) -> tuple[Rule, ...]:

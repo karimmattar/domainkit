@@ -27,6 +27,7 @@ from domainkit.ddd.query import CriteriaLike
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import (
     AnonymousPrincipal,
+    BasePermission,
     HasPermissions,
     IsAuthenticated,
     Public,
@@ -58,9 +59,14 @@ from domainkit_tests.gadgets import (
 from domainkit_tests.test_auth_access import user
 from domainkit_tests.test_resources import (
     GADGETS,
+    GadgetsLabelled,
+    MakeGadget,
+    MakeIn,
     RenameGadget,
     RenameIn,
     Users,
+    labelled,
+    make,
     rename,
 )
 
@@ -242,6 +248,7 @@ def test_members_act_in_a_tenant_with_their_keys_alone(
         "idle": 403,
     }
     assert by_members.get(f"/gadgets/{a}", headers=as_("officer")).status_code == 200
+    assert by_members.get(f"/gadgets/{a}", headers=as_("idle")).status_code == 403
 
 
 def test_member_actions_refuse_routes_served_as_no_tenant_without_outside(
@@ -444,6 +451,129 @@ def test_a_tenant_must_be_one_a_route_names(store: InMemoryGadgets) -> None:
         companies(store, tenant=PathTenant("org_id"))
     with pytest.raises(TypeError, match="serve no tenant"):
         companies(store, tenant=None)
+
+
+def test_a_batch_whose_items_name_tenants_is_refused(store: InMemoryGadgets) -> None:
+    """Its items name tenants it is not served as: no member's rule holds.
+
+    Under ``outside=IsAuthenticated()`` it would let any signed-in caller
+    rename every company. A batch of creations names none, and stays.
+    """
+    resource = companies(store)
+
+    with pytest.raises(TypeError, match=r"names a tenant per item \(gadget_id\)"):
+        resource.batch_route(RenameGadget, service=rename, body=RenameIn)
+    resource.batch_route(MakeGadget, service=make, body=MakeIn, path="/batch")
+
+
+def test_outside_rules_only_viewing_and_making_on_the_collection(
+    store: InMemoryGadgets, members: None
+) -> None:
+    """A rule as ``outside`` lists and creates; a change there is refused.
+
+    ``Actions`` as ``outside`` name each action's rules themselves: the
+    officer, who may change gadgets everywhere, merges; bob may not.
+    """
+
+    def merging(rule: MemberActions) -> TestClient:
+        resource = companies(store, rule=rule)
+        resource.command_route(
+            MakeGadget, service=make, body=MakeIn, path="/merge", action="change"
+        )
+        resource.command_route(MakeGadget, service=make, body=MakeIn, name="found")
+        return client_of(resource)
+
+    plain = merging(MemberActions(GADGETS, outside=IsAuthenticated()))
+    explicit = merging(MemberActions(GADGETS, outside=ModelActions(GADGETS)))
+    body = {"name": "m", "price": "1.00"}
+
+    def sent(client: TestClient, path: str, name: str) -> int:
+        return client.post(path, json=body, headers=as_(name)).status_code
+
+    assert sent(plain, "/gadgets/merge", "bob") == 403
+    assert sent(plain, "/gadgets/merge", "officer") == 403
+    assert sent(plain, "/gadgets", "bob") == 201
+    assert sent(explicit, "/gadgets/merge", "officer") == 201
+    assert sent(explicit, "/gadgets/merge", "bob") == 403
+
+
+class AnyObject(BasePermission):
+    """Signed-in callers, on every object: a rule that looks at objects."""
+
+    async def has_permission(self, request: HTTPConnection, user: AnyUser) -> bool:
+        """A caller who proved who they are."""
+        return bool(user.is_authenticated)
+
+    async def has_object_permission(
+        self, request: HTTPConnection, user: AnyUser, obj: object
+    ) -> bool:
+        """Any object."""
+        return True
+
+
+def test_outside_rules_ask_objects_on_the_collection(
+    store: InMemoryGadgets, members: None
+) -> None:
+    """A query's items on the collection are asked of ``outside``'s object rule.
+
+    ``~InTenant()`` refused every object, so every item was left out.
+    """
+    resource = companies(store, rule=MemberActions(GADGETS, outside=AnyObject()))
+    resource.query_route(GadgetsLabelled, handler=labelled, path="/labelled")
+    client = client_of(resource)
+
+    found = client.get("/gadgets/labelled", params={"label": "A"}, headers=as_("bob"))
+
+    assert [item["name"] for item in found.json()["items"]] == ["a"]
+
+
+async def test_in_tenant_answers_for_objects_as_for_the_request() -> None:
+    """``~InTenant()`` allows an object served as no tenant, and no other."""
+    rule = ~InTenant()
+    ann = user(username="ann")
+
+    assert await rule.has_object_permission(connection(), ann, object())
+    with tenant("acme"):
+        assert not await rule.has_object_permission(connection(), ann, object())
+
+
+def test_scoped_credentials_reach_a_members_routes(
+    store: InMemoryGadgets, members: None
+) -> None:
+    """Credentials limited to the key read a member's item; the collection is closed.
+
+    ``outside=IsAuthenticated()`` checks no scopes, so scoped credentials
+    stay off the list; the member's rule checks them on the item.
+    """
+    client = client_of(companies(store))
+    a = ids(store)["a"]
+    scoped = as_("ann", **{"X-Scopes": "shop.view_gadget"})
+
+    assert client.get(f"/gadgets/{a}", headers=scoped).status_code == 200
+    assert client.get("/gadgets", headers=scoped).status_code == 403
+    assert client.get("/gadgets", headers=as_("ann")).status_code == 200
+
+
+def test_a_nested_resource_keeps_its_parents_tenant(store: InMemoryGadgets) -> None:
+    """A tenant of its own would serve ``/gadgets/{a}/twins`` as none.
+
+    Bob, a stranger to a, would then list a's twins and add one. Under a
+    parent without a tenant, a resource may have its own.
+    """
+    options: dict[str, Any] = {
+        "model": Gadget,
+        "basename": "twin",
+        "unit_of_work": lambda: FakeGadgetsUnitOfWork(store),
+        "repository": lambda uow: uow.gadgets,
+        "parent_field": "id",
+        "rule": MemberActions(GADGETS, outside=IsAuthenticated()),
+        "tenant": PathTenant("twin_id"),
+        "id_type": str,
+    }
+    with pytest.raises(TypeError, match=r"nested under the tenant \{gadget_id\}"):
+        ResourceRouter("/twins", parent=companies(store), **options)
+    plain = companies(store, tenant=None, rule=ModelActions(GADGETS))
+    assert ResourceRouter("/twins", parent=plain, **options).tenant is not None
 
 
 def test_path_tenants_read_their_id_as_text_an_int_or_a_uuid() -> None:
