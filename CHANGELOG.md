@@ -324,6 +324,42 @@ and a status.
 - `READINESS_BROKERS = True` makes `/ready` check each broker of
   `BROKERS` too, as `broker:<alias>`; it is off by default, since a
   process serves while its broker is away (user report W9).
+- Outgoing HTTP calls are counted and timed, with `domainkit[metrics]`:
+  `http_client_requests_total{client, method, outcome}` and
+  `http_client_request_duration_seconds{client, method}` (retries
+  included), and `http_client_retries_total{client}`. `outcome` is the
+  answer's status, or `timeout`, `deadline_exceeded`, `circuit_open`,
+  `too_large`, `unsafe_url`, `cancelled`, or `error`. `client` is the new
+  `HttpClient(name=...)`, by default the host of `base_url`, else
+  `other`; never a URL. Circuits are counted as they open, let a trial
+  through, and close (`http_client_circuit_transitions_total{client,
+  state}`), and those open now at each scrape
+  (`http_client_circuits_open{client}`)
+  ([Outgoing calls](docs/reference/observability.md#outgoing-calls),
+  ADR 0158) (user report W9).
+- `rate_limit_fallbacks_total{fallback}` counts each rate limit decision
+  `RedisBackend` makes while Redis is down: `let_through`, or counted in
+  the `process` (`RATE_LIMIT_FALLBACK_REPLICAS`) (ADR 0158) (user report
+  W9).
+- `METRICS_STATEMENTS = True` times each SQL statement of the pools,
+  failed ones included, in `db_statement_duration_seconds{database,
+  operation}`: the alias (`<alias>:reads` for its `Reads.STATEMENTS`
+  pool) and the first keyword (`SELECT`, `INSERT`, `UPDATE`, `DELETE`,
+  `OTHER`), never the text. Off by default: it costs 13 Python calls a
+  statement
+  ([Rate limits and statements](docs/reference/observability.md#rate-limits-and-statements),
+  ADR 0158) (user report W9).
+- `domainkit.http.tracing.TracingMiddleware`, listed right after
+  `ProxyHeadersMiddleware`, runs each HTTP request in a server span of
+  its own, named by its route's template (`GET /accounts/{account_id}`),
+  with OpenTelemetry's HTTP attributes: never the query string, and the
+  path as sent only with `ACCESS_LOG_PATH = "raw"`. The request's
+  commits, the messages it queues, its calls, and its log lines belong
+  to its trace, and the worker continues it. `ACCEPT_TRACE_CONTEXT` says
+  whose `traceparent` a request continues: a trusted proxy's
+  (`"proxies"`, the default), `"anyone"`'s, or `"never"`. FastAPI's own
+  telemetry stays off ([Requests](docs/reference/observability.md#requests),
+  ADR 0158) (user report W9).
 - Task priorities count on RabbitMQ: each message carries its task's
   priority as its AMQP priority (0 as 4, 1 to 100 over 5 to 31, -100 to
   -1 over 0 to 3), and quorum queues hand out the messages waiting in

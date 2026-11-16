@@ -44,7 +44,13 @@ calls. Every call:
 - is logged by method, origin, and path: never a query string, a header,
   or a body (``build_logging_config`` quiets httpx2's own lines, which
   show the whole URL). ``log_paths=False`` logs the origin alone, for
-  paths that carry what the logs must not keep, such as a hash prefix.
+  paths that carry what the logs must not keep, such as a hash prefix;
+- is counted and timed, with ``domainkit[metrics]``, by the client's
+  ``name`` (by default its base URL's host), its method, and how it ended:
+  the status of its answer, or ``timeout``, ``deadline_exceeded``,
+  ``circuit_open``, ``too_large``, ``unsafe_url``, ``cancelled``, or
+  ``error``. Its retries and its circuits' changes are counted too, and
+  the circuits open now are counted at each scrape. Never a URL.
 
 A client made with ``guard=True`` calls only public addresses
 (``domainkit.http.guard``): https only (``allow_http=True`` adds http), no
@@ -76,6 +82,7 @@ from collections.abc import (
     AsyncIterator,
     Callable,
     Coroutine,
+    Iterable,
     Iterator,
     Mapping,
     Sequence,
@@ -138,6 +145,18 @@ MAX_RETRIES: Final = 10
 """The most retries a client may make of one call."""
 DOT_SEGMENTS: Final = frozenset({b".", b".."})
 """Path segments that move a URL up its path; relative URLs may not hold them."""
+CLIENT_NAME: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
+"""A client's name in its metrics: a short label, never a URL."""
+OTHER: Final = "other"
+"""The metrics' name of a client with neither a name nor a base URL."""
+METHODS: Final = IDEMPOTENT | {"POST", "PATCH", "CONNECT"}
+"""Methods counted by name in the metrics; any other is ``OTHER``."""
+OPENED: Final = "open"
+"""A circuit's state once failures opened it: its calls fail at once."""
+TRYING: Final = "half_open"
+"""A circuit's state while one call tries the host after the cooldown."""
+CLOSED: Final = "closed"
+"""A circuit's state once the host answered: calls go through."""
 _SEGMENTS: Final = re.compile(rb"[/\\]")
 r"""What separates path segments: ``/``, and ``\`` for servers that read it so."""
 
@@ -211,10 +230,17 @@ class CircuitBreaker:
     Event loops on several threads share a client's breaker (free-threaded
     Python), so its circuits change only under its lock: one trial at a
     time holds across them too.
+
+    With ``domainkit[metrics]``, ``http_client_circuit_transitions_total``
+    counts, under ``name``, each circuit that opens (from closed, or after
+    a failed trial), lets a trial through (``half_open``), or closes (a
+    host that answered, or one forgotten for the newer ones).
     """
 
-    def __init__(self) -> None:
-        """Start with every circuit closed."""
+    def __init__(self, *, name: str = OTHER) -> None:
+        """Start with every circuit closed; ``name`` labels its metrics."""
+        self.name = name
+        """The name of the client the circuits are kept for, in its metrics."""
         self._circuits: OrderedDict[str, _Circuit] = OrderedDict()
         self._lock = threading.Lock()
 
@@ -231,7 +257,8 @@ class CircuitBreaker:
             if circuit.trying or clock.monotonic() < circuit.opened + cooldown:
                 return False
             circuit.trying = True
-            return True
+        _observe_circuit(self.name, TRYING)
+        return True
 
     def retry_after(self, host: str, cooldown: float) -> int:
         """Whole seconds until ``host``'s circuit lets a trial through, at least 1."""
@@ -245,7 +272,9 @@ class CircuitBreaker:
     def succeeded(self, host: str) -> None:
         """Forget the host's failures: its circuit closes."""
         with self._lock:
-            self._circuits.pop(host, None)
+            circuit = self._circuits.pop(host, None)
+        if circuit is not None and circuit.opened is not None:
+            _observe_circuit(self.name, CLOSED)
 
     def failed(self, host: str, failures: int) -> bool:
         """Count a failure; return whether it opened the circuit.
@@ -255,14 +284,21 @@ class CircuitBreaker:
         with self._lock:
             circuit = self._circuits.pop(host, None) or _Circuit()
             self._circuits[host] = circuit
+            forgotten = None
             if len(self._circuits) > BREAKER_HOSTS:
-                self._circuits.popitem(last=False)
+                forgotten = self._circuits.popitem(last=False)[1]
+            # A circuit opens from closed, or again after its failed trial.
+            changes = circuit.opened is None or circuit.trying
             circuit.failures += 1
             circuit.trying = False
-            if circuit.failures < failures:
-                return False
-            circuit.opened = clock.monotonic()
-            return True
+            opened = circuit.failures >= failures
+            if opened:
+                circuit.opened = clock.monotonic()
+        if forgotten is not None and forgotten.opened is not None:
+            _observe_circuit(self.name, CLOSED)
+        if opened and changes:
+            _observe_circuit(self.name, OPENED)
+        return opened
 
     def abandoned(self, host: str) -> None:
         """A call that neither succeeded nor failed: let the next one try."""
@@ -271,12 +307,21 @@ class CircuitBreaker:
             if circuit is not None:
                 circuit.trying = False
 
+    def open_circuits(self) -> int:
+        """How many hosts' circuits are not closed: open, or letting a trial through."""
+        with self._lock:
+            return sum(
+                circuit.opened is not None for circuit in self._circuits.values()
+            )
+
 
 _stub: ContextVar[httpx2.AsyncBaseTransport | None] = ContextVar(
     "domainkit_http_stub", default=None
 )
 _clients: WeakSet["HttpClient"] = WeakSet()
-"""Every client made, so ``close_all`` finds their pools."""
+"""Every client made, so ``close_all`` finds their pools, and metrics their circuits."""
+_clients_lock = threading.Lock()
+"""Held to add to ``_clients`` and to copy it: threads make clients and scrape."""
 
 
 class HttpClient:
@@ -300,6 +345,7 @@ class HttpClient:
         transport: httpx2.AsyncBaseTransport | None = None,
         http2: bool = False,
         log_paths: bool | None = None,
+        name: str | None = None,
     ) -> None:
         """Make a client; nothing is opened until its first call.
 
@@ -316,11 +362,14 @@ class HttpClient:
         connects (tests use ``stub``). ``http2`` speaks HTTP/2 where the
         server does (needs ``h2``: ``httpx2[http2]``), as Apple's push
         service requires. ``log_paths`` names each call's path in logs and
-        errors besides its origin (default: unless guarded).
+        errors besides its origin (default: unless guarded). ``name`` labels
+        the client's metrics (default: the host of ``base_url``, else
+        ``other``): up to 128 letters, digits, ``.``, ``_``, ``:``, or
+        ``-``, a fixed name such as ``"rates"``, never a URL.
 
         Raises:
-            ValueError: An option is out of range, or a guarded client was
-                given a transport.
+            ValueError: An option is out of range, a name is not a label, or
+                a guarded client was given a transport.
         """
         if timeout is not None and not (math.isfinite(timeout) and timeout > 0):
             raise ValueError(
@@ -333,7 +382,16 @@ class HttpClient:
                 "A guarded client checks each address as it connects, so it "
                 "cannot use a transport of its own; in tests, use stub()."
             )
+        if name is not None and not CLIENT_NAME.fullmatch(name):
+            raise ValueError(
+                "A client's name is 1 to 128 letters, digits, '.', '_', ':', or "
+                f"'-', starting with a letter or a digit, not {name!r}."
+            )
         self.base_url = None if base_url is None else _base(base_url)
+        self.name = name or (
+            OTHER if self.base_url is None else self.base_url.raw_host.decode("ascii")
+        )
+        """What the client's metrics call it: never a URL."""
         self.headers = dict(headers or {})
         self.timeout = timeout
         self.retries = retries
@@ -344,11 +402,12 @@ class HttpClient:
         self.log_paths = not guard if log_paths is None else log_paths
         self.transport = transport
         self.http2 = http2
-        self.breaker = CircuitBreaker() if breaker else None
+        self.breaker = CircuitBreaker(name=self.name) if breaker else None
         """The client's circuits per host; None with ``breaker=False``."""
         self._pools: PerLoop[httpx2.AsyncClient] = PerLoop()
         """Each event loop's connections (loops on several threads share a client)."""
-        _clients.add(self)
+        with _clients_lock:
+            _clients.add(self)
 
     async def get(self, url: str, **options: Any) -> httpx2.Response:  # noqa: ANN401
         """``request("GET", url, ...)``."""
@@ -408,8 +467,41 @@ class HttpClient:
             raise ValueError(
                 f"A call's timeout must be a finite number above 0, not {timeout!r}."
             )
-        config = settings.HTTP_CLIENT
         method = method.upper()
+        started = clock.monotonic()
+        try:
+            response = await self._call(
+                method,
+                url,
+                params=params,
+                headers=headers,
+                content=content,
+                data=data,
+                json=json,
+                timeout=timeout,
+                retry=retry,
+            )
+        except BaseException as exc:
+            _observe_call(self.name, method, _outcome(exc), started)
+            raise
+        _observe_call(self.name, method, str(response.status_code), started)
+        return response
+
+    async def _call(
+        self,
+        method: str,
+        url: str,
+        *,
+        params: Mapping[str, Any] | None,
+        headers: Mapping[str, str] | None,
+        content: bytes | str | None,
+        data: Mapping[str, Any] | None,
+        json: Any,  # noqa: ANN401 - any JSON value.
+        timeout: float | None,  # noqa: ASYNC109 - bounds the call, retries too.
+        retry: bool | None,
+    ) -> httpx2.Response:
+        """``request``'s work, once its arguments are checked: see there."""
+        config = settings.HTTP_CLIENT
         target = self._target(url)
         origin = _origin(target)
         seconds = timeout or self.timeout or config.TIMEOUT
@@ -509,6 +601,7 @@ class HttpClient:
                     )
                     return response
                 outcome = str(response.status_code)
+            _observe_retry(self.name)
             logger.info(
                 "Retrying %s %s in %.2fs after %s (attempt %d of %d)",
                 call.method,
@@ -998,10 +1091,120 @@ def stub(handler: Handler | httpx2.AsyncBaseTransport) -> Iterator[None]:
         _stub.reset(token)
 
 
+def every_client() -> list[HttpClient]:
+    """Every client made and still in use, in no order."""
+    with _clients_lock:
+        return list(_clients)
+
+
 async def close_all() -> None:
     """Close every client's connections on the running event loop."""
-    await close_each(list(_clients), HttpClient.aclose)
+    await close_each(every_client(), HttpClient.aclose)
 
 
-client: Final = HttpClient()
+OUTCOMES: Final[tuple[tuple[type[BaseException], str], ...]] = (
+    (CircuitOpen, "circuit_open"),
+    (CallTimeout, "timeout"),
+    (deadlines.DeadlineExceeded, "deadline_exceeded"),
+    (ResponseTooLarge, "too_large"),
+    (UnsafeURL, "unsafe_url"),
+    (asyncio.CancelledError, "cancelled"),
+)
+"""How a call that raised ended, in its metrics; any other error is ``error``."""
+
+
+def _outcome(error: BaseException) -> str:
+    """The ``outcome`` label of a call that raised ``error``."""
+    for kind, outcome in OUTCOMES:
+        if isinstance(error, kind):
+            return outcome
+    return "error"
+
+
+OPEN_CIRCUITS: Final = "http_client_circuits_open"
+OPEN_CIRCUITS_HELP: Final = (
+    "Circuits of outgoing calls not closed now: open, or letting a trial through."
+)
+
+try:
+    from prometheus_client import REGISTRY, Counter, Histogram
+    from prometheus_client.metrics_core import GaugeMetricFamily, Metric
+except ImportError:  # pragma: no cover - only without the [metrics] extra.
+
+    def _observe_call(client: str, method: str, outcome: str, started: float) -> None:
+        """Record nothing: ``prometheus_client`` is not installed."""
+
+    def _observe_retry(client: str) -> None:
+        """Record nothing: ``prometheus_client`` is not installed."""
+
+    def _observe_circuit(client: str, state: str) -> None:
+        """Record nothing: ``prometheus_client`` is not installed."""
+
+else:
+    CALLS: Final = Counter(
+        "http_client_requests_total",
+        "Outgoing HTTP calls, by the status of their answer or how else they ended.",
+        ["client", "method", "outcome"],
+    )
+    CALL_DURATION: Final = Histogram(
+        "http_client_request_duration_seconds",
+        "Outgoing HTTP calls' duration, retries included.",
+        ["client", "method"],
+        buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10),
+    )
+    CALL_RETRIES: Final = Counter(
+        "http_client_retries_total", "Outgoing HTTP calls tried again.", ["client"]
+    )
+    TRANSITIONS: Final = Counter(
+        "http_client_circuit_transitions_total",
+        "Circuits of outgoing calls that opened, let a trial through, or closed.",
+        ["client", "state"],
+    )
+
+    def _observe_call(client: str, method: str, outcome: str, started: float) -> None:
+        """Count one call of ``client``, and its time since ``started``."""
+        label = method if method in METHODS else "OTHER"
+        CALLS.labels(client, label, outcome).inc()
+        CALL_DURATION.labels(client, label).observe(clock.monotonic() - started)
+
+    def _observe_retry(client: str) -> None:
+        """Count one retry of a call of ``client``."""
+        CALL_RETRIES.labels(client).inc()
+
+    def _observe_circuit(client: str, state: str) -> None:
+        """Count a circuit of ``client`` entering ``state``."""
+        TRANSITIONS.labels(client, state).inc()
+
+    class OpenCircuits:
+        """``http_client_circuits_open``, counted from the clients at each scrape.
+
+        Every client with a breaker has a series, 0 while its circuits are
+        closed; clients of one name are counted together.
+        """
+
+        def describe(self) -> Iterable[Metric]:
+            """The gauge, without samples: what registering it needs."""
+            yield GaugeMetricFamily(
+                OPEN_CIRCUITS, OPEN_CIRCUITS_HELP, labels=["client"]
+            )
+
+        def collect(self) -> Iterable[Metric]:
+            """The gauge, with each client's circuits not closed now."""
+            counts: dict[str, int] = {}
+            for each in every_client():
+                if each.breaker is not None:
+                    counts[each.name] = (
+                        counts.get(each.name, 0) + each.breaker.open_circuits()
+                    )
+            gauge = GaugeMetricFamily(
+                OPEN_CIRCUITS, OPEN_CIRCUITS_HELP, labels=["client"]
+            )
+            for name, count in sorted(counts.items()):
+                gauge.add_metric([name], count)
+            yield gauge
+
+    REGISTRY.register(OpenCircuits())
+
+
+client: Final = HttpClient(name="default")
 """A client with ``HTTP_CLIENT``'s options, for calls that need no others."""

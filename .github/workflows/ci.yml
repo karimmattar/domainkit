@@ -1226,7 +1226,7 @@ jobs:
               domainkit.http.errors.* domainkit.http.filters.* domainkit.http.guard.*
               domainkit.http.live_events.* domainkit.http.live_fanout.*
               domainkit.http.locale.*
-              domainkit.http.metrics.* domainkit.http.openapi.*
+              domainkit.http.metrics.* domainkit.http.openapi.* domainkit.http.tracing.*
               domainkit.http.ratelimit.* domainkit.http.routing.*
               domainkit.http.shedding.* domainkit.http.compression.* domainkit.http.sse.* domainkit.http.versioning.*
               domainkit.http.access.*
@@ -1248,7 +1248,7 @@ jobs:
           - name: data-2
             mutants: >-
               domainkit.cache.* domainkit.db.connections.* domainkit.db.errors.*
-              domainkit.db.partitioning.* domainkit.db.replicas.*
+              domainkit.db.metrics.* domainkit.db.partitioning.* domainkit.db.replicas.*
               domainkit.db.routing.* domainkit.db.snapshots.*
               domainkit.db.squashing.* domainkit.db.types.*
               domainkit.storage.* domainkit.cloud.* domainkit.money.*

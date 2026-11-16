@@ -18,6 +18,7 @@ from typing import Any, Final, Literal
 import pytest
 from fakeredis import FakeAsyncRedis, FakeServer
 from fastapi.testclient import TestClient
+from prometheus_client import REGISTRY
 from pydantic import BaseModel
 
 from domainkit.cache import Cache, CacheError, CacheUnavailable, cached, caches
@@ -604,6 +605,46 @@ async def test_a_skipped_cache_falls_back_and_takes_refunds(
         False,
         True,
     ]
+
+
+async def test_decisions_made_without_redis_are_counted(
+    server: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``rate_limit_fallbacks_total``: let through, or counted in this process.
+
+    Each decision made while Redis is down counts once, those made while it
+    is skipped after a failure too (user report W9).
+    """
+
+    async def refuse(self: RedisStore, key: str, *args: float) -> tuple[int, float]:
+        raise CacheError("READONLY You can't write against a read only replica.")
+
+    def fallbacks() -> dict[str, float]:
+        return {
+            kind: REGISTRY.get_sample_value(
+                "rate_limit_fallbacks_total", {"fallback": kind}
+            )
+            or 0.0
+            for kind in ("let_through", "process")
+        }
+
+    monkeypatch.setattr(RedisStore, "gcra", refuse)
+    before = fallbacks()
+    with override_settings(
+        CACHES={"default": {}, "shared": server}, RATE_LIMIT_CACHE="shared"
+    ):
+        blind = RedisBackend()
+        counting = RedisBackend(fallback=MemoryBackend(), replicas=2)
+        try:
+            await blind.hit("ip:203.0.113.7", 5, 60)
+            await blind.hit("ip:203.0.113.7", 5, 60)  # Skipped after the failure.
+            await counting.hit("ip:203.0.113.8", 5, 60)
+        finally:
+            await caches.close_all()
+
+    after = fallbacks()
+    assert after["let_through"] == before["let_through"] + 2
+    assert after["process"] == before["process"] + 1
 
 
 async def test_the_fallback_is_a_setting_and_its_memory_is_bounded(

@@ -1,10 +1,11 @@
 """OpenTelemetry spans and log correlation (``domainkit[tracing]``).
 
-domainkit creates spans for its own work (commits, worker messages) and
-stamps log records with the active trace and span ids. Exporting spans is
-the deployment's choice: configure the OpenTelemetry SDK, or run under
-``opentelemetry-instrument``, which also traces FastAPI and SQLAlchemy.
-Without ``opentelemetry-api`` installed, every helper here does nothing.
+domainkit creates spans for its own work (commits, worker messages, and
+requests with ``domainkit.http.tracing.TracingMiddleware``) and stamps
+log records with the active trace and span ids. Exporting spans is the
+deployment's choice: configure the OpenTelemetry SDK, or run under
+``opentelemetry-instrument``, which can also trace SQLAlchemy. Without
+``opentelemetry-api`` installed, every helper here does nothing.
 
 Work that crosses processes carries the W3C trace context
 (``traceparent`` and ``tracestate``): ``trace_headers()`` writes it, and

@@ -560,10 +560,15 @@ their own, in the context of the request that failed
 Run the service under `opentelemetry-instrument`, or configure the
 OpenTelemetry SDK and its exporter yourself (`domainkit[tracing]`).
 domainkit makes spans for its own work (commits, worker messages), and
-stamps log records with the trace and span ids. Outbox messages carry
-the W3C trace context of the commit that queued them, so a worker's span
+stamps log records with the trace and span ids. List
+`domainkit.http.tracing.TracingMiddleware` right after
+`ProxyHeadersMiddleware` to run each request in a span of its own, named
+by its route; the request's commits, messages, calls, and log lines
+belong to its trace. It continues a trusted proxy's `traceparent` only,
+unless `ACCEPT_TRACE_CONTEXT` says otherwise. Outbox messages carry the
+W3C trace context of the commit that queued them, so a worker's span
 continues the request's trace
-([reference/observability.md](reference/observability.md)).
+([reference/observability.md](reference/observability.md#requests)).
 
 `domainkit.tracing` gives your own code the same tools. Without
 OpenTelemetry installed, each one does nothing:
@@ -648,6 +653,9 @@ below are starting points: tune them to the service.
 | `messaging_outbox_lag_seconds` | above a few `POLL_INTERVAL`s for 10 minutes | [The outbox backs up](runbook.md#the-outbox-backs-up) |
 | `messaging_outbox_messages{status="dead"}` | above zero | [Messages are dead-lettered](runbook.md#messages-are-dead-lettered) |
 | `messaging_publisher_breaker_open` | 1 for more than `BREAKER_COOLDOWN` | [A circuit breaker opens](runbook.md#a-circuit-breaker-opens) |
+| `http_client_circuits_open` | above zero for more than `HTTP_CLIENT.BREAKER_COOLDOWN` | [A circuit breaker opens](runbook.md#a-circuit-breaker-opens) |
+| `http_client_requests_total` | its 5xx, `timeout`, and `error` outcomes pass a few percent of a client's calls | [A circuit breaker opens](runbook.md#a-circuit-breaker-opens) |
+| `rate_limit_fallbacks_total` | it grows | [A cache fails](runbook.md#a-cache-fails) |
 | `audit_unsealed_rows` | above `AUDIT.SEAL_BACKLOG_WARNING`, or growing for an hour | [The seal backlog grows](runbook.md#the-seal-backlog-grows) |
 | `cache_errors_total` | it grows | [A cache fails](runbook.md#a-cache-fails) |
 | `db_pool_connections{state="checked_out"}` | at the pool's size for minutes | [Requests are shed](runbook.md#requests-are-shed) |
@@ -693,6 +701,8 @@ Each setting has its full row on [reference/settings.md](reference/settings.md).
 | `READINESS_DETAILS` | `False` | List failing checks in `/ready`'s 503. |
 | `METRICS_TOKEN` | `None` | The bearer token `/metrics` needs in staging and production. |
 | `ACCEPT_REQUEST_ID` | `"proxies"` | Whose `X-Request-ID` is taken: `"proxies"`, `"never"`, or `"anyone"`. |
+| `ACCEPT_TRACE_CONTEXT` | `"proxies"` | Whose `traceparent` a request's span continues: `"proxies"`, `"never"`, or `"anyone"`. |
+| `METRICS_STATEMENTS` | `False` | Times each SQL statement, by alias and first keyword. |
 | `TRUSTED_PROXIES` | `()` | The proxies whose forwarded headers are believed. |
 | `MAX_CONCURRENT_REQUESTS` | `1000` | Requests each process works on at once. |
 | `SHUTDOWN_TIMEOUT` | `15.0` | Seconds a shutdown may take. |

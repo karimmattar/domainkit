@@ -2,11 +2,13 @@
 
 import asyncio
 import io
+import itertools
 import json
 import logging
 import uuid
 from collections.abc import Iterator
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from fastapi import APIRouter, FastAPI, Request, WebSocket
@@ -22,7 +24,10 @@ from opentelemetry.sdk.metrics.export import HistogramDataPoint, InMemoryMetricR
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import SpanKind, StatusCode
 from prometheus_client import REGISTRY
+from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from starlette.types import Receive, Scope, Send
 
 from domainkit import setup, tracing
@@ -31,7 +36,7 @@ from domainkit.conf import override_settings
 from domainkit.contrib.messaging import Worker, enqueue
 from domainkit.contrib.messaging.registry import qualified_name
 from domainkit.contrib.messaging.tables import messages
-from domainkit.db import connections
+from domainkit.db import Reads, connections
 from domainkit.http import get_asgi_application
 from domainkit.http.application import MEASURED, Application
 from domainkit.log import ContextFilter, JsonFormatter
@@ -192,8 +197,8 @@ def test_fastapi_records_nothing_of_its_own(database: None) -> None:
 
     Its spans would carry query strings, and its logs exception messages,
     which domainkit keeps out of what it records. domainkit traces its own
-    work; requests are traced by ``opentelemetry-instrument`` when a
-    deployment asks for it.
+    work; requests get a span when ``MIDDLEWARE`` lists ``TracingMiddleware``,
+    or under ``opentelemetry-instrument``.
     """
     measured = fastapi_requests_measured()
     client = TestClient(get_asgi_application(), raise_server_exceptions=False)
@@ -542,3 +547,377 @@ def test_route_templates_and_failing_refreshers(
 
     assert response.status_code == 200
     assert "Metrics refresher" in caplog.text
+
+
+# The request's own span (user report W9) ------------------------------------------
+
+TRACED_MIDDLEWARE = [
+    "domainkit.http.middleware.ProxyHeadersMiddleware",
+    "domainkit.http.tracing.TracingMiddleware",
+    "domainkit.http.middleware.RequestContextMiddleware",
+]
+PARENT_TRACE = "4bf92f3577b34da6a3ce929d0e0e4736"
+PARENT_SPAN = "00f067aa0ba902b7"
+TRACEPARENT = f"00-{PARENT_TRACE}-{PARENT_SPAN}-01"
+
+traced = APIRouter()
+
+
+@traced.post("/notes", status_code=201)
+async def add_note() -> dict[str, str]:
+    """Add a note and queue a message, in one unit of work."""
+    async with NotesUnitOfWork() as uow:
+        await uow.notes.add(Note(id=NoteId(uuid.uuid4()), text="traced"))
+        uow.defer(remember, value=uuid.uuid4())
+        await uow.commit()
+    return {"status": "added"}
+
+
+@traced.get("/carried")
+async def carried() -> dict[str, str]:
+    """The trace context the request's work would send on."""
+    return tracing.trace_headers()
+
+
+def server_spans() -> list[Any]:
+    """The finished spans of kind ``SERVER``, in the order they ended."""
+    return [
+        span for span in EXPORTER.get_finished_spans() if span.kind is SpanKind.SERVER
+    ]
+
+
+def test_each_request_runs_in_a_server_span_named_by_its_route() -> None:
+    """``TracingMiddleware``: the route's template names the span, never the path.
+
+    No query string, no path as sent; 4xx leaves the status unset, 5xx and
+    an error that escaped set it to error, with no message.
+    """
+    with override_settings(MIDDLEWARE=TRACED_MIDDLEWARE):
+        client = TestClient(get_asgi_application(), raise_server_exceptions=False)
+        assert client.get("/ok?token=s3cret").status_code == 200
+        assert client.get("/http/404").status_code == 404
+        assert client.get("/no/such/1").status_code == 404
+        assert client.get("/boom").status_code == 500
+        with pytest.raises(RuntimeError, match="mid-stream"):
+            TestClient(get_asgi_application()).get("/stream-boom")
+        assert client.request("PURGE", "/ok").status_code == 405
+
+    ok, found, unmatched, boom, stream, purge = server_spans()
+    assert (ok.name, dict(ok.attributes or {})) == (
+        "GET /ok",
+        {
+            "http.request.method": "GET",
+            "url.scheme": "http",
+            "network.protocol.version": "1.1",
+            "http.route": "/ok",
+            "http.response.status_code": 200,
+        },
+    )
+    assert ok.status.status_code is StatusCode.UNSET
+    assert ok.parent is None
+    assert (found.name, found.attributes["http.route"]) == (
+        "GET /http/{status_code}",
+        "/http/{status_code}",
+    )
+    assert found.status.status_code is StatusCode.UNSET
+    assert unmatched.name == "GET"
+    assert "http.route" not in (unmatched.attributes or {})
+    assert boom.status.status_code is StatusCode.ERROR
+    assert boom.status.description is None
+    assert boom.attributes["error.type"] == "500"
+    assert stream.attributes["error.type"] == "RuntimeError"
+    assert stream.attributes["http.response.status_code"] == 200
+    assert stream.status.status_code is StatusCode.ERROR
+    assert (purge.name, purge.attributes["http.request.method"]) == (
+        "HTTP /ok",
+        "_OTHER",
+    )
+    assert purge.attributes["http.request.method_original"] == "PURGE"
+    recorded = str([dict(span.attributes or {}) for span in server_spans()])
+    assert "s3cret" not in recorded
+    assert "/no/such/1" not in recorded
+
+
+def test_the_request_span_holds_its_commits_and_its_messages_runs(
+    database: None,
+) -> None:
+    """The commit's span is the request's child; the worker continues its trace."""
+    with override_settings(
+        MIDDLEWARE=TRACED_MIDDLEWARE, ROOT_ROUTER=f"{__name__}.traced"
+    ):
+        client = TestClient(get_asgi_application())
+        assert client.post("/notes").status_code == 201
+
+    async def work() -> None:
+        await Worker().run_once()
+        await connections.close_all()
+
+    asyncio.run(work())
+
+    spans = {span.name: span for span in EXPORTER.get_finished_spans()}
+    request, commit, message = (
+        spans["POST /notes"],
+        spans["uow.commit"],
+        spans["message.process"],
+    )
+    assert request.parent is None
+    assert commit.parent is not None
+    assert commit.parent.span_id == request.context.span_id
+    assert commit.context.trace_id == request.context.trace_id
+    assert message.context.trace_id == request.context.trace_id
+    assert message.parent is not None
+    assert message.parent.span_id == commit.context.span_id
+
+
+def test_log_lines_of_a_request_name_its_span(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The access line is written inside the request's span: it carries the ids."""
+    caplog.set_level(logging.INFO, "domainkit.access")
+    stamp = ContextFilter()
+    caplog.handler.addFilter(stamp)
+    try:
+        with override_settings(MIDDLEWARE=TRACED_MIDDLEWARE):
+            TestClient(get_asgi_application()).get("/ok")
+    finally:
+        caplog.handler.removeFilter(stamp)
+
+    (span,) = server_spans()
+    (line,) = [r for r in caplog.records if r.name == "domainkit.access"]
+    assert (line.trace_id, line.span_id) == (  # type: ignore[attr-defined]
+        f"{span.context.trace_id:032x}",
+        f"{span.context.span_id:016x}",
+    )
+
+
+@pytest.mark.parametrize(
+    ("accept", "proxies", "continued"),
+    [
+        ("proxies", [], False),
+        ("proxies", ["127.0.0.0/8"], True),
+        ("anyone", [], True),
+        ("never", ["127.0.0.0/8"], False),
+    ],
+)
+def test_a_request_continues_the_trace_of_whom_the_setting_believes(
+    accept: str, proxies: list[str], continued: bool
+) -> None:
+    """``ACCEPT_TRACE_CONTEXT``: a trusted proxy's ``traceparent``, anyone's, none."""
+    headers = {"traceparent": TRACEPARENT, "tracestate": "vendor=1"}
+    with override_settings(
+        MIDDLEWARE=TRACED_MIDDLEWARE,
+        ACCEPT_TRACE_CONTEXT=accept,
+        TRUSTED_PROXIES=proxies,
+    ):
+        client = TestClient(get_asgi_application(), client=("127.0.0.1", 50000))
+        client.get("/ok", headers=headers)
+
+    (span,) = server_spans()
+    if continued:
+        assert span.parent is not None
+        assert span.parent.is_remote
+        assert f"{span.parent.span_id:016x}" == PARENT_SPAN
+        assert f"{span.context.trace_id:032x}" == PARENT_TRACE
+        assert span.context.trace_state.to_header() == "vendor=1"
+    else:
+        assert span.parent is None
+        assert f"{span.context.trace_id:032x}" != PARENT_TRACE
+
+
+def test_trace_context_in_several_lines() -> None:
+    """Two ``traceparent`` lines are no trace context; ``tracestate`` lines join."""
+    from domainkit.http.tracing import TracingMiddleware
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        raise AssertionError  # pragma: no cover - never called.
+
+    middleware = TracingMiddleware(app)
+    middleware.from_anyone = True
+    scope: Scope = {
+        "headers": [
+            (b"traceparent", TRACEPARENT.encode()),
+            (b"tracestate", b"a=1"),
+            (b"tracestate", b"b=2"),
+        ]
+    }
+
+    assert middleware.carried(scope) == {
+        "traceparent": TRACEPARENT,
+        "tracestate": "a=1,b=2",
+    }
+    scope["headers"].append((b"traceparent", TRACEPARENT.encode()))
+    assert middleware.carried(scope) == {}
+    middleware.from_anyone = False
+    assert middleware.carried({"headers": []}) == {}
+
+
+def test_a_request_that_answers_nothing_ends_its_span_as_an_error() -> None:
+    """No answer, and no protocol version from the server: still a span."""
+    from domainkit.http.tracing import TracingMiddleware
+
+    async def silent(scope: Scope, receive: Receive, send: Send) -> None:
+        return None
+
+    async def receive() -> dict[str, object]:
+        raise AssertionError  # pragma: no cover - never called.
+
+    async def send(message: object) -> None:
+        raise AssertionError  # pragma: no cover - never called.
+
+    scope: Scope = {"type": "http", "method": "GET", "path": "/", "headers": []}
+    asyncio.run(TracingMiddleware(silent)(scope, receive, send))
+
+    (span,) = server_spans()
+    assert (span.name, dict(span.attributes or {})) == (
+        "GET",
+        {
+            "http.request.method": "GET",
+            "url.scheme": "http",
+            "error.type": "incomplete_response",
+        },
+    )
+    assert span.status.status_code is StatusCode.ERROR
+
+
+def test_paths_as_sent_only_with_raw_access_log_paths() -> None:
+    """``ACCESS_LOG_PATH = "raw"`` records ``url.path``, never the query."""
+    with override_settings(MIDDLEWARE=TRACED_MIDDLEWARE, ACCESS_LOG_PATH="raw"):
+        TestClient(get_asgi_application()).get("/http/204?token=s3cret")
+
+    (span,) = server_spans()
+    assert span.attributes["url.path"] == "/http/204"
+    assert "s3cret" not in str(dict(span.attributes or {}))
+
+
+def test_a_request_traced_from_above_gets_no_span_of_its_own() -> None:
+    """An enclosing instrumentation's span is the request's; WebSockets get none."""
+
+    async def instrumented(scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await app(scope, receive, send)
+            return
+        with trace.get_tracer("enclosing").start_as_current_span("enclosing"):
+            await app(scope, receive, send)
+
+    with override_settings(MIDDLEWARE=TRACED_MIDDLEWARE):
+        app = get_asgi_application()
+        with TestClient(instrumented) as client:
+            client.get("/ok")
+            with client.websocket_connect("/ws") as websocket:
+                websocket.close()
+
+    assert [span.name for span in EXPORTER.get_finished_spans()] == ["enclosing"]
+
+
+def test_without_an_sdk_no_span_is_opened_and_the_context_passes_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Until a provider is set, spans would be dropped: none is opened.
+
+    A trace context the request continues still reaches what its work sends.
+    """
+    monkeypatch.setattr(trace, "get_tracer_provider", trace.ProxyTracerProvider)
+    with override_settings(
+        MIDDLEWARE=TRACED_MIDDLEWARE, ROOT_ROUTER=f"{__name__}.traced"
+    ):
+        client = TestClient(get_asgi_application())
+        alone = client.get("/carried").json()
+        with override_settings(ACCEPT_TRACE_CONTEXT="anyone"):
+            client = TestClient(get_asgi_application())
+            continued = client.get("/carried", headers={"traceparent": TRACEPARENT})
+
+    assert alone == {}
+    assert continued.json() == {"traceparent": TRACEPARENT}
+    assert EXPORTER.get_finished_spans() == ()
+
+
+# Statement metrics (user report W9) -------------------------------------------------
+
+
+def statements(database: str, operation: str) -> float:
+    """Statements timed so far on ``database`` for ``operation``."""
+    return sample(
+        "db_statement_duration_seconds_count", database=database, operation=operation
+    )
+
+
+def test_statements_are_timed_by_alias_and_first_keyword(
+    database: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``METRICS_STATEMENTS``: each statement is timed, failed ones too; off: none."""
+    from domainkit.db import metrics as statement_metrics
+
+    readings = itertools.count(10.0, 0.25)
+    monkeypatch.setattr(
+        statement_metrics, "time", SimpleNamespace(perf_counter=lambda: next(readings))
+    )
+
+    async def scenario() -> None:
+        async with connections.engine().connect() as connection:
+            await connection.execute(text("select 1"))
+        async with NotesUnitOfWork() as uow:
+            await uow.notes.add(Note(id=NoteId(uuid.uuid4()), text="timed"))
+            await uow.commit()
+        async with connections.engine().connect() as connection:
+            with pytest.raises(DBAPIError):
+                await connection.execute(text("SELEC 1"))
+        await connections.close_all()
+
+    def timed() -> dict[str, float]:
+        return {
+            operation: statements("default", operation)
+            for operation in ("SELECT", "INSERT", "OTHER")
+        }
+
+    def selects_took() -> float:
+        return sample(
+            "db_statement_duration_seconds_sum", database="default", operation="SELECT"
+        )
+
+    before, took = timed(), selects_took()
+    asyncio.run(scenario())  # Off: nothing is timed.
+    assert timed() == before
+    with override_settings(METRICS_STATEMENTS=True):
+        asyncio.run(scenario())
+
+    after = timed()
+    assert after["SELECT"] >= before["SELECT"] + 1  # "select 1", in lower case.
+    assert after["INSERT"] >= before["INSERT"] + 1
+    assert after["OTHER"] >= before["OTHER"] + 1  # "SELEC 1", which failed.
+    assert selects_took() - took == 0.25 * (after["SELECT"] - before["SELECT"])
+
+
+def test_the_reads_pool_is_timed_under_its_own_name(database: None) -> None:
+    """A ``STATEMENTS`` engine's statements are ``<alias>:reads``, as its pool is.
+
+    On SQLite, which has no such engine, they are the alias's own.
+    """
+    url = connections.config().URL.get_secret_value()
+    name = "default:reads" if url.startswith("postgresql") else "default"
+    before = statements(name, "SELECT")
+
+    async def read() -> None:
+        async with connections.session(
+            readonly=True, reads=Reads.STATEMENTS
+        ) as session:
+            await session.execute(text("SELECT 1"))
+        await connections.close_all()
+
+    with override_settings(METRICS_STATEMENTS=True):
+        asyncio.run(read())
+
+    assert statements(name, "SELECT") == before + 1
+
+
+def test_a_statement_that_never_reached_the_driver_is_not_timed() -> None:
+    """An error before the driver has no start: nothing is timed for it."""
+    from domainkit.db import metrics as statement_metrics
+
+    name = f"never-{uuid.uuid4().hex}"
+    found = statement_metrics.timers(name)
+    unsent: Any = SimpleNamespace(execution_context=None, statement="SELECT 1")
+    statement_metrics.failed(found, unsent)
+    assert statements(name, "SELECT") == 0
+    started = SimpleNamespace(domainkit_started=1.0)
+    statement_metrics.ended(found, None, None, "  ", None, started, False)
+    assert statements(name, "OTHER") == 1  # A statement without a word is OTHER.

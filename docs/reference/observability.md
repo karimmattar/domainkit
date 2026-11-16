@@ -10,8 +10,8 @@ On this page you find:
 
 - what a log line holds, and what it never holds;
 - every metric, with its labels;
-- which work gets a span, and how a trace crosses from a request to the
-  worker.
+- which work gets a span, what a request's span records, and how a trace
+  crosses from a request to the worker.
 
 ## Logs
 
@@ -74,6 +74,18 @@ curl -H "Authorization: Bearer $METRICS_TOKEN" https://api.example.com/metrics
 | `http_requests_queued` | (requests waiting for a slot) |
 | `http_requests_shed_total` | `reason` (`queue_full`, `queue_timeout`) |
 | `http_request_deadlines_exceeded_total` | |
+| `db_statement_duration_seconds` | `database` (the alias; `<alias>:reads` for its `Reads.STATEMENTS` pool), `operation` (`SELECT`, `INSERT`, `UPDATE`, `DELETE`, `OTHER`); only with `METRICS_STATEMENTS` |
+
+### Outgoing calls and rate limits
+
+| Metric | Labels |
+| --- | --- |
+| `http_client_requests_total` | `client` (the client's name), `method` (`OTHER` for any but the nine standard ones), `outcome` (the answer's status, or `timeout`, `deadline_exceeded`, `circuit_open`, `too_large`, `unsafe_url`, `cancelled`, `error`) |
+| `http_client_request_duration_seconds` | `client`, `method` (from the call to its answer, retries included) |
+| `http_client_retries_total` | `client` |
+| `http_client_circuits_open` | `client` (hosts whose circuit is open now, or letting a trial through; 0 while all are closed) |
+| `http_client_circuit_transitions_total` | `client`, `state` (`open`, `half_open`, `closed`: the state a circuit entered) |
+| `rate_limit_fallbacks_total` | `fallback` (`let_through`, `process`: decisions `RedisBackend` made while Redis was down) |
 
 ### Messaging
 
@@ -108,12 +120,54 @@ serving. A Starlette route, or a mount inside an included router, is
 labelled as it would be at the top: `unmatched`, or the mounted
 application's route.
 
+### Outgoing calls
+
+Each `HttpClient` counts its calls under its name, never a URL: give it
+one with `HttpClient(name="rates")`. Without one, it is the host of its
+`base_url` (`rates.example.com`), else `other`; the ready
+`domainkit.http.client.client` is `default`. A name is up to 128 letters,
+digits, `.`, `_`, `:`, or `-`. Clients of one name are counted together.
+
+```python
+from domainkit.http.client import HttpClient
+
+rates = HttpClient(base_url="https://rates.example.com/v1", name="rates")
+```
+
+- A call is counted once, when it ends, with how it ended: the status of
+  the answer it returned, or a word for the error it raised. Its duration
+  runs from the call to its answer, its retries and their waits included.
+  Each retry is counted too.
+- A client keeps a circuit per host (see
+  [runtime.md](../runtime.md#outgoing-http-calls)).
+  `http_client_circuits_open` counts, at each scrape, its hosts whose
+  circuit is not closed, so it holds no host name. Each client with a
+  breaker has a series from the start, at 0.
+  `http_client_circuit_transitions_total` counts each circuit that opened
+  (after `BREAKER_FAILURES` failures in a row, or after a failed trial),
+  let a trial through after `BREAKER_COOLDOWN` (`half_open`), or closed
+  (its host answered, or it was forgotten for newer ones past 1,024
+  hosts).
+
+### Rate limits and statements
+
+- `rate_limit_fallbacks_total` counts each request `RedisBackend` decided
+  while Redis was down or skipped after a failure: `let_through`, or
+  counted in the `process` at its share of the limit
+  (`RATE_LIMIT_FALLBACK_REPLICAS`). It grows only during an outage.
+- `METRICS_STATEMENTS = True` times every statement the pools' connections
+  send, from the moment SQLAlchemy hands it to the driver to its answer
+  or its failure. The label is its first keyword, never its text or its
+  values. It is off by default; on, each statement costs 13 Python calls
+  more ([performance.md](../performance.md#what-observability-costs)).
+
 ## Traces
 
-Traces need the `tracing` extra (`domainkit[tracing]`). Commits of
-[units of work](../learning.md#words) and worker messages get spans.
-domainkit uses only the OpenTelemetry API: configure the SDK and the
-exporter in the deployment, or run under `opentelemetry-instrument`:
+Traces need the `tracing` extra (`domainkit[tracing]`). Requests, with
+`TracingMiddleware`, commits of [units of work](../learning.md#words),
+and worker messages get spans. domainkit uses only the OpenTelemetry API:
+configure the SDK and the exporter in the deployment, or run under
+`opentelemetry-instrument`:
 
 ```bash
 opentelemetry-instrument uvicorn config.asgi:application --app-dir src
@@ -123,13 +177,62 @@ Outbox messages carry the W3C trace context of their commit, so a
 worker's span continues the trace of the request that queued its work
 ([messaging](../contrib/messaging.md#traces)).
 
+### Requests
+
+List `domainkit.http.tracing.TracingMiddleware` right after
+`ProxyHeadersMiddleware` ([the middleware order](http.md#middleware)).
+Each HTTP request then runs in a span of kind `SERVER`. Its commits, the
+messages it queues, its outgoing calls, and its log lines (the access
+line among them) belong to that span's trace:
+
+```python
+MIDDLEWARE = [
+    "domainkit.http.middleware.ProxyHeadersMiddleware",
+    "domainkit.http.tracing.TracingMiddleware",
+    "domainkit.http.middleware.SecurityHeadersMiddleware",
+    "domainkit.http.middleware.RequestContextMiddleware",
+    "domainkit.http.deadlines.DeadlineMiddleware",
+    "domainkit.http.shedding.ConcurrencyLimitMiddleware",
+    "domainkit.http.middleware.AllowedHostsMiddleware",
+    "domainkit.http.websockets.WebSocketLimitsMiddleware",
+    "domainkit.http.middleware.RequestBodyLimitMiddleware",
+]
+```
+
+The span follows OpenTelemetry's conventions for HTTP server spans:
+
+| Name or attribute | Value |
+| --- | --- |
+| name | the method and the route's template (`GET /accounts/{account_id}`); the method alone when no route matched; `HTTP` for a method it does not know |
+| `http.request.method` | the method, or `_OTHER` (`http.request.method_original` then holds it) |
+| `http.route` | the route's template, when one matched |
+| `http.response.status_code` | the status of the answer |
+| `url.scheme`, `network.protocol.version` | as the request came, behind trusted proxies as they said |
+| `url.path` | the path as sent, only with `ACCESS_LOG_PATH = "raw"` |
+| `error.type` | the status from 500 up, or the type of an error that escaped; the span's status is then an error |
+
+- The query string, headers, bodies, and error messages are never
+  recorded, as in the logs. Nor is the path as sent unless
+  `ACCESS_LOG_PATH` is `"raw"`: paths carry ids, tokens, and emails.
+- A request continues the trace of its `traceparent` (and `tracestate`)
+  as `ACCEPT_TRACE_CONTEXT` says, like `ACCEPT_REQUEST_ID`: a trusted
+  proxy's only (`"proxies"`, the default), any caller's (`"anyone"`, for
+  a service that other services of yours call), or nobody's (`"never"`).
+  A caller's own trace context would name its requests in the logs, and
+  could ask a sampler to keep every one of its requests.
+- A request already inside a span, which an enclosing instrumentation
+  opened, gets none of its own.
+- WebSocket connections get no span.
+- Without an SDK configured, spans are dropped, at a small cost per
+  request.
+
 ### FastAPI's own telemetry is off
 
 FastAPI (0.142 and later) has telemetry of its own, which
 `get_asgi_application` turns off: its spans record query strings, and
 its log records exception messages, which domainkit keeps out of logs and
-error reports. To trace requests, run under `opentelemetry-instrument`,
-as before.
+error reports. To trace requests, list `TracingMiddleware`
+([Requests](#requests)), or run under `opentelemetry-instrument`.
 
 It is also off in the FastAPI applications mounted in domainkit's, which
 keep FastAPI's defaults otherwise. The application that
