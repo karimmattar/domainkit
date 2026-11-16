@@ -70,7 +70,14 @@ from ._http import PASSWORD_MAX_LENGTH
 from .access import AuthenticatedUser
 from .api import device_logins_kept
 from .captcha import captcha
-from .codes import EMAIL_VERIFICATION, MOBILE_VERIFICATION, PASSWORD_RESET, target_of
+from .codes import (
+    EMAIL_VERIFICATION,
+    MOBILE_VERIFICATION,
+    PASSWORD_RESET,
+    target_of,
+    targets_of,
+    user_target,
+)
 from .events import PasswordReset, PasswordResetRequested
 from .exceptions import EmailTaken, InvalidEmail, MobileNumberTaken, UnknownUserField
 from .gates import check_manage_logins
@@ -386,7 +393,7 @@ async def confirm_mobile_verification_code(
         held = await uow.pending_identifiers.get(stored.id, MOBILE_NUMBER)
         number = held.value if held else getattr(stored, "mobile_number", None)
         if number:
-            target = target_of(number)
+            target = user_target(number, stored.id)
             proven = await uow.verification_codes.check(
                 MOBILE_VERIFICATION, target, body.code
             )
@@ -470,7 +477,7 @@ async def confirm_email_verification_code(
         held = await uow.pending_identifiers.get(stored.id, EMAIL)
         address = held.value if held else email_of(stored)
         if address is not None:
-            target = target_of(address)
+            target = user_target(address, stored.id)
             proven = await uow.verification_codes.check(
                 EMAIL_VERIFICATION, target, body.code
             )
@@ -501,16 +508,22 @@ async def _hold(
     """Hold ``value`` for ``user``'s ``field``, if given; queue ``send``.
 
     The code goes to what is held, or to the user's own while nothing is
-    (``send``). Counted per client address and per user, and, for a value
-    held, per recipient too. The user's own value, given, drops what was
-    held: nothing is to change.
+    (``send``). Counted per client address, per user, and per recipient:
+    the value given, or, without one, the one the code goes to (since 2.5,
+    so asking again cannot text a held number past the rate). The user's
+    own value, given, drops what was held: nothing is to change.
 
     Raises:
         UnknownUserField: The user model cannot change ``field``.
     """
     scope = SCOPES[field]
     if value is None:
-        await _limit_mail(request, scope, f"{scope}:user:{user.id}")
+        async with AuthUnitOfWork() as uow:
+            held = await uow.pending_identifiers.get(user.id, field)
+        own = email_of(user) if field == EMAIL else getattr(user, field, None)
+        to = held.value if held else own
+        recipients = [email_key(scope, target_of(str(to)))] if to else []
+        await _limit_mail(request, scope, f"{scope}:user:{user.id}", *recipients)
         await enqueue(send, user_id=user.id, **language_argument())
         return
     if not hasattr(user, f"change_{field}"):
@@ -554,7 +567,7 @@ async def _take(
     else:
         user.change_mobile_number(held.value)
     if replaced:
-        await uow.verification_codes.forget(user.id, [target_of(replaced)])
+        await uow.verification_codes.forget(user.id, targets_of(replaced, user.id))
     return True
 
 
@@ -597,10 +610,10 @@ async def release(
     targets: list[str] = []
     if email and same_email(user.email, email):
         user.release_email()
-        targets.append(target_of(email))
+        targets.extend(targets_of(email, user.id))
     if mobile_number and user.mobile_number == mobile_number:
         user.release_mobile_number()
-        targets.append(target_of(mobile_number))
+        targets.extend(targets_of(mobile_number, user.id))
     if any(getattr(user, name, None) for name in identifier_fields(type(user))):
         await uow.verification_codes.forget(user.id, targets)
         return
@@ -730,7 +743,7 @@ async def _issue(
     """Issue a code for ``value``; what is held lasts as long as the code."""
     moment = utc_now()
     code = await uow.verification_codes.issue(
-        purpose, target_of(value), user_id=user.id, now=moment
+        purpose, user_target(value, user.id), user_id=user.id, now=moment
     )
     if held is not None:
         await uow.pending_identifiers.extend(

@@ -752,6 +752,11 @@ verified already. `/mobile-verification/code` with the code sets
 code. A number staff set clears the mark. Verifications are audited as
 `auth.mobile_number_verified`; refusals as `auth.mobile_verification`.
 
+Since 2.5 a verification code is its user's own: two users who ask to
+prove one number, or one address, each get a code, and neither replaces
+the other's. Asking again with no body counts against `EMAIL_RATE` per
+the number (or address) the code goes to, a held one too.
+
 ### Changing your address or number
 
 The same routes change the address or the number. The new one is held
@@ -853,19 +858,33 @@ POST /auth/signup
 {"detail": "Check your text messages to finish signing up."}
 ```
 
-A number given with an address is proved by a code of its own (*new in
-2.5*, [ADR 0171](../adr/0171-prove-a-number-given-at-signup-by-its-own-code.md)).
-The address's code makes the account with the address alone. The number
-is then held, as a user's new number is
+A signup that gives an address and a number proves each by a code of
+its own (*new in 2.5*,
+[ADR 0171](../adr/0171-prove-a-number-given-at-signup-by-its-own-code.md)).
+The signup's code goes to the address; or to the number where neither
+the address nor a username given identifies users (`AUTH.IDENTIFIERS`
+without `email`), since an account made with the address alone could
+not log in there. The code makes the account with the value it proved.
+The other is then held, as a user's new value is
 ([Changing your address or number](#changing-your-address-or-number)),
-and the worker texts it a code. The user logs in and sends it to `POST
-/mobile-verification/code`; only then is the number on the account,
-proved, or `409 mobile_number_taken` where another account proved it
-first. The text is counted against `EMAIL_RATE` per number, as `POST
-/mobile-verification` counts it; past the rate the account is made
-without it, and the user asks for a code later. Until the number's own
-code comes back, the number takes nothing from an account that holds
-it, and plays no part in which mail the address gets:
+and the worker sends it a code: a text to the number, or a mail to the
+address. The user logs in and sends it to `POST
+/mobile-verification/code` (or `/email-verification/code`); only then is
+the value on the account, proved, or `409 mobile_number_taken`
+(`email_taken`) where another account proved it first. Until then the
+held value takes nothing from an account that holds it, and plays no
+part in which mail or text the signup gets.
+
+Holding it runs the `on_manage_logins` checks, and counts against
+`EMAIL_RATE` per value among signups (apart from the owner's own
+requests to verify it). Past the rate, or where a check refuses, the
+account is made without it, and nothing says so: `/signup/code` answers
+`204` either way. A held value lasts as long as its last code
+(`AUTH.CODE_TTL`). Once it lapses, the user asks again with the value in
+the body (`POST /mobile-verification` `{"mobile_number": ...}`): with no
+body, the route answers `202` and sends nothing, as for a number proved
+already. A `mobile_number` that `REQUIRED_FIELDS` names comes this way
+too, never under `fields`:
 
 ```http
 POST /auth/signup

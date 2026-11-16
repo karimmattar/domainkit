@@ -8,8 +8,9 @@ report A12).
 
 import io
 from collections.abc import Iterator
+from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Final, cast
+from typing import ClassVar, Final, cast
 from uuid import UUID
 
 import pytest
@@ -632,17 +633,108 @@ def test_a_superuser_is_named_by_its_unproved_address_to_prove_it(
     assert boss.email_verified
 
 
-def test_only_an_id_as_printed_names_by_id(app: App) -> None:
-    """32 hex digits are a username to look for, not an id."""
+def test_an_id_in_any_form_names_by_id_never_a_username(app: App) -> None:
+    """Mallory's username is the operator's id written as 32 hex digits.
+
+    A value that reads as an id names the user with that id, whatever
+    users chose as usernames (second review of user report A12).
+    """
     app()
-    ann = create_user("ann", email="ann@example.com", proved=True)
+    ops = create_user("ops", email="ops@corp.test", proved=True)
+    mallory = create_user(ops.hex, email="mallory@evil.test", proved=True)
 
+    named, found = run("--promote", ops.hex, "--noinput")
+    upper, _ = run("--promote", f"{{{str(ops).upper()}}}", "--noinput")
+    missing = "00000000000040008000000000000000"
     with pytest.raises(CommandError) as unknown:
-        run("--promote", ann.hex, "--noinput")
-    named, _ = run("--promote", str(ann).upper(), "--noinput")
+        run("--promote", missing, "--noinput")
 
-    assert str(unknown.value) == f"User {ann.hex!r} does not exist."
-    assert named == f"{str(ann).upper()!r} is a superuser now.\n"
+    assert named == f"{ops.hex!r} is a superuser now.\n"
+    assert found.splitlines()[0] == f"{ops.hex!r} is user {ops}, by its id."
+    assert upper.endswith("is a superuser already.\n")
+    assert (stored(ops).is_superuser, stored(mallory).is_superuser) == (True, False)
+    assert str(unknown.value) == f"No user has the id {missing}."
+
+
+@pytest.mark.parametrize(
+    "typed",
+    [
+        "0612345678",
+        "0033612345678",
+        "33612345678",
+        "06.12.34.56.78",
+        "\u0660\u0666\u0661\u0662\u0663\u0664\u0665\u0666\u0667\u0668",
+    ],
+)
+def test_digits_not_in_international_form_name_no_one(app: App, typed: str) -> None:
+    """Mallory's username is the operator's number written otherwise.
+
+    Such digits name no number, and are never read as a username: the
+    operator gives the number in international form, or the id. Arabic-
+    Indic digits too.
+    """
+    app()
+    create_user("ops", email="ops@corp.test", mobile_number=NUMBER, proved=True)
+    mallory = create_user(f"m{len(typed)}", email="mallory@evil.test", proved=True)
+    run_async(_rename(mallory, typed))
+
+    with pytest.raises(CommandError) as refused:
+        run("--promote", typed, "--noinput", "--operator", "ops")
+
+    assert str(refused.value) == (
+        f"{typed!r} is written as a number: give the number in international "
+        "form (+33612345678), or the user's id."
+    )
+    assert not stored(mallory).is_superuser
+
+
+async def _rename(user_id: UUID, username: str) -> None:
+    """Give the user ``username``, as a signup could have."""
+    from sqlalchemy import update
+
+    from domainkit.contrib.auth.users import get_user_table
+
+    async with AuthUnitOfWork() as uow:
+        table = get_user_table()
+        await uow.session.execute(
+            update(table).where(table.c.id == user_id).values(username=username)
+        )
+        await uow.commit()
+
+
+def test_look_alike_characters_are_folded_first(app: App) -> None:
+    """A full-width plus is a plus: the number names the operator, who proved it."""
+    app()
+    ops = create_user("ops", email="ops@corp.test", mobile_number=NUMBER, proved=True)
+    mallory = create_user("mallory", email="mallory@evil.test", proved=True)
+    run_async(_rename(mallory, "+33612345678"))
+
+    run("--promote", "\uff0b33612345678", "--noinput")
+
+    assert (stored(ops).is_superuser, stored(mallory).is_superuser) == (True, False)
+
+
+def test_a_model_without_numbers_is_named_by_none(
+    app: App, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A custom user model with no ``mobile_number``: a refusal, not a crash."""
+    app()
+
+    @dataclass
+    class Badge:
+        USERNAME_FIELD: ClassVar[str] = "username"
+        EMAIL_FIELD: ClassVar[None] = None
+        REQUIRED_FIELDS: ClassVar[tuple[str, ...]] = ()
+        id: UUID
+        username: str
+
+    monkeypatch.setattr(createsuperuser, "get_user_model", lambda: Badge)
+    with pytest.raises(CommandError) as refused:
+        run("--promote", NUMBER, "--noinput")
+
+    assert str(refused.value) == (
+        "Users have no mobile number here: name the user by its username or its id."
+    )
 
 
 def test_the_user_shown_may_have_nothing_to_show() -> None:

@@ -56,6 +56,26 @@ relied on 2.4's behaviour changes.
   login, as it does for a changed number; one that read the number from
   the new account at once reads it once proved. A signup by a number
   alone is unchanged.
+- **Where addresses identify no one, a signup with an address and a
+  number gets its code by text.** With `AUTH.IDENTIFIERS` such as
+  `("mobile_number",)`, or `("username", "mobile_number")` and no
+  username given, the code goes to the number (2.4 mailed it to the
+  address), and `/signup/code` takes the number as its `identifier`. The
+  address is held and mailed a code of its own, which the user sends to
+  `POST /auth/email-verification/code`.
+- **A `mobile_number` that `REQUIRED_FIELDS` names comes on its own.**
+  Where numbers identify users, a signup gives it as `mobile_number`, not
+  under `fields` (`422 unknown_user_field` there), and is proved as
+  above. A client that sent it in `fields` moves it up.
+- **Verification codes are each user's own.** Codes for `/email-verification`
+  and `/mobile-verification` issued before the upgrade stop working; they
+  last `AUTH.CODE_TTL`. Asking again with no body now counts against
+  `EMAIL_RATE` per the number or address the code goes to, and can answer
+  `429`.
+- **`createsuperuser --promote` reads an id in any form, and refuses
+  digits that are no number in international form**
+  ([ADR 0165](adr/0165-let-an-operator-prove-a-superusers-address-or-promote-a-proved-account.md)):
+  name a user whose username is written as digits by its id.
 
 ## 2.3 to 2.4
 

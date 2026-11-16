@@ -80,17 +80,25 @@ phone modes where no superuser could bind.
    with `--noinput`. A code that does not come back leaves the superuser
    made, and unproved; the command says how to try again.
 2. **`createsuperuser --promote IDENTIFIER`** makes an existing, active
-   user a superuser, and staff where the model has `is_staff`. What names
-   the user:
-   - its id, as the command prints it;
-   - an email address or a mobile number the user **proved**, in its
-     address or number field, whatever field another user holds it in.
-     A username written as an address (`ceo@example.com`, which
-     `validate_username` allows) never names its account by that
-     address, even where usernames are tried first;
+   user a superuser, and staff where the model has `is_staff`. The value
+   is read once NFKC folds look-alike characters (a full-width `＋` is a
+   `+`). What names the user:
+   - its id, in any form `UUID` reads (32 hex digits too): a value that
+     reads as an id is never a username;
+   - an email address or a mobile number in international form the user
+     **proved**, in its address or number field, whatever field another
+     user holds it in. A username written as an address
+     (`ceo@example.com`, which `validate_username` allows) never names
+     its account by that address, even where usernames are tried first;
    - its username, or another field of `AUTH.IDENTIFIERS`, as the other
      operator commands take them (`match_for_staff`), for a value written
-     as neither an address nor a number.
+     as none of these.
+
+   Digits of any script with phone separators, and a `+` or not, that are
+   no number in international form (`0612345678`, `0033…`, `06.12.…`)
+   are refused: they name no number, and would name a username written
+   so. The operator gives the number in international form, or the id.
+   A user model with no `mobile_number` refuses a number.
 
    **A value nobody proved names no one, with or without `--verify`.** A
    code proves that the operator reads the value, not that the account
@@ -143,7 +151,12 @@ superusers without approvals ([contrib/approvals](../contrib/approvals.md)).
 - **A review of the first version found two ways to promote Mallory**: by
   `--promote <the operator's number> --verify` where her account held
   that number unproved, and by an address that was her username. Both are
-  closed by naming users only by what they proved (Decision 2).
+  closed by naming users only by what they proved (Decision 2). A second
+  review found more: the operator's number written otherwise
+  (`0612345678`, a full-width `+`, Arabic-Indic digits), or the
+  operator's id as 32 hex digits, named a username Mallory had chosen so.
+  Those values are now folded, read as ids or numbers, or refused, never
+  read as a username.
 - ADR 0141's consequence for staff-made accounts stands for other users:
   they log in and prove their address, or get a password from staff.
 

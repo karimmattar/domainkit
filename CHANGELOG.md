@@ -59,20 +59,36 @@ and a status.
 
 ### Security
 
-- A number given at signup with an address is proved by a code of its
-  own. The address's code proved the address alone, yet the signup took
-  the number from an account that held it unproved (ending that account
-  where the number was its only login: anyone with an address of their
-  own could end a superuser made with `createsuperuser --mobile_number`),
-  put it on the new account unproved, and chose the mail it sent the
-  address by whether an account used the number, which told the asker.
-  The account is now made with the address alone; the number is held and
-  texted a verification code (counted against `AUTH.EMAIL_RATE` per
-  number), which `POST /auth/mobile-verification/code` takes, as for a
-  changed number. A signup by a number alone is unchanged. The number is
-  on the account only once its code is proved: see
+- A signup that gives an address and a number proves each by a code of
+  its own. The address's code proved the address alone, yet the signup
+  took the number from an account that held it unproved (ending that
+  account where the number was its only login: anyone with an address of
+  their own could end a superuser made with `createsuperuser
+  --mobile_number`), put it on the new account unproved, and chose the
+  mail it sent the address by whether an account used the number, which
+  told the asker. The signup's code now goes to the address, or to the
+  number where neither the address nor a username given identifies
+  users; the account is made with that value, and the other is held and
+  sent a verification code of its own, which `/auth/mobile-verification/code`
+  (or `/email-verification/code`) takes, as for a changed value. Holding
+  runs the `on_manage_logins` checks and counts against
+  `AUTH.EMAIL_RATE` per value among signups. A `mobile_number` that
+  `REQUIRED_FIELDS` names comes on its own, never under `fields`. A
+  signup by a number alone is unchanged. See
   [upgrading.md](docs/upgrading.md#24-to-25). ADR 0171 (found in review
   of user report A12).
+- Verification codes (`/email-verification`, `/mobile-verification`) are
+  each user's own: a code another user asked for, for the same address
+  or number, no longer replaces one's own. Asking again with no body
+  counts against `AUTH.EMAIL_RATE` per the value the code goes to, a
+  held one too, which re-asking had escaped since 2.4. Codes issued
+  before the upgrade stop working (found in review of user report A12).
+- `createsuperuser --promote` reads its value once NFKC folds look-alike
+  characters, reads any form of an id as an id, and refuses digits that
+  are no number in international form (`0612345678`, `0033…`): such
+  values named a username Mallory could choose. A user model with no
+  `mobile_number` refuses a number rather than crash. ADR 0165 (user
+  report A12).
 
 ## [2.4.0] - 2026-11-16
 

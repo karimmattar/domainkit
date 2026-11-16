@@ -989,11 +989,13 @@ The email address boss@example.com is proved.
 
 `--promote` (*new in 2.5*) makes a user that exists a superuser, such as
 one that signed up in the application, which proved its address there.
-It takes the user's username, its id, or an email address or a mobile
-number the user proved. A value nobody proved names no one, with or
-without `--verify`: one someone put on their own account, unproved, would
-name theirs, and a code you type proves that you read it, not that the
-account is yours. Only a superuser already, made before it proved its
+It takes the user's username, its id (in any form), or an email address
+or a mobile number in international form the user proved. Digits that
+are no number in international form (`0612345678`) are refused: give the
+number as `+33612345678`, or the id. A value nobody proved names no one,
+with or without `--verify`: one someone put on their own account,
+unproved, would name theirs, and a code you type proves that you read
+it, not that the account is yours. Only a superuser already, made before it proved its
 address, is named by that address with `--verify`, to prove it. An
 address names the user that proved it as its address, never one whose
 username is written as that address. The command shows the user and

@@ -29,7 +29,10 @@ the user and asks before it changes anything; in staging and production
 it needs a named operator.
 """
 
+import dataclasses
 import getpass
+import re
+import unicodedata
 from argparse import ArgumentParser, BooleanOptionalAction
 from collections.abc import Callable
 from datetime import datetime
@@ -47,7 +50,7 @@ from domainkit.i18n import override
 from domainkit.management.base import BaseCommand, CommandError, run_async
 from domainkit.management.operators import require_named
 
-from ...codes import EMAIL_VERIFICATION, MOBILE_VERIFICATION, target_of
+from ...codes import EMAIL_VERIFICATION, MOBILE_VERIFICATION, user_target
 from ...exceptions import (
     EmailTaken,
     IdentifierRequired,
@@ -83,6 +86,10 @@ PROOFS: Final = {
 sets it, the purpose of the code that proves it, and the app that sends it.
 The address is the model's ``EMAIL_FIELD``."""
 LABELS: Final = {EMAIL: "email address", NUMBER: "mobile number"}
+ID: Final = "id"
+DIGITS: Final = "digits"
+SEPARATORS: Final = re.compile(r"[\s().\-/]")
+"""What phone numbers are written with besides digits and ``+``."""
 EXACT: Final = frozenset({"username", "id", "proved"})
 """How a user may be named for ``--promote --noinput``, asked nothing."""
 
@@ -138,22 +145,45 @@ def _reached(user: AbstractBaseUser) -> list[tuple[str, str, bool]]:
     return found
 
 
-def _shaped(value: str) -> str | None:
-    """The kind of value ``value`` is written as: an address, a number, or None."""
+def _written_as(value: str) -> str | None:
+    """What ``value`` is written as, once NFKC folds look-alike characters.
+
+    ``id``: a user id, in any form ``UUID`` reads. ``email``: an address.
+    ``mobile_number``: a number in international form. ``digits``: digits
+    of any script and phone separators, with a ``+`` or not, that are no
+    number in international form (``0612345678``, ``0033…``). None for
+    anything else, such as a username.
+    """
+    value = unicodedata.normalize("NFKC", value).strip()
+    try:
+        UUID(value)
+    except ValueError:
+        pass
+    else:
+        return ID
     if "@" in value:
         return EMAIL
-    return NUMBER if as_mobile_number(value) is not None else None
+    bare = SEPARATORS.sub("", value).removeprefix("+")
+    if bare.isdigit():
+        return NUMBER if as_mobile_number(value) is not None else DIGITS
+    return None
 
 
 def _name_of(user: AbstractBaseUser) -> str:
     """What ``--promote`` names the user by, surely: its username, else its id.
 
-    A username written as an address or a number would be read as one.
+    A username written as an id, an address, or a number would be read as
+    one.
     """
     username = getattr(user, user.USERNAME_FIELD, None)
-    if isinstance(username, str) and username and _shaped(username) is None:
+    if isinstance(username, str) and username and _written_as(username) is None:
         return username
     return str(user.id)
+
+
+def _stored_fields() -> set[str]:
+    """The fields the user model stores."""
+    return {field.name for field in dataclasses.fields(get_user_model())}
 
 
 def _retry(user: AbstractBaseUser) -> str:
@@ -427,7 +457,11 @@ class Command(BaseCommand):
     ) -> tuple[AbstractBaseUser, str]:
         """The user ``identifier`` names for ``--promote``, and how it names it.
 
-        A user id names its user (``id``). An address or a number names the
+        It is read once NFKC folds look-alike characters (``_written_as``).
+        A user id, in any form, names its user (``id``), never a username.
+        Digits that are no number in international form are refused: they
+        name no number, and would name a username written so. An address
+        or a number names the
         one user that proved it in its address or number field (``proved``),
         whatever field another user holds it in, such as a username written
         as an address; one nobody proved names nothing, so that a value put
@@ -444,20 +478,30 @@ class Command(BaseCommand):
             f"No user proved {identifier!r}: name the user by its username or "
             "its id, or by an email address or mobile number it proved."
         )
+        kind = _written_as(identifier)
+        value = unicodedata.normalize("NFKC", identifier).strip()
+        if kind == DIGITS:
+            raise CommandError(
+                f"{identifier!r} is written as a number: give the number in "
+                "international form (+33612345678), or the user's id."
+            )
+        if kind == NUMBER and NUMBER not in _stored_fields():
+            raise CommandError(
+                "Users have no mobile number here: name the user by its "
+                "username or its id."
+            )
         async with AuthUnitOfWork() as uow:
-            kind = _shaped(identifier)
+            if kind == ID:
+                return await self._by_id(uow, value), ID
             if kind is None:
-                user = await self._by_id(uow, identifier)
-                if user is not None:
-                    return user, "id"
                 user, field = await match_for_staff(uow.users, identifier, self.note)
                 name = get_user_model().USERNAME_FIELD
                 return user, "username" if field == name else field
             if kind == EMAIL:
-                holders = await uow.users.find_by_email(identifier)
+                holders = await uow.users.find_by_email(value)
             else:
-                number = as_mobile_number(identifier)
-                found = await uow.users.find_by_mobile_number(cast(str, number))
+                number = cast(str, as_mobile_number(value))
+                found = await uow.users.find_by_mobile_number(number)
                 holders = [] if found is None else [found]
         flag = PROOFS[kind][0]
         proved = [user for user in holders if getattr(user, flag, True)]
@@ -478,23 +522,15 @@ class Command(BaseCommand):
         self.note(f"{identifier!r} is user {user.id}, by its {LABELS[kind]}.")
         return user, how
 
-    async def _by_id(
-        self, uow: AuthUnitOfWork, identifier: str
-    ) -> AbstractBaseUser | None:
-        """The user whose id ``identifier`` is, if it is one; say so.
+    async def _by_id(self, uow: AuthUnitOfWork, identifier: str) -> AbstractBaseUser:
+        """The user whose id ``identifier`` is, in any form; say so.
 
-        Only an id as the command prints it (``3f6c...-...``) is read as one.
+        A value that reads as an id is never a username.
 
         Raises:
-            CommandError: It is an id, and no user has it.
+            CommandError: No user has it.
         """
-        try:
-            user_id = UUID(identifier)
-        except ValueError:
-            return None
-        if str(user_id) != identifier.lower():
-            return None
-        user = await uow.users.find(UserId(user_id))
+        user = await uow.users.find(UserId(UUID(identifier)))
         if user is None:
             raise CommandError(f"No user has the id {identifier}.")
         self.note(f"{identifier!r} is user {user.id}, by its id.")
@@ -623,7 +659,7 @@ async def _send_proof(user_id: UUID, kind: str) -> str | None:
         user = await uow.users.get(UserId(user_id))
         value = cast(str, _value(user, kind))
         code = await uow.verification_codes.issue(
-            PROOFS[kind][2], target_of(value), user_id=user.id
+            PROOFS[kind][2], user_target(value, user.id), user_id=user.id
         )
         await uow.commit()
     try:
@@ -654,7 +690,7 @@ async def _deliver(user: AbstractBaseUser, kind: str, value: str, code: str) -> 
 async def _forget(user_id: UUID, value: str) -> None:
     """Make the codes sent to ``value`` for the user stop working."""
     async with AuthUnitOfWork() as uow:
-        await uow.verification_codes.forget(user_id, [target_of(value)])
+        await uow.verification_codes.forget(user_id, [user_target(value, user_id)])
         await uow.commit()
 
 
@@ -667,7 +703,8 @@ async def _take_proof(user_id: UUID, kind: str, code: str) -> bool:
     async with AuthUnitOfWork() as uow:
         user = await uow.users.get(UserId(user_id))
         value = cast(str, _value(user, kind))
-        proven = await uow.verification_codes.check(purpose, target_of(value), code)
+        target = user_target(value, user.id)
+        proven = await uow.verification_codes.check(purpose, target, code)
         right = proven is not None and proven.user_id == user.id
         if right:
             getattr(user, verify)()

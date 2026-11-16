@@ -439,9 +439,10 @@ Settings files other than the base one extend `AUTH`
   that names the field. So `phone` above needs no extra code.
 - **`REQUIRED_FIELDS`** are what `createsuperuser` asks for. Those other
   than the username and the email (`signup_fields()`) are what
-  `POST /signup` takes under `fields` ([Signing up](logging-in.md#signing-up)).
-  Startup refuses a name the model lacks, or one that changes through its
-  own methods.
+  `POST /signup` takes under `fields` ([Signing up](logging-in.md#signing-up)),
+  but `mobile_number` where numbers identify users: it comes on its own,
+  and is proved by a code (since 2.5). Startup refuses a name the model
+  lacks, or one that changes through its own methods.
 - **`EDITABLE_FIELDS`** lists what the admin API may change: `email`,
   `first_name`, and `last_name` on `AbstractUser`, nothing on
   `AbstractBaseUser`. `READ_ONLY_FIELDS` lists what it only shows
