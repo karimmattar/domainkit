@@ -135,7 +135,9 @@ For each act the phone approved that way:
    route's path>/authorization`), then the phone
    (`POST /auth/app-sign-in/authorizations/{id}`), poll
    `POST /auth/app-sign-in/authorizations/token`, and send what it
-   answers in `Action-Authorization`.
+   answers in `Action-Authorization`. A page that waited on
+   `/app-sign-in/step-up/wait` waits on
+   `POST /auth/app-sign-in/authorizations/wait` instead.
 4. In the mobile app, show a request of `kind` `authorization` from its
    `authorization` object (the title and details), and approve it with
    `{"match_code", "digest"}`, signed as before

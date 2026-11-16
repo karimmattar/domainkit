@@ -121,9 +121,9 @@ expired, and unknown answer as a poll does. A wait never redeems the
 request, nor counts as a poll, so a page that waits is never slowed
 down: it redeems an approved request with `/token` or `/session`. The
 wait reads the request every second, and at once when the approval
-commits in its own process. `/app-sign-in/step-up/wait` and
-`/app-sign-in/transactions/wait` do the same for a session's asks, from
-that session only.
+commits in its own process. `/app-sign-in/authorizations/wait`,
+`/app-sign-in/transactions/wait` and `/app-sign-in/step-up/wait` do the
+same for a session's asks, from that session only.
 
 ## How a sign-in works
 
@@ -245,6 +245,7 @@ is bound to its credentials.
 | --- | --- | --- |
 | `POST /auth/app-sign-in/authorizations/{id}` | | `request`, `expires_in`, `interval`, `match_code`. |
 | `POST /auth/app-sign-in/authorizations/token` | `{"request"}` | `{"authorization", "expires_at"}`, as `/auth/authorizations/{id}/confirm` answers; or a poll's answer. |
+| `POST /auth/app-sign-in/authorizations/wait` | `{"request"}` | As `/app-sign-in/wait`, for this session's act. |
 | `POST /auth/app-sign-in/transactions/{challenge_id}` | | `request`, `expires_in`, `interval`, `match_code`. |
 | `POST /auth/app-sign-in/transactions/token` | `{"request"}` | `{"authorization", "expires_at"}`, as `/auth/sca/{id}/confirm` answers; or a poll's answer. |
 | `POST /auth/app-sign-in/transactions/wait` | `{"request"}` | As `/app-sign-in/wait`, for this session's transaction. |
@@ -265,7 +266,8 @@ against `START_RATE`, and shows the page's number under
 An act declared as an `Action` asks for an authorization of its own
 ([Authorizing one act](actions.md)), and the phone confirms it (since
 2.4, [ADR 0144](../adr/0144-authorize-one-act-not-a-window-of-time.md)).
-The page asks for the authorization, then asks the phone, and polls:
+The page asks for the authorization, then asks the phone, and polls (or
+waits, `POST /auth/app-sign-in/authorizations/wait {"request"}`):
 
 ```http
 DELETE /organizations/7/memberships/42                     401 authorization_required
