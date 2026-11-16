@@ -36,6 +36,27 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.4 to 2.5
+
+2.5 answers the third report from a project that runs an identity
+service on domainkit. Each item of this list says what a project that
+relied on 2.4's behaviour changes.
+
+- **A number given at signup with an address is on the account only once
+  its own code is proved**
+  ([ADR 0171](adr/0171-prove-a-number-given-at-signup-by-its-own-code.md)).
+  `POST /auth/signup` with `{"email", "mobile_number"}` makes the account
+  with the address alone when the address's code comes back; the number
+  is held, and texted a code, which the user, logged in, sends to `POST
+  /auth/mobile-verification/code`. Before, the address's code put the
+  number on the account unproved, took it from an account that held it
+  unproved (ending that account where it was its only login), and which
+  mail the address got told whether an account used the number. An app
+  that signs up with both asks for the number's code after the first
+  login, as it does for a changed number; one that read the number from
+  the new account at once reads it once proved. A signup by a number
+  alone is unchanged.
+
 ## 2.3 to 2.4
 
 2.4 answers a report from a project that runs an identity service on

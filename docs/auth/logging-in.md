@@ -853,6 +853,25 @@ POST /auth/signup
 {"detail": "Check your text messages to finish signing up."}
 ```
 
+A number given with an address is proved by a code of its own (*new in
+2.5*, [ADR 0171](../adr/0171-prove-a-number-given-at-signup-by-its-own-code.md)).
+The address's code makes the account with the address alone. The number
+is then held, as a user's new number is
+([Changing your address or number](#changing-your-address-or-number)),
+and the worker texts it a code. The user logs in and sends it to `POST
+/mobile-verification/code`; only then is the number on the account,
+proved, or `409 mobile_number_taken` where another account proved it
+first. The text is counted against `EMAIL_RATE` per number, as `POST
+/mobile-verification` counts it; past the rate the account is made
+without it, and the user asks for a code later. Until the number's own
+code comes back, the number takes nothing from an account that holds
+it, and plays no part in which mail the address gets:
+
+```http
+POST /auth/signup
+{"email": "nina@example.com", "mobile_number": "+33 6 12 34 56 78"}
+```
+
 How signing up works:
 
 1. **The request is checked, then kept.** `fields` holds the user model's
@@ -863,9 +882,10 @@ How signing up works:
    password is taken. The request is kept as a pending signup, and the
    route answers `202`, doing the same work whatever accounts exist.
 2. **The worker sends the code.** When neither the username (in any
-   case) nor the address or number has an account, it sends a code, which
-   works for `AUTH.CODE_TTL`. Otherwise it sends word that an account uses
-   the address or the username, and drops the pending signup.
+   case) nor what the code proves (the address, or a number given alone)
+   has an account, it sends a code, which works for `AUTH.CODE_TTL`.
+   Otherwise it sends word that an account uses the address (or the
+   number) or the username, and drops the pending signup.
 3. **Your app asks for a password**, and posts it with the address or
    number and the code:
 
@@ -906,7 +926,9 @@ Why the password comes last:
   uses it takes the address, verified. The holder loses it
   (`auth.email_released` in the audit trail), and its codes sent there
   stop working. A number held unproved moves the same way
-  (`auth.mobile_number_released`).
+  (`auth.mobile_number_released`) to a signup by that number alone, or
+  to a user whose code proves it later; a number given with an address
+  moves only then (since 2.5: before, the address's code took it too).
   - The code's mail warns the reader (`auth/signup_code_held`): an
     account that is theirs keeps the address if they log in and prove
     it instead. Reset codes go only to proved addresses since 2.4
@@ -946,7 +968,7 @@ Arabic one ([mail.md](../mail.md#templates-in-other-languages)).
 | `auth/password_reset_code`, `auth/email_verification_code` | `user`, `username`, `code`, and `valid_for` (`10 minutes`). |
 | `auth/signup_code` | `code` and `valid_for` only: the username was chosen by whoever asked, who may not be the address's owner. |
 | `auth/signup_code_held` | The same, sent instead when an account holds the address unproved: it says what using the code does to that account. |
-| `auth/signup_exists` | `email`, and `taken` (*new in 2.5*): a sentence, in the reader's language, that says what an account uses already, and what to do. It names the username, or the number, only where the signup gave one, which `AUTH.IDENTIFIERS` allows, and suggests another username only then. |
+| `auth/signup_exists` | `email`, and `taken` (*new in 2.5*): a sentence, in the reader's language, that says what an account uses already, and what to do. It names the username only where the signup chose one, which `AUTH.IDENTIFIERS` allows, and suggests another username only then. A number given with the address plays no part. |
 
 `check` reports these routes mounted without messaging and mail
 (`auth.E103`), or with a user model without `EMAIL_FIELD` and

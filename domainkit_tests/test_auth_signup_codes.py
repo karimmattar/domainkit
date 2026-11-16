@@ -280,22 +280,6 @@ def test_a_number_held_unproved_moves_too(texting: App) -> None:
     assert run_async(_number_taken(NUMBER)) is True
 
 
-def test_one_holder_of_both_loses_both(texting: App) -> None:
-    """The address and the number, held by one account unproved, both move."""
-    client = texting(**BY_TEXT)
-    holder = create_user(None, email="max@example.com", mobile_number=NUMBER)
-
-    ask(client, email="max@example.com", mobile_number=NUMBER)
-    drain()
-    (message,) = mail.outbox
-    assert finish(client, "max@example.com", code_in(message.body)) == (204, None)
-
-    ended = _user(holder)
-    assert (ended.email, ended.mobile_number, ended.is_active) == ("", None, False)
-    made = stored("max@example.com")
-    assert (made.email_verified, made.mobile_number) == (True, NUMBER)
-
-
 def test_what_a_user_proved_is_never_released() -> None:
     """``release_email`` and ``release_mobile_number`` leave proof alone."""
     user = User.create(
@@ -452,9 +436,9 @@ SIGNED_UP_WITH: Final = "Someone tried to sign up with this email address"
         (
             ("email", "mobile_number"),
             {"email": "ann@example.com", "mobile_number": NUMBER},
-            (
-                "An account already uses this address, or the mobile number given. "
-                "If it was you, log in, or reset your password."
+            (  # The number counts for nothing: its own code proves it (ADR 0171).
+                "An account already uses this address. If it was you, log in, or "
+                "reset your password."
             ),
         ),
         (
@@ -470,9 +454,9 @@ SIGNED_UP_WITH: Final = "Someone tried to sign up with this email address"
             ("username", "email", "mobile_number"),
             {"username": "dave", "email": "ann@example.com", "mobile_number": NUMBER},
             (
-                "An account already uses this address, the username chosen, or the "
-                "mobile number given. If it was you, log in, reset your password, "
-                "or sign up again with another username."
+                "An account already uses this address, or the username chosen. If "
+                "it was you, log in, reset your password, or sign up again with "
+                "another username."
             ),
         ),
     ],
@@ -554,9 +538,9 @@ def test_the_taken_mail_and_answer_speak_the_signups_language(texting: App) -> N
             ("username", "email", "mobile_number"),
             {"username": "dave", "email": "dave@example.com", "mobile_number": NUMBER},
             "dave@example.com",
-            (
-                "An account already uses this username, this address, or this "
-                "number; sign up again with another username, or log in."
+            (  # The number, given with an address, is not the signup's to lose.
+                "An account already uses this username or this address; sign up "
+                "again with another username, or log in."
             ),
         ),
     ],

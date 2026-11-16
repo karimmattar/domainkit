@@ -57,6 +57,23 @@ and a status.
   reader's language; a project's own template of it still works (user
   report I8).
 
+### Security
+
+- A number given at signup with an address is proved by a code of its
+  own. The address's code proved the address alone, yet the signup took
+  the number from an account that held it unproved (ending that account
+  where the number was its only login: anyone with an address of their
+  own could end a superuser made with `createsuperuser --mobile_number`),
+  put it on the new account unproved, and chose the mail it sent the
+  address by whether an account used the number, which told the asker.
+  The account is now made with the address alone; the number is held and
+  texted a verification code (counted against `AUTH.EMAIL_RATE` per
+  number), which `POST /auth/mobile-verification/code` takes, as for a
+  changed number. A signup by a number alone is unchanged. The number is
+  on the account only once its code is proved: see
+  [upgrading.md](docs/upgrading.md#24-to-25). ADR 0171 (found in review
+  of user report A12).
+
 ## [2.4.0] - 2026-11-16
 
 2.4 answers a report from a project that runs an identity service on

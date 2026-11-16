@@ -1247,22 +1247,6 @@ msgid ""
 "you, log in, reset your password, or sign up again with another username."
 msgstr ""
 
-msgid ""
-"An account already uses this address, or the mobile number given. If it was "
-"you, log in, or reset your password."
-msgstr ""
-
-msgid ""
-"An account already uses this address, the username chosen, or the mobile "
-"number given. If it was you, log in, reset your password, or sign up again "
-"with another username."
-msgstr ""
-
-msgid ""
-"An account already uses this address or this number; log in, or reset your "
-"password."
-msgstr ""
-
 msgid "An account already uses this address; log in, or reset your password."
 msgstr ""
 
@@ -1272,11 +1256,6 @@ msgstr ""
 msgid ""
 "An account already uses this username or this number; sign up again with "
 "another username, or log in."
-msgstr ""
-
-msgid ""
-"An account already uses this username, this address, or this number; sign "
-"up again with another username, or log in."
 msgstr ""
 
 #. domainkit.contrib.auth and domainkit.contrib.ciba: codes and pushes sent to users
