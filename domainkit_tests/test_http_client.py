@@ -1296,6 +1296,29 @@ async def test_logs_name_the_call_without_secrets(
     assert logged[4].startswith("GET https://api.example.com 200 in ")
 
 
+async def test_a_client_may_keep_paths_out_of_logs_and_errors(
+    caplog: pytest.LogCaptureFixture, waits: list[float]
+) -> None:
+    """``log_paths=False``: the origin alone, as a guarded client logs by default."""
+    caplog.set_level(logging.DEBUG, LOGGER)
+    quiet = HttpClient(log_paths=False)
+    with options(RETRIES=1, BACKOFF=0.0):
+        with stub(Upstream(status(503), status(200))):
+            await quiet.get(URL)
+        with stub(hang), pytest.raises(CallTimeout) as slow:
+            await HttpClient(timeout=0.05, log_paths=False).get(URL)
+        with stub(Upstream(status(200))):
+            await HttpClient(guard=True, log_paths=True).get(URL)
+
+    origin = "https://api.example.com"
+    logged = [r.getMessage() for r in caplog.records if r.name == LOGGER]
+    assert logged[0] == f"Retrying GET {origin} in 0.00s after 503 (attempt 1 of 2)"
+    assert logged[1].startswith(f"GET {origin} 200 in ")
+    assert logged[2] == f"GET {origin} took longer than its 0.05s"
+    assert str(slow.value) == f"GET {origin} took longer than 0.05s."
+    assert logged[3].startswith(f"GET {URL} 200 in ")
+
+
 @pytest.mark.usefixtures("restore_logging")
 async def test_production_logging_keeps_query_strings_out(
     capsys: pytest.CaptureFixture[str],

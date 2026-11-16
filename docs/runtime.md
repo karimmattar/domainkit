@@ -1519,8 +1519,8 @@ out of the application layer, which reaches the service through a port.
 - `HttpClient(...)` takes `base_url`, `headers` (sent with every call),
   `timeout` and `retries` (in place of `HTTP_CLIENT`'s), `guard`,
   `allow_http`, `allowed_networks`, `propagate`, `breaker`, `transport`,
-  and `http2`. `http2=True` speaks HTTP/2 where the server does (it needs
-  `httpx2[http2]`), as Apple's push service requires.
+  `http2`, and `log_paths`. `http2=True` speaks HTTP/2 where the server
+  does (it needs `httpx2[http2]`), as Apple's push service requires.
 - A relative URL is appended to `base_url`, and may not climb out of its
   path. A `.` or `..` segment, spelled out or percent-encoded (`%2e%2e`,
   `..%2f`), raises `UnsafeURL`. A URL that names a host must keep to the
@@ -1573,7 +1573,9 @@ Every call:
   still count.
 - is logged by method, origin, and path: never a query string, a header,
   or a body. Keep secrets out of paths, or use a guarded client, whose
-  logs show only the origin.
+  logs show only the origin. `log_paths=False` keeps the path out of the
+  logs and of `CallTimeout`'s message too, for a path that carries
+  something the logs must not keep, such as a hash prefix.
 
 #### URLs someone else chose
 

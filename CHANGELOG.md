@@ -11,6 +11,10 @@ and a status.
 
 ### Added
 
+- `HttpClient(log_paths=False)` logs each call's origin alone, and names
+  no path in `CallTimeout`'s message, for paths that carry what logs must
+  not keep, such as the breached-password check's hash prefix (user
+  report A11).
 - While the broker is away, relaying workers run the outbox themselves:
   each relay has a breaker, as commits do, and while it is open the
   worker claims and runs the due messages of its queues, as a worker
