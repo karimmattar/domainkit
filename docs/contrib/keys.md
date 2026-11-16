@@ -214,6 +214,13 @@ unwraps each one once, at startup, and keeps them in memory. A KMS that
 refuses stops the startup. `CURRENT_KEY` seals new values. The others
 are retired: they still open what they sealed.
 
+The application, the worker, `seed`, and `privacy export` and `erase`
+start the domains, and so unwrap the keys first. Other commands do not:
+the keys are unwrapped where the ORM's events run, the first time a
+sealed value is read or written, but a query by a blind index raises
+`KeysNotLoaded` until then
+([Commands that start the domains](../reference/commands.md#commands-that-start-the-domains)).
+
 `manage.py keys generate [--id ID]` asks the provider for a new data key,
 and prints it wrapped, as a `DATA_KEYS` entry. Its id is today's date by
 default. The wrapped key is safe to keep in configuration: only the KMS

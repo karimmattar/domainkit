@@ -98,18 +98,59 @@ name. These are the other parts of an action command:
 
 | Name | What it does |
 | --- | --- |
-| `@action(name=None, help=..., options=(), operator=False)` | Marks a method as an action. `operator=True` makes the action take `--operator` and run as that operator. |
+| `@action(name=None, help=..., options=(), operator=False, needs_domains=False)` | Marks a method as an action. `operator=True` makes the action take `--operator` and run as that operator. `needs_domains=True` runs the action, which must be async, with the installed domains started (`BaseCommand.needs_domains`). |
 | `option(*names, **settings)` | One option, as `ArgumentParser.add_argument(*names, **settings)` takes it. |
 | `ActionCommand.common_options` | Options that every action takes after its own, such as `--database`. |
 | `ActionCommand.default_action` | The action that runs when the command line names none. `None` (the default) makes the action required. |
 | `BaseCommand.operator_actions` | `True` makes every action, or the whole command, take `--operator` ([Operators](#operators)). |
 | `BaseCommand.requires_setup` | `True` (the default) loads the settings and the installed domains before `handle` runs. |
-| `BaseCommand.needs_domains` | `True` starts the installed domains around an async `handle`, as serving the application does: their `on_startup` hooks first (a key service's data keys unwrapped, the audit trail's protection checked), their `on_shutdown` hooks after. For commands that run the application's work; `runworker` sets it. |
+| `BaseCommand.needs_domains` | `True` starts the installed domains around an async `handle`, as serving the application does: their `on_startup` hooks first (a key service's data keys unwrapped, the audit trail's protection checked), their `on_shutdown` hooks after. For commands that run the application's work ([Commands that start the domains](#commands-that-start-the-domains)). |
 | `CommandError(message, returncode=1)` | Raise it to stop the command with a message and an exit status. |
 | `call_command(name, *args)` | Runs a command from Python, as a test does. |
 
 A command with `operator_actions` takes `--operator` after any action:
 `python manage.py prices raise-prices 5 --operator alice`.
+
+### Commands that start the domains
+
+A command runs without the domains' `on_startup` hooks, unless it sets
+`needs_domains`. Serving the application runs them: a key service's data
+keys are unwrapped, and the audit trail's and the ledger's protections
+are checked where deployed. These built-in commands set it, because they
+run the application's own work, or other domains' hooks written for it:
+
+| Command | Why |
+| --- | --- |
+| `runworker` | It runs every task and durable handler. |
+| `seed` | It runs every domain's `on_seed` hooks, which look up what exists, maybe by an encrypted field's blind index. |
+| `privacy export`, `privacy erase` | They run every domain's `on_export_subject`, `on_retain_subject`, and `on_erase_subject` hooks. |
+
+With a key service that is not `local`, the data keys are unwrapped
+where SQLAlchemy's events run: a row loaded or written through the ORM,
+or a statement given to `run_sync`, opens and seals values without the
+domains started. A blind index (`F("email") == value` on an encrypted
+field) is computed before the query runs, outside those events, and
+raises `KeysNotLoaded` until the keys are unwrapped. The other commands
+need nothing the startup gives, and some must run without it:
+
+- `migrate`, `check`, and `makemigrations`: the trail's startup check
+  looks for the triggers `migrate` makes.
+- `keys`: `status` and `reencrypt` unwrap the keys themselves; `generate`
+  runs before any data key exists, which the keys' startup refuses.
+- `audit`: it reads no encrypted field, and `verify` must run on a trail
+  whose startup check refuses.
+- `dumpdata --decrypt` and `loaddata`: they open and seal in `run_sync`.
+- `privacy purge`: it runs no other domain's hooks, and erases through
+  the ORM.
+- `messages`, `changepassword`, `createsuperuser`, `resetmfa`,
+  `createtoken`, `unbinddevices`, and the other built-in commands: they
+  read and write through the ORM and build no blind index.
+- `shell`: it opens for repairs too, when a startup check refuses. In it,
+  `await keyring().load()` (`domainkit.keys.ring`) unwraps a key
+  service's data keys.
+
+A command of your own that runs the application's work sets
+`needs_domains = True`, or `@action(needs_domains=True)` for one action.
 
 ## Projects and code
 
@@ -770,9 +811,11 @@ python manage.py seed catalog
 ```
 
 `seed` runs the `on_seed` hooks of the installed domains, in
-`INSTALLED_DOMAINS` order, as the operator. The run is recorded
-(`operator.seed`, with the domains seeded). A project with no hook prints
-`No domain has seed data.`
+`INSTALLED_DOMAINS` order, as the operator, with the domains started
+first, as serving starts them
+([Commands that start the domains](#commands-that-start-the-domains)).
+The run is recorded (`operator.seed`, with the domains seeded). A project
+with no hook prints `No domain has seed data.`
 
 | Option | What it does |
 | --- | --- |
@@ -1146,7 +1189,9 @@ python manage.py privacy purge --dry-run
 `privacy` exports or erases what every installed domain holds about a
 person, from the `Personal` markers on aggregates. It also applies the
 domains' retention policies ([privacy.md](../privacy.md)). Each action is
-audited as the operator's.
+audited as the operator's. `export` and `erase` start the domains first,
+as serving does, since they run every domain's hooks
+([Commands that start the domains](#commands-that-start-the-domains)).
 
 | Action and option | What it does |
 | --- | --- |

@@ -3,7 +3,7 @@
 import inspect
 import sys
 from argparse import ArgumentParser
-from collections.abc import Awaitable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, AbstractContextManager, nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TextIO, cast
@@ -53,7 +53,9 @@ class BaseCommand:
     application does (``registry.lifespan``): their ``on_startup`` hooks
     run first (a key service's data keys unwrapped, a trail's protection
     checked) and their ``on_shutdown`` hooks after. For commands that run
-    the application's work, such as ``runworker``; ``handle`` must be async."""
+    the application's work, such as ``runworker``, ``seed``, and
+    ``privacy erase``; ``handle`` must be async. An ``ActionCommand``
+    marks each action that needs them (``action(needs_domains=True)``)."""
 
     def __init__(
         self, stdout: TextIO | None = None, stderr: TextIO | None = None
@@ -99,10 +101,12 @@ class BaseCommand:
         Raises:
             TypeError: ``needs_domains`` with a ``handle`` that is not async.
         """
-        if self.needs_domains and not inspect.iscoroutinefunction(self.handle):
+        if self.needs_domains and not inspect.iscoroutinefunction(
+            handler := self.handler(options)
+        ):
             raise TypeError(
-                f"{type(self).__name__}.needs_domains needs an async handle: the "
-                "domains start and stop in its event loop."
+                f"{type(self).__name__}.needs_domains needs an async handle "
+                f"({handler.__name__}): the domains start and stop in its event loop."
             )
         acting: AbstractContextManager[None] = nullcontext()
         if self.operator_actions:
@@ -118,6 +122,10 @@ class BaseCommand:
             result = self.handle(**options)
             if inspect.isawaitable(result):
                 run_async(_started(result) if self.needs_domains else result)
+
+    def handler(self, options: Mapping[str, object]) -> Callable[..., object]:
+        """The method ``execute`` runs for ``options``: ``handle``."""
+        return self.handle
 
     def label(self, options: dict[str, object]) -> str:
         """What the audit trail calls this run: the command's name."""

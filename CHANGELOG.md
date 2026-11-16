@@ -576,6 +576,17 @@ and a status.
 
 ### Changed
 
+- `seed`, `privacy export`, and `privacy erase` start the domains first,
+  as serving and `runworker` do (`needs_domains`): their `on_startup`
+  hooks run before, and their `on_shutdown` hooks after. They run other
+  domains' hooks, written for the started application: with a key
+  service that is not `local`, a hook that looked up by an encrypted
+  field's blind index raised `KeysNotLoaded`, as nothing had unwrapped
+  the data keys. `@action(needs_domains=True)` marks one action of an
+  `ActionCommand` so. The other built-in commands need nothing the
+  startup gives, and still run without it; the commands reference says
+  why for each ([Commands that start the domains](docs/reference/commands.md#commands-that-start-the-domains),
+  user report W1).
 - A request reads a user's grants on one object once: within an HTTP
   request with credentials, `ObjectPermissionBackend` answers every
   permission of a user on an object with one query, however many rules

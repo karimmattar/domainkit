@@ -13,11 +13,14 @@ class Command(BaseCommand):
     Domains run in ``INSTALLED_DOMAINS`` order. A seed must be safe to run
     again: rows that exist stay as they are. What it writes is audited as
     its operator (``--operator``), and the run is recorded
-    (``operator.seed``).
+    (``operator.seed``). The domains are started first, as serving
+    starts them: a seed is the application's work, and may look up by an
+    encrypted field's blind index, which needs the data keys unwrapped.
     """
 
     help = "Run the seed hooks of installed domains, in INSTALLED_DOMAINS order."
     operator_actions = True
+    needs_domains = True
 
     def add_arguments(self, parser: ArgumentParser) -> None:
         """Accept domain labels."""
