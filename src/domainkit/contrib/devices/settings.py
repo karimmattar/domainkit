@@ -1,11 +1,29 @@
 """Settings of ``domainkit.contrib.devices``: ``DEVICES = {...}``."""
 
 from datetime import timedelta
-from typing import Literal
+from typing import Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-__all__ = ["DevicesSettings"]
+__all__ = ["DevicesSettings", "PushTokenCheckSettings"]
+
+MAX_PUSH_TOKEN_CHECK: Final = 10.0
+"""The longest ``PUSH_TOKEN_CHECK.TIMEOUT``, in seconds: the app waits for it."""
+
+
+class PushTokenCheckSettings(BaseModel):
+    """``DEVICES["PUSH_TOKEN_CHECK"]``: ask the push service about a new token."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    ENABLED: bool = False
+    """Ask the token's push service whether it knows it when it is
+    registered, delivering nothing (``check_push_token``: FCM's and Push
+    Kit's dry run, APNs' token form), and refuse one it does not know
+    (``422 push_token_refused``). Needs ``domainkit.contrib.notifications``."""
+    TIMEOUT: float = Field(default=3.0, gt=0, le=MAX_PUSH_TOKEN_CHECK)
+    """Seconds the question may take. Past them, or when the service fails,
+    the token is taken, with a warning in the log."""
 
 
 class DevicesSettings(BaseModel):
@@ -29,6 +47,8 @@ class DevicesSettings(BaseModel):
     MAX_DEVICES: int = Field(default=10, ge=1, le=100)
     MAX_PUSH_TOKENS: int = Field(default=20, ge=1, le=100)
     """Push tokens a user holds; a new one past it ends the oldest."""
+    PUSH_TOKEN_CHECK: PushTokenCheckSettings = PushTokenCheckSettings()
+    """Ask the push service about a token when it is registered (off)."""
     SIGNATURE_WINDOW: timedelta = Field(
         default=timedelta(minutes=2), gt=timedelta(0), le=timedelta(minutes=10)
     )

@@ -30,6 +30,10 @@ would refuse again, as it is, raises ``NotificationRefused``, which is
 not tried again. Any other refusal raises ``NotificationFailed`` with
 the service's code and the fields it named, and the worker tries again:
 credentials, permissions, quotas, and outages may change meanwhile.
+
+``check_token`` asks a service about a token without delivering anything,
+where it can: FCM's and Push Kit's dry run (``validate_only``). APNs has
+none: only the token's form is checked.
 """
 
 import json
@@ -72,6 +76,8 @@ FCM_TOKEN_FIELD: Final = "message.token"  # noqa: S105 - a field's name.
 """The field FCM names when the token it refuses is the only thing wrong."""
 HUAWEI_GONE: Final = "80300007"
 """Push Kit's code for tokens it does not know."""
+HUAWEI_SENT: Final = "80000000"
+"""Push Kit's code for a message it took."""
 HUAWEI_LASTING: Final = frozenset({"80100003", "80300008"})
 """Push Kit's codes for a message it cannot take: its structure, or its size."""
 _HEX_TOKEN: Final = re.compile(r"[0-9a-fA-F]{32,200}")
@@ -166,6 +172,20 @@ class ProviderPushBackend(PushBackend):
         kind = NotificationRefused if refusal.lasting else NotificationFailed
         return kind(f"{text}.", code=refusal.code, fields=refusal.fields)
 
+    def unchecked(self, token: str, refusal: Refusal) -> NotificationFailed:
+        """What ``check_token`` raises for ``refusal``.
+
+        ``PushTokenGone`` for a token the service does not know; otherwise
+        ``NotificationFailed``: the service could not tell.
+        """
+        if refusal.gone:
+            return PushTokenGone(token, self.title)
+        return NotificationFailed(
+            f"{self.title} could not check the token: {refusal.code}.",
+            code=refusal.code,
+            fields=refusal.fields,
+        )
+
 
 class FcmOptions(_Options):
     """``PUSH_OPTIONS["fcm"]``: the Firebase project, and who calls it."""
@@ -189,22 +209,39 @@ class FcmPushBackend(ProviderPushBackend):
 
     async def send(self, message: PushMessage) -> None:
         """POST the message to the project; a refusal raises (``refusal``)."""
-        options = self.options
-        token = await _google_account(options.CREDENTIALS_FILE).token(FCM_SCOPE)
         payload: dict[str, Any] = {
             "token": message.token,
             "notification": {"title": message.title, "body": message.body},
         }
         if message.data:
             payload["data"] = message.data
-        response = await self.client.post(
-            f"{options.URL}/v1/projects/{options.PROJECT_ID}/messages:send",
-            json={"message": payload},
-            headers={"Authorization": f"Bearer {token}"},
-        )
+        response = await self.post({"message": payload})
         if response.status_code == 200:
             return
         raise self.failure(message, self.refusal(response))
+
+    async def check_token(self, token: str) -> None:
+        """A dry run (``validate_only``) of a message to ``token``: nothing is sent.
+
+        FCM checks the message, its token included, as it would send it,
+        and answers as ``send`` reads.
+        """
+        async with reached(self.title):
+            response = await self.post(
+                {"validate_only": True, "message": {"token": token}}
+            )
+        if response.status_code != 200:
+            raise self.unchecked(token, self.refusal(response))
+
+    async def post(self, body: dict[str, Any]) -> "httpx2.Response":
+        """POST ``body`` to the project's ``messages:send``, as its account."""
+        options = self.options
+        token = await _google_account(options.CREDENTIALS_FILE).token(FCM_SCOPE)
+        return await self.client.post(
+            f"{options.URL}/v1/projects/{options.PROJECT_ID}/messages:send",
+            json=body,
+            headers={"Authorization": f"Bearer {token}"},
+        )
 
     def refusal(self, response: "httpx2.Response") -> Refusal:
         """FCM's error code and the fields it named, and whether the token is gone.
@@ -310,6 +347,15 @@ class ApnsPushBackend(ProviderPushBackend):
             return
         raise self.failure(message, self.refusal(response))
 
+    async def check_token(self, token: str) -> None:
+        """The token's form alone: APNs checks no token without delivering to it.
+
+        A token that is not hex is gone, as ``send`` reads it; any other
+        is taken, and the first notification tells.
+        """
+        if not _HEX_TOKEN.fullmatch(token):
+            raise PushTokenGone(token, self.title)
+
     def refusal(self, response: "httpx2.Response") -> Refusal:
         """Apple's reason; ``410`` and its reasons for a lost token are gone.
 
@@ -388,8 +434,6 @@ class HuaweiPushBackend(ProviderPushBackend):
 
     async def send(self, message: PushMessage) -> None:
         """POST the message; code ``80000000`` is sent, ``80300007`` gone."""
-        options = self.options
-        app = _huawei_apps.setdefault(options.APP_ID, HuaweiApp(options))
         payload: dict[str, Any] = {
             "notification": {"title": message.title, "body": message.body},
             "android": {"notification": {"click_action": {"type": 3}}},
@@ -397,15 +441,33 @@ class HuaweiPushBackend(ProviderPushBackend):
         }
         if message.data:
             payload["data"] = json.dumps(message.data)
-        response = await self.client.post(
-            f"{options.URL}/v1/{options.APP_ID}/messages:send",
-            json={"validate_only": False, "message": payload},
-            headers={"Authorization": f"Bearer {await app.token('push')}"},
-        )
-        code = (json_of(response) or {}).get("code")
-        if response.status_code == 200 and code == "80000000":
+        response = await self.post({"validate_only": False, "message": payload})
+        if _sent(response):
             return
         raise self.failure(message, self.refusal(response))
+
+    async def check_token(self, token: str) -> None:
+        """A test message (``validate_only``) to ``token``: nothing is sent.
+
+        Push Kit checks the message's format; a token it does not know
+        answers ``80300007``, as ``send`` reads it.
+        """
+        async with reached(self.title):
+            response = await self.post(
+                {"validate_only": True, "message": {"data": "{}", "token": [token]}}
+            )
+        if not _sent(response):
+            raise self.unchecked(token, self.refusal(response))
+
+    async def post(self, body: dict[str, Any]) -> "httpx2.Response":
+        """POST ``body`` to the app's ``messages:send``, with its OAuth token."""
+        options = self.options
+        app = _huawei_apps.setdefault(options.APP_ID, HuaweiApp(options))
+        return await self.client.post(
+            f"{options.URL}/v1/{options.APP_ID}/messages:send",
+            json=body,
+            headers={"Authorization": f"Bearer {await app.token('push')}"},
+        )
 
     def refusal(self, response: "httpx2.Response") -> Refusal:
         """Push Kit's code: ``80300007`` is gone; a message it cannot take, lasting."""
@@ -415,3 +477,9 @@ class HuaweiPushBackend(ProviderPushBackend):
             gone=code == HUAWEI_GONE,
             lasting=code in HUAWEI_LASTING or response.status_code == 400,
         )
+
+
+def _sent(response: "httpx2.Response") -> bool:
+    """Whether Push Kit took the message: ``200`` with its code ``80000000``."""
+    code = (json_of(response) or {}).get("code")
+    return response.status_code == 200 and code == HUAWEI_SENT

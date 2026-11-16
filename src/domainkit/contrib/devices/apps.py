@@ -29,6 +29,7 @@ class DevicesConfig(DomainConfig):
         Raises:
             ImproperlyConfigured: ``devices`` is routed elsewhere than ``auth``,
                 ``ENROLLMENT`` is on without ``domainkit.contrib.messaging``,
+                ``PUSH_TOKEN_CHECK`` without ``domainkit.contrib.notifications``,
                 or ``SIGNATURE_STORE`` is a cache that remembers nothing, or
                 that each process keeps alone where deployed.
         """
@@ -41,13 +42,20 @@ class DevicesConfig(DomainConfig):
         from domainkit.contrib.auth.integration import UserDeleted
 
         messaging = registry.is_installed("domainkit.contrib.messaging")
-        if registry.settings(DevicesSettings).ENROLLMENT and not messaging:
+        config = registry.settings(DevicesSettings)
+        if config.ENROLLMENT and not messaging:
             raise ImproperlyConfigured(
                 "DEVICES.ENROLLMENT needs 'domainkit.contrib.messaging' in "
                 "INSTALLED_DOMAINS: its worker sends the codes."
             )
+        notifications = registry.is_installed("domainkit.contrib.notifications")
+        if config.PUSH_TOKEN_CHECK.ENABLED and not notifications:
+            raise ImproperlyConfigured(
+                "DEVICES.PUSH_TOKEN_CHECK needs 'domainkit.contrib.notifications' "
+                "in INSTALLED_DOMAINS: its push backends ask the services."
+            )
 
-        _check_signature_store(registry.settings(DevicesSettings).SIGNATURE_STORE)
+        _check_signature_store(config.SIGNATURE_STORE)
 
         from domainkit.contrib.auth.integration import on_action_confirmation
         from domainkit.contrib.auth.routing import AccountRoutes, on_account_routes
@@ -71,7 +79,7 @@ class DevicesConfig(DomainConfig):
             register_purge()
             if registry.is_installed("domainkit.contrib.mail"):
                 register_notice()
-        if registry.is_installed("domainkit.contrib.notifications"):
+        if notifications:
             from domainkit.contrib.notifications.events import PushTokenExpired
 
             event_bus.subscribe(PushTokenExpired, forget_push_token)

@@ -101,6 +101,7 @@ a user (`UserDeleted`) removes their passkeys, devices, and push tokens.
 | `MAX_PASSKEYS` | 10 (1 to 100) | Passkeys a user holds at once (`409 too_many_keys` past it). |
 | `MAX_DEVICES` | 10 (1 to 100) | Bound devices a user holds at once (`409 too_many_keys` past it). |
 | `MAX_PUSH_TOKENS` | 20 (1 to 100) | Push tokens a user holds; a new one past it ends the oldest. |
+| `PUSH_TOKEN_CHECK` | off | Ask the token's push service, when a token is registered, whether it knows it (`422 push_token_refused` if not): `{"ENABLED": True, "TIMEOUT": 3.0}`, `TIMEOUT` at most 10 seconds ([Checking a token](#checking-a-token)). Needs `domainkit.contrib.notifications`. |
 | `SIGNATURE_WINDOW` | 2 minutes (at most 10) | How far a signed request's time may be from the server's. |
 | `SIGNATURE_STORE` | `"database"` | Where the signed requests seen within the window are kept: `"database"`, or `"cache"` (the default cache, shared by every process) ([Bound devices](#bound-devices)). |
 | `BOUND_NOTICE` | `True` | Mail the user when a device is bound to their account ([The user is told](#the-user-is-told)). |
@@ -478,7 +479,7 @@ returns what the user's device signed for the request (`DeviceProof`:
 
 | Endpoint | Who | Answer |
 | --- | --- | --- |
-| `POST /devices/push-tokens` | a user; in the phone modes, signed by one of their devices once they have one | `{"token", "platform"}` (`fcm`, `apns`, `huawei`): `201` with `id`, `platform`, `created_at`, `last_seen_at`. |
+| `POST /devices/push-tokens` | a user; in the phone modes, signed by one of their devices once they have one | `{"token", "platform"}` (`fcm`, `apns`, `huawei`): `201` with `id`, `platform`, `created_at`, `last_seen_at`; with `PUSH_TOKEN_CHECK`, `422 push_token_refused` for a token its service does not know. |
 | `GET /devices/push-tokens` | a user | The user's tokens, never the token itself. |
 | `DELETE /devices/push-tokens/{id}` | a user; signed as registering one is | `204`, when the app logs out. |
 
@@ -496,6 +497,40 @@ and `platform` are the new ones (before 2.4, each registration gave it a
 new `id`). A token that moves to another user gets a new `id` there.
 Registrations of one token at once each succeed: one upsert, on
 PostgreSQL and SQLite.
+
+### Checking a token
+
+By default a token is kept as the app gives it, and the first
+notification finds out whether its service knows it. A token the
+service does not know (made up, cut short, an APNs token sent as `fcm`)
+then fails that notification, and is forgotten (`PushTokenExpired`).
+
+With `PUSH_TOKEN_CHECK`, the route asks the token's push service first,
+outside the transaction, delivering nothing, and refuses a token the
+service does not know: `422 push_token_refused`, and nothing is kept.
+
+```python
+DEVICES = {"PUSH_TOKEN_CHECK": {"ENABLED": True, "TIMEOUT": 3.0}}
+```
+
+| Platform | How it is asked |
+| --- | --- |
+| `fcm` (`FcmPushBackend`) | A dry run: `messages:send` with `validate_only`, which FCM checks as a send, token included, and does not deliver ([`validate_only`](https://firebase.google.com/docs/reference/fcm/rest/v1/projects.messages/send)). A token FCM does not know answers `INVALID_ARGUMENT` (its own error, no field) or `UNREGISTERED`. |
+| `huawei` (`HuaweiPushBackend`) | A test message: `validate_only`, which Push Kit checks and does not push ([send API](https://developer.huawei.com/consumer/en/doc/HMS-References/push-sendapi)). A token it does not know answers `80300007`. Huawei documents the check as one of the message's format, not of every token. |
+| `apns` (`ApnsPushBackend`) | Apple has no call that checks a token without delivering to it: only its form is checked (hex, as Apple's tokens are). The first notification tells the rest. |
+| any other backend | `PushBackend.check_token` takes every token, unless the backend overrides it. |
+
+The check fails open. A service that cannot be reached, refuses the
+question for another reason (its credentials, a quota), or does not
+answer within `TIMEOUT` seconds lets the token in, with a warning in the
+log that names no token: an outage at the push service never stops an
+app from registering, and the worker still forgets a token gone at its
+first notification. It costs the app one call to the service for each
+registration (an app may register on every start).
+
+`check_push_token(token, platform, *, within)`, in
+`domainkit.contrib.notifications`, is the check: `False` only when the
+service says it does not know the token.
 
 A use case notifies the user on every app of theirs, through
 [`domainkit.contrib.notifications`](../mail.md#text-messages-and-push-notifications):
@@ -559,6 +594,7 @@ async with DevicesUnitOfWork() as uow:
 | `AuthorizationChanged` | `409 authorization_changed` | The app's digest is not the act's. |
 | `AuthorizationNeedsOtherFactors` | `409 authorization_needs_other_factors` | A passkey, where the act asks the phone. |
 | `UnsupportedKey` | `422 unsupported_device_key` | Not a P-256 or Ed25519 public key. |
+| `PushTokenRefused` | `422 push_token_refused` | With `PUSH_TOKEN_CHECK`: the push service does not know the token. The app asks its service for a new one. |
 
 ## Common mistakes
 

@@ -507,6 +507,12 @@ await send_push(
   the worker, and return how many were sent.
 - `get_sms_backend()` and `get_push_backend(platform=None)` return a new
   instance of the backend that would send.
+- `check_push_token(token, platform=None, *, within)` asks the push
+  service whether it knows a token, delivering nothing, and answers
+  `False` only when it does not; a service that fails or does not answer
+  `within` seconds counts as `True`. `domainkit.contrib.devices` calls it
+  when a token is registered, with `DEVICES.PUSH_TOKEN_CHECK`
+  ([Checking a token](auth/devices.md#checking-a-token)).
 
 ### Providers
 
@@ -572,6 +578,12 @@ NOTIFICATIONS = {
   NotificationRefused: FCM refused the notification: INVALID_ARGUMENT (message.data[0].value).
   ```
 
+- **Checking a token without sending.** `PushBackend.check_token(token)`
+  raises `PushTokenGone` for a token the service does not know, and
+  `NotificationFailed` when it cannot tell. FCM and Push Kit answer a dry
+  run (`validate_only`), which delivers nothing; APNs has none, so its
+  backend checks the token's form alone; the port's default takes every
+  token.
 - **Reading a refusal your own way.** Each push backend reads its
   service's answer in `refusal(response)`, which returns a `Refusal`
   (`code`, `gone`, `lasting`, `fields`). Override it for one case, and

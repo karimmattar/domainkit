@@ -1235,3 +1235,7 @@ msgstr ""
 
 msgid "This account's mobile number cannot be changed here."
 msgstr ""
+
+#. domainkit.contrib.devices: DEVICES.PUSH_TOKEN_CHECK
+msgid "The push service does not know this token: ask it for a new one."
+msgstr ""

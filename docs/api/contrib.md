@@ -541,6 +541,7 @@ Text messages and push notifications through the outbox.
 - `PushMessage`: A push notification to one device, by the token its platform gave it.
 - `SmsBackend`: Sends text messages through a provider.
 - `SmsMessage`: A text message to a phone number in E.164 form (`+33612345678`).
+- `check_push_token`: Whether the push service of `platform` may know `token`.
 - `deliver_push`: Send push notifications now, skipping the outbox (from the worker).
 - `deliver_sms`: Send text messages now, skipping the outbox (from the worker).
 - `get_push_backend`: A new instance of `NOTIFICATIONS.PUSH_BACKEND`.

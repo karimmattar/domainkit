@@ -11,6 +11,16 @@ and a status.
 
 ### Added
 
+- `DEVICES["PUSH_TOKEN_CHECK"] = {"ENABLED": True}` asks a push token's
+  service, when `POST /auth/devices/push-tokens` registers it, whether it
+  knows the token, delivering nothing, and refuses one it does not with
+  `422 push_token_refused`: FCM and Push Kit through their dry run
+  (`validate_only`), APNs, which has none, by the token's form. A service
+  that fails, or does not answer within `TIMEOUT` (3 seconds, at most
+  10), lets the token in, with a warning: the check fails open.
+  `PushBackend.check_token(token)` is the backends' part, and
+  `check_push_token(token, platform, within=...)` the check. The refusal
+  is in English and Arabic (user report N2).
 - A route can take its tenant from its path, once routed:
   `Depends(PathTenant("org_id"))` on a router prefixed `/orgs/{org_id}`
   serves each of its routes as that tenant, as `TenantMiddleware` serves

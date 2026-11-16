@@ -228,6 +228,7 @@ unique constraint may name its own code
 | `phone_required` | 403 | `PhoneRequired` (contrib.ciba.exceptions): Only the user's mobile app manages their logins and the ways into the account (`CIBA.APPROVE_LOGINS`, ADR 0130, ADR 0134). |
 | `phone_unavailable` | 409 | `PhoneUnavailable` (contrib.ciba.exceptions): No phone of the signed-in user can be asked now: none is bound, `MAX_PENDING` requests wait, or the user reported one within `REPORT_COOLDOWN`. |
 | `policy_removed` | 409 | `PolicyRemoved` (contrib.approvals.exceptions): The request's guard or policy no longer exists: it is neither decided nor run. |
+| `push_token_refused` | 422 | `PushTokenRefused` (contrib.devices.exceptions): The push service does not know the token (`DEVICES.PUSH_TOKEN_CHECK`). |
 | `precondition_failed` | 412 | `PreconditionFailed` (ddd.exceptions): The caller expected another version of the aggregate than the stored one. |
 | `precondition_required` | 428 | resources.conditional: Send If-Match with the ETag of the version you are changing. |
 | `qr_code_expired` | 422 | `QrCodeExpired` (contrib.ciba.exceptions): The QR code is unknown, was claimed, or expired. |

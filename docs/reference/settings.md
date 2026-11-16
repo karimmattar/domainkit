@@ -23,6 +23,7 @@ On this page you find:
 | HTTP, security headers, CORS, outgoing calls, live connections, middleware | [http.md](http.md) |
 | Each optional app's settings (`AUTH`, `MESSAGING`, `AUDIT`, ...) | the app's own page ([contrib.md](../contrib.md)) |
 | `AUTH`'s keys, `AUTH["BREACHED_PASSWORDS"]` (new passwords checked against data breaches) among them | [auth.md](../auth.md#settings) |
+| `DEVICES`'s keys, `DEVICES["PUSH_TOKEN_CHECK"]` (push tokens checked with their service when registered) among them | [devices.md](../auth/devices.md#settings) |
 
 Each table has a Default column. A default in backticks is the value
 itself. A row also states its bounds, such as "at most 3600".
