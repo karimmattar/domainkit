@@ -1,7 +1,8 @@
 """An organisation's routes, by its id in the path, and its members' roles.
 
 The project keeps memberships in a table of its own, a role on each;
-``role_permissions`` is its ``TENANCY.MEMBER_PERMISSIONS`` (tenancy tests).
+``role_permissions`` is its ``TENANCY.MEMBER_PERMISSIONS``, and
+``role_tenants`` its ``MEMBER_TENANTS`` (tenancy tests).
 ``everything`` mounts them with auth's API, personal tokens, and admin API.
 """
 
@@ -43,6 +44,15 @@ async def role_permissions(user: Any, org: str) -> frozenset[str] | None:  # noq
             )
         )
     return None if role is None else ROLES[role]
+
+
+async def role_tenants(user: Any) -> list[str]:  # noqa: ANN401
+    """The organisations ``user`` belongs to: ``TENANCY.MEMBER_TENANTS``."""
+    async with connections.engine().connect() as connection:
+        found = await connection.scalars(
+            select(MEMBERS.c.org).where(MEMBERS.c.user_id == user.id)
+        )
+    return list(found)
 
 
 router = APIRouter(prefix="/orgs/{org}", dependencies=[Depends(PathTenant("org"))])

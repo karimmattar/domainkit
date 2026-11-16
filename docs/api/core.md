@@ -483,3 +483,4 @@ Multi-tenancy: a tenant per request; its rows, caches, limits, and database.
 - `scoped_key`: `key`, the current tenant's own: caches and rate limits use it.
 - `tenant`: Serve `tenant_id` inside the block (work outside a request, tests).
 - `tenant_schema`: The PostgreSQL schema of `tenant_id` (`TENANCY.SCHEMA`).
+- `tenants_beyond`: The tenants where `user` holds what `actor` does not; None if unknown.

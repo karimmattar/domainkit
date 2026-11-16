@@ -7,6 +7,7 @@ wrote its own ``MembershipBackend`` (ADR 0150).
 """
 
 from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Annotated, Any, Final, NewType
 from uuid import UUID, uuid4
 
@@ -27,7 +28,9 @@ from starlette.datastructures import Headers
 from starlette.testclient import WebSocketDenialResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from domainkit.apps import registry
 from domainkit.conf import TenancyConfig, override_settings
+from domainkit.contrib.auth import AuthUnitOfWork
 from domainkit.contrib.auth.backends import MembershipBackend, ObjectGrant
 from domainkit.db import connections
 from domainkit.ddd import AggregateRoot, InMemoryRepository
@@ -45,12 +48,18 @@ from domainkit.tenancy import (
     member_permissions,
     path_tenant_problems,
     tenant,
+    tenants_beyond,
 )
 from domainkit_tests import sample_tenant_orgs
-from domainkit_tests.conftest import API, MIDDLEWARE, Api
+from domainkit_tests.conftest import (
+    API,
+    MIDDLEWARE,
+    Api,
+    UseAuth,
+)
 from domainkit_tests.support.auth import PASSWORD, bearer, create_user, grant, login
 from domainkit_tests.test_auth_access import user
-from domainkit_tests.test_auth_admin import token_for
+from domainkit_tests.test_auth_admin import ADMIN, staff, token_for
 
 pytestmark = pytest.mark.anyio
 
@@ -563,6 +572,7 @@ def test_a_members_role_raises_no_ceiling(api: Api) -> None:
             "HEADER": "X-Tenant",
             "REQUIRED": False,
             "MEMBER_PERMISSIONS": f"{ORGS}.role_permissions",
+            "MEMBER_TENANTS": f"{ORGS}.role_tenants",
         },
         AUTH={**API.settings["AUTH"], "BACKENDS": MEMBERSHIP_BACKENDS},
     ):
@@ -605,3 +615,176 @@ def test_a_members_role_raises_no_ceiling(api: Api) -> None:
         "shop.change_product",
         "shop.view_product",
     ]
+
+
+@contextmanager
+def admin_with_roles(api: Api, **tenancy: Any) -> Iterator[TestClient]:  # noqa: ANN401
+    """A client of ``everything``, roles from the project's table, ``tenancy`` more."""
+    with override_settings(
+        ROOT_ROUTER=f"{ORGS}.everything",
+        TENANCY={"MEMBER_PERMISSIONS": f"{ORGS}.role_permissions", **tenancy},
+        AUTH={**API.settings["AUTH"], "BACKENDS": MEMBERSHIP_BACKENDS},
+    ):
+        yield api()
+
+
+def test_staff_cannot_take_over_a_tenants_owner(api: Api) -> None:
+    """Staff who hold ``auth.change_user`` and no role in acme cannot become its owner.
+
+    A password set or a logout is as good as becoming the user, and with
+    them their role in every tenant they belong to. The function that
+    names a member's keys answers one tenant at a time, so without
+    ``MEMBER_TENANTS`` nothing can rule a user out as a member: only
+    superusers change users.
+    """
+    ann = create_user("ann")
+    helpdesk = staff("helpdesk", "auth.change_user", "auth.view_user")
+    root = staff("root", is_superuser=True)
+    with admin_with_roles(api) as client:
+        seed((ann, "acme", "owner"))
+        password = client.post(
+            f"{ADMIN}/users/{ann}/password", json={"password": None}, headers=helpdesk
+        )
+        logout = client.post(f"{ADMIN}/users/{ann}/logout", headers=helpdesk)
+        rooted = client.post(f"{ADMIN}/users/{ann}/logout", headers=root)
+
+    assert [password.status_code, logout.status_code] == [403, 403]
+    assert password.json()["detail"] == (
+        "Only superusers may change users while TENANCY.MEMBER_TENANTS does not "
+        "say which tenants a user belongs to."
+    )
+    assert rooted.status_code == 204
+
+
+def test_staff_change_only_those_who_hold_no_more_in_their_tenants(api: Api) -> None:
+    """With ``MEMBER_TENANTS``, a tenant's members are changed by its own staff.
+
+    Staff change a user only in tenants they belong to themselves, holding
+    there (or everywhere) every key the user holds: acme's owner logs out
+    acme's viewer and its other owner; its viewer, though staff, not its
+    owner; neither reaches globex's owner. A user of no tenant is anyone's.
+    """
+    ann, dee, cy, bob = (create_user(name) for name in ("ann", "dee", "cy", "bob"))
+    helpdesk = staff("helpdesk", "auth.change_user", "auth.view_user")
+    owner = staff("owner", "auth.change_user", "auth.view_user")
+    viewer = staff("viewer", "auth.change_user", "auth.view_user")
+    with admin_with_roles(api, MEMBER_TENANTS=f"{ORGS}.role_tenants") as client:
+        seed(
+            (ann, "acme", "owner"),
+            (dee, "acme", "viewer"),
+            (cy, "globex", "owner"),
+            (stored_id("owner"), "acme", "owner"),
+            (stored_id("viewer"), "acme", "viewer"),
+        )
+
+        def logout(target: UUID, by: dict[str, str]) -> Any:  # noqa: ANN401
+            return client.post(f"{ADMIN}/users/{target}/logout", headers=by)
+
+        answers = {
+            "helpdesk logs out one of no tenant": logout(bob, helpdesk),
+            "helpdesk logs out acme's owner": logout(ann, helpdesk),
+            "acme's owner logs out its viewer": logout(dee, owner),
+            "acme's owner logs out its other owner": logout(ann, owner),
+            "acme's viewer logs out its owner": logout(ann, viewer),
+            "acme's owner logs out globex's owner": logout(cy, owner),
+        }
+
+    assert {name: answer.status_code for name, answer in answers.items()} == {
+        "helpdesk logs out one of no tenant": 204,
+        "helpdesk logs out acme's owner": 403,
+        "acme's owner logs out its viewer": 204,
+        "acme's owner logs out its other owner": 204,
+        "acme's viewer logs out its owner": 403,
+        "acme's owner logs out globex's owner": 403,
+    }
+    assert answers["acme's viewer logs out its owner"].json()["detail"] == (
+        "You can only change users whose permissions you have; you lack what "
+        "they hold in 1 of their tenants."
+    )
+
+
+def stored_id(username: str) -> UUID:
+    """The id of the stored user ``username``."""
+
+    async def find() -> UUID:
+        async with AuthUnitOfWork() as uow:
+            found = await uow.users.get_by_natural_key(username)
+        assert found is not None
+        return UUID(str(found.id))
+
+    return run_async(find())
+
+
+def tenants_listed(user: Any) -> set[str]:  # noqa: ANN401
+    """``MEMBER_TENANTS`` over ``MEMBERS``."""
+    return {org for name, org in MEMBERS if name == getattr(user, "username", None)}
+
+
+def every_tenant(user: Any) -> list[str]:  # noqa: ANN401
+    """``MEMBER_TENANTS`` that lists tenants a user may not belong to."""
+    return ["acme", "globex", "initech"]
+
+
+def no_tenant_list(user: Any) -> str:  # noqa: ANN401
+    """``MEMBER_TENANTS`` that answers one id as text."""
+    return "acme"
+
+
+async def test_tenants_beyond_counts_memberships_and_keys() -> None:
+    """Belonging counts with ``MEMBERSHIP``; keys too with ``MEMBER_PERMISSIONS``."""
+    ann, bob = PEOPLE["ann"], PEOPLE["bob"]
+    belonging = {"MEMBERSHIP": f"{HERE}.belongs"}
+    with override_settings(
+        TENANCY={**belonging, "MEMBER_TENANTS": f"{HERE}.tenants_listed"}
+    ):
+        assert await tenants_beyond(bob, ann, ()) == frozenset({"acme"})
+        assert await tenants_beyond(ann, bob, ()) == frozenset()
+    with override_settings(
+        TENANCY={
+            "MEMBER_PERMISSIONS": f"{HERE}.keys",
+            "MEMBER_TENANTS": f"{HERE}.every_tenant",
+        }
+    ):
+        # Both list initech, where neither belongs; bob holds nothing in acme.
+        assert await tenants_beyond(ann, bob, ()) == frozenset()
+        assert await tenants_beyond(bob, ann, ()) == frozenset({"acme"})
+        assert await tenants_beyond(bob, ann, ROLES["acme"]) == frozenset({"acme"})
+    with override_settings(TENANCY={"MEMBER_PERMISSIONS": f"{HERE}.keys"}):
+        assert await tenants_beyond(bob, ann, ()) is None
+    with override_settings(TENANCY=belonging):
+        assert await tenants_beyond(bob, ann, ()) == frozenset()
+    with override_settings(TENANCY=None):
+        assert await tenants_beyond(bob, ann, ()) == frozenset()
+    with (
+        override_settings(
+            TENANCY={**belonging, "MEMBER_TENANTS": f"{HERE}.no_tenant_list"}
+        ),
+        pytest.raises(ImproperlyConfigured, match="returned a str"),
+    ):
+        await tenants_beyond(bob, ann, ())
+
+
+def test_member_tenants_need_someone_to_say_who_belongs() -> None:
+    """``MEMBER_TENANTS`` lists what ``MEMBERSHIP`` or ``MEMBER_PERMISSIONS`` admits."""
+    with pytest.raises(ValidationError, match="set one of them"):
+        TenancyConfig(MEMBER_TENANTS="a.b")
+
+
+def test_check_warns_that_only_superusers_change_users(use_auth: UseAuth) -> None:
+    """``auth.W010``: members' keys, and no list of a user's tenants."""
+    use_auth()
+    config = registry.get_domain_config("auth")
+
+    def warnings() -> list[str]:
+        return [found.id for found in config.weak_settings()]  # type: ignore[attr-defined]
+
+    assert warnings() == []
+    with override_settings(TENANCY={"MEMBER_PERMISSIONS": f"{HERE}.keys"}):
+        assert warnings() == ["auth.W010"]
+    with override_settings(
+        TENANCY={
+            "MEMBER_PERMISSIONS": f"{HERE}.keys",
+            "MEMBER_TENANTS": f"{HERE}.tenants_listed",
+        }
+    ):
+        assert warnings() == []

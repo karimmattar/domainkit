@@ -86,6 +86,7 @@ __all__ = [
     "scoped_key",
     "tenant",
     "tenant_schema",
+    "tenants_beyond",
 ]
 
 CONNECTION: Final = "domainkit_connection"
@@ -106,6 +107,7 @@ type Membership = Callable[[Any, str], Awaitable[bool] | bool]
 type MemberPermissions = Callable[
     [Any, str], Awaitable[Iterable[str] | None] | Iterable[str] | None
 ]
+type MemberTenants = Callable[[Any], Awaitable[Iterable[str]] | Iterable[str]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,7 +126,7 @@ class _Members:
     """Who belongs to a tenant, holding what: ``TENANCY``'s hooks, imported once."""
 
     def __init__(self, config: TenancyConfig) -> None:
-        """Import ``MEMBER_PERMISSIONS`` or ``MEMBERSHIP``, if set."""
+        """Import ``MEMBER_PERMISSIONS`` or ``MEMBERSHIP``, and ``MEMBER_TENANTS``."""
         self.permissions: MemberPermissions | None = (
             None
             if config.MEMBER_PERMISSIONS is None
@@ -132,6 +134,11 @@ class _Members:
         )
         self.membership: Membership | None = (
             None if config.MEMBERSHIP is None else import_string(config.MEMBERSHIP)
+        )
+        self.tenants: MemberTenants | None = (
+            None
+            if config.MEMBER_TENANTS is None
+            else import_string(config.MEMBER_TENANTS)
         )
 
     @property
@@ -182,6 +189,23 @@ async def _ask(
     return await answer if inspect.isawaitable(answer) else answer
 
 
+async def _listed(hook: MemberTenants, user: object) -> frozenset[str]:
+    """The tenants ``MEMBER_TENANTS`` (``hook``) says ``user`` belongs to.
+
+    Raises:
+        ImproperlyConfigured: It answered something other than tenant ids
+            (one string, None, a bool).
+    """
+    answer = hook(user)
+    listed = await answer if inspect.isawaitable(answer) else answer
+    if isinstance(listed, str | bytes) or not isinstance(listed, Iterable):
+        raise ImproperlyConfigured(
+            "TENANCY.MEMBER_TENANTS returns the ids of the tenants a user "
+            f"belongs to; it returned a {type(listed).__name__}."
+        )
+    return frozenset(listed)
+
+
 def _keys(answer: object) -> frozenset[str] | None:
     """``MEMBER_PERMISSIONS``'s ``answer`` as keys; None for one who is not a member.
 
@@ -225,6 +249,43 @@ async def member_permissions(user: object) -> frozenset[str]:
     if current is None or config is None or config.MEMBER_PERMISSIONS is None:
         return frozenset()
     return await _members(config).admit(user, current) or frozenset()
+
+
+async def tenants_beyond(
+    actor: object, user: object, held: Iterable[str]
+) -> frozenset[str] | None:
+    """The tenants where ``user`` holds what ``actor`` does not; None if unknown.
+
+    ``user`` holds more in a tenant they belong to (``MEMBER_TENANTS``)
+    when ``actor`` does not belong to it, or holds keys there that are
+    neither ``held`` (what ``actor`` holds everywhere) nor ``actor``'s own
+    keys there. Changing a user hands over their memberships, so the admin
+    API refuses staff such a user, as administrators may not reset the
+    credentials of one who holds more than they do (ADR 0150). None when
+    ``MEMBER_PERMISSIONS`` is set without ``MEMBER_TENANTS``: no one can be
+    ruled out as a member. Empty without memberships to count.
+    """
+    from domainkit.conf import settings
+
+    config = settings.TENANCY
+    if config is None:
+        return frozenset()
+    admitting = _members(config)
+    listing = admitting.tenants
+    if listing is None:
+        return None if admitting.permissions is not None else frozenset()
+    theirs = await _listed(listing, user)
+    if not theirs:
+        return frozenset()
+    mine = await _listed(listing, actor)
+    beyond = set(theirs - mine)
+    everywhere = frozenset(held)
+    for tenant_id in sorted(theirs & mine):
+        keys = await admitting.admit(user, tenant_id, fresh=True)
+        own = await admitting.admit(actor, tenant_id, fresh=True)
+        if keys is not None and (own is None or not keys <= everywhere | own):
+            beyond.add(tenant_id)
+    return frozenset(beyond)
 
 
 class TenantMiddleware:

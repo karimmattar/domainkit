@@ -48,6 +48,7 @@ from domainkit.http.access import IsUnscoped, Require
 from domainkit.resources import HasModelPermission as HasModelPermission
 from domainkit.resources import ModelActions, ResourceRouter
 from domainkit.resources.access import ModelLike
+from domainkit.tenancy import tenants_beyond
 from domainkit.utils.decimals import jsonable
 
 from .access import IsAdminUser, IsSuperuser, impersonated
@@ -748,6 +749,10 @@ async def may_change(actor: AnyUser, user: AbstractBaseUser) -> None:
     themselves; only superusers change superusers. Other backends grant an
     inactive user nothing, so only superusers change inactive users while
     such backends are configured: what the user would hold is unknown.
+    Becoming a user also hands over their memberships: staff change no one
+    who belongs to a tenant they do not, or holds keys there they lack
+    (``tenants_beyond``); while ``TENANCY.MEMBER_PERMISSIONS`` is set
+    without ``MEMBER_TENANTS``, only superusers change users (ADR 0150).
     """
     if user.is_superuser:
         _superusers_only(actor, "Only superusers may change superusers.")
@@ -763,6 +768,27 @@ async def may_change(actor: AnyUser, user: AbstractBaseUser) -> None:
     refusal = "You can only change users whose permissions you have"
     await may_grant(actor, granted | _keys(*user.groups), refusal)
     await may_hold(actor, await object_grants(user), refusal)
+    await _may_change_member(actor, user, refusal)
+
+
+async def _may_change_member(
+    actor: AnyUser, user: AbstractBaseUser, refusal: str
+) -> None:
+    """Refuse to change a user who holds, in some tenant, what ``actor`` does not."""
+    if actor.is_superuser:
+        return
+    beyond = await tenants_beyond(actor, user, await get_all_permissions(actor))
+    if beyond is None:
+        _superusers_only(
+            actor,
+            "Only superusers may change users while TENANCY.MEMBER_TENANTS does "
+            "not say which tenants a user belongs to.",
+        )
+    elif beyond:
+        # How many, not which: staff need not learn where the user belongs.
+        raise PermissionDenied(
+            f"{refusal}; you lack what they hold in {len(beyond)} of their tenants."
+        )
 
 
 async def _not_the_last_superuser(uow: AuthUnitOfWork) -> None:
