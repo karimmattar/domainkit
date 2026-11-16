@@ -72,6 +72,7 @@ BUILTINS = {
     "partitions",
     "runserver",
     "seed",
+    "serve",
     "shell",
     "showmigrations",
     "squashmigrations",

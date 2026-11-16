@@ -28,7 +28,11 @@ from domainkit.http.application import application_problems, build_application
 from domainkit.http.blocking import awaited_sync, sync_calls
 from domainkit.http.live import unchecked_routes
 from domainkit.http.live_events import fanout_warnings
-from domainkit.http.servers import unix_socket_warnings
+from domainkit.http.servers import (
+    keep_alive_warnings,
+    server_keep_alive,
+    unix_socket_warnings,
+)
 from domainkit.management.base import BaseCommand, CommandError
 
 
@@ -120,6 +124,9 @@ def _warnings(app: FastAPI) -> list[str]:
         warnings += _tagged("servers.W001", websockets.server_warnings(app))
         warnings += _tagged(
             "servers.W002", unix_socket_warnings(settings.TRUSTED_PROXIES)
+        )
+        warnings += keep_alive_warnings(
+            settings.PROXY_IDLE_TIMEOUT, server_keep_alive()
         )
     warnings += _tagged("blocking.W001", sync_calls(app, _project_domains()))
     warnings += _tagged("blocking.W002", awaited_sync(_event_handlers()))

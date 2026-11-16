@@ -119,6 +119,7 @@ Django-style settings access.
 - `HttpClientConfig`: `HTTP_CLIENT`: what `domainkit.http.client` clients do by default.
 - `LedgerConfig`: One `LEDGERS` entry: write once, read many, verified on the client.
 - `SearchConfig`: `SEARCH`: the search engine documents are indexed in (`domainkit.search`).
+- `ServeConfig`: `SERVE`: the server `manage.py serve` starts, and its limits.
 - `Settings`: Validated, read-only settings; extra names are checked at `setup()`.
 - `ShardConfig`: One `SHARDS` group: SQL databases that share a schema, split by key.
 - `StorageConfig`: One `STORAGES` entry: a `Storage` class and its arguments (Django's).

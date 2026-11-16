@@ -525,10 +525,10 @@ by it, and leave room for the server, the database, and peaks.
 
 ## Making requests cheaper
 
-- **Serve one worker per core**, on uvloop: `uvicorn config.asgi:application
-  --workers N --loop uvloop`, or Granian
-  ([reference/servers.md](reference/servers.md) has the whole command and
-  its limits).
+- **Serve one worker per core**, on uvloop: `python manage.py serve`
+  with `SERVE = {"WORKERS": N}` (or `WEB_CONCURRENCY`), on Granian or
+  uvicorn ([reference/servers.md](reference/servers.md#the-serve-command)
+  has its limits, and each server's own command).
 - **Keep a route's first path segment literal** where you can
   (`/invoices/{id}`, not `/{tenant}/invoices/{id}`). The application
   tries only the routes of a request's first segment, and those that may

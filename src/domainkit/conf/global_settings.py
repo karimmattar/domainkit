@@ -726,6 +726,59 @@ class ScannerConfig(BaseModel):
     """Keyword arguments of the class, such as ``{"host": "clamav"}``."""
 
 
+GRANIAN_MAX_KEEP_ALIVE: Final = 60
+"""The most seconds Granian keeps an idle connection open (60,000 ms)."""
+MAX_SERVE_WORKERS: Final = 1024
+"""The most worker processes ``serve`` starts."""
+
+
+class ServeConfig(BaseModel):
+    """``SERVE``: the server ``manage.py serve`` starts, and its limits.
+
+    The defaults are the options of docs/reference/servers.md ("Server
+    limits"). The limits are each worker process's, but ``BACKLOG``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    SERVER: Literal["auto", "granian", "uvicorn"] = "auto"
+    """``auto``: Granian where the ``granian`` extra is installed, else uvicorn."""
+    WORKERS: int | None = Field(default=None, ge=1, le=MAX_SERVE_WORKERS)
+    """Worker processes; None: ``WEB_CONCURRENCY`` if set, else one."""
+    MAX_CONNECTIONS: int = Field(default=1200, ge=1, le=MAX_REQUESTS_AT_ONCE)
+    """Connections a worker takes at once, idle ones included (uvicorn's
+    ``--limit-concurrency``, Granian's ``--backpressure``)."""
+    BACKLOG: int = Field(default=2048, ge=128, le=65_535)
+    """Connections waiting to be accepted, for every worker together."""
+    KEEP_ALIVE: int | None = Field(default=None, ge=1, le=3600)
+    """Seconds an idle connection stays open; None: 5 on uvicorn, 60 on Granian.
+
+    Granian keeps one 60 seconds at most.
+    """
+    GRACEFUL_TIMEOUT: int = Field(default=10, ge=1, le=600)
+    """Seconds requests in flight may take to finish once the server stops;
+    Granian's workers are killed this plus ``SHUTDOWN_TIMEOUT`` later."""
+    MAX_HEADER_SIZE: int = Field(default=16_384, ge=8192, le=1_048_576)
+    """Bytes of a request line and headers (uvicorn's h11 limit, Granian's
+    ``--http1-buffer-size``)."""
+    WEBSOCKETS: bool = True
+    """Accept WebSockets; uvicorn reads messages up to ``MAX_REQUEST_BODY_SIZE``."""
+
+    @model_validator(mode="after")
+    def _granian_keep_alive(self) -> Self:
+        """Granian refuses a keep-alive past 60 seconds: so does this."""
+        if (
+            self.SERVER == "granian"
+            and self.KEEP_ALIVE is not None
+            and self.KEEP_ALIVE > GRANIAN_MAX_KEEP_ALIVE
+        ):
+            raise ValueError(
+                f"KEEP_ALIVE is {self.KEEP_ALIVE}, but Granian keeps an idle "
+                f"connection {GRANIAN_MAX_KEEP_ALIVE} seconds at most"
+            )
+        return self
+
+
 class DebugToolbarConfig(BaseModel):
     """``DEBUG_TOOLBAR``: what ``DebugToolbarMiddleware`` adds while ``DEBUG``."""
 
@@ -942,6 +995,8 @@ class Settings(BaseModel):
     """Commands' and ``runserver``'s loop: uvloop when installed (``auto``), or not."""
     RUNSERVER_SERVER: Literal["uvicorn", "granian"] = "uvicorn"
     """The server ``runserver`` starts when ``--server`` names none."""
+    SERVE: ServeConfig = Field(default_factory=ServeConfig)
+    """The production server ``serve`` starts, and its limits."""
 
     DATABASES: dict[str, DatabaseConfig] = Field(default_factory=dict)
     """SQL databases by alias; if any are set, ``default`` is required."""
@@ -1046,6 +1101,9 @@ class Settings(BaseModel):
         default="X-Forwarded-Proto", pattern=HEADER_NAME
     )
     """The header in which trusted proxies say the client's scheme; None: none does."""
+    PROXY_IDLE_TIMEOUT: float | None = Field(default=None, gt=0, le=MAX_LIFETIME)
+    """Seconds the proxy in front keeps an idle connection to the server open;
+    ``check`` warns where the server's keep-alive is not longer. None: unchecked."""
     ACCEPT_REQUEST_ID: Literal["proxies", "anyone", "never"] = "proxies"
     """Whose ``X-Request-ID`` names a request: ``TRUSTED_PROXIES``' only, any
     caller's (0.10's rule), or nobody's (always a new id). Out of format, it

@@ -10,6 +10,8 @@ named by its dotted path, which ``dictConfig`` imports again::
     python manage.py logconfig --output /tmp/logging.json
     granian --log-config /tmp/logging.json ...
 
+``manage.py serve`` gives the server the same mapping, with no file.
+
 A value JSON cannot hold, which no dotted path names (an object, a
 function defined inside another), is refused with its place in
 ``LOGGING``. Nothing is loaded but the settings, and nothing is printed

@@ -426,6 +426,33 @@ and a status.
   documentation of the release that wrote them, where they named a path
   of domainkit's repository
   ([Granian](docs/reference/servers.md#granian)) (user report S1).
+- `manage.py serve`: the production server for `ASGI_APPLICATION`.
+  Granian where the `granian` extra is installed, else uvicorn, started
+  through its Python API with the options of "Server limits", read from
+  a new setting, `SERVE` (`ServeConfig`): `SERVER`, `WORKERS`
+  (`WEB_CONCURRENCY` unless set), `MAX_CONNECTIONS`, `BACKLOG`,
+  `KEEP_ALIVE`, `GRACEFUL_TIMEOUT`, `MAX_HEADER_SIZE`, and `WEBSOCKETS`.
+  It never reloads, reads no proxy header, writes no access log, gives
+  the server `LOGGING` for its main process's lines as `logconfig`
+  writes it, and listens on `0.0.0.0:8000` unless given an address or
+  `--uds`. Granian's workers are killed `GRACEFUL_TIMEOUT` plus
+  `SHUTDOWN_TIMEOUT` seconds after a stop, and a worker that dies is
+  started again; uvicorn reads WebSocket messages up to
+  `MAX_REQUEST_BODY_SIZE`. A deployed application started by `serve`
+  logs `servers.W001` and `servers.W002` from `SERVE` and its command
+  line, and `live.W003` counts its `WORKERS`
+  ([The `serve` command](docs/reference/servers.md#the-serve-command),
+  ADR 0160, user report S1).
+- `PROXY_IDLE_TIMEOUT`: the seconds the proxy in front keeps an idle
+  connection to the server open (`None` unless set). In staging and
+  production, `check` warns (`servers.W003`) when the server's keep-alive
+  is not longer, as the proxy would then answer some requests 502, with
+  both numbers, and the value to set or, past Granian's 60 seconds, the
+  proxy's to lower. The server's keep-alive comes from
+  `UVICORN_TIMEOUT_KEEP_ALIVE`, `GRANIAN_HTTP1_HEADER_READ_TIMEOUT`, or
+  gunicorn's `--keep-alive` where set, else from `SERVE`
+  ([The proxy in front](docs/reference/servers.md#the-proxy-in-front),
+  ADR 0160, user report S1).
 - Every domain event names who caused it: `actor`, an `Actor`
   (`domainkit.ddd`), read from the request, job, or command it was made
   in. `actor.id` is the user's id, the staff member's in an
@@ -634,6 +661,11 @@ and a status.
   connections open 60 seconds, as the proxy's idle timeout must be
   shorter ([Granian](docs/reference/servers.md#granian)) (user report
   S1).
+- "Server limits" says that uvicorn's `--h11-max-incomplete-event-size`
+  holds with its h11 parser only, for a header block still arriving:
+  its httptools parser, which `uvicorn[standard]` installs and prefers,
+  let a 100 KB header through, so the proxy must limit headers (user
+  report S1).
 - "Server limits" says that `check --deploy`, in a container of its own,
   sees the server's variables, never its arguments
   ([WebSocket message size](docs/reference/servers.md#websocket-message-size))

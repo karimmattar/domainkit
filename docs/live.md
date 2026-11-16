@@ -216,11 +216,16 @@ is seen at the next re-check.
 closes the connection with 1009. By then the server has read the whole
 message, up to its own limit, which is 16 MiB in uvicorn. Run the server
 with the same limit, so that it refuses larger messages before it reads
-them:
+them. `manage.py serve` gives uvicorn `MAX_REQUEST_BODY_SIZE`; run by
+hand:
 
 ```bash
 uvicorn config.asgi:application --ws-max-size 1048576 ...
 ```
+
+Granian has no limit: under `serve`, `SERVE["WEBSOCKETS"] = False` turns
+WebSockets off where the API takes none
+([The `serve` command](reference/servers.md#the-serve-command)).
 
 - In staging and production, `check` warns when the application serves
   WebSockets and the server's limit is above `MAX_REQUEST_BODY_SIZE`
@@ -503,7 +508,8 @@ serves live routes (WebSocket routes, and routes that return an
 
 - the server starts several worker processes: `--workers`, or the
   variables the servers read in its place, `WEB_CONCURRENCY` (uvicorn and
-  gunicorn), `UVICORN_WORKERS`, `GRANIAN_WORKERS`, and `GUNICORN_CMD_ARGS`;
+  gunicorn), `UVICORN_WORKERS`, `GRANIAN_WORKERS`, and `GUNICORN_CMD_ARGS`,
+  or `SERVE["WORKERS"]` for `manage.py serve`;
 - `domainkit.contrib.messaging` is installed: its worker commits events
   in a process of its own.
 

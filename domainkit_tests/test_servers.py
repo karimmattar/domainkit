@@ -374,6 +374,29 @@ def test_the_servers_worker_processes_are_counted(
     assert server_processes(argv, environ) == processes
 
 
+@pytest.mark.parametrize(
+    ("workers", "argv", "environ", "processes"),
+    [
+        (None, ["manage.py", "serve"], {}, 1),
+        (None, ["manage.py", "serve"], {"WEB_CONCURRENCY": "3"}, 3),
+        (4, ["manage.py", "serve"], {"WEB_CONCURRENCY": "3"}, 4),
+        (4, ["manage.py", "check"], {}, 4),
+        (2, ["manage.py", "check"], {"UVICORN_WORKERS": "3"}, 3),
+        (4, [UVICORN, "--workers", "2"], {}, 2),
+    ],
+)
+def test_serve_counts_the_workers_its_settings_start(
+    workers: int | None, argv: list[str], environ: dict[str, str], processes: int
+) -> None:
+    """``SERVE["WORKERS"]``, else ``WEB_CONCURRENCY``, for ``serve`` (live.W003).
+
+    ``check`` counts them too, as the server ``serve`` would start; a
+    server started on its own reads only its options and variables.
+    """
+    with override_settings(SERVE={"WORKERS": workers}):
+        assert server_processes(argv, environ) == processes
+
+
 def test_a_unix_socket_without_unix_in_trusted_proxies_is_warned() -> None:
     """Callers there have no address, unless the proxy on the socket is believed."""
     uds = [UVICORN, "--uds", "/run/api.sock"]

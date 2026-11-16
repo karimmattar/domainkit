@@ -443,14 +443,35 @@ python manage.py runserver 0.0.0.0:8000 --server granian
 `runserver` starts a development server for `ASGI_APPLICATION`, on
 uvicorn or Granian (the `granian` extra). It restarts when your code
 changes. `RUNSERVER_SERVER = "granian"` in the development settings
-serves with Granian without `--server`. In production you run the
-server yourself ([Server limits](servers.md)).
+serves with Granian without `--server`. In production, run `serve`.
 
 | Option | What it does |
 | --- | --- |
 | `[address]` | A port, or `address:port` (default: `127.0.0.1:8000`). |
 | `--noreload` | Does not restart when the code changes. |
 | `--server` | `uvicorn` or `granian`; unless given, `RUNSERVER_SERVER` (`uvicorn` unless set) chooses. |
+
+### `serve`: serve the project in production
+
+```bash
+python manage.py serve
+python manage.py serve --uds /run/api.sock
+```
+
+`serve` starts the production server for `ASGI_APPLICATION`: Granian
+where the `granian` extra is installed, else uvicorn, with the options
+of [Server limits](servers.md). `SERVE` sets the server, its worker
+processes, and its limits; `WEB_CONCURRENCY` sets the processes unless
+`SERVE["WORKERS"]` does ([The `serve` command](servers.md#the-serve-command)).
+It never reloads, reads no proxy header, writes no access log, and
+gives the server `LOGGING` for its own lines, its main process's
+included. It loads the settings only: each worker process imports the
+application.
+
+| Option | What it does |
+| --- | --- |
+| `[address]` | A port, or `address:port` (default: `0.0.0.0:8000`, every address of a container). |
+| `--uds` | Listens on this unix socket instead, for a proxy on the same host. Add `"unix"` to `TRUSTED_PROXIES` ([Unix sockets](servers.md#unix-sockets)). |
 
 ### `logconfig`: write `LOGGING` for the server
 

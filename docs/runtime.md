@@ -299,15 +299,17 @@ with work done before; by default, a new budget begins when it is called.
 The budget covers what happens after the server stops taking requests.
 The server first waits for the requests in flight. Tell it how long, and
 keep the sum below your orchestrator's grace period (Kubernetes sends
-`SIGKILL` 30 seconds after `SIGTERM` by default):
+`SIGKILL` 30 seconds after `SIGTERM` by default). `manage.py serve`
+gives the server `SERVE["GRACEFUL_TIMEOUT"]`:
 
-```bash
-uvicorn config.asgi:application --timeout-graceful-shutdown 10  # + SHUTDOWN_TIMEOUT 15 = 25 s
+```python
+SERVE = {"GRACEFUL_TIMEOUT": 10}  # + SHUTDOWN_TIMEOUT 15 = 25 s
 ```
 
-Without `--timeout-graceful-shutdown`, uvicorn waits for requests without
-a limit, and a slow client can take the whole grace period. See
-[ADR 0046](adr/0046-one-shutdown-budget-in-phases.md).
+Run by hand, uvicorn takes `--timeout-graceful-shutdown 10`. Without
+it, uvicorn waits for requests without a limit, and a slow client can
+take the whole grace period. Granian kills its workers once both have
+passed. See [ADR 0046](adr/0046-one-shutdown-budget-in-phases.md).
 
 ### Readiness
 
@@ -341,9 +343,12 @@ to use the probes.
 domainkit is an ASGI application, served by
 [uvicorn](https://www.uvicorn.org/) (a dependency) or
 [Granian](https://github.com/emmett-framework/granian) (the `granian`
-extra). `manage.py runserver --server granian` runs Granian while you
-develop. [reference/servers.md](reference/servers.md) gives a production
-command and the limits for each.
+extra). `manage.py serve` runs either in production: Granian where it
+is installed, else uvicorn, with the limits of `SERVE`
+([The `serve` command](reference/servers.md#the-serve-command)).
+`manage.py runserver --server granian` runs Granian while you develop.
+[reference/servers.md](reference/servers.md) gives each server's own
+command line too, and the limits for each.
 
 - **uvicorn** is Python on uvloop and httptools. It answers 503 past
   `--limit-concurrency`, limits WebSocket messages (`--ws-max-size`), and
@@ -985,11 +990,16 @@ and format: uvicorn's (`uvicorn`, `uvicorn.error`) and Granian's
 write nothing, as `domainkit.access` writes one line per request, without
 its query string.
 
-uvicorn applies `LOGGING` in each process, as each imports the
-application. Granian's main process, which starts and stops the workers,
-never imports it. Its lines (`Starting granian`, `Spawning worker-1`,
-`Unexpected exit from worker-1`) keep Granian's format, unless it reads
-`LOGGING` from a JSON file. `manage.py logconfig` writes that file:
+`manage.py serve` gives either server `LOGGING`, as `logconfig` writes
+it, so its main process, which starts and stops the workers and never
+imports the application, writes its lines (`Starting granian`,
+`Spawning worker-1`, `Unexpected exit from worker-1`) as the
+application does.
+
+Run by hand, uvicorn applies `LOGGING` in each process that imports the
+application, and Granian's main process keeps Granian's format, unless
+it reads `LOGGING` from a JSON file. `manage.py logconfig` writes that
+file:
 
 ```bash
 python manage.py logconfig --output /tmp/logging.json
@@ -1707,7 +1717,8 @@ Each setting has its full row on
 | Setting | Default | What it does |
 | --- | --- | --- |
 | `SHUTDOWN_TIMEOUT` | `15.0` | Seconds a shutdown may take in all, from the domains' hooks to the logs. |
-| `EVENT_LOOP` | `"auto"` | The loop of `runserver` and of `async` commands: `"auto"`, `"asyncio"`, or `"uvloop"`. |
+| `EVENT_LOOP` | `"auto"` | The loop of `runserver`, `serve`, and `async` commands: `"auto"`, `"asyncio"`, or `"uvloop"`. |
+| `SERVE` | see [`serve`](reference/servers.md#the-serve-command) | The server `manage.py serve` starts, its worker processes, and its limits. |
 | `SLOW_CALLBACK_DURATION` | `0.1` | With `DEBUG`, log each loop step that holds the loop this long. `None` turns it off. |
 | `LOGGING` | minimal | The `dictConfig` mapping `setup()` applies. `build_logging_config` makes one. |
 | `ERROR_REPORTERS` | `()` | Reporters by dotted path, run on the reporting thread. |
