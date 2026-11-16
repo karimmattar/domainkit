@@ -333,6 +333,62 @@ def test_the_named_pages_are_read_with_their_anchors_and_headings() -> None:
     assert unreachable("nowhere.md", "", "") == "docs/nowhere.md: no such page"
 
 
+_CITED = re.compile(
+    r"\bADRs?\s+(\d{4}\b(?:(?:,\s*|,?\s+and\s+|,?\s+or\s+)\d{4}\b(?!-))*)"
+)
+
+
+def cited_decisions(text: str) -> list[str]:
+    """The numbers of the decisions a text cites: ``ADR 0057``, ``ADRs 0008 and 0009``.
+
+    Comments wrapped over lines are read as one line, as ``named_pages``
+    reads them.
+    """
+    joined = re.sub(r"\s*\n\s*(?:#\s*)?", " ", text)
+    return [
+        number
+        for match in _CITED.finditer(joined)
+        for number in re.findall(r"\d{4}", match[1])
+    ]
+
+
+def test_every_decision_the_code_cites_has_a_record() -> None:
+    """``ADR 0057`` in a docstring, a message, or a template names a record.
+
+    The index of decisions lists every record (the test below), so the
+    number leads to the record (user report D2).
+    """
+    problems = [
+        f"{source.relative_to(ROOT)}: ADR {number}: no such record"
+        for source in sources()
+        for number in cited_decisions(source.read_text(encoding="utf-8"))
+        if number not in records()
+    ]
+    assert problems == []
+
+
+def test_the_cited_decisions_are_read_in_each_way_the_code_cites_them() -> None:
+    """One, two, or a list of numbers, over a line break; a year is not one."""
+    text = (
+        "See ADR 0057. ADRs 0008 and 0009 decided it\n"
+        "# (ADR 0130, 0131, 0132; ADRs 0111, 0125, or\n# 0042). In 2026 a record\n"
+        "# (ADR 0062, 2026-10-21).\n"
+    )
+
+    assert cited_decisions(text) == [
+        "0057",
+        "0008",
+        "0009",
+        "0130",
+        "0131",
+        "0132",
+        "0111",
+        "0125",
+        "0042",
+        "0062",
+    ]
+
+
 def test_the_middleware_table_is_the_order_the_template_and_defaults_keep() -> None:
     """The template's and the default stacks are the table's, with rows left out."""
     from domainkit.conf.global_settings import DEFAULT_MIDDLEWARE
