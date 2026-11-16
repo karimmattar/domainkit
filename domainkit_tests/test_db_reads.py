@@ -613,7 +613,10 @@ async def slow_proxy(port: int, delay: dict[str, float]) -> asyncio.Server:
     sets an exception on the SSLRequest's future, which nobody awaits any
     more: "unexpected connection_lost() call". The loop reports it, and the
     test runner fails whichever test is running with it. These tests check
-    no TLS.
+    no TLS: CI's PostgreSQL, as the local one, runs without it, so the
+    SSLRequest was always answered "no". Once asyncpg guards that future
+    when the connect is cancelled, as it guards ``connected`` already, the
+    setting can go.
     """
 
     async def pipe(
