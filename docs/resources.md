@@ -1047,6 +1047,12 @@ router.include_router(reviews)
 - `links=True` adds `links` to each representation: `self`, and `parent`
   for a nested one, as paths of this API.
 
+A prefix may hold path parameters of its own, not a parent's:
+`ResourceRouter("/companies/{company_id}/templates", ...)`. A create's
+`Location` and the links take them from the request:
+`/companies/7/templates/<id>`. Read them in `scope`, a rule, or `provide`
+(`request.path_params["company_id"]`).
+
 ## Routes of your own on a resource
 
 `ResourceRouter.fetch(request, uow, id_, action="view")` loads an

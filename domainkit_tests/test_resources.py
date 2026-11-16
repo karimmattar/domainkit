@@ -942,6 +942,86 @@ def test_nested_resources_live_under_their_parent(
     assert "links" in schema["required"]
 
 
+def test_a_prefix_s_own_path_parameters_fill_locations_and_links(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """``/shops/{shop}/gadgets``: a create answers 201, links name the shop (U5)."""
+    use_auth()
+    parent = ResourceRouter(
+        "/shops/{shop}/gadgets",
+        model=Gadget,
+        unit_of_work=lambda: FakeGadgetsUnitOfWork(store),
+        repository=lambda uow: uow.gadgets,
+        rule=ModelActions(GADGETS),
+        links=True,
+    )
+    parent.command_route(MakeGadget, service=make, body=MakeIn)
+    parent.batch_route(MakeGadget, service=make, body=MakeIn)
+    reviews = InMemoryRepository[Review, UUID]()
+
+    class Reviews(UnitOfWork):
+        def __init__(self) -> None:
+            super().__init__(events=EventBus())
+            self.reviews = reviews
+
+        async def _commit(self) -> None:
+            """Nothing to write."""
+
+        async def _rollback(self) -> None:
+            """Nothing to undo."""
+
+    async def write(command: WriteReview, uow: Reviews) -> Review:
+        review = Review(id=uuid4(), gadget=GadgetId(command.gadget), text=command.text)
+        async with uow:
+            await uow.reviews.add(review)
+            await uow.commit()
+        return review
+
+    nested = ResourceRouter(
+        "/reviews",
+        model=Review,
+        unit_of_work=Reviews,
+        repository=lambda uow: uow.reviews,
+        parent=parent,
+        parent_field="gadget",
+        rule=IsAuthenticated(),
+        links=True,
+    )
+    nested.command_route(WriteReview, service=write, body=ReviewIn)
+    client = client_of(parent, nested)
+    gadget = next(iter(store.items.values()))
+    shop = "/shops/s1/gadgets"
+
+    created = client.post(
+        shop, json={"name": "new", "price": "9.50"}, headers=as_("adder")
+    )
+    batch = client.post(
+        f"{shop}/batch",
+        json={"items": [{"name": "more", "price": "1.00"}]},
+        headers=as_("adder"),
+    )
+    listed = client.get(shop, headers=as_("viewer")).json()["items"]
+    review = client.post(
+        f"{shop}/{gadget.id}/reviews", json={"text": "good"}, headers=as_("viewer")
+    )
+
+    made = created.json()["id"]
+    assert (created.status_code, created.headers["location"]) == (
+        201,
+        f"{shop}/{made}",
+    )
+    assert created.json()["links"] == {"self": f"{shop}/{made}"}
+    assert client.get(f"{shop}/{made}", headers=as_("viewer")).json() == created.json()
+    (item,) = batch.json()["results"]
+    assert item["location"] == f"{shop}/{item['item']['id']}"
+    assert {each["links"]["self"] for each in listed} == {
+        f"{shop}/{each.id}" for each in store.items.values()
+    }
+    assert review.status_code == 201
+    assert review.headers["location"].startswith(f"{shop}/{gadget.id}/reviews/")
+    assert review.json()["links"]["parent"] == f"{shop}/{gadget.id}"
+
+
 def test_crud_creates_changes_and_deletes_reference_data(
     store: InMemoryGadgets, use_auth: UseAuth
 ) -> None:

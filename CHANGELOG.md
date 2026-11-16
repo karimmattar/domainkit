@@ -9,6 +9,14 @@ and a status.
 
 ## [Unreleased]
 
+### Fixed
+
+- A resource whose prefix holds a path parameter of its own, such as
+  `/companies/{company_id}/templates`, answered a create with `500`, and
+  a listing with links too: `Location` and `links` were built from the
+  resource's and its parent's ids only. They take the prefix's parameters
+  from the request (user report U5).
+
 ## [2.4.0] - 2026-11-16
 
 2.4 answers a report from a project that runs an identity service on

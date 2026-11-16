@@ -10,12 +10,14 @@ for one created), another schema, or nothing.
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from email.utils import format_datetime, parsedate_to_datetime
+from functools import cache
 from typing import TYPE_CHECKING, Any
 
 from fastapi import Response, status
 from pydantic import AliasChoices, BaseModel, Field, create_model
 from pydantic.fields import FieldInfo
 from starlette.requests import HTTPConnection
+from starlette.routing import compile_path
 
 from domainkit.ddd.model import AggregateRoot
 from domainkit.http.responses import BuiltJSONResponse
@@ -231,17 +233,31 @@ def url(
     *,
     parent: bool = False,
 ) -> str:
-    """The path of the read route ``name`` for ``id_`` (and the parent's id)."""
+    """The path of the read route ``name`` for ``id_``.
+
+    The other parameters of its path are the request's: the parent's id,
+    and those of the resource's prefix (``/companies/{company_id}/...``).
+    The ids the route read are written as their type writes them.
+    """
     owner = router.parent if parent else router
     assert owner is not None  # noqa: S101 - a parent was asked for only with one.
-    params = {owner.lookup: str(id_)}
-    if owner.parent is not None:
-        params[owner.parent.lookup] = str(context.ids[owner.parent.lookup])
     request = context.request
+    given = {
+        **request.path_params,
+        **{key: str(value) for key, value in context.ids.items()},
+    }
+    params = {each: given[each] for each in parameters(owner.prefix)}
+    params[owner.lookup] = str(id_)
     path = request.app.url_path_for(name, **params)
     # A path for a response's links, not a response (a Flask rule).
     # nosemgrep: directly-returned-format-string  # noqa: ERA001
     return f"{request.scope.get('root_path', '')}{path}"
+
+
+@cache
+def parameters(prefix: str) -> tuple[str, ...]:
+    """The names of the path parameters in a resource's ``prefix``."""
+    return tuple(compile_path(prefix)[2])
 
 
 async def hidden_fields(
