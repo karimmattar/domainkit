@@ -39,7 +39,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from json.encoder import encode_basestring
-from typing import Any, Final
+from typing import Any, Final, Protocol
 
 from domainkit import clock
 from domainkit.context import current_request
@@ -470,12 +470,14 @@ class BackgroundListener(logging.handlers.QueueListener):
 
         Reentrant: a handler that forks, on the thread, does not wait for
         itself."""
-        self._turnstile = threading.Lock()
+        self._turnstile = threading.RLock()
         """Held by a fork; the thread passes it before each record.
 
         A lock goes to whoever asks first once it is let go, and the thread
         asks again at once for its next record: without this, a fork
-        could wait for ``_writing`` as long as records keep coming."""
+        could wait for ``_writing`` as long as records keep coming.
+        Reentrant, as a signal handler on the thread that holds it may
+        fork."""
 
     @property
     def running(self) -> bool:
@@ -550,7 +552,7 @@ class BackgroundListener(logging.handlers.QueueListener):
         self._worker = None
         self._starting = threading.Lock()
         self._writing = threading.RLock()
-        self._turnstile = threading.Lock()
+        self._turnstile = threading.RLock()
 
     def _write_queued(self) -> None:
         """The thread: write what the queue holds until it reads ``_STOP``.
@@ -834,8 +836,6 @@ _LOGGING_LOCK: Final[threading.RLock] = logging._lock  # type: ignore[attr-defin
 A ``BackgroundHandler`` takes ``_handlers_lock`` as it is made, so under
 this one; a fork takes them in that order too. Every Python from 3.13 on
 has it, and ``logging.config`` holds it the same way."""
-_held: "list[threading.Lock | threading.RLock]" = []
-"""The listeners' locks the fork under way holds."""
 _throttled_logs: "weakref.WeakSet[ThrottledLog]" = weakref.WeakSet()
 """Every ``ThrottledLog`` in use, for ``flush_throttled`` at shutdown."""
 
@@ -852,6 +852,35 @@ def _live_handlers() -> list[BackgroundHandler]:
         return list(_handlers)
 
 
+class _Held(Protocol):
+    """What a fork holds until it is done."""
+
+    def release(self) -> None:
+        """Let it go."""
+
+
+class _Lock(_Held, Protocol):
+    """A lock, as ``threading``'s are."""
+
+    def acquire(self, blocking: bool = ..., timeout: float = ...) -> bool:
+        """Take it, waiting at most ``timeout`` seconds (-1: as long as it takes)."""
+
+
+class _Forks(threading.local):
+    """What the forks under way on this thread hold, the innermost last.
+
+    A signal handler may fork while this thread's own fork runs its hooks:
+    each fork lets go of what it took, and only that.
+    """
+
+    def __init__(self) -> None:
+        """No fork under way."""
+        self.held: list[list[_Held]] = []
+
+
+_forking = _Forks()
+
+
 def _before_fork() -> None:
     """Hold every logging thread between two records, then the locks.
 
@@ -860,48 +889,79 @@ def _before_fork() -> None:
     thread it does not have, and its first write to that stream waits
     forever. So a fork first takes every listener's turnstile, so no
     thread starts another record, then each ``_writing``, as each thread
-    finishes the record it is writing: all of them within
-    ``FLUSH_TIMEOUT``. One still writing then is on a stuck stream, which
-    the child could not write to either, and the fork goes on without
-    it; the others have finished by then.
+    finishes the record it is writing. The waits for the threads end
+    ``FLUSH_TIMEOUT`` after the fork began: one still writing then is on
+    a stuck stream, which the child could not write to either, and the
+    fork goes on without it.
 
     Then ``logging``'s lock and ``_handlers_lock``, held across the fork so
     no thread is changing the handlers then; ``logging``'s own hook takes
-    its lock again, after this one. The order is the same everywhere: a
-    listener's lock first (its thread's handlers may take the others),
-    then ``logging``'s, then ours, as ``dictConfig`` takes them. A thread
-    started while this waited is waited for too; none starts once
-    ``_handlers_lock`` is held.
+    its lock again, after this one. The threads' locks come first, as
+    their handlers may take ``logging``'s while they write; ours last, as
+    ``dictConfig`` takes it under ``logging``'s. A thread started while
+    this waited is held too; none starts once ``_handlers_lock`` is held.
+
+    Each lock is noted as it is taken. A signal handler that raises while
+    this waits (Ctrl-C) leaves nothing taken.
     """
-    global _held
+    held: list[_Held] = []
+    _forking.held.append(held)
+    try:
+        _hold_for_fork(held)
+    except BaseException:
+        _let_go(held)
+        raise
+
+
+def _hold_for_fork(held: list[_Held]) -> None:
+    """Take what ``_before_fork`` takes, noting each in ``held``."""
     deadline = _seconds() + FLUSH_TIMEOUT
-    waited: set[BackgroundListener] = set()
-    held: list[threading.Lock | threading.RLock] = []
+    paused: set[BackgroundListener] = set()
     while True:
         with _handlers_lock:
-            started = sorted(set(_listening) - waited, key=id)
-        waited.update(started)
-        locks: list[threading.Lock | threading.RLock]
-        locks = [listener._turnstile for listener in started]
-        locks += [listener._writing for listener in started]
-        held += [lock for lock in locks if lock.acquire(timeout=_left(deadline))]
-        _LOGGING_LOCK.acquire()
-        _handlers_lock.acquire()
-        if waited.issuperset(_listening):
-            break
-        _handlers_lock.release()
-        _LOGGING_LOCK.release()
-    _held = held
+            started = sorted(set(_listening) - paused, key=id)
+        paused.update(started)
+        _pause(started, held, deadline)
+        if _LOGGING_LOCK not in held:
+            _take(_LOGGING_LOCK, held, -1)
+        _take(_handlers_lock, held, -1)
+        if paused.issuperset(_listening):
+            return
+        held.pop().release()
+
+
+def _pause(
+    listeners: list[BackgroundListener], held: list[_Held], deadline: float
+) -> None:
+    """Hold ``listeners``' threads between two records, until ``deadline``.
+
+    Every turnstile first, so a thread whose record ends while the fork
+    waits for another's starts no other.
+    """
+    for listener in listeners:
+        _take(listener._turnstile, held, _left(deadline))
+    for listener in listeners:
+        _take(listener._writing, held, _left(deadline))
+
+
+def _take(lock: _Lock, held: list[_Held], timeout: float) -> bool:
+    """Take ``lock`` within ``timeout`` (-1: as long as it takes) and note it."""
+    if not lock.acquire(timeout=timeout):
+        return False
+    held.append(lock)
+    return True
+
+
+def _let_go(held: list[_Held]) -> None:
+    """Let go of what ``held`` holds, the last taken first."""
+    while held:
+        held.pop().release()
 
 
 def _after_fork_in_parent() -> None:
-    """Let the parent's threads at the handlers, and its logging threads write on."""
-    global _held
-    held, _held = _held, []
-    _handlers_lock.release()
-    _LOGGING_LOCK.release()
-    for lock in reversed(held):
-        lock.release()
+    """Let go of what the hook before this fork took, on this thread."""
+    if _forking.held:
+        _let_go(_forking.held.pop())
 
 
 def _after_fork_in_child() -> None:
@@ -912,12 +972,13 @@ def _after_fork_in_child() -> None:
     ``_handlers_lock`` before it reads the handlers, as ``logging`` does
     with its own (which it has done by now: its hook runs first), and
     each listener new locks (``restart_on``). The child has no logging
-    thread yet: each starts at its handler's first record.
+    thread yet: each starts at its handler's first record. Nothing is
+    left to let go of after this fork, or a fork it was nested in.
     """
-    global _handlers_lock, _listening, _held
+    global _handlers_lock, _listening, _forking
     _handlers_lock = threading.RLock()
     _listening = weakref.WeakSet()
-    _held = []
+    _forking = _Forks()
     for handler in _live_handlers():
         handler._after_fork()
 

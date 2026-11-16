@@ -845,19 +845,19 @@ def test_forked_children_start_over(
 ) -> None:
     """A child gets a new queue and no thread; its first record starts one.
 
-    And new locks to write under: the fork held the parent's.
+    And a new turnstile: the fork held the parent's.
     """
     handler = BackgroundHandler.writing_to(collect, maxsize=7)
     handler.handle(record("parent"))
     assert handler.wait_written(10)
-    parents, parents_locks = handler.queue, locks_of(handler)
+    parents, parents_turnstile = handler.queue, turnstile_of(handler)
     unwired = BackgroundHandler(queue.Queue(3))
     monkeypatch.setattr(log, "_live_handlers", lambda: [handler, unwired])
     for name in ("_handlers_lock", "_listening"):  # Put back after.
         monkeypatch.setattr(log, name, getattr(log, name))
-    monkeypatch.setattr(log, "_held", list(parents_locks))
-    for lock in parents_locks:  # As the fork left them.
-        lock.acquire()
+    monkeypatch.setattr(log, "_forking", log._Forks())
+    log._forking.held.append([parents_turnstile])
+    parents_turnstile.acquire()  # As the fork left it.
 
     log._after_fork_in_child()
 
@@ -866,16 +866,15 @@ def test_forked_children_start_over(
     assert handler.listener is not None
     assert handler.listener.queue is handler.queue
     assert not handler.listener.running
-    assert set(locks_of(handler)).isdisjoint(parents_locks)
+    assert turnstile_of(handler) is not parents_turnstile
     assert list(log._listening) == []  # No thread in the child yet.
-    assert log._held == []
+    assert log._forking.held == []
     handler._count_dropped(logging.INFO)  # As if the child's own queue was full.
     handler._count_dropped(logging.INFO)
     handler.handle(record("child"))
     assert handler.listener in log._listening
     handler.close()
-    for lock in parents_locks:
-        lock.release()
+    parents_turnstile.release()
     parents.put(log._STOP)  # End the parent's thread, which this test left.
     assert collect.lines == [
         "parent",
@@ -900,7 +899,7 @@ def test_a_forked_child_never_waits_for_the_parents_lock(
     monkeypatch.setattr(log, "_handlers_lock", held)
     monkeypatch.setattr(log, "_handlers", weakref.WeakSet([handler]))
     monkeypatch.setattr(log, "_listening", log._listening)  # Put back after.
-    monkeypatch.setattr(log, "_held", log._held)
+    monkeypatch.setattr(log, "_forking", log._forking)
     held.acquire()  # As at the fork.
 
     child = threading.Thread(target=log._after_fork_in_child)
@@ -953,6 +952,15 @@ def test_the_handlers_lock_is_reentrant() -> None:
     assert free_to_others(log._handlers_lock)
 
 
+@pytest.fixture
+def forks(monkeypatch: pytest.MonkeyPatch) -> "weakref.WeakSet[BackgroundListener]":
+    """The fork hooks' state, this test's own: no other test's thread is waited for."""
+    listening: weakref.WeakSet[BackgroundListener] = weakref.WeakSet()
+    monkeypatch.setattr(log, "_listening", listening)
+    monkeypatch.setattr(log, "_forking", log._Forks())
+    return listening
+
+
 def test_the_lock_is_held_across_a_fork(
     monkeypatch: pytest.MonkeyPatch, forks: "weakref.WeakSet[BackgroundListener]"
 ) -> None:
@@ -974,22 +982,34 @@ def test_the_lock_is_held_across_a_fork(
     assert free_to_others(log._LOGGING_LOCK)
 
 
-@pytest.fixture
-def forks(monkeypatch: pytest.MonkeyPatch) -> "weakref.WeakSet[BackgroundListener]":
-    """The fork hooks' listeners, this test's own: no other test's is waited for."""
-    listening: weakref.WeakSet[BackgroundListener] = weakref.WeakSet()
-    monkeypatch.setattr(log, "_listening", listening)
-    monkeypatch.setattr(log, "_held", [])
-    return listening
+def turnstile_of(handler: BackgroundHandler) -> Any:  # noqa: ANN401 - an RLock.
+    """The turnstile of ``handler``'s listener."""
+    assert handler.listener is not None
+    return handler.listener._turnstile
 
 
-def locks_of(*handlers: BackgroundHandler) -> list[Any]:
-    """Each handler's listener's turnstile, then its ``_writing``."""
-    locks: list[Any] = []
-    for handler in handlers:
-        assert handler.listener is not None
-        locks += [handler.listener._turnstile, handler.listener._writing]
-    return locks
+def taken(lock: Any) -> bool:  # noqa: ANN401 - a Lock or an RLock.
+    """Whether a thread holds ``lock``."""
+    return not free_to_others(lock)
+
+
+def where_writes_lock(handler: BackgroundHandler) -> tuple[Any, str]:
+    """Where the lock is that ``handler``'s thread writes under: its listener's."""
+    assert handler.listener is not None
+    return handler.listener, "_writing"
+
+
+def write_lock(handler: BackgroundHandler) -> Any:  # noqa: ANN401 - an RLock.
+    """The lock ``handler``'s thread writes under, which a fork takes."""
+    return getattr(*where_writes_lock(handler))
+
+
+def all_free(handler: BackgroundHandler, *locks: Any) -> bool:  # noqa: ANN401
+    """Whether no fork holds or asks anything of ``handler``'s thread, or ``locks``."""
+    assert handler.listener is not None
+    mine = (handler.listener._turnstile, write_lock(handler))
+    others = (log._LOGGING_LOCK, log._handlers_lock, *locks)
+    return all(map(free_to_others, (*mine, *others)))
 
 
 def until(condition: Callable[[], bool]) -> bool:
@@ -998,7 +1018,7 @@ def until(condition: Callable[[], bool]) -> bool:
     while not condition():
         if time.monotonic() > deadline:
             return False
-        time.sleep(0.001)
+        time.sleep(0.002)
     return True
 
 
@@ -1006,7 +1026,7 @@ class Fork:
     """The hooks of a fork in the parent, on a thread, as ``os.fork`` runs them.
 
     ``ready`` is set once the hooks before the fork have returned, with
-    the locks they hold in ``held``; ``finish`` runs those after it.
+    what they hold in ``held``; ``finish`` runs those after it.
     """
 
     def __init__(self) -> None:
@@ -1020,53 +1040,75 @@ class Fork:
     def _fork(self) -> None:
         log._before_fork()
         log._LOGGING_LOCK.acquire()  # ``logging``'s own hook, which runs next.
-        self.held = list(log._held)
+        self.held = list(log._forking.held[-1])
         self.ready.set()
         self.go_on.wait(30)
         log._LOGGING_LOCK.release()  # ``logging``'s own, which runs first.
         log._after_fork_in_parent()
 
-    def finish(self) -> None:
-        """Run the hooks after the fork, in the parent."""
+    def holds(self, lock: Any) -> bool:  # noqa: ANN401 - a Lock or an RLock.
+        """Whether the hooks before the fork took ``lock``."""
+        return any(item is lock for item in self.held)
+
+    def finish(self) -> bool:
+        """Run the hooks after the fork, in the parent; whether they ended."""
         self.go_on.set()
         self.thread.join(10)
-        assert not self.thread.is_alive()
+        return not self.thread.is_alive()
 
 
-def test_a_fork_waits_for_the_record_being_written(
-    held: Collect, forks: "weakref.WeakSet[BackgroundListener]"
+@pytest.fixture
+def start_fork() -> Iterator[Callable[[], Fork]]:
+    """Start a fork's hooks; those after it run at the end, if the test did not."""
+    started: list[Fork] = []
+
+    def start() -> Fork:
+        started.append(Fork())
+        return started[-1]
+
+    yield start
+    for fork in started:
+        fork.finish()
+
+
+def test_a_fork_waits_for_the_write_in_progress(
+    held: Collect,
+    forks: "weakref.WeakSet[BackgroundListener]",
+    start_fork: Callable[[], Fork],
 ) -> None:
     """No child inherits a stream in the middle of a write.
 
     The thread holds its stream's lock while it writes; a child forked
     then finds it held, by a thread the child does not have, for ever.
-    The next record waits at the turnstile, so the fork gets its turn.
+    The handler writes under its own lock, which the fork takes; the next
+    record waits at the turnstile, so the fork gets its turn.
     """
     handler = BackgroundHandler.writing_to(held)
     handler.handle(record("being written"))
     assert held.entered.wait(10)
     handler.handle(record("queued"))
-    turnstile, _ = locks_of(handler)
 
-    fork = Fork()
-    assert until(turnstile.locked)  # The fork waits for the record.
+    fork = start_fork()
+    assert until(lambda: taken(turnstile_of(handler)))  # It waits for the write.
     waited = not fork.ready.is_set()
     held.resume.set()
     assert fork.ready.wait(10)
     while_forking = list(held.lines)
-    fork.finish()
+    assert fork.finish()
 
     assert waited
-    assert fork.held == locks_of(handler)
+    assert fork.holds(write_lock(handler))
     assert while_forking == ["being written"]
     assert handler.wait_written(10)
     assert held.lines == ["being written", "queued"]
+    assert all_free(handler)
     handler.close()
 
 
 def test_a_fork_waits_for_a_stuck_stream_no_longer_than_flush_timeout(
     held: Collect,
     forks: "weakref.WeakSet[BackgroundListener]",
+    start_fork: Callable[[], Fork],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A write that never ends does not hold the fork: the child could not write."""
@@ -1075,12 +1117,13 @@ def test_a_fork_waits_for_a_stuck_stream_no_longer_than_flush_timeout(
     handler.handle(record("stuck"))
     assert held.entered.wait(10)
 
-    fork = Fork()
+    fork = start_fork()
     went_on = fork.ready.wait(10)
-    fork.finish()
+    assert fork.finish()
 
     assert went_on
-    assert fork.held == locks_of(handler)[:1]  # The turnstile only.
+    assert fork.holds(turnstile_of(handler))
+    assert not fork.holds(write_lock(handler))  # Given up on.
     held.resume.set()
     assert handler.wait_written(10)
     handler.close()
@@ -1106,12 +1149,13 @@ class Gated(logging.Handler):
 def test_a_stuck_stream_does_not_cost_another_thread_its_wait(
     held: Collect,
     forks: "weakref.WeakSet[BackgroundListener]",
+    start_fork: Callable[[], Fork],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Every turnstile is taken first, so the other threads finish their records.
+    """Every turnstile is taken first, so the other threads finish their writes.
 
     Whichever thread the fork waits for first, the healthy one finishes its
-    record meanwhile and starts no other: the time the stuck one uses up
+    write meanwhile and starts no other: the time the stuck one uses up
     does not cost it its turn.
     """
     monkeypatch.setattr(log, "FLUSH_TIMEOUT", 1.0)
@@ -1123,19 +1167,20 @@ def test_a_stuck_stream_does_not_cost_another_thread_its_wait(
     slow.handle(record("next"))
     assert held.entered.wait(10)
     assert gated.entered.wait(10)
-    locks = locks_of(stuck, slow)
+    turnstiles = [turnstile_of(stuck), turnstile_of(slow)]
 
-    fork = Fork()
-    assert until(lambda: all(lock.locked() for lock in locks[::2]))  # Turnstiles.
-    gated.gate.release()  # The record being written ends; the next waits.
+    fork = start_fork()
+    assert until(lambda: all(map(taken, turnstiles)))
+    gated.gate.release()  # The write in progress ends; the next waits.
     went_on = fork.ready.wait(10)
     while_forking = list(gated.lines)
-    fork.finish()
+    assert fork.finish()
     gated.gate.release()
     held.resume.set()
 
     assert went_on
-    assert sorted(map(id, fork.held)) == sorted(map(id, locks[:1] + locks[2:]))
+    assert fork.holds(write_lock(slow))
+    assert not fork.holds(write_lock(stuck))
     assert while_forking == ["being written"]
     for handler in (stuck, slow):
         assert handler.wait_written(10)
@@ -1153,7 +1198,9 @@ class MakesALogger(Collect):
 
 
 def test_a_handler_may_take_loggings_lock_while_a_fork_waits_for_it(
-    forks: "weakref.WeakSet[BackgroundListener]", monkeypatch: pytest.MonkeyPatch
+    forks: "weakref.WeakSet[BackgroundListener]",
+    start_fork: Callable[[], Fork],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A fork waits for the thread holding no other lock, so it never waits in a circle.
 
@@ -1166,26 +1213,25 @@ def test_a_handler_may_take_loggings_lock_while_a_fork_waits_for_it(
     handler = BackgroundHandler.writing_to(writes)
     handler.handle(record("being written"))
     assert writes.entered.wait(10)
-    turnstile, _ = locks_of(handler)
 
-    fork = Fork()
-    assert until(turnstile.locked)  # The fork waits for the record.
+    fork = start_fork()
+    assert until(lambda: taken(turnstile_of(handler)))  # It waits for the write.
     loggings_free = free_to_others(log._LOGGING_LOCK)
     ours_free = free_to_others(log._handlers_lock)
     writes.resume.set()
     went_on = fork.ready.wait(10)
-    fork.finish()
+    assert fork.finish()
 
     assert loggings_free
     assert ours_free
     assert went_on
-    assert fork.held == locks_of(handler)  # Waited for, not given up on.
+    assert fork.holds(write_lock(handler))  # Waited for, not given up on.
     assert writes.lines == ["being written"]
     handler.close()
 
 
 def test_a_fork_takes_loggings_lock_before_ours_as_dictconfig_does(
-    forks: "weakref.WeakSet[BackgroundListener]",
+    forks: "weakref.WeakSet[BackgroundListener]", start_fork: Callable[[], Fork]
 ) -> None:
     """``dictConfig`` holds ``logging``'s lock while it makes handlers, which take ours.
 
@@ -1204,13 +1250,13 @@ def test_a_fork_takes_loggings_lock_before_ours_as_dictconfig_does(
     config = threading.Thread(target=configure, daemon=True)
     config.start()
     assert configuring.wait(10)
-    fork = Fork()
+    fork = start_fork()
     waited = not fork.ready.wait(0.1)
     go_on.set()
     config.join(10)  # A bound for a broken test, not a timing.
     configured = not config.is_alive()
     went_on = fork.ready.wait(10)
-    fork.finish()
+    assert fork.finish()
 
     assert waited
     assert configured
@@ -1221,41 +1267,205 @@ def test_a_fork_takes_loggings_lock_before_ours_as_dictconfig_does(
 def test_a_handler_that_forks_does_not_wait_for_its_own_thread(
     forks: "weakref.WeakSet[BackgroundListener]", monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The hooks run on the thread, which holds its lock: they take it again."""
+    """The hooks run on the thread, which holds its handler's lock, and take it."""
     monkeypatch.setattr(log, "FLUSH_TIMEOUT", 60.0)
     held: list[Any] = []
 
     class Forks(logging.Handler):
         def emit(self, record: logging.LogRecord) -> None:
             log._before_fork()
-            held.extend(log._held)
+            held.extend(log._forking.held[-1])
             log._after_fork_in_parent()
 
-    handler = BackgroundHandler.writing_to(Forks())
+    forking = Forks()
+    handler = BackgroundHandler.writing_to(forking)
     handler.handle(record("forks"))
 
     assert handler.wait_written(10)
-    assert held == locks_of(handler)
+    assert any(item is write_lock(handler) for item in held)
+    assert all_free(handler)
+    handler.close()
+
+
+def test_a_fork_nested_in_a_fork_on_one_thread_lets_go_of_its_own(
+    collect: Collect,
+    forks: "weakref.WeakSet[BackgroundListener]",
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A signal handler may fork while this thread's own fork runs its hooks.
+
+    A signal that arrives during the fork is handled in the first hook
+    after it, ``logging``'s. The nested fork takes again what the other
+    holds, without waiting for itself, and each lets go of what it took:
+    the thread writes on.
+    """
+    monkeypatch.setattr(log, "FLUSH_TIMEOUT", 60.0)
+    handler = BackgroundHandler.writing_to(collect)
+    handler.handle(record("before"))
+    assert handler.wait_written(10)
+
+    def fork() -> None:
+        log._before_fork()
+        log._LOGGING_LOCK.acquire()  # ``logging``'s hook before the fork.
+        log._LOGGING_LOCK.release()  # And after it, where the signal is handled:
+        log._before_fork()
+        log._LOGGING_LOCK.acquire()
+        log._LOGGING_LOCK.release()
+        log._after_fork_in_parent()
+        log._after_fork_in_parent()  # The fork the signal came in.
+
+    forking = threading.Thread(target=fork, daemon=True)
+    forking.start()
+    forking.join(10)  # A bound for a broken test, not a timing.
+
+    assert not forking.is_alive()
+    assert all_free(handler)
+    handler.handle(record("after"))
+    assert handler.wait_written(10)
+    assert collect.lines == ["before", "after"]
+    handler.close()
+
+
+def test_the_child_of_a_nested_fork_lets_go_of_nothing_after_the_outer_one(
+    forks: "weakref.WeakSet[BackgroundListener]", monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The child of a fork made during another's hooks runs the other's next.
+
+    By then the child's hook has started it over, and ``logging``'s lock,
+    which the outer fork took, is reset: there is nothing to let go of.
+    """
+    monkeypatch.setattr(log, "_live_handlers", list)
+    monkeypatch.setattr(log, "_handlers_lock", log._handlers_lock)  # Put back after.
+    reset = threading.RLock()  # As ``logging``'s lock is in the child.
+    log._forking.held.append([reset])  # What the outer fork took.
+
+    log._after_fork_in_child()
+    log._after_fork_in_parent()  # The outer fork's, which would raise on ``reset``.
+
+    assert log._forking.held == []
+
+
+class Interrupted(BaseException):
+    """What a signal handler raises, as Ctrl-C raises ``KeyboardInterrupt``."""
+
+
+class InterruptedOnce:
+    """A lock whose next wait, once armed, a signal handler interrupts."""
+
+    def __init__(self) -> None:
+        """Unarmed."""
+        self.lock = threading.RLock()
+        self.armed = False
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        """Raise ``Interrupted`` once armed, else take the lock."""
+        if self.armed:
+            self.armed = False
+            raise Interrupted
+        return self.lock.acquire(blocking, timeout)
+
+    def release(self) -> None:
+        """Let the lock go."""
+        self.lock.release()
+
+    def __enter__(self) -> bool:
+        """Take the lock, as ``with`` does, uninterrupted."""
+        return self.lock.__enter__()
+
+    def __exit__(self, *exc: object) -> None:
+        """Let the lock go."""
+        self.lock.release()
+
+
+@pytest.mark.parametrize("waiting_for", ["a write", "_handlers_lock"])
+def test_a_fork_interrupted_while_it_waits_leaves_nothing_taken(
+    waiting_for: str,
+    collect: Collect,
+    forks: "weakref.WeakSet[BackgroundListener]",
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A signal handler that raises in the hook's wait (Ctrl-C) leaves no lock held.
+
+    Python reports the exception and forks all the same; the hook after
+    the fork finds nothing to let go of, and the thread writes on. Waiting
+    for a write, the hook holds the turnstile; for ``_handlers_lock``, it
+    holds ``logging``'s lock and the thread too.
+    """
+    handler = BackgroundHandler.writing_to(collect)
+    interrupted = InterruptedOnce()
+    if waiting_for == "a write":
+        monkeypatch.setattr(*where_writes_lock(handler), interrupted)
+    else:
+        monkeypatch.setattr(log, "_handlers_lock", interrupted)
+    handler.handle(record("before"))
+    assert handler.wait_written(10)
+    interrupted.armed = True
+
+    with pytest.raises(Interrupted):
+        log._before_fork()
+    log._after_fork_in_parent()  # Python forks all the same.
+
+    assert all_free(handler, interrupted.lock)
+    assert log._forking.held == []
+    handler.handle(record("after"))
+    assert handler.wait_written(10)
+    assert collect.lines == ["before", "after"]
+    handler.close()
+
+
+def test_two_threads_forking_at_once_let_go_each_of_its_own(
+    collect: Collect, forks: "weakref.WeakSet[BackgroundListener]"
+) -> None:
+    """Each thread notes what its hooks took apart from the other's."""
+    handler = BackgroundHandler.writing_to(collect)
+
+    def fork_often(name: str) -> None:
+        for n in range(100):
+            handler.handle(record(f"{name} {n}"))
+            log._before_fork()
+            log._LOGGING_LOCK.acquire()  # ``logging``'s own hooks.
+            log._LOGGING_LOCK.release()
+            log._after_fork_in_parent()
+
+    forking = [
+        threading.Thread(target=fork_often, args=(name,), daemon=True)
+        for name in ("one", "two")
+    ]
+    for thread in forking:
+        thread.start()
+    for thread in forking:
+        thread.join(30)  # A bound for a broken test, not a timing.
+
+    assert not any(thread.is_alive() for thread in forking)
+    assert handler.wait_written(10)
+    assert sorted(collect.lines) == sorted(
+        f"{name} {n}" for name in ("one", "two") for n in range(100)
+    )
+    assert all_free(handler)
     handler.close()
 
 
 def test_a_thread_started_while_a_fork_waits_is_waited_for_too(
-    held: Collect, collect: Collect, forks: "weakref.WeakSet[BackgroundListener]"
+    held: Collect,
+    collect: Collect,
+    forks: "weakref.WeakSet[BackgroundListener]",
+    start_fork: Callable[[], Fork],
 ) -> None:
     """None starts once the fork holds ``_handlers_lock``; one before is held."""
     first = BackgroundHandler.writing_to(held)
     first.handle(record("being written"))
     assert held.entered.wait(10)
-    fork = Fork()
-    assert until(locks_of(first)[0].locked)  # The fork waits for the first thread.
+    fork = start_fork()
+    assert until(lambda: taken(turnstile_of(first)))  # It waits for the write.
 
     second = BackgroundHandler.writing_to(collect)
     second.handle(record("starts the second thread"))
     held.resume.set()
     assert fork.ready.wait(10)
-    fork.finish()
+    assert fork.finish()
 
-    assert sorted(map(id, fork.held)) == sorted(map(id, locks_of(first, second)))
+    assert fork.holds(write_lock(first))
+    assert fork.holds(write_lock(second))
     assert set(forks) == {first.listener, second.listener}
     for handler in (first, second):
         assert handler.wait_written(10)
