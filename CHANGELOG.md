@@ -31,11 +31,15 @@ and a status.
   `member_permissions(user)` returns them. The keys count toward no
   ceiling: `get_all_permissions` leaves out backends whose grants hold in
   one tenant (`BaseBackend.tenant_scoped`), so staff grant none of them
-  through the admin API, and no personal token or sign-in approval is
-  scoped with them; `/auth/me` lists them. A project wrote memberships
-  and a backend of its own for this. ADR 0150 (user report D2).
-  `member_permissions(user)` returns them. A project wrote memberships and
-  a backend of its own for this. ADR 0150 (user report D2).
+  through the admin API, nor on objects (`contrib.objectpermissions`),
+  and no personal token or sign-in approval is scoped with them;
+  `/auth/me` lists them. Staff change, log out, or act as a user only in
+  tenants they belong to, holding there every key the user holds:
+  `TENANCY.MEMBER_TENANTS` names the function that lists a user's
+  tenants (`tenants_beyond`), and while `MEMBER_PERMISSIONS` is set
+  without it only superusers change users (`auth.W010`). A project wrote
+  memberships and a backend of its own for this. ADR 0150 (user report
+  D2).
 - `AUTH.BREACHED_PASSWORDS = {"ENABLED": True}` checks every new password
   (signup, change, reset, the admin API, a change at the first login or
   at enrollment, the commands) against Have I Been Pwned's Pwned
@@ -56,7 +60,6 @@ and a status.
   no path in `CallTimeout`'s message, for paths that carry what logs must
   not keep, such as the breached-password check's hash prefix (user
   report A11).
-
 - Grants on single objects may expire, come in roles, and name a
   permission of another model. `grant_permission(..., expires_at=...)`
   ends a grant at that moment: from then on it counts nowhere (`has_perm`,

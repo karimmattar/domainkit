@@ -487,6 +487,12 @@ what.
   Inactive users count with every grant they keep. While other backends
   are configured, only superusers change inactive users, because those
   backends grant them nothing until they are active.
+- **Memberships count too** (multi-tenancy). Staff change a user only in
+  tenants they belong to, holding there, or everywhere, every key the
+  user holds there (`403`, saying in how many tenants). While
+  `TENANCY.MEMBER_PERMISSIONS` is set without `MEMBER_TENANTS`, only
+  superusers change users here (`auth.W010`)
+  ([tenancy](../tenancy.md#members-permissions)).
 - **Deactivating a user ends their sessions.** Their tokens are deleted,
   and do not work again if the user is made active again.
 - **The last active superuser stays.** It cannot be demoted,

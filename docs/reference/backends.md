@@ -239,6 +239,7 @@ Each `STORAGES` entry:
 | `RESOLVER` | `None` | The dotted path of a function of the request (async or not) that returns its tenant, or `None`. It replaces `SUBDOMAIN_OF` and `HEADER`. |
 | `MEMBERSHIP` | `None` | The dotted path of a function of the user and a tenant id (async or not): whether the user may act in that tenant (403 `not_a_member` if not; 404 on a route that takes its tenant from its path, `PathTenant`). |
 | `MEMBER_PERMISSIONS` | `None` | The dotted path of a function of the user and a tenant id (async or not): the permission keys the user holds as a member of that tenant, or `None` for one who is not a member. It replaces `MEMBERSHIP` (not both), and `MembershipBackend` grants the keys in the tenant being served ([tenancy.md](../tenancy.md#members-permissions)). |
+| `MEMBER_TENANTS` | `None` | The dotted path of a function of the user (async or not): the ids of the tenants the user belongs to. Staff then change through the admin API only users who hold nothing beyond them in a tenant; with `MEMBER_PERMISSIONS` and without it, only superusers change users (`auth.W010`). Needs `MEMBERSHIP` or `MEMBER_PERMISSIONS`. |
 | `REQUIRED` | `True` | Refuses a request that names no tenant (400 `tenant_not_named`). |
 | `EXEMPT_PATHS` | `("/health",)` | Paths that start with one of these may name no tenant. |
 | `SCHEMA` | `"tenant_{tenant}"` | A tenant's PostgreSQL schema, on the `SCHEMA_DATABASES`. Lower-case letters and `_` around `{tenant}`. |

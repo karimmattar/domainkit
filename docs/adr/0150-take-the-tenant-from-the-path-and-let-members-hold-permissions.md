@@ -112,6 +112,47 @@ For memberships that carry permissions:
   `contrib.auth` grants the keys. A contrib app with a table can later
   implement the hook without changing it.
 
+Changing a member. The admin API lets staff change a user (a password, a
+logout, acting as them) only when they hold every grant the user holds
+(`may_change`): becoming the user must not give more than staff have.
+A member's keys and memberships are the user's too, but the hook answers
+one tenant at a time, so `may_change` could not see them: staff holding
+`auth.change_user` could take over a tenant's owner. How others bound
+this:
+
+- Microsoft Entra lists, for each administrator role, whose passwords it
+  may reset: a Helpdesk Administrator resets those of non-administrators
+  and a few low roles only; a Privileged Authentication Administrator,
+  everyone's [15]. Users in a restricted management administrative unit
+  can be changed only by administrators assigned to that unit, not by
+  tenant-wide ones, Global Administrators included [16].
+- Okta: "An administrator assigned one or more Custom Admin Roles cannot
+  perform operations on a user with Super Administrator" [17].
+- Auth0 keeps organisation administration apart from user
+  administration: its Editor - Organizations role reads users and cannot
+  change them; Editor - Users is tenant-wide [18].
+- Keycloak scopes administration per organisation with fine-grained
+  admin permissions (manage or view one organisation) [19].
+- Django warns that a non-superuser who may edit users is "ultimately the
+  same as giving them superuser status" [20]; django-organizations
+  leaves who may manage an organisation's users to its own mixins [9].
+
+The principle: an administrator changes only users who hold no more than
+they do, and a user inside a unit (an organisation, a tenant) only from
+inside it. Options weighed:
+
+- **(a) A listing hook, `TENANCY.MEMBER_TENANTS`** (user -> tenant ids):
+  `may_change` counts the user's memberships and keys in every tenant.
+- **(b) The listing as part of the contract**: a startup error while
+  `MEMBER_PERMISSIONS` is set and the admin API is mounted without it.
+  Every project with roles and an admin API would have to write it, even
+  one whose staff are all superusers.
+- **(c) A default refusal**: while nothing can rule a user out as a
+  member, only superusers change users, as `may_hold` already does while
+  a backend cannot list its grants on objects (SEC-16a-5, `auth.W007`).
+- **`on_admin_change` alone**, documented: it leaves the gap open by
+  default.
+
 ## Decision
 
 - **`domainkit.tenancy.PathTenant(parameter)`** is a FastAPI dependency
@@ -190,6 +231,30 @@ For memberships that carry permissions:
   whose own dependencies check callers before `PathTenant`
   (`tenancy.E002`). A `PathTenant` inside another dependency is checked
   against the path only.
+- **Changing a member: (a) and (c).** `TENANCY.MEMBER_TENANTS` names a
+  function of the user (async or not) that returns the ids of the tenants
+  they belong to; it needs `MEMBERSHIP` or `MEMBER_PERMISSIONS`.
+  `domainkit.tenancy.tenants_beyond(actor, user, held)` returns the
+  tenants where the user holds what the actor does not: those the actor
+  does not belong to, and those where the user's keys are neither among
+  `held` (what the actor holds everywhere) nor the actor's own keys
+  there, each asked afresh. `may_change` refuses a non-superuser any
+  user it returns a tenant for (`403`, saying in how many tenants, not
+  which, as `may_hold` says how many grants). So the impersonation
+  tokens that `may_change` re-checks on every request are held to it
+  too. While `MEMBER_PERMISSIONS` is set without `MEMBER_TENANTS`, it
+  returns None and only superusers change users, and `check` warns
+  (`auth.W010`). With `MEMBERSHIP` alone and no `MEMBER_TENANTS`, the
+  admin API counts no memberships, as in 2.3: refusing there would break
+  every released project that names its members, for a gap no key widens.
+  (c) keeps the default safe and leaves superusers working; (a) is how a
+  project gives its staff back the users they may change; (b) would
+  break startup for projects that need neither.
+- **Grants on objects.** `contrib.objectpermissions` checks the model
+  permission a granter must hold against `get_all_permissions`, which
+  leaves out tenant-scoped backends, instead of `has_perm`, so a member
+  grants on objects none of the keys they hold only through a role. The
+  permission on the object itself still counts.
 
 ## Consequences
 
@@ -203,23 +268,22 @@ For memberships that carry permissions:
 - A member's keys count inside the tenant only. A member cannot scope a
   personal token with them; their session in the tenant still does what
   they allow.
-- `may_change` does not see what a user holds through memberships: the
-  hook answers one tenant at a time and cannot list a user's tenants. A
-  password change hands over a user's memberships too, so a project whose
-  staff should not change the members of tenants they do not run refuses
-  it with `on_admin_change`; the docs say so.
-- `contrib.objectpermissions` checks who may grant on an object with
-  `has_perm`, not `get_all_permissions`, so it counts a member's keys in
-  the tenant being served. On that tenant's own objects this stays in the
-  tenant; on an object of no tenant it would not. It is left for later,
-  below.
+- Staff take over no member of a tenant they do not run. A project with
+  roles and non-superuser staff writes `MEMBER_TENANTS`, one query; until
+  it does, those staff change no users through the admin API, and
+  `check` says why.
+- Changing a user asks `MEMBER_TENANTS` for both, then the keys of each
+  in every tenant they share: two queries per shared tenant, on every
+  change and on every request of an impersonation token.
+- Platform support staff who change customers' users either belong to
+  those tenants or are superusers, as Entra's restricted units allow
+  only administrators assigned to them.
 - The kept answer is tied to the principal object: a re-check of a live
   connection, with the principal loaded afresh, asks the hook again; a
   principal that is never reloaded keeps its answer for the request.
-- Left for later: bounding `contrib.objectpermissions`' grants by what
-  the actor holds everywhere; a `404` option for `TenantMiddleware`; a
-  memberships table in a contrib app; and re-checking membership on
-  connections that `TenantMiddleware` admitted.
+- Left for later: a `404` option for `TenantMiddleware`; a memberships
+  table in a contrib app; and re-checking membership on connections that
+  `TenantMiddleware` admitted.
 
 ## References
 
@@ -252,3 +316,18 @@ For memberships that carry permissions:
     <https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html>
 14. GitHub REST API, *Troubleshooting*, 404 for private repositories:
     <https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api>
+15. Microsoft Entra, *Privileged roles and permissions*, who can reset
+    passwords:
+    <https://learn.microsoft.com/en-us/entra/identity/role-based-access-control/privileged-roles-permissions>
+16. Microsoft Entra, *Restricted management administrative units*:
+    <https://learn.microsoft.com/en-us/entra/identity/role-based-access-control/admin-units-restricted-management>
+17. Okta, *Create custom admin roles that prevent help desk operations
+    on privileged users*:
+    <https://support.okta.com/help/s/article/create-custom-admin-roles-that-prevent-help-desk-operations-on-privileged-users>
+18. Auth0, *Dashboard access by role*:
+    <https://auth0.com/docs/get-started/manage-dashboard-access/feature-access-by-role>
+19. Keycloak, *Fine-grained admin permissions for organizations*:
+    <https://www.keycloak.org/2026/05/org-fgap>
+20. Django, *Using the authentication system*, managing users in the
+    admin:
+    <https://docs.djangoproject.com/en/5.2/topics/auth/default/>

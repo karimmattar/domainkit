@@ -290,11 +290,35 @@ reads, leaves out the backends whose grants hold in one tenant only
 `/auth/me` lists a member's keys in the tenant with the rest, as the
 checks count them.
 
-The admin API does not see a user's memberships when it decides whether
-staff may change them: the function answers one tenant at a time. A
-password change hands over the user's memberships too. Refuse such
-changes with `on_admin_change` ([the admin API](auth/routes.md#the-admin-api))
-where staff should not change the members of tenants they do not run.
+**Staff change no one who holds more than they do in a tenant.** Setting
+a user's password, logging them out, or acting as them hands over their
+memberships too. So, as Microsoft Entra keeps a helpdesk administrator
+from resetting the password of an administrator, the admin API lets
+staff change a user only in tenants the staff member belongs to, holding
+there, or everywhere, every key the user holds there. To know a user's
+tenants, name a function of the user (async or not) that returns their
+ids in `MEMBER_TENANTS`:
+
+```python
+async def member_tenants(user) -> list[str]:
+    async with AccountsUnitOfWork() as uow:
+        rows = await uow.memberships.values(F("user_id") == user.id, "tenant")
+    return [row["tenant"] for row in rows]
+
+
+TENANCY = {
+    "MEMBER_PERMISSIONS": "accounts.tenancy.member_permissions",
+    "MEMBER_TENANTS": "accounts.tenancy.member_tenants",
+}
+```
+
+Without it, nothing rules a user out as a member, so only superusers
+change users through the admin API while `MEMBER_PERMISSIONS` is set, and
+`check` warns (`auth.W010`). A refusal says in how many of the user's
+tenants staff lack what the user holds, not which. Impersonation tokens
+are checked the same way on every request. With `MEMBERSHIP` alone, staff
+are held to the user's tenants once `MEMBER_TENANTS` is set; without it,
+as before 2.4, the admin API does not count memberships.
 
 ## Outside a request
 
@@ -478,6 +502,7 @@ it, and so do formats that name it (`%(tenant)s`).
 | --- | --- |
 | `current_tenant()` | The tenant being served, or None. |
 | `member_permissions(user)` | The keys `user` holds as a member of the current tenant (`MEMBER_PERMISSIONS`); async. |
+| `tenants_beyond(actor, user, held)` | The tenants where `user` holds what `actor` does not (`MEMBER_TENANTS`), or None when no one can be ruled out; async. The admin API's `may_change` asks it. |
 | `row_tenant()` | The tenant `TenantOwned` rows are scoped to; None inside `all_tenants()`. With no tenant current, it raises `TenantRequired`. |
 | `tenant_schema(tenant_id)` | The PostgreSQL schema of a tenant. |
 | `scoped_key(key)` | The key, made the current tenant's own. |
@@ -505,6 +530,7 @@ None
 | `RESOLVER` | `None` | Dotted path to a function of the request (async or not) that returns its tenant, or None. It replaces the two above. |
 | `MEMBERSHIP` | `None` | Dotted path to a function of the user and a tenant id (async or not): whether the user may act in it. |
 | `MEMBER_PERMISSIONS` | `None` | Dotted path to a function of the user and a tenant id (async or not): the keys the user holds as a member, or None for one who is not. Not with `MEMBERSHIP`. |
+| `MEMBER_TENANTS` | `None` | Dotted path to a function of the user (async or not): the ids of the tenants the user belongs to. With `MEMBERSHIP` or `MEMBER_PERMISSIONS`. |
 | `REQUIRED` | `True` | Refuse a request that names no tenant. |
 | `EXEMPT_PATHS` | `("/health",)` | Paths that may name no tenant. |
 | `SCHEMA` | `"tenant_{tenant}"` | A tenant's schema on `SCHEMA_DATABASES`: lowercase letters and `_` around `{tenant}`. |
@@ -525,7 +551,7 @@ None
 | (`PathTenant`) | The caller does not belong to the path's tenant, or it is not one. | `404 not_found` |
 | (`PathTenant`) | An anonymous caller does not belong to the path's tenant. | `401 not_authenticated` |
 | `ValueError` | `tenant()` or `check_tenant_id()` with a malformed id. | |
-| `ImproperlyConfigured` | `TenantMiddleware` without `TENANCY`; both `SUBDOMAIN_OF` and `HEADER`, or both `MEMBERSHIP` and `MEMBER_PERMISSIONS`; `PathTenant` without either; `MembershipBackend` without `MEMBER_PERMISSIONS`. | |
+| `ImproperlyConfigured` | `TenantMiddleware` without `TENANCY`; both `SUBDOMAIN_OF` and `HEADER`, or both `MEMBERSHIP` and `MEMBER_PERMISSIONS`, or `MEMBER_TENANTS` without either; `PathTenant` without either; `MembershipBackend` without `MEMBER_PERMISSIONS`; a hook that answers one string or a bool. | |
 
 ## Common mistakes
 
