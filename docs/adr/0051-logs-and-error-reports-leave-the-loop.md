@@ -1,6 +1,6 @@
 # 0051. Write logs and error reports from threads, dropping what does not fit
 
-- Status: Accepted; amended 2026-10-21 and 2026-10-26 (at the end)
+- Status: Accepted; amended 2026-10-21, 2026-10-26 and 2026-11-17 (at the end)
 - Date: 2026-10-20
 
 ## Context
@@ -107,3 +107,34 @@ pays the formatting, on errors only: 59 µs before, 176 µs after, per
 record. A handler behind the queue that needs the exception object, not
 its text, no longer gets it; error trackers take exceptions from
 `ERROR_REPORTERS`, which this does not change.
+
+## Amendment (2026-11-17, 2.6): a fork waits for the record being written
+
+A process forked while the logging thread wrote to a buffered stream
+(standard output on a pipe, a file) inherited the stream's lock held, by
+a thread the child does not have. The child's first write from its main
+thread waited forever, and its own logging thread's lines were lost with
+`reentrant call` errors. 2.5.0 spared `manage.py serve` by spawning
+Granian's workers; `gunicorn --preload`, `multiprocessing`'s fork, and a
+project's own `os.fork` still hit it: in the test, 18 of 20 children
+forked while the thread wrote hung.
+
+So a fork now waits for each running thread's current record too, not
+only for a thread changing the list of handlers. Each listener writes a
+record holding a lock of its own, after a turnstile. The hook before a
+fork takes every running listener's turnstile, so no thread starts
+another record, then each listener's lock, as its thread finishes the
+record it is writing. They share one `FLUSH_TIMEOUT`: a thread still
+writing then is on a stuck stream, which the child could not write to
+either, and the fork goes on without it. Without the turnstile, the
+thread took its lock again for its next record before the fork woke.
+
+The hook then takes `logging`'s lock, then the lock of the handler list,
+in the order `dictConfig` takes them: it makes handlers under `logging`'s
+lock, and each takes ours. Before, the fork held ours while `logging`'s
+own hook, which runs after domainkit's, waited for `logging`'s, and a
+`dictConfig` on another thread waited for ours: a loop of forks against a
+loop of `dictConfig` calls deadlocked within seconds. The listeners'
+locks come before both, as their handlers may take `logging`'s lock while
+they write (making a logger, reading a level not cached yet), and the
+fork waits for them holding no other lock.
