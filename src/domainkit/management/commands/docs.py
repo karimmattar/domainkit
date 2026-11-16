@@ -6,9 +6,9 @@ wheel holds neither (ADR 0152): this command prints where each one is for
 the release installed, under the release's tag, which nobody moves or
 deletes::
 
-    domainkit docs docs/live.md     # .../blob/v2.3.0/docs/live.md
-    domainkit docs "ADR 0057"       # the index of decisions of 2.3.0
-    domainkit docs                  # the first page of 2.3.0's
+    domainkit docs docs/live.md     # .../blob/v2.4.0/docs/live.md
+    domainkit docs "ADR 0057"       # the index of decisions of 2.4.0
+    domainkit docs                  # the first page of 2.4.0's
 
 The index of decisions has a row per record, which links it and says
 what amended or replaced it. Like ``init``, the command needs no project;
