@@ -53,6 +53,10 @@ narrows what a caller sees to criteria of its own (``VisibleTo``), and
 what is out of scope is ``404``, in lists and items alike. ``policy``
 (a ``FieldPolicy``) hides fields, or keeps them from being changed, by
 permission. ``parent`` nests a resource: ``/orders/{order_id}/invoices``.
+``tenant`` (a ``PathTenant``) serves each route whose path holds its
+parameter as that tenant: ``tenant=PathTenant("company_id")`` serves
+``/companies/{company_id}`` and its commands, and lists ``/companies``
+as no tenant (ADR 0170).
 
 The router is a facade over one module per kind of route (``listing``,
 ``reading``, ``commands``, ``batching``, ``queries``, ``crud``), each a
@@ -62,12 +66,13 @@ request from a typed ``RouteContext``; what they share is in ``reach``
 A new kind of route is a module of that shape and a method here (ADR 0025).
 """
 
+import re
 from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, params
 from fastapi.routing import APIRoute
 from pydantic import BaseModel
 from starlette.requests import HTTPConnection
@@ -83,9 +88,10 @@ from domainkit.http.access import Rule, check_object_permissions
 from domainkit.http.filters import FilterSet
 from domainkit.http.middleware import body_limit
 from domainkit.http.pagination import Pagination
+from domainkit.tenancy import PathTenant
 from domainkit.utils.text import pluralize, snake_case
 
-from ..access import VIEW, Actions
+from ..access import VIEW, Actions, MemberActions
 from ..batches import MAX_ITEMS
 from ..policies import FieldPolicy
 from ..renderers import FORMATS, JSON
@@ -129,6 +135,7 @@ class ResourceRouter(APIRouter):
         repository: RepositoryOf,
         schema: type[BaseModel] | None = None,
         present: Callable[[Any], BaseModel] | None = None,
+        present_many: presenting.ManyPresenter | None = None,
         rule: Rule | Actions | None = None,
         filters: type[FilterSet] | Callable[..., object] | None = None,
         pagination: Pagination | None = None,
@@ -155,6 +162,7 @@ class ResourceRouter(APIRouter):
         exports: Sequence[str] = (),
         max_export: int = 10_000,
         body_limits: Mapping[str, int] | None = None,
+        tenant: PathTenant | None = None,
         **options: Any,  # noqa: ANN401 - APIRouter's options (tags, dependencies).
     ) -> None:
         """Declare the resource and add its list and read routes.
@@ -164,7 +172,11 @@ class ResourceRouter(APIRouter):
         must be given. ``unit_of_work`` is a FastAPI dependency (a class is
         called without arguments); ``repository`` picks the repository from
         a unit of work. ``present`` turns an aggregate into ``schema``
-        (default: its ``from_domain``). ``filters`` is a ``FilterSet``, or
+        (default: its ``from_domain``). ``present_many``, async, in its
+        place, turns the aggregates of one answer (a page, a query's items,
+        an export's chunk, or one aggregate) and the request into their
+        schemas, in order: one call per answer, so it can load what another
+        domain holds for all of them at once. ``filters`` is a ``FilterSet``, or
         a dependency returning a ``Query`` or criteria. ``page_schema``
         replaces the page's schema; ``lookup`` names the id in the path
         (``<basename>_id``). ``not_found(id)`` is the error for an id that
@@ -183,6 +195,15 @@ class ResourceRouter(APIRouter):
         ``command``, ``batch``) a body limit in bytes of its own
         (``domainkit.http.middleware.body_limit``); ``command_route`` and
         ``batch_route`` take ``body_limit=`` per route.
+
+        ``tenant`` serves every route whose path holds its parameter as the
+        tenant that parameter names, before the route's rules run: the
+        resource's own id (``PathTenant("company_id")`` for a lookup of
+        ``company_id``), a parent's, or one in its prefix. A route
+        without it (the collection's, for the resource's own id) serves no
+        tenant. Routes of your own on the resource are served alike. A
+        nested resource takes its parent's ``tenant`` unless it has one of
+        its own. The ``PathTenant`` reads the id as its type.
 
         Raises:
             TypeError: A declaration does not fit the model.
@@ -209,6 +230,8 @@ class ResourceRouter(APIRouter):
         """Body limits by kind of route; a kind left out has the global one."""
         if writable is not None and not crud:
             raise TypeError("writable= names what crud=True writes; crud is off.")
+        if present is not None and present_many is not None:
+            raise TypeError("Give present= or present_many=, not both.")
         self._model = model
         self.basename = basename or snake_case(model.__name__)
         self.plural = plural or pluralize(self.basename)
@@ -219,6 +242,20 @@ class ResourceRouter(APIRouter):
         self.parent = parent
         self.parent_field = parent_field
         super().__init__(prefix=self._nested(prefix), **options)
+        self.tenant: PathTenant | None = self._tenant(
+            tenant or (parent.tenant if parent else None)
+        )
+        """What serves this resource's routes as a tenant, if its path names one."""
+        if (
+            isinstance(rule, MemberActions)
+            and rule.outside is not None
+            and self.tenant is None
+        ):
+            raise TypeError(
+                "MemberActions(outside=...) rules the routes that serve no "
+                "tenant; this resource serves none, so it would rule them all. "
+                'Give the resource tenant=PathTenant("...").'
+            )
         self.unit_of_work = unit_of_work_dependency(unit_of_work)
         self.repository = repository
         self.missing = not_found
@@ -246,6 +283,8 @@ class ResourceRouter(APIRouter):
         self.source_schema = given
         self.schema = presenting.documented(self, given)
         self.present = present or presenting.presenter(given)
+        self.present_many = present_many
+        """Shows the aggregates of one answer at once, in ``present``'s place."""
         self.list_fields = presenting.listed(self.schema, list_fields)
         """The fields lists show; None: all of them."""
         if unknown := sorted(set(exports) - set(FORMATS)):
@@ -285,6 +324,63 @@ class ResourceRouter(APIRouter):
         if parent.lookup == self.lookup:
             raise TypeError(f"The parent and the resource both use {self.lookup!r}.")
         return f"{parent.prefix}/{{{parent.lookup}}}{prefix}"
+
+    def _tenant(self, tenant: PathTenant | None) -> PathTenant | None:
+        """``tenant``, reading its parameter as the id it names is typed.
+
+        Raises:
+            TypeError: No route's path would hold its parameter.
+        """
+        if tenant is None:
+            return None
+        name = tenant.parameter
+        typed: dict[str, type] = {}
+        owner: ResourceRouter | None = self
+        while owner is not None:
+            typed.setdefault(owner.lookup, owner.id_type)
+            owner = owner.parent
+        if name != self.lookup and not holds(self.prefix, name):
+            raise TypeError(
+                f"No route of this resource has {{{name}}} in its path, so "
+                f"PathTenant({name!r}) would serve none; name its id "
+                f"({self.lookup!r}), a parent's, or a parameter of its prefix."
+            )
+        kind = typed.get(name, tenant.id_type)
+        return tenant if tenant.id_type is kind else PathTenant(name, id_type=kind)
+
+    def serves_tenant(self, path: str) -> bool:
+        """Whether the route at ``path`` (after the prefix) is served as a tenant."""
+        tenant: PathTenant | None = getattr(self, "tenant", None)
+        return tenant is not None and holds(f"{self.prefix}{path}", tenant.parameter)
+
+    def add_api_route(
+        self,
+        path: str,
+        endpoint: Callable[..., Any],
+        **options: Any,  # noqa: ANN401 - APIRouter's options.
+    ) -> None:
+        """Add a route; one whose path holds the tenant's parameter is served as it.
+
+        Routes of your own on the resource are too: ``tenant`` comes first
+        among the route's own dependencies, before its rules.
+        """
+        if self.serves_tenant(path):
+            given = options.get("dependencies") or ()
+            options["dependencies"] = [Depends(self.tenant), *given]
+        super().add_api_route(path, endpoint, **options)
+
+    def add_api_websocket_route(
+        self,
+        path: str,
+        endpoint: Callable[..., Any],
+        name: str | None = None,
+        *,
+        dependencies: Sequence[params.Depends] | None = None,
+    ) -> None:
+        """Add a WebSocket route; one whose path holds the tenant's is served as it."""
+        if self.serves_tenant(path):
+            dependencies = [Depends(self.tenant), *(dependencies or ())]
+        super().add_api_websocket_route(path, endpoint, name, dependencies=dependencies)
 
     @property
     def model(self) -> type:
@@ -536,6 +632,11 @@ class ResourceRouter(APIRouter):
         return aggregate
 
 
+def holds(path: str, parameter: str) -> bool:
+    """Whether ``path`` has the parameter ``parameter``: ``{name}``, ``{name:type}``."""
+    return re.search(rf"\{{{re.escape(parameter)}(:[^}}]*)?\}}", path) is not None
+
+
 def _id_type(model: type | Callable[[], type]) -> type:
     """The type of the model's ids in paths: ``UUID`` unless the hint says."""
     if not isinstance(model, type):
@@ -553,6 +654,7 @@ def _filtered(filters: object) -> set[str]:
         *filters.ordering_fields,
         *(item.removeprefix("-") for item in filters.default_ordering),
         *filters.search_fields,
+        *filters.search_through,
     }
     return {name for name in used if name}
 

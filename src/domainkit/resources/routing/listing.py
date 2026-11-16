@@ -72,10 +72,9 @@ class ListRoute:
         async with context.uow as uow:
             found = await page.fetch(router.repository(uow), query)
         hidden = await presenting.hidden_fields(router, request)
-        items = [
-            presenting.dump(router, context, item, hidden, router.list_fields)
-            for item in found.items
-        ]
+        items = await presenting.documents(
+            router, context, found.items, hidden, router.list_fields
+        )
         out = page.respond(found, items, query)
         body = {"items": items}
         for name in router.page_schema.model_fields:
@@ -129,10 +128,9 @@ class ListRoute:
                         limit=min(EXPORT_CHUNK, router.max_export - sent),
                         after=after,
                     )
-                documents = [
-                    presenting.dump(router, context, item, hidden, router.list_fields)
-                    for item in page.items
-                ]
+                documents = await presenting.documents(
+                    router, context, page.items, hidden, router.list_fields
+                )
                 sent += len(documents)
                 yield (
                     csv_rows(

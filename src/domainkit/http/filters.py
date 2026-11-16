@@ -21,6 +21,11 @@ the query string into a ``Selection``::
 search in one of the search fields. ``__in`` and ``ordering`` repeat:
 ``?status__in=open&status__in=paid``.
 
+``search_through`` searches what a field refers to, in another aggregate
+or domain: ``{"user_id": users_named}`` asks ``users_named(word, limit)``
+for the ids of at most ``max_reference_matches`` users each word names,
+and keeps the rows whose ``user_id`` is one of them (ADR 0170).
+
 A filter of a money field (``domainkit.money.Money``) compares amounts,
 and brings a ``<name>_currency`` parameter: amounts compare only within a
 currency, so ``?total__gte=10.00&total_currency=USD`` means totals in USD
@@ -37,15 +42,17 @@ is refused with 422 ``invalid_filter``. Values only ever reach SQL as bound
 parameters.
 """
 
-from collections.abc import Iterable, Mapping
+import inspect
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 from inspect import Parameter, Signature
+from itertools import islice
 from typing import Annotated, Any, ClassVar, Final, Literal
 
+from fastapi import Depends, Request, status
 from fastapi import Query as QueryParameter
-from fastapi import Request, status
 from pydantic import AwareDatetime, Field
 
 from domainkit.ddd.exceptions import DomainError
@@ -86,6 +93,9 @@ CURRENCY: Final = "_currency"
 ORDERING: Final = "ordering"
 SEARCH: Final = "search"
 REQUEST: Final = "_request"
+THROUGH: Final = "_through"
+"""The parameter that takes what ``search_through`` found, by word and field."""
+ID: Final = "id"
 _INT64: Final = 2**63
 _ANY_AMOUNT: Final = Digits(80, 40)
 """The bounds of amounts filtered on a field without ``Digits``: 40 digits
@@ -118,6 +128,12 @@ class InvalidFilter(APIError):
         super().__init__(
             status.HTTP_422_UNPROCESSABLE_CONTENT, detail, code="invalid_filter"
         )
+
+
+type Finder = Callable[[str, int], Awaitable[Iterable[object]] | Iterable[object]]
+"""What ``search_through`` asks: the ids of at most ``limit`` rows a word names."""
+type Found = Mapping[str, Mapping[str, tuple[object, ...]]]
+"""The ids each search word names through each field (``FilterSet.through``)."""
 
 
 class Filter:
@@ -182,6 +198,16 @@ class FilterSet:
     """The ordering without ``?ordering=`` (``"-placed_at"``); the id ends every one."""
     search_fields: ClassVar[tuple[str, ...]] = ()
     """Text fields ``?search=`` looks in (case-insensitively)."""
+    search_through: ClassVar[Mapping[str, Finder]] = {}
+    """Fields that refer to other rows, and how to find the ones a word names.
+
+    ``{"user_id": users_named}``: ``users_named(word, limit)``, async or
+    not, returns the ids of at most ``limit`` users the word names (in
+    their own fields, indexed there); a row matches the word when its
+    ``user_id`` is one of them. Index the field: it is read with ``in``.
+    """
+    max_reference_matches: ClassVar[int] = 100
+    """The most ids one search word names through one field; the rest are left out."""
     max_conditions: ClassVar[int] = 10
     """The most filters and search words one request may combine."""
     max_values: ClassVar[int] = 50
@@ -213,7 +239,7 @@ class FilterSet:
             for lookup in each.lookups
         }
         cls.currencies = _currency_parameters(cls, declared)
-        if taken := {ORDERING, SEARCH, REQUEST} & set(cls.filters):
+        if taken := {ORDERING, SEARCH, REQUEST, THROUGH} & set(cls.filters):
             names = ", ".join(sorted(taken))
             raise TypeError(f"{cls.__name__}: {names} cannot name a filter.")
         for name in (*cls.ordering_fields, *_fields(cls.default_ordering)):
@@ -222,10 +248,28 @@ class FilterSet:
         for name in cls.search_fields:
             if not resolve(cls.model, name)[-1].text:
                 raise TypeError(f"{cls.__name__}: {name} is not text to search.")
+        for name, finder in cls.search_through.items():
+            resolve(cls.model, name)
+            if not callable(finder):
+                raise TypeError(
+                    f"{cls.__name__}: search_through[{name!r}] finds the ids a "
+                    "word names; give a function of the word and a limit."
+                )
+        if cls.max_reference_matches < 1:
+            raise TypeError(f"{cls.__name__}: max_reference_matches is at least 1.")
         setattr(cls, "__signature__", Signature(_parameters(cls)))  # noqa: B010 - not a declared attribute.
 
-    def __init__(self, _request: Request | None = None, **values: Any) -> None:  # noqa: ANN401 - each parameter's type.
+    def __init__(
+        self,
+        _request: Request | None = None,
+        _through: Found | None = None,
+        **values: Any,  # noqa: ANN401 - each parameter's type.
+    ) -> None:
         """Take the parameters FastAPI parsed; refuse what it cannot check.
+
+        ``_through`` is what ``through`` found for the search: FastAPI
+        passes it; a set built by hand searches only its own fields
+        without it.
 
         Raises:
             InvalidFilter: An unknown or repeated filter, a repeated ordering
@@ -233,6 +277,8 @@ class FilterSet:
         """
         if _request is not None:
             self._check_names(_request)
+        self.found: Found = _through or {}
+        """The ids each search word named through ``search_through``."""
         given = {name: value for name, value in values.items() if value is not None}
         ordering: list[str] = list(given.pop(ORDERING, ()))
         search: str = given.pop(SEARCH, "")
@@ -262,6 +308,31 @@ class FilterSet:
         """The query: the criteria and the ordering, plus ``options`` (``limit=``)."""
         return Selection(self.criteria, ordering=self.ordering, **options)
 
+    @classmethod
+    async def through(cls, search: str | None) -> Found:
+        """The ids each word of ``search`` names through ``search_through``.
+
+        Each finder is asked once per distinct word, for at most
+        ``max_reference_matches`` ids, and what it answers past that is
+        left out. A search the set would refuse (too long, too many words)
+        asks nothing.
+        """
+        if not cls.search_through or not search:
+            return {}
+        words = search.split()
+        if len(search) > cls.max_search_length or len(words) > cls.max_search_words:
+            return {}
+        limit = cls.max_reference_matches
+        found: dict[str, dict[str, tuple[object, ...]]] = {}
+        for word in dict.fromkeys(words):
+            for name, finder in cls.search_through.items():
+                answer = finder(word, limit)
+                ids = await answer if inspect.isawaitable(answer) else answer
+                found.setdefault(word, {})[name] = tuple(
+                    islice(dict.fromkeys(ids), limit)
+                )
+        return found
+
     def _criteria(self) -> Criteria | None:
         """The conditions the parameters and search words ask for.
 
@@ -285,10 +356,7 @@ class FilterSet:
             elif name not in compared:
                 parts.append(F(each.field or name).lookup(lookup, argument))
         parts.extend(self._money(each, given) for each, given in amounts.items())
-        parts.extend(
-            Or.of(*(F(name).icontains(word) for name in self.search_fields))
-            for word in self.search
-        )
+        parts.extend(self._searched(word) for word in self.search)
         if not parts:
             return None
         criteria = And.of(*parts)
@@ -301,6 +369,15 @@ class FilterSet:
         except (ValueError, TypeError) as exc:  # A value object's; it may quote one.
             raise InvalidFilter("A filter value does not fit its field.") from exc
         return criteria
+
+    def _searched(self, word: str) -> Criteria:
+        """Rows that hold ``word`` in a search field, or refer to a row it names."""
+        named = self.found.get(word, {})
+        alternatives = [
+            *(F(name).icontains(word) for name in self.search_fields),
+            *(F(name).in_(ids) for name, ids in named.items() if ids),
+        ]
+        return Or.of(*alternatives) if alternatives else F(ID).in_(())
 
     def _money(self, each: Filter, amounts: list[tuple[Lookup, object]]) -> Criteria:
         """The amounts given to the money filter ``each``, in its currency.
@@ -464,7 +541,11 @@ def _parameters(cls: type[FilterSet]) -> list[Parameter]:
                 ],
             )
         )
-    if cls.search_fields:
+    searched = (
+        *cls.search_fields,
+        *(f"what {name} refers to" for name in cls.search_through),
+    )
+    if searched:
         parameters.append(
             Parameter(
                 SEARCH,
@@ -475,11 +556,23 @@ def _parameters(cls: type[FilterSet]) -> list[Parameter]:
                     QueryParameter(
                         max_length=cls.max_search_length,
                         description=(
-                            f"Words to find in {', '.join(cls.search_fields)}, "
-                            "ignoring case."
+                            f"Words to find in {', '.join(searched)}, ignoring case."
                         ),
                     ),
                 ],
+            )
+        )
+    if cls.search_through:
+
+        async def through(request: Request) -> Found:
+            return await cls.through(request.query_params.get(SEARCH))
+
+        parameters.append(
+            Parameter(
+                THROUGH,
+                Parameter.KEYWORD_ONLY,
+                default=None,
+                annotation=Annotated[object, Depends(through)],
             )
         )
     return parameters
