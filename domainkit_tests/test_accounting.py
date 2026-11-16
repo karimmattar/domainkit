@@ -168,7 +168,9 @@ async def test_concurrent_transfers_keep_every_entry_balanced_and_lose_no_update
     an account wait for each other in one order and never deadlock; each
     balance moves in its posting's transaction, under its lock, so none is
     overwritten. No run is retried (no race was lost), every balance is the
-    sum of its postings, and every entry balances.
+    sum of its postings, and every entry balances. The test waits for
+    every transfer, even when one fails, so none still holds a connection
+    when it ends.
     """
     pooled: dict[str, object] = {"POOL_SIZE": 25, "MAX_OVERFLOW": 30}
     if books.startswith("sqlite"):  # One writer at a time: wait as long as it takes.
@@ -208,8 +210,12 @@ async def test_concurrent_transfers_keep_every_entry_balanced_and_lose_no_update
             running = [asyncio.create_task(one(number)) for number in range(TRANSFERS)]
             await asyncio.sleep(0)
             start.set()
-            posted = await asyncio.wait_for(asyncio.gather(*running), 60)
+            done = await asyncio.wait_for(
+                asyncio.gather(*running, return_exceptions=True), 60
+            )
 
+        assert [each for each in done if not isinstance(each, Entry)] == []
+        posted = [each for each in done if isinstance(each, Entry)]
         assert len({entry.id for entry in posted}) == TRANSFERS
         assert not [r for r in caplog.records if "lost a race" in r.getMessage()]
         expected = {each.id: Decimal("1000.0000") for each in chart}

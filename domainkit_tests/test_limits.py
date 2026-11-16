@@ -192,7 +192,8 @@ async def test_fifty_payments_at_once_pass_exactly_what_the_limit_allows(
     The holder's five wallets each lock only their own accounts, so the
     ledger's locks do not order the payments (ADR 0123's design B let up
     to 1,139.25 through); the holder's row does. None deadlocks or is
-    retried, and the books still balance.
+    retried, and the books still balance. The test waits for every payment,
+    even when one fails, so none still holds a connection when it ends.
     """
     pooled: dict[str, object] = {"POOL_SIZE": 25, "MAX_OVERFLOW": 30}
     if books.startswith("sqlite"):  # One writer at a time: wait as long as it takes.
@@ -220,14 +221,15 @@ async def test_fifty_payments_at_once_pass_exactly_what_the_limit_allows(
             running = [asyncio.create_task(pay(number)) for number in range(ATTEMPTS)]
             await asyncio.sleep(0)
             start.set()
-            done = await asyncio.wait_for(asyncio.gather(*running), 60)
+            done = await asyncio.wait_for(
+                asyncio.gather(*running, return_exceptions=True), 60
+            )
             (used,) = await usage_of("holder", "h-1")
 
-        posted = [each for each in done if isinstance(each, Entry)]
-        assert len(posted) == 40
         assert [each for each in done if not isinstance(each, Entry)] == [
             "limit_exceeded"
         ] * 10
+        assert len([each for each in done if isinstance(each, Entry)]) == 40
         assert (used.used, used.count, used.remaining) == (egp("1000"), 40, egp("0"))
         assert not [r for r in caplog.records if "lost a race" in r.getMessage()]
         assert await verify_ledger() == []
