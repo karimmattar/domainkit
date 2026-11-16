@@ -67,8 +67,10 @@ use too (PEP 562, as `domainkit.http` does since PERF-15), so importing
 `domainkit.i18n.lazy` loads no settings. `DOMAIN_ALLOWED_PREFIXES`
 lists it; the rest of `domainkit.i18n` stays forbidden in a domain. A
 refusal is marked with `gettext_noop` and the boundary translates it, as
-ADR 0039 decided; a label is lazy. `makemessages` extracts
-`gettext_noop`. The options weighed: allowing the whole package (the
+ADR 0039 decided; a refusal with values is translated, then filled
+(`gettext_lazy(...).format(...)`), since the boundary finds no filled
+text in a catalog; a label is lazy. A lazy string given to an error is
+answered as its text. `makemessages` extracts `gettext_noop`. The options weighed: allowing the whole package (the
 project's workaround, and the report's proposal), which lets a domain
 read the settings; marking functions in `domainkit.ddd`, which ADR 0039
 kept free of translation; or error codes the boundary maps to texts, as
@@ -80,9 +82,11 @@ one that holds `ROOT_ROUTER`'s module (a module outside any package
 alone), leaving out domainkit's and every installed domain's modules.
 What they mark is *added* to the catalogs of the first `LOCALE_PATHS`
 directory, which is looked up first at run time: nothing already in them
-changes or becomes obsolete, so a project's rewordings survive. Without
-`LOCALE_PATHS`, a run names the messages and their files on stderr and
-writes the domains' catalogs as before; `--check` fails. Failing every
+changes or becomes obsolete, so a project's rewordings survive; an
+obsolete entry of a message marked again comes back, as for a domain.
+Without `LOCALE_PATHS`, a run names on stderr the messages that no
+installed catalog translates already, and their files, and writes the
+domains' catalogs as before; `--check` fails on them. Failing every
 run, as Django does, would break a project's `makemessages` in a minor
 release; reading the whole working directory, as Django does, would read
 tests and scripts that serve nobody.
@@ -111,8 +115,8 @@ taking the same values.
 - A domain's refusals and labels reach its catalog with `makemessages`,
   and its tests still need no settings: `gettext_noop` returns English.
   Turning a lazy label into text needs the settings, as before.
-- `import domainkit.i18n` no longer imports its submodules; each name
-  is imported when first read, and is the same object.
+- `import domainkit.i18n` no longer imports its modules; each name, and
+  each module, is imported when first read, and is the same object.
 - A project's catalog in `LOCALE_PATHS` keeps every entry it has. A
   message the project no longer marks stays there until removed by hand.
 - A project with marked texts outside its domains and no `LOCALE_PATHS`

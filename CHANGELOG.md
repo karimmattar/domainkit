@@ -14,9 +14,9 @@ and a status.
 - A domain layer may import `domainkit.i18n.lazy`, and no other module of
   `domainkit.i18n`: `gettext_noop` marks a refusal the boundary
   translates, and `gettext_lazy`, `ngettext_lazy` and `pgettext_lazy`
-  make labels translated when they are shown. Importing it loads no
-  settings and no catalog: `domainkit.i18n` now imports its names on
-  first use. A project that allowed all of `domainkit.i18n` in
+  make labels translated when they are shown; a refusal with values is
+  `gettext_lazy(...).format(...)`. Importing it loads no settings and no
+  catalog. A project that allowed all of `domainkit.i18n` in
   `ARCHITECTURE["DOMAIN_ALLOWED"]` may drop it
   ([i18n.md](docs/i18n.md#messages-of-the-domain-layer), ADR 0166, user
   report I2).
@@ -25,10 +25,12 @@ and a status.
   holds the settings module, and the one that holds `ROOT_ROUTER`'s
   module, without the installed domains. What they mark is added to the
   catalogs of the first `LOCALE_PATHS` directory, which keep every entry
-  they hold, the project's rewordings of others' messages too. Without
-  `LOCALE_PATHS`, a run names those messages on stderr, and `--check`
-  fails ([i18n.md](docs/i18n.md#the-projects-own-messages), ADR 0166,
-  user report I6).
+  they hold, the project's rewordings of others' messages too, and an
+  obsolete (`#~`) entry of a message marked again comes back. Without
+  `LOCALE_PATHS`, a run names on stderr those messages that no catalog
+  translates already, and `--check` fails on them
+  ([i18n.md](docs/i18n.md#the-projects-own-messages), ADR 0166, user
+  report I6).
 
 - Devices' mails, `devices/enrollment_code` and `devices/device_bound`,
   ship in Arabic. A test holds every mail template domainkit ships to
@@ -86,6 +88,14 @@ and a status.
   way to confirm the act: an authenticator app, or a bound device
   ([Testing](docs/auth/actions.md#testing)) (user report A17).
 
+### Changed
+
+- `import domainkit.i18n` imports none of its modules. Its names, and its
+  modules (`domainkit.i18n.translation`, `formats`, ...), are imported
+  when first read as its attributes, and are the same objects; `dir()`
+  lists them all. A domain layer that imports `domainkit.i18n.lazy` so
+  loads no settings (ADR 0166, user report I2).
+
 ### Deprecated
 
 - A `ResourceRouter` route that asks `StepUp(for_=...)` and runs a
@@ -97,6 +107,11 @@ and a status.
   ([upgrading.md](docs/upgrading.md#24-to-25)) (user report A13).
 
 ### Fixed
+
+- A lazy string (`gettext_lazy`) given as a `DomainError`'s message, an
+  `InvalidField`'s, or `error_response`'s detail is answered as its text
+  in the caller's language. It made a `500`: the body refused anything
+  but text (user report I2).
 
 - `LocaleMiddleware` reads `LANGUAGE_CODE` and `LANGUAGES` per request,
   not when the application is built: a test that overrides them is

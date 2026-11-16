@@ -19,6 +19,7 @@ text, in the language active then::
 """
 
 from collections.abc import Callable
+from typing import NamedTuple
 
 __all__ = [
     "LazyString",
@@ -99,26 +100,40 @@ def pgettext_lazy(context: str, message: str) -> LazyString:
     return LazyString(_pgettext, context, message)
 
 
-# The lookups are imported when a string is first shown: importing this
-# module loads no settings, no domain registry, and no catalog.
+# The lookups are imported when a string is first shown, then kept: importing
+# this module loads no settings, no domain registry, and no catalog.
+
+
+class _Lookups(NamedTuple):
+    """``domainkit.i18n.translation``'s lookups."""
+
+    gettext: Callable[[str], str]
+    ngettext: Callable[[str, str, int], str]
+    pgettext: Callable[[str, str], str]
+
+
+_found: _Lookups | None = None
+
+
+def _lookups() -> _Lookups:
+    """The lookups, imported the first time a lazy string is shown."""
+    global _found
+    from domainkit.i18n.translation import gettext, ngettext, pgettext
+
+    _found = _Lookups(gettext, ngettext, pgettext)
+    return _found
 
 
 def _gettext(message: str) -> str:
     """``translation.gettext``."""
-    from domainkit.i18n.translation import gettext
-
-    return gettext(message)
+    return (_found or _lookups()).gettext(message)
 
 
 def _ngettext(singular: str, plural: str, n: int) -> str:
     """``translation.ngettext``."""
-    from domainkit.i18n.translation import ngettext
-
-    return ngettext(singular, plural, n)
+    return (_found or _lookups()).ngettext(singular, plural, n)
 
 
 def _pgettext(context: str, message: str) -> str:
     """``translation.pgettext``."""
-    from domainkit.i18n.translation import pgettext
-
-    return pgettext(context, message)
+    return (_found or _lookups()).pgettext(context, message)
