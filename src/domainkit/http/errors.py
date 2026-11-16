@@ -176,10 +176,10 @@ def error_response(
     It is problem details when ``ERROR_FORMAT`` says so. ``extensions``
     are members of the error's own (``DomainError.extensions``), added
     after the body's; one named as a member of a body, in either format,
-    is left out.
+    is left out. A lazy string (``gettext_lazy``) is taken as its text.
     """
     request = current_request()
-    detail = gettext(detail)
+    detail = gettext(str(detail))
     if settings.ERROR_FORMAT == PROBLEM_FORMAT:
         problem = problem_details(
             status_code, detail, code=code, errors=errors, request=request
@@ -281,16 +281,17 @@ def status_code_for(error: DomainError) -> int:
 
 async def domain_error_handler(request: Request, exc: DomainError) -> JSONResponse:
     """Answer a ``DomainError`` with its status, message, error code, and extensions."""
+    message = str(exc.message)  # A lazy string's text (domainkit.i18n.lazy).
     errors = (
         duplicate_errors(exc)
         if isinstance(exc, DuplicateValue)
-        else [FieldError(loc=["body", exc.field], msg=exc.message, type=exc.code)]
+        else [FieldError(loc=["body", exc.field], msg=message, type=exc.code)]
         if isinstance(exc, InvalidField)
         else None
     )
     return error_response(
         status_code_for(exc),
-        exc.message,
+        message,
         code=exc.code,
         errors=errors,
         extensions=exc.extensions(),
