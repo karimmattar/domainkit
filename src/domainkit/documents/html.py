@@ -9,8 +9,13 @@ form, or SVG; no event handler, ``class``, or ``id``; no URL to fetch,
 in ``src`` or in CSS (``url()``); no link unless ``links`` (and then
 https and mailto links only, which a PDF shows and never loads). A style
 keeps only the properties of ``STYLE_PROPERTIES``, each with a value of
-plain words, numbers, and colours, none negative, so text can neither
-fetch nor be moved over other text. Comments are dropped.
+plain words, numbers, and colours, none negative; ``vertical-align``
+keeps keywords only, and ``line-height`` is at least 1 (or 100%), so
+text can neither fetch nor be moved over other text. nh3 writes a style
+back as its CSS parser read it, so the text is cleaned twice, and the
+second pass checks what the first wrote. Comments are dropped. Text made
+tiny, or the colour of the page, is not stopped: a preview shows what is
+signed.
 
 It is one of two layers. The renderer is the other: Chromium, started
 by Gotenberg with JavaScript off and a deny list, refuses what gets
@@ -73,7 +78,25 @@ STYLE_PROPERTIES: Final = frozenset(
 STYLE_VALUE: Final = re.compile(r"[A-Za-z0-9#%.,\s'\"-]{0,200}")
 """A style's value: words, numbers, units, colours, quoted font names."""
 COLOUR_FUNCTION: Final = re.compile(r"(?:rgba?|hsla?)\([0-9.,%\s/]*\)", re.IGNORECASE)
-NEGATIVE: Final = re.compile(r"(?<![A-Za-z0-9])-\s*[0-9.]")
+NEGATIVE: Final = re.compile(r"(?<![A-Za-z])-")
+"""A minus sign that is not inside a word: ``0-500px`` is read as ``0 -500px``."""
+KEYWORDS: Final[Mapping[str, frozenset[str]]] = {
+    "vertical-align": frozenset(
+        {
+            "baseline",
+            "sub",
+            "super",
+            "text-top",
+            "text-bottom",
+            "middle",
+            "top",
+            "bottom",
+        }
+    ),
+}
+"""Properties that keep keywords only: a length would lift text over other text."""
+LINE_HEIGHT: Final = re.compile(r"([0-9]{1,4}(?:\.[0-9]{1,4})?)(%?)")
+"""A line height without a unit, or in percent: at least 1, or 100%, or ``normal``."""
 IMAGE: Final = re.compile(
     r"data:image/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+={0,2}"
 )
@@ -100,18 +123,22 @@ def clean_html(html: str, *, links: bool = False) -> str:
     if links:
         tags.add("a")
         attributes["a"] = {"href"}
-    cleaned: str = nh3.clean(
-        html,
-        tags=tags,
-        clean_content_tags=set(DROPPED),
-        attributes=attributes,
-        attribute_filter=_attribute,
-        url_schemes={"data", "https", "mailto"} if links else {"data"},
-        url_relative="deny",
-        filter_style_properties=set(STYLE_PROPERTIES),
-        strip_comments=True,
-        link_rel="noopener noreferrer",
-    )
+    cleaned = html
+    # Twice: nh3 writes a style back as its CSS parser read it (``0-500px``
+    # as ``0 -500px``), so the second pass checks what the first one wrote.
+    for _ in range(2):
+        cleaned = nh3.clean(
+            cleaned,
+            tags=tags,
+            clean_content_tags=set(DROPPED),
+            attributes=attributes,
+            attribute_filter=_attribute,
+            url_schemes={"data", "https", "mailto"} if links else {"data"},
+            url_relative="deny",
+            filter_style_properties=set(STYLE_PROPERTIES),
+            strip_comments=True,
+            link_rel="noopener noreferrer",
+        )
     return cleaned
 
 
@@ -132,13 +159,18 @@ def _style(style: str) -> str | None:
     for declaration in style.split(";"):
         prop, colon, value = declaration.partition(":")
         prop, value = prop.strip().lower(), value.strip()
-        if colon and prop in STYLE_PROPERTIES and _plain(value):
+        if colon and prop in STYLE_PROPERTIES and _plain(prop, value):
             kept.append(f"{prop}: {value}")
     return "; ".join(kept) or None
 
 
-def _plain(value: str) -> bool:
-    """Whether a style's value loads nothing and moves nothing back."""
+def _plain(prop: str, value: str) -> bool:
+    """Whether a style's value loads nothing and moves no text over other text."""
+    if prop in KEYWORDS:
+        return value.lower() in KEYWORDS[prop]
+    if prop == "line-height" and value.lower() != "normal":
+        number = LINE_HEIGHT.fullmatch(value)
+        return number is not None and float(number[1]) >= (100 if number[2] else 1)
     bare = COLOUR_FUNCTION.sub("", value)
     return (
         bool(value)

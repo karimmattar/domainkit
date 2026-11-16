@@ -74,6 +74,18 @@ def test_nothing_that_loads_or_runs_is_kept(html: str, cleaned: str) -> None:
         ),
         ('font-family: "unbalanced', None),
         ("margin-top: -500px", None),
+        ("margin: 0 0-500px", None),
+        ("margin: 0 0 0 0-500px", None),
+        ("text-indent: 0-50em", None),
+        ("vertical-align: 900px", None),
+        ("vertical-align: Super", "vertical-align:Super"),
+        ("line-height: 0", None),
+        ("line-height: 0.9", None),
+        ("line-height: 90%", None),
+        ("line-height: 2em", None),
+        ("line-height: 1.5", "line-height:1.5"),
+        ("line-height: 120%", "line-height:120%"),
+        ("line-height: Normal", "line-height:Normal"),
         ("text-indent: - 2em", None),
         (
             "color: rgb(10, 20, 30); font-weight: bold",
@@ -91,7 +103,11 @@ def test_nothing_that_loads_or_runs_is_kept(html: str, cleaned: str) -> None:
 def test_a_style_keeps_plain_values_of_listed_properties(
     style: str, kept: str | None
 ) -> None:
-    """No ``url()``, no CSS escape that spells one, nothing negative or placed."""
+    """No ``url()``, no CSS escape that spells one, nothing negative or placed.
+
+    nh3 writes ``0-500px`` back as ``0 -500px``: the value it writes is the
+    one checked. Text is not lifted, nor lines laid over one another.
+    """
     attribute = "" if kept is None else f' style="{kept}"'
     assert clean_html(f'<p style="{style}">a</p>') == f"<p{attribute}>a</p>"
 
