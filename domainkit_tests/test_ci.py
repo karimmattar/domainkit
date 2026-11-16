@@ -1925,6 +1925,50 @@ def test_the_published_links_name_the_release_tag(tmp_path: Path) -> None:
 REPOSITORY_URL = "https://github.com/karimmattar/domainkit/"
 
 
+@pytest.mark.parametrize(("shown", "status"), [("installed", 0), ("9.8.7", 1)])
+def test_the_smoke_test_asks_the_installed_wheel_for_a_pages_link(
+    tmp_path: Path, shown: str, status: int
+) -> None:
+    """``domainkit docs`` links a page under the tag the README's links name.
+
+    The wheel holds no docs/: the pages its docstrings and messages name
+    are links into the release's tag (ADR 0152, user report D2). The
+    build job's smoke test runs it from the installed wheel, and fails on
+    another version's tag.
+    """
+    from importlib.metadata import version
+    from shlex import quote
+
+    smoke = next(
+        step["run"]
+        for step in jobs()["build"]["steps"]
+        if "domainkit init smokeAPI" in step.get("run", "")
+    )
+    (line,) = [each for each in smoke.splitlines() if "domainkit docs" in each]
+    program = f"{quote(sys.executable)} -m domainkit"
+    shim = tmp_path / "bin" / "poetry"
+    shim.parent.mkdir()
+    shown = version("domainkit") if shown == "installed" else shown
+    shim.write_text(f"#!/bin/sh\necho {shown}\n")
+    shim.chmod(0o755)
+    done = subprocess.run(  # noqa: S603 - bash, the workflow's own line.
+        [  # noqa: S607 - bash from PATH.
+            "bash",
+            "-e",
+            "-c",
+            re.sub(r"[\w/]*/clean/bin/domainkit\b", lambda _: program, line),
+        ],
+        cwd=tmp_path,
+        env={**os.environ, "PATH": f"{shim.parent}{os.pathsep}{os.environ['PATH']}"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert f"{REPOSITORY_URL}blob/v$(poetry version --short)/docs/live.md" in line
+    assert done.returncode == status, done.stderr
+
+
 def test_the_build_runs_reviewed_tools_and_uploads_what_it_built() -> None:
     """dist/ is built by hash-pinned tools, and uploaded before anything else runs.
 

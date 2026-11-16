@@ -614,6 +614,8 @@ jobs:
           path: dist/
           # A release of this commit downloads it from this run.
           retention-days: 90
+      # The wheel holds no docs/: the pages its docstrings and messages
+      # name link to this release's tag (ADR 0152).
       - run: |
           python .github/scripts/lock_constraints.py > /tmp/constraints.txt
           python -m venv /tmp/clean
@@ -621,6 +623,7 @@ jobs:
           /tmp/clean/bin/python -c "import domainkit, domainkit.broker, domainkit.cache, domainkit.contrib.messaging; print(domainkit.__version__)"
           /tmp/clean/bin/domainkit init smokeAPI /tmp/smoke
           test -f /tmp/smoke/.env && test -f /tmp/smoke/manage.py
+          test "$(/tmp/clean/bin/domainkit docs docs/live.md)" = "https://github.com/karimmattar/domainkit/blob/v$(poetry version --short)/docs/live.md"
       # The image a new project builds, with this wheel: it leaves out an env
       # file next to the Dockerfile, runs as a user without privileges,
       # passes check with the production settings, and answers /health
