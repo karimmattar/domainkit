@@ -175,6 +175,7 @@ statuses, and the amendments they name.
 | [0163](0163-authorize-admin-changes-and-requests-steps-as-acts.md) | Authorize admin changes, and a request's steps, as acts | Accepted |
 | [0164](0164-let-the-asker-withdraw-a-phone-request-count-sessions-per-user-and-word-each-kind.md) | Let the asker withdraw a phone request, count sessions per user, and word each kind | Accepted |
 | [0166](0166-let-a-domain-layer-mark-its-texts-extract-the-projects-own-and-add-a-translation-alone.md) | Let a domain layer mark its texts, extract the project's own, and add a translation alone | Accepted |
+| [0168](0168-render-documents-through-a-port-with-gotenberg-and-fill-them-locally.md) | Render documents through a port with Gotenberg, and fill them locally | Accepted |
 | [0169](0169-granians-http-versions-failed-starts-fcm-dry-runs-write-once-probes-clamd-over-tls-and-dropped-files.md) | Granian's HTTP versions and failed starts, FCM's dry runs, write-once probes, clamd over TLS, and dropped files | Accepted |
 
 ### Decisions still without a record

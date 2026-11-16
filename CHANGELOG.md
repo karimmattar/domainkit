@@ -208,6 +208,39 @@ and a status.
   ([Removing files a change dropped](docs/uploads.md#removing-files-a-change-dropped),
   ADR 0169) (user report U5).
 
+- `domainkit.documents` renders, fills, and lays out documents. A
+  `Renderer` port turns HTML (Chromium) and Office documents
+  (LibreOffice) into PDFs; `GotenbergRenderer` is it on Gotenberg 8.40
+  or 9, through `domainkit.http.client`, with basic auth and TLS, the
+  request's id as `Gotenberg-Trace`, and retries; `renderer()` makes the
+  one `DOCUMENTS = {"RENDERER": {"URL": ...}}` names. A refusal is
+  `RenderingRefused`, a renderer that cannot render is 503
+  `renderer_unavailable`. `fill_docx(document, values)` fills `{{ name }}`
+  placeholders in a Word document wherever Word split them into runs,
+  in the body, tables, text boxes, headers, footers, and notes, each
+  value in the formatting of the run its placeholder starts in; it
+  refuses a placeholder without a value, a value without a placeholder,
+  and a malformed placeholder, all at once. It reads the archive within
+  `ArchiveLimits`, each file inflated no further than its stated size,
+  stored or deflated, under a plain relative name (a zip bomb is refused
+  uninflated), and the XML as UTF-8, refusing a DTD or an entity before
+  parsing, so nothing outside the part is opened.
+  `overlay_pdf(document, overlay)` lays rendered pages over a PDF's,
+  rotated and cropped pages too, and `page_sizes` gives each page's size
+  as shown. `clean_html` keeps rich text to an allowlist that loads and
+  runs nothing, and keeps out the styles that most often lay text over
+  text. Arabic is rendered by Chromium or LibreOffice, never drawn. They need the new `documents` extra
+  (pypdf, lxml, nh3) and say so when it is missing. Guide:
+  `docs/documents.md`; ADR 0168 (user report U2).
+
+- Staging and production refuse a `DOCUMENTS["RENDERER"]` reached by
+  plain `http://` on another host (`documents.E001`; `localhost` and
+  `ALLOW_HTTP = True` may), and warn of one without a login
+  (`documents.W001`). `check` says that Gotenberg's flags cannot be
+  checked from the service (`documents.I001`), and names those to set,
+  for Chromium and LibreOffice: `docs/documents.md`, "Hardening
+  Gotenberg". ADR 0168 (user report U2).
+
 ### Changed
 
 - `import domainkit.i18n` imports none of its modules. Its names, and its

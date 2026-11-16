@@ -824,6 +824,8 @@ More in [testing.md](testing.md).
 
 - [Backends reference](reference/backends.md#storages): the `STORAGES`
   and `UPLOAD_SCANNER` rows.
+- [Documents](documents.md): filling uploaded Word templates, and laying
+  text over uploaded PDFs.
 - [Resources](resources.md): body limits for the routes of a
   `ResourceRouter`.
 - [Security](security.md): deny by default, and what every answer
