@@ -131,7 +131,7 @@ statuses, and the amendments they name.
 | [0118](0118-run-a-keys-messages-in-commit-order-by-holding-the-later-ones-in-the-outbox.md) | Run a key's messages in commit order by holding the later ones in the outbox | Accepted; amended 2026-10-30 (at the end) |
 | [0119](0119-wrap-data-keys-under-a-kms-key-through-a-port-and-name-the-key-in-every-sealed-value.md) | Wrap data keys under a KMS key through a port, and name the key in every sealed value | Accepted; amended 2026-10-31 (at the end) |
 | [0120](0120-seal-encrypted-fields-in-the-orm-bound-to-their-row-and-shred-a-person-by-destroying-their-key.md) | Seal encrypted fields in the ORM, bound to their row, and shred a person by destroying their key | Accepted; amended 2026-10-31 (at the end) |
-| [0121](0121-hold-guarded-commands-as-sealed-requests-and-count-approvals-under-the-requests-lock.md) | Hold guarded commands as sealed requests, and count approvals under the request's lock | Accepted; amended 2026-10-31 and 2026-11-01 (at the end) |
+| [0121](0121-hold-guarded-commands-as-sealed-requests-and-count-approvals-under-the-requests-lock.md) | Hold guarded commands as sealed requests, and count approvals under the request's lock | Accepted; amended 2026-10-31, 2026-11-01, and 2026-11-16 (at the end); amended by [0154](0154-hold-admin-changes-for-approval-and-show-requests-to-those-they-concern.md) |
 | [0122](0122-step-up-in-a-rule-and-bind-authorizations-with-a-stored-row-and-a-code.md) | Step up in a rule, and bind authorizations with a stored row and a code | Accepted; amended 2026-11-01 (at the end) |
 | [0123](0123-count-movements-against-limits-under-the-subjects-row-in-the-movements-transaction.md) | Count movements against limits under the subject's row, in the movement's transaction | Accepted; amended 2026-10-31 and 2026-11-01 (at the end) |
 | [0124](0124-write-a-banks-controls-on-and-wired-as-a-profile-over-the-project-template.md) | Write a bank's controls on and wired, as a profile over the project template | Accepted; amended 2026-10-31 (at the end) |
@@ -164,6 +164,7 @@ statuses, and the amendments they name.
 | [0151](0151-object-grants-that-expire-roles-and-owners-a-caller-administers.md) | Object grants that expire, roles, and owners a caller administers | Accepted |
 | [0152](0152-link-the-pages-the-code-names-to-the-releases-tag.md) | Link the pages the code names to the release's tag | Accepted |
 | [0153](0153-hold-a-new-address-or-number-until-its-code-proves-it.md) | Hold a new address or number until its code proves it | Accepted |
+| [0154](0154-hold-admin-changes-for-approval-and-show-requests-to-those-they-concern.md) | Hold admin changes for approval, and show requests to those they concern | Accepted |
 | [0155](0155-choose-number-matching-and-the-same-network-per-page.md) | Choose number matching and the same network per page | Accepted |
 | [0156](0156-refusals-that-last-push-tokens-checked-and-commands-that-start-the-domains.md) | Refusals that last, push tokens checked when registered, and commands that start the domains | Accepted |
 | [0157](0157-priorities-on-rabbitmq-an-unpartitioned-outbox-and-audit-trail-and-live-routes-in-several-processes.md) | Priorities on RabbitMQ, an unpartitioned outbox and audit trail, and live routes in several processes | Accepted |

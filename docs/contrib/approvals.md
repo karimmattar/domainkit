@@ -16,7 +16,11 @@ On this page you learn how to:
 - write policies: who approves, how many, and when;
 - submit, approve, reject, and cancel requests, in code and over HTTP;
 - guard large ledger postings and the making of superusers;
+- hold changes of the admin API for approval: making staff, groups,
+  permissions, passwords, impersonation;
 - ask approvers for a step-up, or to authorize each approval once;
+- choose who reads which requests, and tell the approvers of one;
+- add a staff rule or a step-up to the routes of your choice;
 - know what maker-checker does not stop.
 
 Every step is a domain event, recorded in the [audit trail](audit.md)
@@ -148,9 +152,10 @@ by action. Its arguments:
 | `permission` | What a maker must hold to submit the command over HTTP: the permission that the direct route would ask for. |
 | `submit` | `True`: a direct call submits the command for whoever is acting, then raises `ApprovalPending`. |
 | `maker_rule` | An access rule that a maker must pass to submit over HTTP, besides `permission` (`IsSuperuser()` for making superusers). It is asked again when the approved command runs. |
-| `parties` | A function that names, for a command, the people it is about (the payee of a payment, the user a grant promotes). They may not approve or reject it (`interested_party`, 403), and their approvals never count. |
+| `parties` | A function that names, for a command, the people it is about (the payee of a payment, the user a grant promotes). They may not approve or reject it (`interested_party`, 403), and their approvals never count. It may be `async def` and read the database (since 2.4): it runs at each decision and at the run. `Guard.aparties_of(command)` awaits it; `parties_of` takes a plain function only. |
 | `maker_fields` | The command's fields that hold who acts (`invited_by`, `granted_by`). The submit route sets them to the maker's id, whatever the client sent; a command your code submits (`submit_command`, a direct call with `submit`) must name its maker there (`invalid_arguments` otherwise); and the run checks them again. A name the command has not is refused when the guard is made. |
 | `http` | `True`: makers submit the command at `POST /requests`. `False` keeps it off that route (`404 unknown_action`): only your code submits it. |
+| `by_maker` | `True`: the approved command runs in its maker's own call, never in the worker (since 2.4). See [Run by its maker](#run-by-its-maker). |
 | `domain` | The installed domain that the guard belongs to, when you call `guard()` outside `ready()`. |
 
 ### What a direct call does
@@ -182,6 +187,36 @@ returns the approved command being run here, if any, and
 `maker_rule` is asked again when the approved command runs, on the maker
 as a user, with no credentials. So a rule about the submitting request's
 own scopes or step-up passes at submission only, and refuses at the run.
+
+### Run by its maker
+
+Some commands give their maker something, such as a token, or take
+something that must not be stored, such as a password. The worker cannot
+hand a token to anyone, and a request keeps its command for good. With
+`by_maker=True`, the maker runs the approved command with a call of their
+own (since 2.4):
+
+1. A direct call submits the command as the caller's, and raises
+   `ApprovalPending` with the request's id. The same call made while the
+   request waits raises it again, with the same id: nothing new is
+   submitted.
+2. The approvers approve it. Nothing is queued: the worker runs nothing.
+3. The maker makes the same call again. The service runs as the approved
+   request (`current_run()` names it), and the request is `executed`.
+4. A later call submits a new request.
+
+The call finds the request by its maker and its fingerprint: the oldest
+approved request of the caller's, of this action, that holds exactly this
+command. Another command, or another person's call, submits a request of
+its own. The request is checked as the worker checks a run (its seals,
+its arguments, its approvals, its maker), and marked executed before the
+service runs. So a call refused after that, by the service or the
+database, needs a new approval: check what you can before the call. A
+request that fails a check fails, with the refusal's code, and the call
+submits a new one. An approved request that its maker does not run
+before its `expires_at` is never run. Inside the run of another approved
+command, a direct call is refused (`approval_required`), and nothing is
+submitted.
 
 ### Policies
 
@@ -522,6 +557,85 @@ approvals registers one that asks `refuse_if_guarded`. Auth imports no
 other app for it
 ([ADR 0140](../adr/0140-auth-asks-other-apps-through-hooks.md)).
 
+## Changes of the admin API
+
+A staff member who makes someone staff, adds them to a group, or sets
+their password acts alone. PCI DSS asks that adding and changing user IDs
+and their authentication factors be approved, and done with only the
+privileges approved (requirement 8.2.4). `ADMIN_APPROVALS` holds the
+changes it names for approval, each with the approvals it needs (since
+2.4, [ADR 0154](../adr/0154-hold-admin-changes-for-approval-and-show-requests-to-those-they-concern.md)):
+
+```python
+APPROVALS = {
+    "ADMIN_APPROVALS": {
+        "auth.set_staff": 1,
+        "auth.set_groups": 1,
+        "auth.set_permissions": 1,
+        "auth.set_password": 1,
+        "auth.impersonate": 2,
+    },
+}
+```
+
+| Action (constant) | Held when the admin API | The request's arguments | Policy |
+| --- | --- | --- | --- |
+| `auth.set_staff` (`SET_STAFF`) | makes a user staff: `PATCH /users/{id}` with `"is_staff": true`, for a user who is not | `{"user_id"}` (`SetStaff`) | `auth.staff` |
+| `auth.set_groups` (`SET_GROUPS`) | adds a user to a group: `PUT /users/{id}/groups` | `{"user_id", "added", "removed"}`, group names (`SetGroups`) | `auth.groups` |
+| `auth.set_permissions` (`SET_PERMISSIONS`) | grants a user a permission: `PUT /users/{id}/permissions` | `{"user_id", "added", "removed"}`, permission keys (`SetPermissions`) | `auth.permissions` |
+| `auth.set_password` (`SET_PASSWORD`) | sets a password, or makes it unusable: `POST /users/{id}/password` | `{"user_id"}` (`SetPassword`) | `auth.password` |
+| `auth.impersonate` (`IMPERSONATE`) | acts as a user: `POST /users/{id}/impersonate` | `{"user_id", "reason"}` (`Impersonate`) | `auth.impersonation` |
+
+The staff member's client goes round once per change:
+
+```http
+PATCH /admin/auth/users/6f1c... {"is_staff": true}                       403 approval_pending, "approval_request_id": "0192..."
+POST /api/approvals/requests/0192.../approve {"fingerprint": "3f1b..."}  200 (a superuser)
+PATCH /admin/auth/users/6f1c... {"is_staff": true}                       200: the user is staff
+```
+
+- **The admin API's own checks come first**: the staff member's bounds
+  (a group or a permission they lack), the fields, the password's
+  validators. Then the change is submitted as the staff member's request,
+  and the call answers `403 approval_pending` with its id. The same call
+  made while the request waits answers the same id.
+- **Once approved, the same call by the same staff member makes the
+  change, once.** The guards run by their maker
+  ([Run by its maker](#run-by-its-maker)): the worker runs nothing, an
+  impersonation's token goes to the staff member, and the change is made
+  by the admin API, with its checks as of then.
+- **The request holds the change, not the call.** For groups and
+  permissions, it holds what the call adds and takes away, sorted, not
+  the list sent. The fingerprint binds it: a call that would add or take
+  away anything else, because the user's groups changed meanwhile,
+  submits a request of its own.
+- **A password is never stored**, in the request or anywhere else:
+  `SetPassword` names the user alone. Approvers could not judge a
+  password; they approve setting one, and the call made once it is
+  approved sets one, which the validators check.
+- **What only takes away waits for no one**: unmaking staff, taking a
+  group or a permission away. Removing access should not wait for a
+  second person.
+- **Creating a user who is staff is refused** while making staff is held
+  (`403 approval_required`, "Making staff needs approval: create the
+  user, then make them staff.").
+- **Superusers approve**, other than the staff member, and never the user
+  the change is about (`interested_party`). With `ADMIN_APPROVERS` set,
+  the holders of that permission approve instead; as with
+  `SUPERUSER_APPROVERS`, a superuser can then give it to a second account
+  of their own ([Making superusers](#making-superusers)).
+- **Only the admin API submits them**: `POST /requests` answers
+  `404 unknown_action`. Staff acting as someone else (an impersonation)
+  are refused ("Requests are made and decided in one's own name only.").
+
+The admin API asks through auth's `on_admin_change` hook, which approvals
+registers a check with while `ADMIN_APPROVALS` names a change: auth
+imports nothing of approvals ([ADR 0140](../adr/0140-auth-asks-other-apps-through-hooks.md)).
+Each `AdminChange` carries the values it sets (`values`), such as
+`is_staff` true or false and the reason of an impersonation, so a check of
+your own can tell making staff from unmaking them
+([the admin API](../auth/routes.md#staff-hand-out-only-what-they-have)).
+
 ## Who may approve: step-up
 
 Approving can ask for more than being an approver: a recent second
@@ -655,7 +769,7 @@ router.include_router(approvals, prefix="/api/approvals")
 
 | Route | Who | What it does |
 | --- | --- | --- |
-| `GET /requests`, `/requests/{id}` | `approvals.view_approvalrequest` | Requests (`?status=pending`, `action`, `policy`, `maker`), with their command, fingerprint, and decisions. |
+| `GET /requests`, `/requests/{id}` | `approvals.view_approvalrequest` | Requests (`?status=pending`, `action`, `policy`, `maker`), with their command, fingerprint, and decisions: those the caller made, and those they may decide ([Who reads which requests](#who-reads-which-requests)). |
 | `POST /requests` | `approvals.add_approvalrequest`, and the guard's `permission` and `maker_rule` | Submit `{"action": ..., "arguments": {...}}`: 201, with `Location`. |
 | `POST /requests/{id}/approve` | an approver of its policy, and its approve rule | Approve, stating `{"fingerprint": ...}`; with `APPROVE_ACTION`, and an `Action-Authorization` of this approval. |
 | `POST /requests/{id}/approve/authorization` | as for approving | With `APPROVE_ACTION` on: ask for an authorization of approving, stating `{"fingerprint": ...}`: 201, `{"id", "purpose", "shown", "expires_at"}`. Off: 404. |
@@ -667,6 +781,114 @@ who acts for someone else (impersonation, above). The maker and the
 approvers are the principal's id, whatever authenticates requests.
 `domainkit.contrib.approvals.api` also exports `requests`, the resource
 router that `router` mounts.
+
+### Who reads which requests
+
+A request holds its command, and the command may say much: an amount and
+an account, a password reset, the reason staff act as someone. Since 2.4,
+`GET /requests` and `GET /requests/{id}` show a caller with
+`approvals.view_approvalrequest`:
+
+- the requests they made;
+- the requests whose policy names them among its approvers: they hold its
+  permission, belong to its group, or pass its approver rule (asked about
+  them alone, not about the request), whoever made them.
+
+Any other request is `404 approval_request_not_found`, as if it were not
+there. `approvals.view_every_approvalrequest` shows every request: give it
+to auditors. Approving, rejecting, and cancelling are not narrowed: their
+own rules answer, as before. Approval systems work the same way: an
+approver's list holds what is waiting for them, and administrators see
+everything (ADR 0154).
+
+### Rules of your own on the routes
+
+The routes ask for model permissions, and approving asks the approve rule
+too. A project that wants staff alone to submit, reject, and cancel, or a
+fresh second factor to submit, mounts a copy of the router with
+dependencies of its own on those routes (`select_routes`,
+[Rules on the framework's routes](../auth/routes.md#rules-on-the-frameworks-routes)):
+
+```python
+from datetime import timedelta
+
+from fastapi import APIRouter, Depends
+
+from domainkit.contrib.approvals.api import router as approvals
+from domainkit.contrib.auth import IsAdminUser, StepUp
+from domainkit.http.access import Require
+from domainkit.http.routers import select_routes
+
+STAFF_ONLY = Depends(Require(IsAdminUser()))
+STEP_UP = Depends(Require(StepUp(max_age=timedelta(minutes=5))))
+
+router = APIRouter()
+router.include_router(
+    select_routes(
+        approvals,
+        dependencies={
+            "POST /requests": [STAFF_ONLY, STEP_UP],
+            "POST /requests/{request_id}/reject": [STAFF_ONLY],
+            "POST /requests/{request_id}/cancel": [STAFF_ONLY, STEP_UP],
+        },
+    ),
+    prefix="/api/approvals",
+)
+```
+
+The routes' own rules still apply; the dependencies run after them,
+before the route. Mount the copy in place of `approvals`, not beside it.
+Keep a step-up off rejecting: stopping a request should never wait for a
+second factor. Approving has its own setting (`APPROVE_RULE`, or
+`APPROVE_ACTION`). No setting of approvals does this, as the rule is the
+project's: `route_names(approvals)` lists the names.
+
+## Telling the approvers
+
+Nobody is told that a request waits. `RequestSubmitted` is recorded with
+each request, and `approvers_of(request)` (since 2.4) gives the active
+users who may decide it now:
+
+- the holders of its permission (`has_perm`: granted to them or to a
+  group of theirs; superusers hold every permission);
+- the members of its group;
+- for an approver rule, the superusers and staff the rule lets through,
+  asked about the user alone, on a connection without credentials;
+- never its maker, a party to its command, or someone who decided it
+  already.
+
+It needs `domainkit.contrib.auth`. A permission that only a backend of
+your own grants (`AUTH.BACKENDS`) is not looked for: its holders are not
+found. A durable handler tells them, through the outbox
+([mail](../mail.md)):
+
+```python
+from domainkit.contrib.approvals import (
+    ApprovalsUnitOfWork,
+    RequestSubmitted,
+    approvers_of,
+)
+from domainkit.contrib.mail import send_mail
+from domainkit.ddd import handles
+
+
+@handles(RequestSubmitted, durable=True, name="payments.tell_approvers")
+async def tell_approvers(event: RequestSubmitted) -> None:
+    async with ApprovalsUnitOfWork() as uow:
+        request = await uow.requests.get(event.request_id)
+    addresses = [user.email for user in await approvers_of(request) if user.email]
+    if addresses:
+        await send_mail(
+            f"An approval waits: {request.action}",
+            f"Request {request.id} waits for your decision.",
+            addresses,
+        )
+```
+
+Put it in a domain's `controllers.py`. The message names the request, not
+its command: the approver reads the command at `GET /requests/{id}`,
+where they may. Send a push or a text message the same way
+([mail](../mail.md)).
 
 ## From the command line
 
@@ -747,6 +969,8 @@ other settings.
 | `ENTRY_APPROVERS` | `"accounting.add_entry"` | The permission whoever approves a posting holds. |
 | `SUPERUSER_APPROVALS` | `0` | Approvals that making a superuser needs (at most 10); 0: it is not guarded. |
 | `SUPERUSER_APPROVERS` | `None` | The permission whoever approves making a superuser holds; `None`: superusers approve, and only they. An empty text is `None` too (an unset variable in a compose file). Set, it lets a superuser approve through a second account ([Making superusers](#making-superusers)). |
+| `ADMIN_APPROVALS` | `{}` | The changes of the admin API held for approval, each with the approvals it needs (1 to 10): `"auth.set_staff"`, `"auth.set_groups"`, `"auth.set_permissions"`, `"auth.set_password"`, `"auth.impersonate"`. Empty: none is ([Changes of the admin API](#changes-of-the-admin-api)). It needs `domainkit.contrib.auth` (`setup()` fails without it). |
+| `ADMIN_APPROVERS` | `None` | The permission whoever approves those changes holds; `None`: superusers approve, and only they. An empty text is `None` too. |
 
 ## On PostgreSQL and SQLite
 
@@ -791,6 +1015,9 @@ for one ([Errors and refusals](../auth/actions.md#errors-and-refusals)).
   second account. Keep the two rights apart.
 - **A use case that commits twice.** The request is marked with the
   first commit. Keep it to one.
+- **Waiting for the worker to make a change of the admin API.** It never
+  does: the staff member sends the same call again once the request is
+  approved.
 - **Removing `SECRET_KEY` while requests wait.** Their seals no longer
   hold. Keep the old key in `SECRET_KEY_FALLBACKS`.
 
