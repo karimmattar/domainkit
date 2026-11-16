@@ -3,25 +3,32 @@
 With ``AUTH.ADMIN_ACTION`` on (ADR 0163), every route of the admin API
 that changes a user or a group asks for an authorization of that change,
 ``auth.admin_change``, in place of a step-up window: staff ask for one at
-the route's twin (``POST <its path>/authorization``), confirm it, and send
+the route's twin (``POST <its path>/authorization``, or ``.../patch`` and
+``.../delete`` after it where those share a path), confirm it, and send
 it with the change, which spends it once, with its commit. The act binds
 the user or group and what changes; the screen says both. Off (the
 default), the admin API is as it was, and the twins answer ``404``.
 """
 
+import os
+import subprocess
+import sys
 from collections.abc import Iterator
 from datetime import timedelta
+from pathlib import Path
 from typing import Any, Final
 from uuid import UUID
 
 import pytest
 from fastapi import APIRouter, Depends, FastAPI
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from domainkit.clock import FrozenClock, freeze_time
 from domainkit.conf import override_settings
 from domainkit.contrib.approvals import ApprovalsUnitOfWork
+from domainkit.contrib.approvals.api import requests as approval_requests
 from domainkit.contrib.approvals.tables import requests
 from domainkit.contrib.auth import AuthSettings, GroupNotFound, StepUp, UserNotFound
 from domainkit.contrib.auth.actions import (
@@ -32,7 +39,7 @@ from domainkit.contrib.auth.actions import (
     spent_in_code,
 )
 from domainkit.contrib.auth.admin import router as admin_router
-from domainkit.contrib.auth.admin_actions import AdminAct, fit, fitted, show
+from domainkit.contrib.auth.admin_actions import AdminAct, fit, fitted, listed, show
 from domainkit.contrib.auth.apps import action_problems
 from domainkit.contrib.auth.tables import authorizations
 from domainkit.db import connections
@@ -58,6 +65,7 @@ from domainkit_tests.test_auth_admin import join, make_group, token_for
 from domainkit_tests.test_auth_stepup import enrol, now_code
 
 ROUTES: Final = "domainkit_tests.sample_admin_action_routes"
+SOURCE: Final = Path(__file__).parents[1] / "src"
 ACTS: Final = Shape(
     "admin_acts",
     "approvals",
@@ -208,7 +216,7 @@ def test_off_by_default_changes_ask_nothing_and_the_twins_are_not_there(
     target = str(create_user("target"))
 
     twin = client.post(
-        f"{ADMIN}/users/{target}/authorization", json={}, headers=headers
+        f"{ADMIN}/users/{target}/authorization/patch", json={}, headers=headers
     )
     changed = client.patch(
         f"{ADMIN}/users/{target}",
@@ -240,7 +248,7 @@ def test_a_change_without_an_authorization_asks_for_one(
     refused = ann.call("PATCH", f"/users/{target}", {"fields": {"first_name": "X"}})
     plain = client.patch(f"{ADMIN}/users/{target}", json={}, headers=stranger)
     plain_twin = client.post(
-        f"{ADMIN}/users/{target}/authorization", json={}, headers=stranger
+        f"{ADMIN}/users/{target}/authorization/patch", json={}, headers=stranger
     )
 
     problem(refused, 401, "authorization_required")
@@ -345,7 +353,7 @@ def test_every_change_asks_and_its_twin_answers(
         (
             "PATCH",
             f"/users/{target}",
-            f"/users/{target}/authorization",
+            f"/users/{target}/authorization/patch",
             {"fields": {"first_name": "Ada"}},
             200,
         ),
@@ -387,7 +395,7 @@ def test_every_change_asks_and_its_twin_answers(
         (
             "DELETE",
             f"/users/{victim}",
-            f"/users/{victim}/delete/authorization",
+            f"/users/{victim}/authorization/delete",
             None,
             204,
         ),
@@ -395,7 +403,7 @@ def test_every_change_asks_and_its_twin_answers(
         (
             "PATCH",
             f"/groups/{crew}",
-            f"/groups/{crew}/authorization",
+            f"/groups/{crew}/authorization/patch",
             {"name": "team"},
             200,
         ),
@@ -409,7 +417,7 @@ def test_every_change_asks_and_its_twin_answers(
         (
             "DELETE",
             f"/groups/{gone}",
-            f"/groups/{gone}/delete/authorization",
+            f"/groups/{gone}/authorization/delete",
             None,
             204,
         ),
@@ -449,7 +457,7 @@ def test_the_screen_names_the_user_or_group_and_the_change(
         f"/users/{target}/impersonate/authorization", {"reason": "Ticket\n42"}
     )
     many = shown(
-        f"/users/{target}/authorization",
+        f"/users/{target}/authorization/patch",
         {
             "is_active": True,
             "is_staff": False,
@@ -465,8 +473,8 @@ def test_the_screen_names_the_user_or_group_and_the_change(
         "/users/authorization",
         {"username": "made", "password": "Zq8!wL-d4#Kp7v", "is_staff": False},
     )
-    renamed = shown(f"/groups/{crew}/authorization", {"name": "team"})
-    deleted = shown(f"/groups/{crew}/delete/authorization")
+    renamed = shown(f"/groups/{crew}/authorization/patch", {"name": "team"})
+    deleted = shown(f"/groups/{crew}/authorization/delete")
     logged_out = shown(f"/users/{target}/logout/authorization")
     left = shown(f"/users/{target}/groups/authorization", {"groups": []})
     granting = shown(
@@ -480,14 +488,18 @@ def test_the_screen_names_the_user_or_group_and_the_change(
     assert many["title"] == "Change a user"
     assert pairs(many) == [
         ("User", "target"),
-        ("email", "ada@example.com"),
-        ("first_name", "Ada"),
-        ("is_active", "true"),
+        ("is_superuser", "false"),
         ("is_staff", "false"),
+        ("is_active", "true"),
+        ("email", "ada@example.com"),
         ("…", "2 more values"),
     ]
     assert created["title"] == "Create a user"
-    assert pairs(created) == [("Username", "made"), ("Password", "set")]
+    assert pairs(created) == [
+        ("Username", "made"),
+        ("is_active", "true"),
+        ("Password", "set"),
+    ]
     assert renamed["title"] == "Rename a group"
     assert pairs(renamed) == [("Group", "crew"), ("New name", "team")]
     assert (deleted["title"], pairs(deleted)) == ("Delete a group", [("Group", "crew")])
@@ -505,6 +517,133 @@ def test_a_user_or_group_gone_is_not_shown(client: TestClient) -> None:
         run_async(show(AdminAct(kind="logout", user_id=nobody)))
     with pytest.raises(GroupNotFound):
         run_async(show(AdminAct(kind="group_delete", group_id=nobody)))
+
+
+def test_flags_are_never_hidden_and_a_cut_list_says_how_many_more(
+    client: TestClient, frozen: FrozenClock
+) -> None:
+    """Making a superuser shows, whatever else changes; so does every group added.
+
+    The flags that grant or take access come first, before the fields,
+    which are counted past what fits; a list too long for a line shows its
+    first items and how many more, so the last one added is never dropped
+    unsaid.
+    """
+    root = Staff(client, frozen, "root", superuser=True)
+    target = create_user("target", email="target@example.com")
+    names = [f"aaa_harmless_{each}" for each in range(5)] + ["zz_admins"]
+    for name in names:
+        make_group(name)
+    body = {
+        "is_active": True,
+        "is_staff": False,
+        "is_superuser": True,
+        "fields": {"email": "a@example.com", "first_name": "A", "last_name": "B"},
+    }
+
+    making = root.ask(f"/users/{target}/authorization/patch", body)
+    joining = root.ask(f"/users/{target}/groups/authorization", {"groups": names})
+
+    assert making.status_code == 201, making.json()
+    shown = {each["label"]: each["value"] for each in making.json()["shown"]["details"]}
+    assert shown["is_superuser"] == "true"
+    assert joining.status_code == 201, joining.json()
+    assert joining.json()["shown"]["details"][1] == {
+        "label": "Adds",
+        "value": "aaa_harmless_0, aaa_harmless_1, aaa_harmless_2 and 3 more",
+    }
+
+
+def test_a_list_is_cut_to_fit_with_its_count() -> None:
+    """All that fit, then how many more; one item too long alone is cut."""
+    long = "g" * 100
+
+    assert listed(("a", "b")) == "a, b"
+    assert listed((long,)) == "g" * 63 + "…"
+    cut = listed((long, "b", "c"))
+    assert cut.endswith("… and 2 more")
+    assert len(cut) == 64
+    assert listed(tuple(f"group_{each:02}" for each in range(9))) == (
+        "group_00, group_01, group_02, group_03, group_04 and 4 more"
+    )
+
+
+def test_creating_binds_whether_the_user_is_active(
+    client: TestClient, frozen: FrozenClock
+) -> None:
+    """Authorized to create an inactive user, staff cannot create an active one."""
+    root = Staff(client, frozen, "root", superuser=True)
+    inactive = {"username": "made", "is_active": False}
+
+    asked = root.ask("/users/authorization", inactive)
+    authorization = root.confirm(asked.json()["id"])
+    active = root.call("POST", "/users", {"username": "made"}, authorization)
+
+    assert asked.json()["shown"]["details"][1] == {
+        "label": "is_active",
+        "value": "false",
+    }
+    problem(active, 403, "action_not_authorized")
+    assert root.call("GET", "/users", None).json()["items"][0]["username"] == "root"
+
+
+def test_every_twin_is_marked_and_named_by_its_route(client: TestClient) -> None:
+    """Each hand-written twin carries the twins' marker; shared paths name methods.
+
+    ``domainkit_twin`` is the attribute by which
+    ``domainkit.resources.asking_authorization`` (user report A17) tells a twin's
+    request apart. A ``PATCH`` and a ``DELETE`` of one path name their
+    method; a route alone on its path keeps ``<path>/authorization``.
+    """
+    twins = {
+        route.path: route.endpoint
+        for router in (admin_router, approval_requests)
+        for route in router.routes
+        if isinstance(route, APIRoute) and "/authorization" in route.path
+    }
+
+    assert set(twins) >= {
+        "/users/authorization",
+        "/users/{user_id}/authorization/patch",
+        "/users/{user_id}/authorization/delete",
+        "/users/{user_id}/password/authorization",
+        "/groups/{group_id}/authorization/patch",
+        "/groups/{group_id}/authorization/delete",
+        "/requests/authorization",
+    }
+    assert "/users/{user_id}/authorization" not in twins
+    assert "/users/{user_id}/delete/authorization" not in twins
+    hand_written = {
+        path: endpoint
+        for path, endpoint in twins.items()
+        if not path.startswith("/requests/{request_id}")
+    }
+    assert len(hand_written) == 13
+    assert all(
+        getattr(each, "domainkit_twin", None) is True for each in hand_written.values()
+    )
+
+
+def test_the_admin_api_loads_no_act_while_the_setting_is_off() -> None:
+    """Importing the admin API leaves ``admin_actions`` unloaded.
+
+    A project that keeps ``ADMIN_ACTION`` off loads no module more than
+    before.
+    """
+    probe = (
+        "import sys, domainkit.contrib.auth.admin;"
+        "print('domainkit.contrib.auth.admin_actions' in sys.modules)"
+    )
+    found = subprocess.run(  # noqa: S603 - the test interpreter and a fixed script.
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+        env={**os.environ, "PYTHONPATH": str(SOURCE)},
+    )
+
+    assert found.stdout.strip() == "False", found.stderr
 
 
 def test_details_fit_a_screen() -> None:
@@ -532,7 +671,9 @@ def test_the_twin_refuses_what_the_change_would(
     """Staff ask only for a change they could make: their bounds, the user, the reason.
 
     A permission they lack, a superuser they may not change, themselves to
-    impersonate, a password the validators refuse, a user who is not there.
+    impersonate, a password the validators refuse, a user who is not there,
+    the last superuser deleted or deactivated, a user created staff while
+    making staff waits for approval.
     """
     ann = Staff(client, frozen, "ann")
     target = create_user("target")
@@ -547,7 +688,7 @@ def test_the_twin_refuses_what_the_change_would(
         f"/users/{ann.id}/impersonate/authorization", {"reason": "Ticket 42"}
     )
     weak = ann.ask(f"/users/{target}/password/authorization", {"password": "123"})
-    missing = ann.ask(f"/users/{UUID(int=1)}/delete/authorization")
+    missing = ann.ask(f"/users/{UUID(int=1)}/authorization/delete")
 
     problem(lacking, 403, "permission_denied")
     problem(superior, 403, "permission_denied")
@@ -556,18 +697,43 @@ def test_the_twin_refuses_what_the_change_would(
     problem(missing, 404, "user_not_found")
 
 
+def test_the_twins_keep_the_last_superuser_and_refuse_creating_staff_held(
+    client: TestClient, frozen: FrozenClock
+) -> None:
+    """What the change refuses after the project's checks, its twin refuses too.
+
+    Deleting or deactivating the last active superuser; creating a user who
+    is staff while making staff waits for approval (``ADMIN_APPROVALS``).
+    """
+    root = Staff(client, frozen, "root", superuser=True)
+
+    last = root.ask(f"/users/{root.id}/authorization/delete")
+    demoted = root.ask(f"/users/{root.id}/authorization/patch", {"is_active": False})
+    kept = root.ask(f"/users/{root.id}/authorization/patch", {"is_active": True})
+    staffed = root.ask("/users/authorization", {"username": "made", "is_staff": True})
+
+    problem(last, 409, "last_superuser")
+    problem(demoted, 409, "last_superuser")
+    assert kept.status_code == 201, kept.json()
+    problem(staffed, 403, "approval_required")
+
+
 def test_a_change_refused_after_its_checks_spends_nothing(
     client: TestClient, frozen: FrozenClock
 ) -> None:
-    """Spent with the change's commit: a refused change leaves it unspent."""
+    """Spent with the change's commit: a refused change leaves it unspent.
+
+    A username taken is found by the change alone, after the spend, in its
+    transaction: the change is refused, and the authorization holds still.
+    """
     root = Staff(client, frozen, "root", superuser=True)
-    body = {"is_superuser": False}
-    path = f"/users/{root.id}"
+    create_user("made")
+    body = {"username": "made"}
 
-    authorization = root.authorized(f"{path}/authorization", body)
-    refused = root.call("PATCH", path, body, authorization)
+    authorization = root.authorized("/users/authorization", body)
+    refused = root.call("POST", "/users", body, authorization)
 
-    problem(refused, 409, "last_superuser")
+    assert refused.status_code == 409, refused.json()
     assert row(authorization)["consumed_at"] is None
 
 
@@ -586,10 +752,10 @@ def test_a_held_change_is_checked_before_it_waits_and_spent_once_approved(
     path = f"/users/{target}"
     making = {"is_staff": True}
 
-    other = ann.authorized(f"{path}/authorization", {"is_active": True})
+    other = ann.authorized(f"{path}/authorization/patch", {"is_active": True})
     mismatched = ann.call("PATCH", path, making, other)
     held = held_requests()
-    authorization = ann.authorized(f"{path}/authorization", making)
+    authorization = ann.authorized(f"{path}/authorization/patch", making)
     waiting = ann.call("PATCH", path, making, authorization)
     request_id = waiting.json()["approval_request_id"]
     read = client.get(f"/approvals/requests/{request_id}", headers=root.headers)

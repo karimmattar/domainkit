@@ -22,6 +22,7 @@ from domainkit.apps import registry
 from domainkit.clock import FrozenClock
 from domainkit.conf import override_settings
 from domainkit.contrib.approvals import (
+    ApprovalRequired,
     ApprovalsSettings,
     ApprovalsUnitOfWork,
     CancelRequest,
@@ -33,7 +34,12 @@ from domainkit.contrib.approvals import (
     reject_request,
     submit_request,
 )
+from domainkit.contrib.approvals.builtin import (
+    check_admin_change,
+    refuse_staff_creation,
+)
 from domainkit.contrib.auth.actions import AuthorizationRequired, action_for
+from domainkit.contrib.auth.gates import AdminChange
 from domainkit.ddd import fingerprint
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
@@ -316,6 +322,32 @@ def test_code_that_submits_rejects_or_cancels_needs_an_authorization(
     for call in calls:
         with pytest.raises(AuthorizationRequired):
             run_async(call)
+
+
+def test_creating_staff_is_refused_only_while_making_staff_is_held(
+    client: TestClient,
+) -> None:
+    """``refuse_staff_creation``, auth's ``on_create_staff`` check, asks the guards.
+
+    Without ``ADMIN_APPROVALS`` holding ``auth.set_staff``, it lets the
+    creation through; ``check_admin_change`` asks it of a creation too.
+    """
+    created = AdminChange("create", frozenset({"is_staff"}), values={"is_staff": True})
+
+    refuse_staff_creation()  # Raises nothing.
+    assert run_async(check_admin_change(None, None, created)) is None
+
+
+def test_creating_staff_is_refused_while_making_staff_is_held(
+    api: TestClient,
+) -> None:
+    """With ``auth.set_staff`` held, the check refuses, from either side."""
+    created = AdminChange("create", frozenset({"is_staff"}), values={"is_staff": True})
+
+    with pytest.raises(ApprovalRequired):
+        refuse_staff_creation()
+    with pytest.raises(ApprovalRequired):
+        run_async(check_admin_change(None, None, created))
 
 
 @pytest.mark.parametrize("setting", ["SUBMIT_ACTION", "REJECT_ACTION", "CANCEL_ACTION"])

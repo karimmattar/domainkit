@@ -68,6 +68,7 @@ __all__ = [
     "PasswordGate",
     "SessionLimiter",
     "SessionLimits",
+    "StaffCheck",
     "SuperuserCheck",
     "check_gates_passed",
     "check_manage_logins",
@@ -75,6 +76,7 @@ __all__ = [
     "login_origin",
     "manages_logins",
     "on_admin_change",
+    "on_create_staff",
     "on_login_gate",
     "on_make_superuser",
     "on_manage_logins",
@@ -153,6 +155,21 @@ on_make_superuser: Final[HookPoint[SuperuserCheck]] = HookPoint(
 It runs before the admin API creates a superuser or makes a user one.
 ``domainkit.contrib.approvals`` registers its guard: where it holds the
 grant for approval, no one makes a superuser here.
+"""
+
+type StaffCheck = Callable[[], None]
+"""A check before the admin API creates a user who is staff: raise to refuse."""
+
+on_create_staff: Final[HookPoint[StaffCheck]] = HookPoint(
+    "create staff", arguments=0, awaited=False
+)
+"""Register a check of creating a user who is staff in the admin API.
+
+It runs with the admin API's own checks of a creation, before the
+``on_admin_change`` checks, and in the creation's twin too, so asking for
+an authorization of a creation it refuses is refused (since 2.5).
+``domainkit.contrib.approvals`` registers one while ``ADMIN_APPROVALS``
+holds making staff: create the user, then make them staff.
 """
 
 type AdminKind = Literal[

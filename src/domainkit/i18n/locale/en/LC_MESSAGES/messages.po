@@ -1319,6 +1319,11 @@ msgctxt "password"
 msgid "none"
 msgstr ""
 
+msgid "{items} and {count} more"
+msgid_plural "{items} and {count} more"
+msgstr[0] ""
+msgstr[1] ""
+
 msgid "{count} more value"
 msgid_plural "{count} more values"
 msgstr[0] ""

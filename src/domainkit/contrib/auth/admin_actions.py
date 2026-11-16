@@ -4,9 +4,10 @@ With ``AUTH.ADMIN_ACTION`` on (ADR 0163), every route of the admin API
 that changes a user or a group asks for an authorization of that change
 (``Action-Authorization``, ADR 0144), in place of a step-up window. Staff
 ask for one at the route's twin, ``POST <its path>/authorization``
-(``POST <its path>/delete/authorization`` for a ``DELETE``), confirm it
-with a code, the phone, or a passkey, and send it with the change, which
-spends it once, with its commit.
+(``<its path>/authorization/patch`` and ``.../delete`` where a ``PATCH``
+and a ``DELETE`` share a path), confirm it with a code, the phone, or a
+passkey, and send it with the change, which spends it once, with its
+commit. The admin API imports this module only while the setting is on.
 
 The act's arguments are the change (``AdminAct``): its kind, the user or
 group, and what it sets, adds, and takes away, sorted; never a password.
@@ -15,30 +16,28 @@ group: which one, and what changes.
 """
 
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import Final, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
-from starlette.requests import HTTPConnection
 
-from domainkit.http.access import BasePermission, Principal
 from domainkit.i18n import gettext, gettext_noop, ngettext, pgettext
 from domainkit.utils.decimals import jsonable
 
-from .access import StepUp
 from .actions import Action, Shown, spent_in_code
 from .exceptions import GroupNotFound, UserNotFound
 from .gates import AdminChange
 from .models import AbstractBaseUser, GroupId, UserId
 from .repositories.authorizations import DETAIL_MAX_LENGTH, MAX_DETAILS
-from .settings import auth_settings
 from .uow import AuthUnitOfWork
 
 PURPOSE: Final = "auth.admin_change"
 """The action each change of the admin API is, with ``ADMIN_ACTION`` on."""
 NEW: Final = "new"
 """The id in the subject of a user or a group being created."""
+FLAGS: Final = ("is_superuser", "is_staff", "is_active")
+"""The flags a change sets that grant or take access: shown first, always."""
 GROUP_KINDS: Final = frozenset(
     {"group_create", "group_rename", "group_permissions", "group_delete"}
 )
@@ -126,13 +125,19 @@ class AdminAct(BaseModel):
         *,
         name: str | None = None,
         password: bool | None = None,
+        values: Mapping[str, object] | None = None,
     ) -> "AdminAct":
-        """The act of ``change`` to ``user`` (None for one being created)."""
+        """The act of ``change`` to ``user`` (None for one being created).
+
+        ``values`` adds what the change sets that ``change.values`` leaves
+        out: whether a user created is active.
+        """
+        given = {**change.values, **(values or {})}
         return cls(
             kind=change.kind,
             user_id=None if user is None else user.id,
             name=name,
-            values={key: jsonable(value) for key, value in change.values.items()},
+            values={key: jsonable(value) for key, value in given.items()},
             added=tuple(sorted(change.added)),
             removed=tuple(sorted(change.removed)),
             password=password,
@@ -172,10 +177,13 @@ async def show(act: AdminAct) -> Shown:
     """Which user or group, and what changes, read from the stored one.
 
     The title says the kind of change; then the user or group by its
-    first identifier or name, the name given, the reason of an
-    impersonation, what is added and taken away, whether a new user gets a
-    password, and the values set, by field. Six values at most: with more,
-    the last line says how many are not shown.
+    first identifier or name, the name given, the flags that grant or take
+    access (``is_superuser``, ``is_staff``, ``is_active``), the reason of
+    an impersonation, what is added and taken away (as many as fit, and
+    how many more), whether a new user gets a password, and the other
+    values set, by field. Those come first and are never left out; of the
+    other values, six lines in all at most, the last saying how many are
+    not shown.
 
     Raises:
         UserNotFound: The user is gone.
@@ -195,12 +203,13 @@ async def show(act: AdminAct) -> Shown:
         )
         leading.append((gettext(label), act.name))
     values = dict(act.values)
+    leading.extend((flag, _text(values.pop(flag))) for flag in FLAGS if flag in values)
     if act.kind == "impersonate":
         leading.append((gettext(REASON), _text(values.pop("reason", ""))))
     if act.added:
-        leading.append((gettext(ADDS), ", ".join(act.added)))
+        leading.append((gettext(ADDS), listed(act.added)))
     if act.removed:
-        leading.append((gettext(TAKES_AWAY), ", ".join(act.removed)))
+        leading.append((gettext(TAKES_AWAY), listed(act.removed)))
     if act.kind == "create" and act.password is not None:
         state = pgettext("password", PASSWORD_STATES[act.password])
         leading.append((gettext(PASSWORD), state))
@@ -259,6 +268,31 @@ def fit(
     return [*details, *shown, (MORE_LABEL, fitted(more.format(count=hidden)))]
 
 
+def listed(items: tuple[str, ...]) -> str:
+    """``items``, joined, as many as fit on a line, and how many more.
+
+    A list too long for 64 characters shows its first items and says how
+    many it leaves out ("auditors, clerks and 4 more"): a screen never
+    drops one without saying so. A single item too long is cut.
+    """
+    names = [_printable(each) for each in items]
+    if len(names) == 1 or len(whole := ", ".join(names)) <= DETAIL_MAX_LENGTH:
+        return fitted(names[0]) if len(names) == 1 else whole
+    for shown in range(len(names) - 1, 0, -1):
+        text = _and_more(names[:shown], len(names) - shown)
+        if len(text) <= DETAIL_MAX_LENGTH:
+            return text
+    hidden = len(names) - 1
+    room = DETAIL_MAX_LENGTH - len(_and_more([""], hidden)) - len(CUT)
+    return _and_more([names[0][:room] + CUT], hidden)
+
+
+def _and_more(names: list[str], hidden: int) -> str:
+    """``names``, joined, and the count of those ``hidden``."""
+    more = ngettext("{items} and {count} more", "{items} and {count} more", hidden)
+    return more.format(items=", ".join(names), count=hidden)
+
+
 def _text(value: object) -> str:
     """``value`` as text: a string as itself, anything else as compact JSON."""
     if isinstance(value, str):
@@ -272,57 +306,24 @@ def fitted(text: str) -> str:
     A character that is not printable is shown escaped, as Python writes
     it; a longer text is cut, and ends with ``…``.
     """
-    printable = "".join(
-        each if each.isprintable() else each.encode("unicode_escape").decode("ascii")
-        for each in text
-    )
+    printable = _printable(text)
     if len(printable) <= DETAIL_MAX_LENGTH:
         return printable
     return printable[: DETAIL_MAX_LENGTH - len(CUT)] + CUT
 
 
+def _printable(text: str) -> str:
+    """``text``, each character that is not printable escaped as Python writes it."""
+    return "".join(
+        each if each.isprintable() else each.encode("unicode_escape").decode("ascii")
+        for each in text
+    )
+
+
 ADMIN_CHANGE: Final = spent_in_code(
     Action(PURPOSE, command=AdminAct, subject=subject_of, show=show)
 )
-"""A change of the admin API, spent with it (``admin._admin_change``)."""
+"""A change of the admin API, spent with it (``admin._admin_change``).
 
-
-def asked() -> bool:
-    """Whether the admin API's changes ask for authorizations (``ADMIN_ACTION``)."""
-    return auth_settings().ADMIN_ACTION
-
-
-class AdminChangeAuthorized(BasePermission):
-    """With ``AUTH.ADMIN_ACTION`` on: the change holds an authorization of its own.
-
-    It asks what ``StepUp(for_="auth.admin_change")`` asks (ADR 0144): an
-    ``Action-Authorization`` header holding a confirmed authorization of
-    the staff member's, of their login. ``401 authorization_required``
-    without one, ``403 action_not_authorized`` with one that does not hold;
-    staff acting as a user are refused. The route checks that it binds
-    the change it makes, when it makes it. Off, it allows everyone.
-    """
-
-    def __init__(self) -> None:
-        """Ask nothing until the setting is on."""
-        self._rule: BasePermission | None = None
-
-    def asking(self) -> BasePermission | None:
-        """``StepUp(for_="auth.admin_change")``, while the setting is on."""
-        if not asked():
-            return None
-        if self._rule is None:
-            self._rule = StepUp(for_=ADMIN_CHANGE)
-        return self._rule
-
-    async def has_permission(self, request: HTTPConnection, user: Principal) -> bool:
-        """The setting is off, or the request holds an authorization of a change."""
-        rule = self.asking()
-        return rule is None or await rule.has_permission(request, user)
-
-    async def refusal(
-        self, request: HTTPConnection, user: Principal
-    ) -> Exception | None:
-        """``401 authorization_required`` without the header; else ``403``."""
-        rule = self.asking()
-        return None if rule is None else await rule.refusal(request, user)
+Imported only once something asks for it (``AUTH.ADMIN_ACTION`` on): the
+admin API loads none of this module while the setting is off."""

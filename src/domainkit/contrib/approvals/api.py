@@ -80,6 +80,9 @@ TAGS: Final = ["approvals"]
 VIEW_EVERY: Final = "approvals.view_every_approvalrequest"
 """The permission that shows every request, not only one's own and those one decides."""
 READS: Final = frozenset({"GET", "HEAD"})
+TWIN: Final = "domainkit_twin"
+"""The attribute that marks a twin's endpoint: it asks for an authorization,
+and makes no act (``domainkit.resources.asking_authorization``)."""
 
 
 class RequestFilters(FilterSet):
@@ -312,6 +315,9 @@ async def ask_to_submit(
     command = await _submission(body, request, user)
     answer = await SubmitAction().ask_authorization(request, command)
     return ApprovalAuthorizationOut.model_validate(answer.model_dump())
+
+
+setattr(ask_to_submit, TWIN, True)
 
 
 async def _submission(

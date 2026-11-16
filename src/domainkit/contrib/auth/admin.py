@@ -27,16 +27,17 @@ recorded as events, so the audit trail shows who changed what.
 
 With ``AUTH.ADMIN_ACTION`` on, each change is an act (ADR 0163): its
 route asks for an authorization of ``auth.admin_change`` bound to that
-change, which its twin (``POST <its path>/authorization``, or
-``<its path>/delete/authorization`` for a ``DELETE``) asks for, and the
-change spends with its commit (``admin_actions``).
+change, which its twin asks for (``POST <its path>/authorization``, or
+``<its path>/authorization/patch`` and ``.../delete`` where a ``PATCH``
+and a ``DELETE`` share a path), and the change spends with its commit
+(``admin_actions``, imported only while the setting is on).
 """
 
 import dataclasses
 from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta
 from types import SimpleNamespace
-from typing import Annotated, Any, Final, Self, cast
+from typing import TYPE_CHECKING, Annotated, Any, Final, Self, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
@@ -52,7 +53,7 @@ from domainkit.ddd import PermissionDenied
 from domainkit.ddd.query import F
 from domainkit.ddd.query import Selection as Listing
 from domainkit.http import Pagination, error_responses
-from domainkit.http.access import IsUnscoped, Require
+from domainkit.http.access import BasePermission, IsUnscoped, Principal, Require
 from domainkit.http.errors import APIError
 from domainkit.resources import HasModelPermission as HasModelPermission
 from domainkit.resources import ModelActions, ResourceRouter
@@ -61,14 +62,13 @@ from domainkit.tenancy import tenants_beyond
 from domainkit.utils.decimals import jsonable
 
 from ._http import no_store
-from .access import IsAdminUser, IsSuperuser, impersonated
+from .access import IsAdminUser, IsSuperuser, StepUp, impersonated
 from .actions import (
     ActionAuthorizationOut,
     check_authorization,
     request_action_authorization,
     spend_authorization,
 )
-from .admin_actions import ADMIN_CHANGE, AdminAct, AdminChangeAuthorized, asked
 from .authentication import IMPERSONATION
 from .backends import (
     ModelBackend,
@@ -85,7 +85,13 @@ from .exceptions import (
     UnknownUserField,
     UserNotFound,
 )
-from .gates import AdminChange, AdminKind, on_admin_change, on_make_superuser
+from .gates import (
+    AdminChange,
+    AdminKind,
+    on_admin_change,
+    on_create_staff,
+    on_make_superuser,
+)
 from .models import AbstractBaseUser, AnyUser, Group, GroupId, Permission, UserId
 from .repositories import GroupRepository, user_search
 from .settings import auth_settings, identifier_fields
@@ -93,6 +99,12 @@ from .tokens import LoginMethod, LoginOrigin, logging_in
 from .uow import AuthUnitOfWork
 from .users import FieldValue, get_user_model, get_user_table, typed_fields
 from .validators import avalidate_password
+
+if TYPE_CHECKING:
+    from starlette.requests import HTTPConnection
+
+    from .actions import Action
+    from .admin_actions import ActKind, AdminAct
 
 __all__ = [
     "may_change",
@@ -144,11 +156,99 @@ def _change(action: str, model: Callable[[], type]) -> Any:  # noqa: ANN401 - De
     """The dependency of a change: staff with ``action``, and its authorization.
 
     With ``AUTH.ADMIN_ACTION`` on, the request holds an authorization of an
-    admin change (``AdminChangeAuthorized``, ADR 0163); the route spends it
-    on the change it makes, which must be the one authorized.
+    admin change (``ChangeAuthorized``, ADR 0163); the route spends it on
+    the change it makes, which must be the one authorized.
     """
     rules = staff_rules(model).rules_for(action)
-    return Depends(Require(*rules, AdminChangeAuthorized()))
+    return Depends(Require(*rules, ChangeAuthorized()))
+
+
+def _asked() -> bool:
+    """Whether the admin API's changes ask for authorizations (``ADMIN_ACTION``)."""
+    return auth_settings().ADMIN_ACTION
+
+
+class ChangeAuthorized(BasePermission):
+    """With ``AUTH.ADMIN_ACTION`` on: the change holds an authorization of its own.
+
+    It asks what ``StepUp(for_="auth.admin_change")`` asks (ADR 0144): an
+    ``Action-Authorization`` header holding a confirmed authorization of
+    the staff member's, of their login. ``401 authorization_required``
+    without one, ``403 action_not_authorized`` with one that does not hold;
+    staff acting as a user are refused. The route checks that it binds the
+    change it makes, when it makes it. Off, it allows everyone, and the
+    action's module is not loaded.
+    """
+
+    def __init__(self) -> None:
+        """Ask nothing until the setting is on."""
+        self._rule: BasePermission | None = None
+
+    def _asking(self) -> BasePermission | None:
+        """``StepUp(for_="auth.admin_change")``, while the setting is on."""
+        if not _asked():
+            return None
+        if self._rule is None:
+            self._rule = StepUp(for_=_admin_change_action())
+        return self._rule
+
+    async def has_permission(self, request: "HTTPConnection", user: Principal) -> bool:
+        """The setting is off, or the request holds an authorization of a change."""
+        rule = self._asking()
+        return rule is None or await rule.has_permission(request, user)
+
+    async def refusal(
+        self, request: "HTTPConnection", user: Principal
+    ) -> Exception | None:
+        """``401 authorization_required`` without the header; else ``403``."""
+        rule = self._asking()
+        return None if rule is None else await rule.refusal(request, user)
+
+
+def _admin_change_action() -> "Action":
+    """``auth.admin_change``, loaded on first use (``admin_actions``)."""
+    from .admin_actions import ADMIN_CHANGE
+
+    return ADMIN_CHANGE
+
+
+TWIN: Final = "domainkit_twin"
+"""The attribute that marks a twin's endpoint: it asks for an authorization,
+and makes no change (``domainkit.resources.asking_authorization``)."""
+
+
+def _twin[F: Callable[..., Any]](endpoint: F) -> F:
+    """Mark ``endpoint`` as a twin (``TWIN``)."""
+    setattr(endpoint, TWIN, True)
+    return endpoint
+
+
+def _user_act(
+    user: AbstractBaseUser | None,
+    change: AdminChange,
+    *,
+    name: str | None = None,
+    password: bool | None = None,
+    values: dict[str, object] | None = None,
+) -> "AdminAct":
+    """The act of ``change`` to ``user``, as its authorization binds it."""
+    from .admin_actions import AdminAct
+
+    return AdminAct.of(user, change, name=name, password=password, values=values)
+
+
+def _group_act(
+    kind: "ActKind",
+    group_id: UUID | None = None,
+    *,
+    name: str | None = None,
+    added: Iterable[str] = (),
+    removed: Iterable[str] = (),
+) -> "AdminAct":
+    """The act of a change to a group, as its authorization binds it."""
+    from .admin_actions import AdminAct
+
+    return AdminAct.of_group(kind, group_id, name=name, added=added, removed=removed)
 
 
 def _user_change(action: str) -> Any:  # noqa: ANN401 - Depends.
@@ -407,7 +507,7 @@ async def create_user(
     """
     fields, flags, change = await _creating(actor, body)
     async with AuthUnitOfWork() as uow:
-        await _admin_change(actor, None, change, _created(body, change), uow)
+        await _admin_change(actor, None, change, uow, lambda: _created(body, change))
         user = await uow.users.create_user(
             body.username, body.password, **fields, **flags
         )
@@ -424,6 +524,7 @@ async def create_user(
     status_code=status.HTTP_201_CREATED,
     responses=_errors(*ASK),
 )
+@_twin
 async def ask_to_create_user(
     body: AdminUserIn,
     request: Request,
@@ -456,6 +557,9 @@ async def _creating(
     if body.password is not None:
         candidate = SimpleNamespace(**{**fields, model.USERNAME_FIELD: body.username})
         await avalidate_password(body.password, candidate)
+    if body.is_staff:
+        for hook in on_create_staff:  # Approvals, while making staff is held.
+            hook.call()
     flags_set = {name for name in ("is_staff", "is_superuser") if getattr(body, name)}
     change = AdminChange(
         "create",
@@ -465,10 +569,18 @@ async def _creating(
     return fields, flags, change
 
 
-def _created(body: AdminUserIn, change: AdminChange) -> AdminAct:
-    """The act of creating ``body``'s user: its username, and a password or none."""
-    return AdminAct.of(
-        None, change, name=body.username, password=body.password is not None
+def _created(body: AdminUserIn, change: AdminChange) -> "AdminAct":
+    """The act of creating ``body``'s user: its name, activity, and password.
+
+    Whether the user is active is bound, though ``change`` names it only
+    when set; whether there is a password, never which.
+    """
+    return _user_act(
+        None,
+        change,
+        name=body.username,
+        password=body.password is not None,
+        values={"is_active": body.is_active},
     )
 
 
@@ -486,13 +598,9 @@ async def update_user(
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
         fields, change = await _updating(actor, user, body)
-        await _admin_change(actor, user, change, AdminAct.of(user, change), uow)
+        await _admin_change(actor, user, change, uow, lambda: _user_act(user, change))
         was_active = user.is_active
-        if (
-            user.is_superuser
-            and user.is_active
-            and False in (body.is_superuser, body.is_active)
-        ):
+        if _demoting(user, body):
             await _not_the_last_superuser(uow)  # Before anything is flushed.
         set_staff = getattr(user, "set_staff", None)
         if body.is_staff is not None and set_staff is not None:
@@ -512,10 +620,11 @@ async def update_user(
 
 
 @router.post(
-    "/users/{user_id}/authorization",
+    "/users/{user_id}/authorization/patch",
     status_code=status.HTTP_201_CREATED,
     responses=_errors(*ASK),
 )
+@_twin
 async def ask_to_update_user(
     user_id: UUID,
     body: AdminUserPatch,
@@ -528,7 +637,18 @@ async def ask_to_update_user(
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
         _, change = await _updating(actor, user, body)
-    return await _ask(request, response, AdminAct.of(user, change))
+        if _demoting(user, body):
+            await _not_the_last_superuser(uow)
+    return await _ask(request, response, _user_act(user, change))
+
+
+def _demoting(user: AbstractBaseUser, body: AdminUserPatch) -> bool:
+    """Whether ``body`` takes an active superuser's status or activity away."""
+    return (
+        user.is_superuser
+        and user.is_active
+        and False in (body.is_superuser, body.is_active)
+    )
 
 
 async def _updating(
@@ -564,7 +684,7 @@ async def delete_user(
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
         change = await _changing(actor, user, "delete")
-        await _admin_change(actor, user, change, AdminAct.of(user, change), uow)
+        await _admin_change(actor, user, change, uow, lambda: _user_act(user, change))
         if user.is_superuser and user.is_active:
             await _not_the_last_superuser(uow)
         user.delete()
@@ -573,10 +693,11 @@ async def delete_user(
 
 
 @router.post(
-    "/users/{user_id}/delete/authorization",
+    "/users/{user_id}/authorization/delete",
     status_code=status.HTTP_201_CREATED,
     responses=_errors(*ASK),
 )
+@_twin
 async def ask_to_delete_user(
     user_id: UUID,
     request: Request,
@@ -587,8 +708,10 @@ async def ask_to_delete_user(
     _asking()
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
-    change = await _changing(actor, user, "delete")
-    return await _ask(request, response, AdminAct.of(user, change))
+        change = await _changing(actor, user, "delete")
+        if user.is_superuser and user.is_active:
+            await _not_the_last_superuser(uow)
+    return await _ask(request, response, _user_act(user, change))
 
 
 async def _changing(
@@ -617,7 +740,7 @@ async def set_password(
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
         change = await _setting_password(actor, user, body)
-        await _admin_change(actor, user, change, _password_act(user, body), uow)
+        await _admin_change(actor, user, change, uow, lambda: _password_act(user, body))
         await uow.users.set_password(
             user, body.password, priority=True, temporary=user.id != actor.id
         )
@@ -630,6 +753,7 @@ async def set_password(
     status_code=status.HTTP_201_CREATED,
     responses=_errors(*ASK),
 )
+@_twin
 async def ask_to_set_password(
     user_id: UUID,
     body: AdminPasswordIn,
@@ -641,7 +765,7 @@ async def ask_to_set_password(
     _asking()
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
-    await _setting_password(actor, user, body)
+        await _setting_password(actor, user, body)
     return await _ask(request, response, _password_act(user, body))
 
 
@@ -655,11 +779,10 @@ async def _setting_password(
     return AdminChange("password")
 
 
-def _password_act(user: AbstractBaseUser, body: AdminPasswordIn) -> AdminAct:
+def _password_act(user: AbstractBaseUser, body: AdminPasswordIn) -> "AdminAct":
     """The act of setting ``user``'s password: usable or not, never which."""
-    return AdminAct.of(
-        user, AdminChange("password"), password=body.password is not None
-    )
+    usable = body.password is not None
+    return _user_act(user, AdminChange("password"), password=usable)
 
 
 @router.post(
@@ -674,7 +797,7 @@ async def log_out_user(
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
         change = await _changing(actor, user, "logout")
-        await _admin_change(actor, user, change, AdminAct.of(user, change), uow)
+        await _admin_change(actor, user, change, uow, lambda: _user_act(user, change))
         await uow.tokens.revoke_user(user.id)
         user.record(UserLoggedOut(user_id=user.id, everywhere=True))
         await uow.commit()
@@ -685,6 +808,7 @@ async def log_out_user(
     status_code=status.HTTP_201_CREATED,
     responses=_errors(*ASK),
 )
+@_twin
 async def ask_to_log_out_user(
     user_id: UUID,
     request: Request,
@@ -695,8 +819,8 @@ async def ask_to_log_out_user(
     _asking()
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
-    change = await _changing(actor, user, "logout")
-    return await _ask(request, response, AdminAct.of(user, change))
+        change = await _changing(actor, user, "logout")
+    return await _ask(request, response, _user_act(user, change))
 
 
 @router.post(
@@ -729,7 +853,7 @@ async def impersonate(
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
         change = await _impersonating(actor, user, body)
-        await _admin_change(actor, user, change, AdminAct.of(user, change), uow)
+        await _admin_change(actor, user, change, uow, lambda: _user_act(user, change))
         with logging_in(LoginOrigin(LoginMethod.IMPERSONATION)):
             raw = await uow.tokens.issue(
                 user.id, ttl=ttl, name=IMPERSONATION, family=staff_id
@@ -748,6 +872,7 @@ async def impersonate(
     status_code=status.HTTP_201_CREATED,
     responses=_errors(*ASK),
 )
+@_twin
 async def ask_to_impersonate(
     user_id: UUID,
     body: ImpersonateIn,
@@ -760,8 +885,8 @@ async def ask_to_impersonate(
     _impersonation_ttl(request, actor, user_id)
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
-    change = await _impersonating(actor, user, body)
-    return await _ask(request, response, AdminAct.of(user, change))
+        change = await _impersonating(actor, user, body)
+    return await _ask(request, response, _user_act(user, change))
 
 
 def _impersonation_ttl(request: Request, actor: AnyUser, user_id: UUID) -> timedelta:
@@ -803,7 +928,7 @@ async def set_user_groups(
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
         wanted, added, change = await _grouping(uow, actor, user, body)
-        await _admin_change(actor, user, change, AdminAct.of(user, change), uow)
+        await _admin_change(actor, user, change, uow, lambda: _user_act(user, change))
         for group in [group for group in user.groups if group not in wanted]:
             user.leave(group)
         for group in added:
@@ -817,6 +942,7 @@ async def set_user_groups(
     status_code=status.HTTP_201_CREATED,
     responses=_errors(*ASK),
 )
+@_twin
 async def ask_to_set_user_groups(
     user_id: UUID,
     body: GroupsIn,
@@ -829,7 +955,7 @@ async def ask_to_set_user_groups(
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
         _, _, change = await _grouping(uow, actor, user, body)
-    return await _ask(request, response, AdminAct.of(user, change))
+    return await _ask(request, response, _user_act(user, change))
 
 
 async def _grouping(
@@ -860,7 +986,7 @@ async def set_user_permissions(
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
         wanted, added, change = await _granting(uow, actor, user, body)
-        await _admin_change(actor, user, change, AdminAct.of(user, change), uow)
+        await _admin_change(actor, user, change, uow, lambda: _user_act(user, change))
         user.revoke(*[p for p in user.user_permissions if p not in wanted])
         user.grant(*added)
         await uow.commit()
@@ -872,6 +998,7 @@ async def set_user_permissions(
     status_code=status.HTTP_201_CREATED,
     responses=_errors(*ASK),
 )
+@_twin
 async def ask_to_set_user_permissions(
     user_id: UUID,
     body: PermissionsIn,
@@ -884,7 +1011,7 @@ async def ask_to_set_user_permissions(
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
         _, _, change = await _granting(uow, actor, user, body)
-    return await _ask(request, response, AdminAct.of(user, change))
+    return await _ask(request, response, _user_act(user, change))
 
 
 async def _granting(
@@ -912,8 +1039,11 @@ async def create_group(
 ) -> GroupOut:
     """Create a group with ``permissions``."""
     async with AuthUnitOfWork() as uow:
-        permissions, act = await _creating_group(uow, actor, body)
-        await _spend(uow, act)
+        permissions = await _creating_group(uow, actor, body)
+        keys = {permission.key for permission in permissions}
+        await _spend(
+            uow, lambda: _group_act("group_create", name=body.name, added=keys)
+        )
         group = await uow.groups.create(body.name)
         group.grant(*permissions)
         await uow.commit()
@@ -925,6 +1055,7 @@ async def create_group(
     status_code=status.HTTP_201_CREATED,
     responses=_errors(*ASK),
 )
+@_twin
 async def ask_to_create_group(
     body: GroupIn,
     request: Request,
@@ -934,18 +1065,19 @@ async def ask_to_create_group(
     """Ask for an authorization of creating this group (``AUTH.ADMIN_ACTION``)."""
     _asking()
     async with AuthUnitOfWork() as uow:
-        _, act = await _creating_group(uow, actor, body)
+        permissions = await _creating_group(uow, actor, body)
+    keys = {permission.key for permission in permissions}
+    act = _group_act("group_create", name=body.name, added=keys)
     return await _ask(request, response, act)
 
 
 async def _creating_group(
     uow: AuthUnitOfWork, actor: AnyUser, body: GroupIn
-) -> tuple[list[Permission], AdminAct]:
-    """The permissions a new group gets, checked; the act it is."""
+) -> list[Permission]:
+    """The permissions a new group gets, if ``actor`` may grant them."""
     permissions = await uow.permissions.get_many(body.permissions)
-    keys = {permission.key for permission in permissions}
-    await may_grant(actor, keys)
-    return permissions, AdminAct.of_group("group_create", name=body.name, added=keys)
+    await may_grant(actor, {permission.key for permission in permissions})
+    return permissions
 
 
 @router.patch("/groups/{group_id}", responses=_errors(*CHANGE))
@@ -956,17 +1088,18 @@ async def rename_group(
     async with AuthUnitOfWork() as uow:
         group = await _group(uow, group_id)
         await _may_change_group(actor, group)
-        await _spend(uow, AdminAct.of_group("group_rename", group.id, name=body.name))
+        await _spend(uow, lambda: _group_act("group_rename", group.id, name=body.name))
         await uow.groups.rename(group, body.name)
         await uow.commit()
     return GroupOut.of(group)
 
 
 @router.post(
-    "/groups/{group_id}/authorization",
+    "/groups/{group_id}/authorization/patch",
     status_code=status.HTTP_201_CREATED,
     responses=_errors(*ASK),
 )
+@_twin
 async def ask_to_rename_group(
     group_id: UUID,
     body: GroupPatch,
@@ -978,8 +1111,8 @@ async def ask_to_rename_group(
     _asking()
     async with AuthUnitOfWork() as uow:
         group = await _group(uow, group_id)
-    await _may_change_group(actor, group)
-    act = AdminAct.of_group("group_rename", group.id, name=body.name)
+        await _may_change_group(actor, group)
+    act = _group_act("group_rename", group.id, name=body.name)
     return await _ask(request, response, act)
 
 
@@ -992,8 +1125,8 @@ async def set_group_permissions(
     """Grant the group exactly ``permissions``; its members gain and lose them."""
     async with AuthUnitOfWork() as uow:
         group = await _group(uow, group_id)
-        wanted, added, act = await _granting_group(uow, actor, group, body)
-        await _spend(uow, act)
+        wanted, added, removed = await _granting_group(uow, actor, group, body)
+        await _spend(uow, lambda: _granted_to(group, added, removed))
         group.revoke(*[p for p in group.permissions if p not in wanted])
         group.grant(*added)
         await uow.commit()
@@ -1005,6 +1138,7 @@ async def set_group_permissions(
     status_code=status.HTTP_201_CREATED,
     responses=_errors(*ASK),
 )
+@_twin
 async def ask_to_set_group_permissions(
     group_id: UUID,
     body: PermissionsIn,
@@ -1016,26 +1150,32 @@ async def ask_to_set_group_permissions(
     _asking()
     async with AuthUnitOfWork() as uow:
         group = await _group(uow, group_id)
-        _, _, act = await _granting_group(uow, actor, group, body)
-    return await _ask(request, response, act)
+        _, added, removed = await _granting_group(uow, actor, group, body)
+    return await _ask(request, response, _granted_to(group, added, removed))
 
 
 async def _granting_group(
     uow: AuthUnitOfWork, actor: AnyUser, group: Group, body: PermissionsIn
-) -> tuple[list[Permission], list[Permission], AdminAct]:
-    """The permissions wanted and added, checked; the act it is."""
+) -> tuple[list[Permission], list[Permission], list[Permission]]:
+    """The permissions wanted, added, and taken away, checked."""
     await _may_change_group(actor, group)
     wanted = await uow.permissions.get_many(body.permissions)
     added = [permission for permission in wanted if permission not in group.permissions]
     removed = [p for p in group.permissions if p not in wanted]
     await may_grant(actor, {permission.key for permission in added})
-    act = AdminAct.of_group(
+    return wanted, added, removed
+
+
+def _granted_to(
+    group: Group, added: list[Permission], removed: list[Permission]
+) -> "AdminAct":
+    """The act of granting ``group`` ``added`` and taking ``removed`` away."""
+    return _group_act(
         "group_permissions",
         group.id,
         added=(permission.key for permission in added),
         removed=(permission.key for permission in removed),
     )
-    return wanted, added, act
 
 
 @router.delete(
@@ -1050,17 +1190,18 @@ async def delete_group(
     async with AuthUnitOfWork() as uow:
         group = await _group(uow, group_id)
         await _may_change_group(actor, group)
-        await _spend(uow, AdminAct.of_group("group_delete", group.id))
+        await _spend(uow, lambda: _group_act("group_delete", group.id))
         group.delete()
         await uow.groups.remove(group)
         await uow.commit()
 
 
 @router.post(
-    "/groups/{group_id}/delete/authorization",
+    "/groups/{group_id}/authorization/delete",
     status_code=status.HTTP_201_CREATED,
     responses=_errors(*ASK),
 )
+@_twin
 async def ask_to_delete_group(
     group_id: UUID,
     request: Request,
@@ -1071,8 +1212,8 @@ async def ask_to_delete_group(
     _asking()
     async with AuthUnitOfWork() as uow:
         group = await _group(uow, group_id)
-    await _may_change_group(actor, group)
-    return await _ask(request, response, AdminAct.of_group("group_delete", group.id))
+        await _may_change_group(actor, group)
+    return await _ask(request, response, _group_act("group_delete", group.id))
 
 
 @router.get("/permissions", responses=_errors(*COMMON))
@@ -1099,12 +1240,12 @@ def _asking() -> None:
         APIError: 404 ``not_found``, while ``AUTH.ADMIN_ACTION`` is off: a
             twin answers as a route that is not there.
     """
-    if not asked():
+    if not _asked():
         raise APIError(status.HTTP_404_NOT_FOUND, "Not Found", code="not_found")
 
 
 async def _ask(
-    request: Request, response: Response, act: AdminAct
+    request: Request, response: Response, act: "AdminAct"
 ) -> ActionAuthorizationOut:
     """Store an authorization of ``act`` for the staff member; what they are told.
 
@@ -1112,7 +1253,8 @@ async def _ask(
     that cannot ask, no way to confirm, staff acting as a user.
     """
     no_store(response)
-    asked_for = await request_action_authorization(request, ADMIN_CHANGE, act)
+    action = _admin_change_action()
+    asked_for = await request_action_authorization(request, action, act)
     return ActionAuthorizationOut.of(asked_for)
 
 
@@ -1144,29 +1286,32 @@ async def _admin_change(
     actor: AnyUser,
     user: AbstractBaseUser | None,
     change: AdminChange,
-    act: AdminAct,
     uow: AuthUnitOfWork,
+    act: Callable[[], "AdminAct"],
 ) -> None:
     """Run the domains' ``on_admin_change`` checks; any may refuse ``change``.
 
     With ``AUTH.ADMIN_ACTION`` on, the request's authorization must bind
-    ``act``, the change as staff authorized it: checked before the checks
+    ``act()``, the change as staff authorized it: checked before the checks
     (one may spend an approval), and spent after them, in ``uow``'s
-    transaction, so it is spent if and only if the change commits.
+    transaction, so it is spent if and only if the change commits. Off, the
+    act is never built.
 
     Raises:
         ActionNotAuthorized: With ``ADMIN_ACTION``, the authorization is of
             another change (it is voided), or was spent meanwhile.
     """
-    if asked():
-        await check_authorization(ADMIN_CHANGE, act)
+    made = act() if _asked() else None
+    if made is not None:
+        await check_authorization(_admin_change_action(), made)
     for hook in on_admin_change:
         await hook.call(actor, user, change)
-    await _spend(uow, act)
+    if made is not None:
+        await spend_authorization(uow, _admin_change_action(), made)
 
 
-async def _spend(uow: AuthUnitOfWork, act: AdminAct) -> None:
-    """With ``AUTH.ADMIN_ACTION`` on, spend the request's authorization of ``act``.
+async def _spend(uow: AuthUnitOfWork, act: Callable[[], "AdminAct"]) -> None:
+    """With ``AUTH.ADMIN_ACTION`` on, spend the request's authorization of ``act()``.
 
     In ``uow``'s transaction: it is spent if and only if the change commits.
 
@@ -1174,8 +1319,8 @@ async def _spend(uow: AuthUnitOfWork, act: AdminAct) -> None:
         ActionNotAuthorized: It is of another change (it is voided), or was
             spent meanwhile.
     """
-    if asked():
-        await spend_authorization(uow, ADMIN_CHANGE, act)
+    if _asked():
+        await spend_authorization(uow, _admin_change_action(), act())
 
 
 def _approval_needed() -> None:
