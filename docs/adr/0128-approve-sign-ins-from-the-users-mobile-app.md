@@ -1,6 +1,6 @@
 # 0128. Approve sign-ins from the user's mobile app
 
-- Status: Accepted
+- Status: Accepted; amended by [0155](0155-choose-number-matching-and-the-same-network-per-page.md)
 - Date: 2026-11-05
 
 ## Context

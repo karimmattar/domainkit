@@ -138,7 +138,7 @@ statuses, and the amendments they name.
 | [0125](0125-freeze-the-public-api-for-1-0-renaming-what-was-never-published.md) | Freeze the public API for 1.0, renaming what was never published | Accepted |
 | [0126](0126-identify-users-by-the-fields-a-project-chooses-and-verify-them-by-code.md) | Identify users by the fields a project chooses, and verify them by code | Accepted; links removed in 2.0, as decided here |
 | [0127](0127-ping-a-pooled-connection-only-after-it-rested.md) | Ping a pooled connection only after it rested | Accepted |
-| [0128](0128-approve-sign-ins-from-the-users-mobile-app.md) | Approve sign-ins from the user's mobile app | Accepted |
+| [0128](0128-approve-sign-ins-from-the-users-mobile-app.md) | Approve sign-ins from the user's mobile app | Accepted; amended by [0155](0155-choose-number-matching-and-the-same-network-per-page.md) |
 | [0129](0129-complete-the-phone-as-identity.md) | Complete the phone as identity | Accepted |
 | [0130](0130-show-where-each-login-came-from-and-manage-logins-from-the-phone.md) | Show where each login came from, and manage logins from the phone | Accepted |
 | [0131](0131-choose-what-a-password-change-does-to-the-devices-logins.md) | Choose what a password change does to the devices' logins | Accepted |
@@ -163,6 +163,7 @@ statuses, and the amendments they name.
 | [0150](0150-take-the-tenant-from-the-path-and-let-members-hold-permissions.md) | Take the tenant from the path, and let members hold permissions | Accepted |
 | [0151](0151-object-grants-that-expire-roles-and-owners-a-caller-administers.md) | Object grants that expire, roles, and owners a caller administers | Accepted |
 | [0152](0152-link-the-pages-the-code-names-to-the-releases-tag.md) | Link the pages the code names to the release's tag | Accepted |
+| [0155](0155-choose-number-matching-and-the-same-network-per-page.md) | Choose number matching and the same network per page | Accepted |
 
 ### Decisions still without a record
 
