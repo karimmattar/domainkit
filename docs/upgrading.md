@@ -1160,8 +1160,10 @@ class SearchConfig(DomainConfig):
     async def startup(self) -> None:
         await index.connect()
 
+
 # 0.12
 from domainkit.apps.hooks import on_startup
+
 
 class SearchConfig(DomainConfig):
     def ready(self) -> None:
