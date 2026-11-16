@@ -75,6 +75,38 @@ Users, groups, and permissions for REST APIs (Django's `contrib.auth`).
 - `password_help_texts`: What each configured rule asks of a password, for API clients.
 - `validate_password`: Raise `InvalidPassword` listing every rule `password` breaks.
 
+## `domainkit.contrib.auth.actions`
+
+Authorize one act, with its arguments, once (ADR 0144).
+
+- `AUTHORIZATION_HEADER`: The header a request sends its act's authorization in: `<id>.<code>`.
+- `Action`: An act that asks for its own authorization: its purpose, command, and words.
+- `ActionAuthorization`: An act waiting for its user's authorization, or holding it (ADR 0144).
+- `ActionAuthorizationOut`: An authorization asked for: confirm it, then send it with the act.
+- `ActionAuthorizationUsed`: An act's authorization was spent on that act, once.
+- `ActionAuthorized`: A user confirmed one act, with its arguments (`auth.actions`).
+- `ActionConfirmation`: A way to confirm action authorizations: what it proves, and who has it.
+- `ActionNotAuthorized`: No authorization holds for this act: ask for one, then try again (403).
+- `AuthorizationChanged`: What the device was shown is not what the authorization holds (409).
+- `AuthorizationNeedsOtherFactors`: The act asks confirming it to prove what this way does not (409).
+- `AuthorizationNotFound`: No authorization of the user's, or of the login's, has that id (404).
+- `AuthorizationRequired`: The act needs an authorization of its own, and none came with it (401).
+- `Shown`: What the user is shown of an act: a title, and up to six labelled values.
+- `action_authorization`: The user's authorization `authorization_id`, to show it, in any state.
+- `action_for`: The registered action of `purpose`, if there is one.
+- `confirm_action_with`: Confirm the authorization, which `methods` proved; return `<id>.<code>`.
+- `confirmed_action_authorization`: `<id>.<code>` of the user's confirmed authorization, for the confirming app.
+- `link_action_authorization`: Link what will confirm the authorization: the phone's request, or a passkey's.
+- `linked_action_authorization`: The user's authorization the phone's request `sign_in_request_id` confirms.
+- `login_digest`: The login's digest: the SHA-256 of its scheme and token, as the phone keeps it.
+- `on_action_confirmation`: Register a way to confirm action authorizations (an `ActionConfirmation`).
+- `register_action`: Register an `Action` (`register_action(END_MEMBERSHIP)` in `ready()`).
+- `registered_actions`: Every registered action, by purpose.
+- `request_action_authorization`: Store an authorization of `command` for the request's user and login.
+- `requires_authorization`: Spend the request's authorization of `action` on the service's command.
+- `router`: The routes: authorize one act, with its arguments, once (ADR 0144).
+- `spend_authorization`: Spend the request's authorization of `action` on `command`, in code.
+
 ## `domainkit.contrib.auth.admin`
 
 The admin API: users, groups, and permissions over REST (Django's admin).
@@ -395,15 +427,28 @@ Passkeys (WebAuthn) and bound devices: keys a user's devices hold.
 
 The routes of passkeys and bound devices.
 
-- `router`: The routes: passkeys registered, logging in and stepping up; devices bound, listed, unbound, stepping up.
+- `router`: The routes: passkeys registered, logging in and stepping up; devices bound, listed, unbound, stepping up; acts' authorizations confirmed.
+
+## `domainkit.contrib.devices.authorizations`
+
+Confirming an act's authorization with a bound device or a passkey (ADR 0144).
+
+- `DEVICE_CONFIRMATION`: The app's own act, signed by a bound device: `hwk` and `phone`.
+- `PASSKEY_CONFIRMATION`: A passkey verified with its user: `hwk` and `mfa`, never `phone`.
+- `AuthorizationOut`: The authorization: send it with the act, in `Action-Authorization`, once.
+- `confirm_with_device`: Confirm the app's own authorization, whose act's digest its device signed.
+- `confirm_with_passkey`: Confirm one of the session's authorizations: the user's passkey answered.
+- `passkey_options`: The options to confirm one of the session's authorizations with a passkey.
 
 ## `domainkit.contrib.devices.binding`
 
 Requests signed by a bound device's key.
 
+- `DeviceProof`: What a bound device signed for a request: enough to check it again later.
 - `DeviceSigned`: Requests a bound device of the user signed, now, once.
 - `bind_key`: Bind `key` to the user in `uow`, which its caller commits.
 - `device_key`: A device key's algorithm, and the key as SubjectPublicKeyInfo.
+- `device_proof`: What the device of `user` that signed the request signed, and its key.
 - `mark_signed_by`: Count `request` as signed by `device`, which it just bound.
 - `proves_key`: Whether `request` is signed by `key`, now (`DEVICES.SIGNATURE_WINDOW`).
 - `signed_message`: What a device signs for a request.
@@ -494,6 +539,10 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `MANAGES_LOGINS`: `dependencies=[MANAGES_LOGINS]`: the route passes `on_manage_logins`.
 - `PASSWORD_MAX_LENGTH`: The longest password auth checks: longer ones are refused before hashing.
 - `REAUTH_AGE`: How recent a step-up must be to stand for the password (`reauthenticate`).
+- `ActionAuthorization`: An act waiting for its user's authorization, or holding it (ADR 0144).
+- `ActionConfirmation`: A way to confirm action authorizations: what it proves, and who has it.
+- `AuthorizationChanged`: What the device was shown is not what the authorization holds (409).
+- `AuthorizationNeedsOtherFactors`: The act asks confirming it to prove what this way does not (409).
 - `CsrfOut`: The token to send back in `X-CSRF-Token` with unsafe methods.
 - `LoginMethod`: How a login signed in (ADR 0130): shown with it, to tell logins apart.
 - `MfaChallengeOut`: The password holds; send this token and a code to `/mfa/login`.
@@ -506,6 +555,8 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `UserLoggedOut`: A user logged out: of this session, or `everywhere`.
 - `UserSignedUp`: Someone created their own account (`AUTH.SIGNUP_ENABLED`).
 - `account_key`: The count of `scope` attempts at the account `username` names.
+- `action_authorization`: The user's authorization `authorization_id`, to show it, in any state.
+- `action_for`: The registered action of `purpose`, if there is one.
 - `address_key`: The count of `scope` attempts from the request's client address.
 - `attach_login_device`: Mark the login that sent `request` as the bound device `device_id`'s.
 - `attempt`: Count an attempt against each `(key, rate)`; refuse it past a rate.
@@ -516,15 +567,21 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `check_manage_logins`: Run every check of `on_manage_logins` on `request`.
 - `check_origin`: Refuse a request whose `Origin` (or `Referer`) is not trusted.
 - `check_password_again`: Check the user's password again, counted with their other password checks.
+- `confirm_action_with`: Confirm the authorization, which `methods` proved; return `<id>.<code>`.
 - `confirm_transaction_with`: Confirm `challenge`, which `methods` proved; return its authorization.
+- `confirmed_action_authorization`: `<id>.<code>` of the user's confirmed authorization, for the confirming app.
 - `end_device_logins`: End the logins marked as the bound device `device_id`'s: how many.
 - `first_use_after_code`: `user`, a password staff set changed now that the second factor held.
 - `gates_passed`: Let the login of `user_id` through, in the block, with no gate run.
 - `impersonated`: Whether staff act as the user on `connection` (an impersonation).
 - `issue_login`: Record the user's login, and issue them tokens (the first class's).
+- `link_action_authorization`: Link what will confirm the authorization: the phone's request, or a passkey's.
+- `linked_action_authorization`: The user's authorization the phone's request `sign_in_request_id` confirms.
+- `login_digest`: The login's digest: the SHA-256 of its scheme and token, as the phone keeps it.
 - `mail_user`: Mail `user` at their address from `template`; False where none can go.
 - `needs_second_factor`: Whether `user` turned a second factor on: a login needs its code.
 - `note_login_device`: Say that the user's bound device `device_id` signed this request.
+- `on_action_confirmation`: Register a way to confirm action authorizations (an `ActionConfirmation`).
 - `on_login_gate`: Register a gate every login passes (`on_login_gate(gate)` in `ready()`).
 - `on_manage_logins`: Register a check of requests that manage logins (ADR 0130).
 - `on_password_login`: Register a gate of password logins that runs before the password does.
@@ -533,6 +590,7 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `proof_of`: The step-up of the connection's credentials, read once a request.
 - `reauthenticate`: The user authenticated again: `password`, or a step-up within `REAUTH_AGE`.
 - `record_step_up`: Keep `proof` where the credentials keep step-ups, and say so (`SteppedUp`).
+- `register_action`: Register an `Action` (`register_action(END_MEMBERSHIP)` in `ready()`).
 - `sca_transaction`: The user's transaction `challenge_id`: its amount, payee, and state.
 - `second_factor_holds`: Whether `code` proves `user`'s second factor; a code that does is spent.
 - `send_code`: Issue a code for `purpose` and send it where `identifier` reaches `user`.
@@ -634,6 +692,7 @@ Approve sign-ins from the user's mobile app: OIDC CIBA, push and QR.
 - `CibaSettings`: How sign-in requests reach the phone, last, and are limited; all optional.
 - `CibaUnitOfWork`: The devices unit of work, with the CIBA tables (on the same database).
 - `DifferentNetwork`: The phone is not on the address of the page (403, `QR_SAME_NETWORK`).
+- `DigestRequired`: Approving an act needs the digest the phone was shown (422).
 - `PhoneApprovalRequired`: This login must be approved from the user's mobile app (403).
 - `PhoneEnrollmentRequired`: The user has no bound device, and every login comes from one (403).
 - `PhoneRequired`: Only the user's mobile app manages their logins (403).
@@ -694,6 +753,7 @@ What a sign-in request may be refused, and what a poll may answer.
 - `AccessDenied`: The phone denied the sign-in.
 - `AuthorizationPending`: The phone has not answered yet: poll again after the interval.
 - `DifferentNetwork`: The phone is not on the address of the page (403, `QR_SAME_NETWORK`).
+- `DigestRequired`: Approving an act needs the digest the phone was shown (422).
 - `OAuthError`: An OAuth error the OpenID Provider routes answer in OAuth's format.
 - `PhoneApprovalRequired`: This login must be approved from the user's mobile app (403).
 - `PhoneEnrollmentRequired`: The user has no bound device, and every login comes from one (403).
@@ -772,7 +832,7 @@ CIBA clients, sign-in requests, and the client assertions already used.
 
 - `assertions`: The `jti` of each `private_key_jwt` assertion, until it expires: once.
 - `clients`: The OIDC clients that may ask a user's phone (`domainkit ciba add`, `list`).
-- `sign_in_requests`: Each sign-in, step-up, or transaction a phone is asked to approve, until purged.
+- `sign_in_requests`: Each sign-in, step-up, transaction, or act a phone is asked about, until purged.
 
 ## `domainkit.contrib.devices.tasks`
 

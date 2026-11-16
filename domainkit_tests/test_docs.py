@@ -31,6 +31,7 @@ from domainkit.contrib.accounting import AccountingSettings
 from domainkit.contrib.approvals import ApprovalsSettings
 from domainkit.contrib.audit.settings import AuditSettings
 from domainkit.contrib.auth.settings import (
+    AuthorizationsSettings,
     AuthSettings,
     ClientCertSettings,
     CookieSettings,
@@ -121,6 +122,7 @@ def documented(pages: str) -> set[str]:
         (MfaSettings, "auth.md"),
         (StepUpSettings, "auth.md"),
         (ScaSettings, "auth.md"),
+        (AuthorizationsSettings, "auth.md"),
         (ClientCertSettings, "auth.md"),
         (PrincipalCacheSettings, "auth.md"),
         (MailSettings, "mail.md"),
@@ -441,6 +443,7 @@ SETTINGS_TABLES: tuple[tuple[type[BaseModel], str, str], ...] = (
     (MfaSettings, "auth.md", 'AUTH["MFA"]'),
     (StepUpSettings, "auth.md", 'AUTH["STEP_UP"]'),
     (ScaSettings, "auth.md", 'AUTH["SCA"]'),
+    (AuthorizationsSettings, "auth.md", 'AUTH["AUTHORIZATIONS"]'),
     (ClientCertSettings, "auth.md", 'AUTH["CLIENT_CERT"]'),
     (PrincipalCacheSettings, "auth.md", 'AUTH["PRINCIPAL_CACHE"]'),
     (JWTSettings, "auth.md", 'AUTH["JWT"]'),
@@ -460,7 +463,8 @@ PROSE_DEFAULTS = {
     "CacheConfig": {"KEY_PREFIX", "TLS_CA"},
     "BrokerConfig": {"URL", "PREFIX", "TLS_CA"},
     "AuthSettings": {"USER_TABLE", "PASSWORD_HASHERS", "PASSWORD_VALIDATORS"}
-    | {"JWT", "COOKIE", "MFA", "STEP_UP", "SCA", "CLIENT_CERT", "PRINCIPAL_CACHE"},
+    | {"JWT", "COOKIE", "MFA", "STEP_UP", "SCA", "CLIENT_CERT", "PRINCIPAL_CACHE"}
+    | {"AUTHORIZATIONS"},
     "CookieSettings": {"NAME", "CSRF_NAME"},
     "JWTSettings": {"SIGNING_KEY"},
     "PreviousJWTKey": {"KEY", "RETIRED_AT"},

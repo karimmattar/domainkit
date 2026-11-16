@@ -90,6 +90,11 @@ MAX_STEP_UP_AGE: Final = timedelta(days=1)
 type Factor = Literal["pwd", "otp"]
 """What a step-up or a transaction authorization asks for (RFC 8176's names):
 the password (``pwd``), or a code of the authenticator app (``otp``)."""
+type AuthorizationMethod = Literal["pwd", "otp", "phone"]
+"""What confirming an action authorization asks for: a ``Factor``, or
+``phone``, a confirmation on a bound device's own screen (ADR 0144)."""
+MAX_AUTHORIZATION_TTL: Final = timedelta(minutes=30)
+"""The longest an action authorization may live (``AUTHORIZATIONS.TTL``)."""
 
 
 class PasswordValidatorConfig(BaseModel):
@@ -282,6 +287,37 @@ class ScaSettings(BaseModel):
     is made, confirming and using it included; 30 minutes at most."""
 
     _check_methods = field_validator("METHODS")(with_a_factor)
+
+
+def with_a_second_factor(
+    value: tuple[AuthorizationMethod, ...],
+) -> tuple[AuthorizationMethod, ...]:
+    """Refuse methods without a second factor (``otp``, ``phone``), or repeats."""
+    if not {"otp", "phone"} & set(value):
+        raise ValueError(
+            'METHODS must hold "otp" or "phone": a password alone is no second factor'
+        )
+    if len(set(value)) != len(value):
+        raise ValueError("METHODS lists each method once")
+    return value
+
+
+class AuthorizationsSettings(BaseModel):
+    """``AUTH["AUTHORIZATIONS"]``: acts authorized one at a time (``auth.actions``)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    TTL: timedelta = Field(
+        default=timedelta(minutes=5), gt=timedelta(0), le=MAX_AUTHORIZATION_TTL
+    )
+    """How long an action authorization works, from when it is asked for,
+    its confirmation and its use included; 30 minutes at most."""
+    METHODS: tuple[AuthorizationMethod, ...] = ("otp",)
+    """What confirming one must prove, unless its ``Action`` names others: a
+    code of the authenticator app (``otp``, which a bound device's key and a
+    passkey stand for), the password (``pwd``), or the phone (``phone``)."""
+
+    _check_methods = field_validator("METHODS")(with_a_second_factor)
 
 
 class ClientCertSettings(BaseModel):
@@ -547,6 +583,8 @@ class AuthSettings(BaseModel):
     """Authenticating again for one act (``StepUp``)."""
     SCA: ScaSettings = ScaSettings()
     """Transactions authorized for one amount and payee (``auth.sca``)."""
+    AUTHORIZATIONS: AuthorizationsSettings = AuthorizationsSettings()
+    """Acts authorized one at a time (``auth.actions``, ADR 0144)."""
     CLIENT_CERT: ClientCertSettings = ClientCertSettings()
     """Client certificates (mutual TLS)."""
     PRINCIPAL_CACHE: PrincipalCacheSettings = PrincipalCacheSettings()

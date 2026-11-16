@@ -14,6 +14,9 @@ from .accounts import StaffMatch as StaffMatch
 from .accounts import UserRepository as UserRepository
 from .accounts import searched_fields as searched_fields
 from .accounts import user_search as user_search
+from .authorizations import ActionAuthorization as ActionAuthorization
+from .authorizations import AuthorizationStore as AuthorizationStore
+from .authorizations import Shown as Shown
 from .factors import MfaStore as MfaStore
 from .factors import ScaChallenge as ScaChallenge
 from .factors import ScaStore as ScaStore

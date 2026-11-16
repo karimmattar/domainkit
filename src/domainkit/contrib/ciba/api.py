@@ -29,13 +29,19 @@ per address):
 A signed-in web session (credentials without scopes) asks the user's
 phone for more (ADR 0129); only that session redeems the answer:
 
-- ``POST /app-sign-in/step-up`` ``{"message"}``: approve an action the
-  message names. ``POST /app-sign-in/step-up/token`` ``{"request"}``
-  steps the session up, ``amr`` ``["hwk"]``, once approved.
+- ``POST /app-sign-in/authorizations/{authorization_id}``: confirm one of
+  the session's action authorizations (ADR 0144); the phone is shown the
+  act as auth keeps it, and signs its digest.
+  ``POST /app-sign-in/authorizations/token`` ``{"request"}`` answers the
+  authorization ``<id>.<code>``, for the act's ``Action-Authorization``.
 - ``POST /app-sign-in/transactions/{challenge_id}``: confirm one of the
   user's ``auth.sca`` transactions; the phone is shown its amount and
   payee. ``POST /app-sign-in/transactions/token`` ``{"request"}``
   answers its authorization ``<id>.<code>``, as ``/sca/{id}/confirm``.
+- ``POST /app-sign-in/step-up`` ``{"message"}``, deprecated in 2.4 and
+  removed in 3.0: approve what the page's message says.
+  ``POST /app-sign-in/step-up/token`` ``{"request"}`` steps the session
+  up, ``amr`` ``["hwk"]``, once approved: a window for every guarded act.
 
 The phone (a user's credentials without scopes, and a request signed by
 one of their bound devices, ``DeviceSigned``):
@@ -43,7 +49,8 @@ one of their bound devices, ``DeviceSigned``):
 - ``GET /app-sign-in/requests``: the requests waiting for an answer, with
   who asks and from where.
 - ``POST /app-sign-in/requests/claim`` ``{"code"}``: the QR request scanned.
-- ``POST /app-sign-in/requests/{id}/approve`` ``{"match_code"?}``.
+- ``POST /app-sign-in/requests/{id}/approve`` ``{"match_code"?}``, and an
+  act's ``{"digest"}``.
 - ``POST /app-sign-in/requests/{id}/deny`` ``{"report"?}``.
 
 A new phone is bound from one the user bound before, which scans it
@@ -57,31 +64,45 @@ A new phone is bound from one the user bound before, which scans it
   by the new key: once approved, the key is bound, and the phone logged in.
 """
 
+import base64
+import functools
 import hashlib
-from datetime import datetime
+import hmac
+import warnings
+from datetime import UTC, date, datetime
 from typing import Annotated, Final, Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from domainkit import deadlines
 from domainkit.contrib.auth import AbstractBaseUser
+from domainkit.contrib.auth.actions import ActionAuthorizationOut, AuthorizationNotFound
 from domainkit.contrib.auth.authentication import Credentials, Proof
 from domainkit.contrib.auth.captcha import captcha
 from domainkit.contrib.auth.integration import (
+    ActionAuthorization,
+    AuthorizationChanged,
+    AuthorizationNeedsOtherFactors,
     CsrfOut,
     LoginMethod,
     ReauthenticationRequired,
     StepUpOut,
     TokenOut,
+    action_authorization,
+    action_for,
     address_key,
     attempt,
     auth_settings,
     check_origin,
+    confirm_action_with,
     confirm_transaction_with,
+    confirmed_action_authorization,
     impersonated,
     issue_login,
+    link_action_authorization,
+    linked_action_authorization,
     pass_login_gates,
     record_step_up,
     sca_transaction,
@@ -91,6 +112,7 @@ from domainkit.contrib.auth.integration import (
 )
 from domainkit.contrib.auth.models import UserId
 from domainkit.contrib.devices import (
+    BoundDevice,
     DeviceSignatureRefused,
     DeviceSigned,
     DevicesUnitOfWork,
@@ -100,15 +122,19 @@ from domainkit.contrib.devices.binding import (
     device_key,
     mark_signed_by,
     proves_key,
+    signed_message,
     signing_device,
 )
 from domainkit.ddd import NotFound
+from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import IsUnscoped, Public, Require
 from domainkit.http.errors import error_responses
+from domainkit.http.versioning import Deprecation
 from domainkit.money import Money
 
 from .exceptions import (
+    DigestRequired,
     SignInUnknown,
     TransactionClosed,
     TransactionNeedsOtherFactors,
@@ -117,6 +143,7 @@ from .exceptions import (
 from .gate import mark_approved
 from .hooks import on_approve, on_start
 from .services import (
+    PHONE_CONFIRMS,
     Requester,
     Started,
     approve,
@@ -124,13 +151,23 @@ from .services import (
     ciba_settings,
     claim,
     deny,
+    matches,
     poll,
     secret_digest,
     start_push,
     start_qr,
     wait,
+    waiting,
 )
-from .stores import DEVICE, QR, STEP_UP, TRANSACTION, CibaUnitOfWork, SignInRequest
+from .stores import (
+    AUTHORIZATION,
+    DEVICE,
+    QR,
+    STEP_UP,
+    TRANSACTION,
+    CibaUnitOfWork,
+    SignInRequest,
+)
 
 __all__ = ["count_start", "router"]
 
@@ -146,6 +183,25 @@ HANDLE_LENGTH: Final = 100
 CODE_LENGTH: Final = 400
 """Characters a scanned QR code may hold: ``QR_FORMAT`` and its 43."""
 STARTS_THROTTLED: Final = "Too many sign-ins were started; try again later."
+PHONE_COVERS: Final = frozenset({"otp", "phone"})
+"""What an act may ask the phone's approval to prove: ``hwk`` stands for
+an authenticator's code (``otp``), never for the password (``pwd``)."""
+DEVICE_TIME: Final = "x-device-time"
+DEVICE_SIGNATURE: Final = "x-device-signature"
+"""The headers of a device's signature (``devices.binding``)."""
+FREE_TEXT_STEP_UP: Final = Deprecation(
+    since=date(2026, 11, 15),
+    link="https://github.com/karimmattar/domainkit/blob/main/docs/auth/ciba.md"
+    "#the-pages-words-and-a-window-deprecated",
+)
+"""``POST /app-sign-in/step-up``, its token and wait: deprecated in 2.4, gone in 3.0."""
+FREE_TEXT_STEP_UP_WARNING: Final = (
+    "POST /app-sign-in/step-up is deprecated: the phone shows the page's words, "
+    "and its approval opens a window for every guarded act. Ask for an action "
+    "authorization of the act, and have the phone confirm it "
+    "(POST /app-sign-in/authorizations/{id}); see docs/auth/actions.md. The "
+    "route is removed in domainkit 3.0."
+)
 
 
 class IdentifierIn(BaseModel):
@@ -240,11 +296,14 @@ class ClaimIn(BaseModel):
 
 
 class ApproveIn(BaseModel):
-    """The number the sign-in page shows, when it shows one."""
+    """The number the sign-in page shows, when it shows one; an act's digest."""
 
     model_config = ConfigDict(extra="forbid")
 
     match_code: str | None = Field(default=None, max_length=10)
+    digest: str | None = Field(default=None, min_length=1, max_length=64)
+    """Needed for an act (kind ``authorization``), and for it only: the
+    digest the phone was shown, which the device's signature then covers."""
 
 
 class DenyIn(BaseModel):
@@ -281,6 +340,17 @@ class TransactionOut(BaseModel):
     purpose: str
 
 
+class ActOut(ActionAuthorizationOut):
+    """The act the phone is asked to confirm, as auth keeps it, and its digest.
+
+    ``purpose``, and ``shown``: the title and details the server built when
+    the authorization was asked for, never words a page sent.
+    """
+
+    digest: str
+    """Send it back to approve: the device's signature then covers it."""
+
+
 class AuthorizationOut(BaseModel):
     """The transaction's authorization: hand it to the use case that acts, once."""
 
@@ -294,8 +364,9 @@ class SignInOut(BaseModel):
     id: UUID
     kind: str
     """``sign_in``, ``step_up`` (``binding_message`` says what for),
-    ``transaction`` (``transaction`` says what), or ``device``: a phone
-    asks to be bound, and ``binding_message`` is the name it gave."""
+    ``transaction`` (``transaction`` says what), ``authorization``
+    (``authorization`` says what), or ``device``: a phone asks to be
+    bound, and ``binding_message`` is the name it gave."""
     channel: str
     """``push`` or ``qr``."""
     client: str | None
@@ -312,6 +383,8 @@ class SignInOut(BaseModel):
     """Approving needs the number the sign-in page shows."""
     transaction: TransactionOut | None = None
     """A transaction's amount, payee and purpose, read from auth's record."""
+    authorization: ActOut | None = None
+    """An act's purpose, title, details and digest, read from auth's record."""
     created_at: datetime
     expires_at: datetime
 
@@ -612,11 +685,11 @@ async def start_approved_session(
     return await start_browser_session(request, user, response, method=method)
 
 
-async def _device_id(request: Request, user: AbstractBaseUser) -> UUID:
+async def _device(request: Request, user: AbstractBaseUser) -> BoundDevice:
     """The bound device that signed the request (``DEVICE_SIGNED`` checked it)."""
     device = await signing_device(request, user)
     assert device is not None  # noqa: S101 - DeviceSigned allowed the request.
-    return device.id
+    return device
 
 
 async def _out(
@@ -625,6 +698,7 @@ async def _out(
     """What the phone is shown of each request."""
     names: dict[str, str] = {}
     transactions: dict[UUID, TransactionOut | None] = {}
+    acts: dict[UUID, ActOut | None] = {}
     for each in sign_ins:
         if each.client_id is not None and each.client_id not in names:
             client = await uow.clients.get(each.client_id)
@@ -633,6 +707,8 @@ async def _out(
             transactions[each.id] = await _transaction(
                 each.sca_challenge_id, each.user_id
             )
+        if each.kind == AUTHORIZATION and each.user_id is not None:
+            acts[each.id] = await _act(each.id, each.user_id)
     here = _address(request)
     return [
         SignInOut(
@@ -650,6 +726,7 @@ async def _out(
             ),
             match_required=each.match_code is not None,
             transaction=transactions.get(each.id),
+            authorization=acts.get(each.id),
             created_at=each.created_at,
             expires_at=each.expires_at,
         )
@@ -665,6 +742,18 @@ async def _transaction(challenge_id: UUID, user_id: UUID) -> TransactionOut | No
         return None
     return TransactionOut(
         amount=challenge.amount, payee=challenge.payee, purpose=challenge.purpose
+    )
+
+
+async def _act(request_id: UUID, user_id: UUID) -> ActOut | None:
+    """What the phone is shown of an act; None if auth no longer links one."""
+    try:
+        authorization = await linked_action_authorization(request_id, user_id)
+    except AuthorizationNotFound:
+        return None
+    return ActOut(
+        **ActionAuthorizationOut.of(authorization).model_dump(),
+        digest=authorization.digest,
     )
 
 
@@ -702,7 +791,9 @@ async def claim_sign_in(
     "/app-sign-in/requests/{request_id}/approve",
     status_code=status.HTTP_204_NO_CONTENT,
     responses=error_responses(
-        status.HTTP_404_NOT_FOUND, status.HTTP_422_UNPROCESSABLE_CONTENT
+        status.HTTP_404_NOT_FOUND,
+        status.HTTP_409_CONFLICT,
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
     ),
 )
 async def approve_sign_in(
@@ -711,19 +802,91 @@ async def approve_sign_in(
     request: Request,
     user: Annotated[AbstractBaseUser, DEVICE_SIGNED],
 ) -> None:
-    """Approve the sign-in from this device; a wrong number denies it."""
-    device_id = await _device_id(request, user)
+    """Approve the sign-in from this device; a wrong number denies it.
+
+    An act (kind ``authorization``) is approved with the digest the phone
+    was shown: auth confirms its authorization with the device's key, the
+    bytes it signed, and its signature, kept to check it again. Another
+    digest denies the request (``409 authorization_changed``).
+    """
+    device = await _device(request, user)
     async with CibaUnitOfWork() as uow:
-        sign_in = await uow.requests.get(request_id)
-        if sign_in is not None and sign_in.user_id == user.id:
-            for hook in on_approve:  # Raising refuses it: nothing is approved.
-                await hook.call(request, user, sign_in)
+        asked = await waiting(uow, user.id, request_id)
+    for hook in on_approve:  # Raising refuses it: nothing is approved or confirmed.
+        await hook.call(request, user, asked)
+    if asked.kind == AUTHORIZATION and matches(asked, body.match_code):
+        await _confirm_act(request, user, asked, device, body.digest)
+    async with CibaUnitOfWork() as uow:
         approved = await approve(
-            uow, user.id, request_id, device_id, match_code=body.match_code
+            uow, user.id, request_id, device.id, match_code=body.match_code
         )
         await uow.commit()  # A wrong number denies it, then is refused.
     if approved is None:
         raise WrongMatchCode()
+
+
+async def _confirm_act(
+    request: Request,
+    user: AbstractBaseUser,
+    asked: SignInRequest,
+    device: BoundDevice,
+    digest: str | None,
+) -> None:
+    """Confirm the act's authorization, signed by ``device``; deny it if it changed.
+
+    Each step is a transaction of its own: auth's confirmation commits
+    before the request is approved. Should that approval then lose (the
+    request answered or ended meanwhile), the authorization is confirmed
+    and nobody can redeem it.
+
+    Raises:
+        DigestRequired: The phone sent no digest.
+        AuthorizationNotFound: Auth no longer links an authorization to it.
+        AuthorizationChanged: Not the act's digest: the request is denied.
+        AuthorizationNeedsOtherFactors: The act asks more than the phone proves.
+        APIError: 409 ``authorization_confirmed`` or ``authorization_expired``.
+    """
+    if digest is None:
+        raise DigestRequired()
+    authorization = await linked_action_authorization(
+        asked.id, user.id, login=asked.credential_digest
+    )
+    if not hmac.compare_digest(digest.encode(), authorization.digest.encode()):
+        async with CibaUnitOfWork() as uow:
+            await deny(uow, user.id, asked.id)
+            await uow.commit()
+        raise AuthorizationChanged
+    signed_at, signature, signed = await _signed(request)
+    await confirm_action_with(
+        authorization.id,
+        PHONE_CONFIRMS,
+        user_id=user.id,
+        login=asked.credential_digest,
+        digest=digest,
+        device_id=device.id,
+        algorithm=device.algorithm,
+        public_key=device.public_key,
+        signature=signature,
+        signed=signed,
+        signed_at=signed_at,
+    )
+
+
+async def _signed(request: Request) -> tuple[datetime, bytes, bytes]:
+    """When the device signed ``request``, its signature, and the bytes it signed.
+
+    The message ``devices.binding`` verified (``signed_message``): the
+    method, the path with its query as sent, the time, and the body's
+    digest. ``DEVICE_SIGNED`` checked the headers already.
+    """
+    time = int(request.headers[DEVICE_TIME])
+    encoded = request.headers[DEVICE_SIGNATURE]
+    signature = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+    target = request.scope.get("raw_path", b"").decode("latin-1") or request.url.path
+    if query := request.scope.get("query_string", b""):
+        target = f"{target}?{query.decode('latin-1')}"
+    signed = signed_message(request.method, target, time, await request.body())
+    return datetime.fromtimestamp(time / 1000, UTC), signature, signed
 
 
 @router.post(
@@ -793,9 +956,20 @@ async def _redeemed(body: PollIn, digest: str, kind: str) -> SignInRequest:
     return await poll(body.request, client_id=None, kind=kind, credential_digest=digest)
 
 
+@functools.cache
+def _warn_free_text_step_up() -> None:
+    """Warn that the free-text step-up goes in 3.0: once a process.
+
+    Warned again while the warning is an error (a project's tests), so
+    each use fails there.
+    """
+    warnings.warn(FREE_TEXT_STEP_UP_WARNING, DomainkitDeprecationWarning, stacklevel=2)
+
+
 @router.post(
     "/app-sign-in/step-up",
     response_model_exclude_none=True,
+    dependencies=[Depends(FREE_TEXT_STEP_UP)],
     responses=error_responses(
         status.HTTP_400_BAD_REQUEST,
         status.HTTP_401_UNAUTHORIZED,
@@ -809,7 +983,13 @@ async def ask_phone_step_up(
     response: Response,
     user: Annotated[AbstractBaseUser, SIGNED_IN],
 ) -> StartedOut:
-    """Ask the user's phone to approve what ``message`` says, for this session."""
+    """Ask the user's phone to approve what ``message`` says, for this session.
+
+    Deprecated in 2.4, removed in 3.0: the phone shows the page's words,
+    and the approval opens a window for every guarded act. Ask for an
+    action authorization, and ``/app-sign-in/authorizations/{id}``.
+    """
+    _warn_free_text_step_up()
     _no_store(response)
     _, digest = _session_of(request)
     return await _ask(request, user, digest, kind=STEP_UP, message=body.message)
@@ -817,6 +997,7 @@ async def ask_phone_step_up(
 
 @router.post(
     "/app-sign-in/step-up/wait",
+    dependencies=[Depends(FREE_TEXT_STEP_UP)],
     responses=error_responses(
         status.HTTP_400_BAD_REQUEST, status.HTTP_401_UNAUTHORIZED
     ),
@@ -863,6 +1044,7 @@ async def wait_for_phone_transaction(  # Before /{challenge_id}, which "wait" ma
 @router.post(
     "/app-sign-in/step-up/token",
     response_model_exclude_none=True,
+    dependencies=[Depends(FREE_TEXT_STEP_UP)],
     responses=error_responses(
         status.HTTP_400_BAD_REQUEST, status.HTTP_401_UNAUTHORIZED
     ),
@@ -943,3 +1125,90 @@ async def ask_phone_transaction(
     return await _ask(
         request, user, digest, kind=TRANSACTION, sca_challenge_id=challenge.id
     )
+
+
+def _asks(authorization: ActionAuthorization) -> frozenset[str]:
+    """What confirming ``authorization`` must prove: its action's, or the setting's."""
+    action = action_for(authorization.purpose)
+    if action is not None:
+        return action.required()
+    return frozenset(auth_settings().AUTHORIZATIONS.METHODS)
+
+
+@router.post(
+    "/app-sign-in/authorizations/token",
+    responses=error_responses(
+        status.HTTP_400_BAD_REQUEST,
+        status.HTTP_401_UNAUTHORIZED,
+        status.HTTP_404_NOT_FOUND,
+        status.HTTP_409_CONFLICT,
+    ),
+)
+async def redeem_phone_authorization(  # Before /{authorization_id}: "token" matches.
+    body: PollIn,
+    request: Request,
+    response: Response,
+    user: Annotated[AbstractBaseUser, SIGNED_IN],
+) -> AuthorizationOut:
+    """The act's authorization, ``<id>.<code>``, once the phone confirmed it.
+
+    Only the session that asked redeems it, once; until then, a poll's
+    answers.
+    """
+    _no_store(response)
+    _, digest = _session_of(request)
+    approved = await _redeemed(body, digest, AUTHORIZATION)
+    authorization = await linked_action_authorization(
+        approved.id, user.id, login=digest
+    )
+    issued = await confirmed_action_authorization(
+        authorization.id, user.id, login=digest
+    )
+    return AuthorizationOut(authorization=issued, expires_at=authorization.expires_at)
+
+
+@router.post(
+    "/app-sign-in/authorizations/{authorization_id}",
+    response_model_exclude_none=True,
+    responses=error_responses(
+        status.HTTP_400_BAD_REQUEST,
+        status.HTTP_401_UNAUTHORIZED,
+        status.HTTP_404_NOT_FOUND,
+        status.HTTP_409_CONFLICT,
+        status.HTTP_429_TOO_MANY_REQUESTS,
+    ),
+)
+async def ask_phone_authorization(
+    authorization_id: UUID,
+    request: Request,
+    response: Response,
+    user: Annotated[AbstractBaseUser, SIGNED_IN],
+) -> StartedOut:
+    """Ask the user's phone to confirm one of this session's action authorizations.
+
+    Counted and bounded as a step-up is: ``START_RATE``, ``MAX_PENDING``,
+    the number under ``NUMBER_MATCHING``. The authorization is linked to
+    the request first, so the phone reads the act from auth's record.
+    """
+    _no_store(response)
+    _, digest = _session_of(request)
+    authorization = await action_authorization(authorization_id, user.id, login=digest)
+    if _asks(authorization) - PHONE_COVERS:
+        raise AuthorizationNeedsOtherFactors
+    await count_start(request)
+    request_id = uuid4()
+    await link_action_authorization(
+        authorization.id, user_id=user.id, sign_in_request_id=request_id
+    )
+    async with CibaUnitOfWork() as uow:
+        started = await ask_signed_in(
+            uow,
+            user,
+            kind=AUTHORIZATION,
+            credential_digest=digest,
+            requester=_requester(request),
+            match=ciba_settings().NUMBER_MATCHING,
+            request_id=request_id,
+        )
+        await uow.commit()
+    return _started(started)

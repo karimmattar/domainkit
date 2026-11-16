@@ -19,6 +19,7 @@ On this page you learn how to:
 - add a passkey, log in with it, and step up with it;
 - bind a device, sign requests with it, and guard a route with
   `DeviceSigned`;
+- confirm one act from the mobile app, or with a passkey;
 - register push tokens and notify a user.
 
 ## A first example
@@ -132,6 +133,8 @@ Every route of this domain for a signed-in user needs credentials without scopes
 | `POST /passkeys/login` | anyone | `{"credential"}`: `200` with tokens. |
 | `POST /passkeys/step-up/options` | a user | The options, offering the user's passkeys. |
 | `POST /passkeys/step-up` | a user | `{"credential"}`: a step-up, `amr` `["hwk", "mfa"]`. |
+| `POST /passkeys/authorizations/{id}/options` | the session that asked for the authorization | The options, with a challenge for that authorization ([Confirming one act](#confirming-one-act)). |
+| `POST /passkeys/authorizations/{id}` | the session that asked | `{"credential"}`: `200 {"authorization", "expires_at"}`, proving `hwk` and `mfa`. |
 | `GET /passkeys` | a user | The user's passkeys: `id`, `name`, `backed_up` (synced), `created_at`, `last_used_at`. |
 | `DELETE /passkeys/{id}` | a user; in the phone modes, signed | `204`; `404 passkey_not_found` for another's. |
 
@@ -179,8 +182,9 @@ second factor, and a step-up with one proves whatever `StepUp` asks
 For code of your own, `domainkit.contrib.devices.passkeys` has the
 ceremonies the routes use: `creation_options(user)`,
 `register(user, client_data_json=..., attestation_object=..., name=...)`,
-`request_options(purpose, user)`, `authenticate(assertion, purpose, user=None)`
-with an `Assertion(credential_id, client_data_json, authenticator_data, signature, user_handle=None)`,
+`request_options(purpose, user)`, `authenticate(assertion, purpose, user=None, *, challenge=None)`
+with an `Assertion(credential_id, client_data_json, authenticator_data, signature, user_handle=None)`
+(with `challenge`, only an answer to that one),
 and `reauthenticate(request, user, password, action)`.
 
 ## Bound devices
@@ -191,6 +195,7 @@ and `reauthenticate(request, user, password, action)`.
 | `GET /devices` | a user | The user's devices: `id`, `name`, `created_at`, `last_used_at`. |
 | `DELETE /devices/{id}` | a user; in the [phone modes](ciba.md#managing-logins-from-the-phone), signed by one of their devices | `204`: its signatures hold no more, and its logins end. `404 device_not_found` for another's; `403 phone_required` unsigned in the phone modes. |
 | `POST /devices/step-up` | a user, signed by their device | A step-up, `amr` `["hwk"]`. |
+| `POST /devices/authorizations/{id}` | the login that asked for the authorization, signed by one of the user's devices | `{"digest"}`: `200 {"authorization", "expires_at"}`, proving `hwk` and `phone` ([Confirming one act](#confirming-one-act)). |
 | `POST /devices/login` | anyone, signed by a bound device (`DEVICE_LOGIN`) | Tokens for the device's user, as `/login` gives them; `404 device_login_off` without the setting. |
 
 The key is P-256 or Ed25519, as SubjectPublicKeyInfo or, for P-256, the
@@ -362,6 +367,113 @@ asking and runs `unbinddevices`; there is no self-service replacement.
 The login the enrollment issues passes the login gates as any login does,
 signed by the device it bound: `CIBA.APPROVE_LOGINS` lets it through.
 
+## Confirming one act
+
+An act may ask for an authorization of its own, for its arguments, spent
+once ([Authorizing one act](actions.md), since 2.4,
+[ADR 0144](../adr/0144-authorize-one-act-not-a-window-of-time.md)). This
+domain confirms one two ways, besides a code, and registers both with
+auth when it is installed:
+
+| Way | Endpoint | Proves | A user has it when |
+| --- | --- | --- | --- |
+| The mobile app's own act | `POST /devices/authorizations/{id}` | `hwk`, `phone` | they have a bound device |
+| A passkey | `POST /passkeys/authorizations/{id}/options`, then `POST /passkeys/authorizations/{id}` | `hwk`, `mfa` | they have a passkey, and `RP_ID` is set |
+
+Each answers `{"authorization": "<id>.<code>", "expires_at"}`, for the
+act's `Action-Authorization` header. Asking for an authorization needs a
+way the user has that proves what the act asks (`409 no_second_factor`
+otherwise): with this domain, a bound device or a passkey stands for the
+authenticator app. An act may ask `["phone"]` alone: the app's own act
+proves it, so `check` passes it (`auth.E108`).
+
+### The mobile app's own act
+
+The app makes an act itself, from its own login, and shows it on the
+phone's screen, which the web session does not control. It asks for the
+authorization, works out the act's digest from what it shows, and sends
+the digest, signed by its device:
+
+```http
+POST   /organizations/7/memberships/42/authorization                 201 {"id": "9f0c...", "shown": {...}}
+POST   /auth/devices/authorizations/9f0c... {"digest": "5d1e..."}    200 {"authorization": "9f0c....mYd3...", "expires_at": "..."}
+       X-Device-Id, X-Device-Time, X-Device-Signature
+DELETE /organizations/7/memberships/42
+       Action-Authorization: 9f0c....mYd3...                         204
+```
+
+The digest is the SHA-256 of `{"action": <the purpose>, "arguments": <the
+command's fields>}` as JSON, keys sorted and no spaces, in UTF-8, less the
+fields the action ignores: `fingerprint(purpose, arguments)`.
+
+```python
+from domainkit.ddd import fingerprint
+
+digest = fingerprint(
+    "organizations.end_membership",
+    {"organization_id": ORGANIZATION_ID, "membership_id": MEMBERSHIP_ID},
+)
+```
+
+What the server checks:
+
+- **A bound device of the user signed the request**, as `DeviceSigned`
+  checks it: else `401 device_signature_refused`.
+- **The authorization is the app's own login's.** The login that sends
+  the request must be the one that asked for it, which alone spends it.
+  Another session's, even the user's own browser's, is `404
+  authorization_not_found`: the app confirms only the acts it makes and
+  shows itself. A page's act is confirmed on the phone
+  ([Sign-in approvals](ciba.md#asking-the-phone-from-a-signed-in-session)),
+  which shows who asked, and matches a number.
+- **The digest is the act's**: else `409 authorization_changed`, and the
+  authorization stays unconfirmed. The app shows another act than the
+  server holds.
+
+The authorization keeps the device's id, its key, what it signed, its
+signature, and when, so the approval can be checked again once the device
+is unbound; with `domainkit.contrib.evidence` installed, the evidence
+ledger keeps them too, past the row (`auth.action_authorized`). What the
+device signed holds the body's SHA-256: an app that sends the body as
+compact JSON, `{"digest":"<the digest>"}`, lets anyone check the kept proof
+from the row alone.
+
+### A passkey
+
+1. `POST /passkeys/authorizations/{id}/options` answers the options for
+   `navigator.credentials.get()`, as the step-up's do, with a challenge
+   made for this authorization and linked to its row. Asking again makes
+   a new challenge; only the last one confirms it.
+2. The page shows the act (`GET /auth/authorizations/{id}`), and the
+   browser asks the passkey.
+3. `POST /passkeys/authorizations/{id}` takes `{"credential"}`, and
+   answers the authorization.
+
+What the server checks:
+
+- **Only the session that asked** uses either route. Another, even
+  another login of the same user, gets `404 authorization_not_found`, and
+  the challenge stays for the session.
+- **The challenge**, as a step-up's is checked (purpose `authorize`, the
+  user, once), must be the one made for this authorization. An answer to
+  another authorization's challenge, or to a step-up's or a login's, is
+  `401 passkey_refused`, and the challenge it answered is spent.
+- **What the act asks.** A passkey proves `hwk` and `mfa`: it stands for
+  a code and for the password, never for `phone`. An act that asks the
+  phone is `409 authorization_needs_other_factors`, before any challenge
+  is made.
+
+As with a code, what the user read was on the page.
+
+`domainkit.contrib.devices.authorizations` has what the routes call, for
+code of your own: `confirm_with_device(request, user, authorization_id, digest)`,
+`passkey_options(request, user, authorization_id)`,
+`confirm_with_passkey(request, user, authorization_id, assertion)`, and
+the two ways, `DEVICE_CONFIRMATION` and `PASSKEY_CONFIRMATION`.
+`device_proof(request, user)`, in `domainkit.contrib.devices.binding`,
+returns what the user's device signed for the request (`DeviceProof`:
+`device`, `signed`, `signature`, `signed_at`), or `None`.
+
 ## Push tokens
 
 | Endpoint | Who | Answer |
@@ -407,7 +519,9 @@ forgotten when the worker learns so (`PushTokenExpired`).
 With `domainkit.contrib.audit` installed: `devices.passkey_added`,
 `devices.passkey_removed`, `devices.device_bound`, and
 `devices.device_unbound` (the events `PasskeyAdded`, `PasskeyRemoved`,
-`DeviceBound`, `DeviceUnbound`), and step-ups as `auth.stepped_up`.
+`DeviceBound`, `DeviceUnbound`), step-ups as `auth.stepped_up`, and an
+act's authorization confirmed as `auth.action_authorized`, with the
+device that confirmed it.
 Refused enrollments are audited as `devices.enroll`.
 
 ## The Python names
@@ -441,6 +555,9 @@ async with DevicesUnitOfWork() as uow:
 | `PasskeysOff` | `404 passkeys_off` | `RP_ID` is not set. |
 | `PasskeyNotFound`, `DeviceNotFound` | `404 passkey_not_found`, `404 device_not_found` | Not one of the user's. |
 | `TooManyKeys` | `409 too_many_keys` | Past `MAX_PASSKEYS` or `MAX_DEVICES`. |
+| `AuthorizationNotFound` | `404 authorization_not_found` | Confirming an authorization another session asked for, or another user's. |
+| `AuthorizationChanged` | `409 authorization_changed` | The app's digest is not the act's. |
+| `AuthorizationNeedsOtherFactors` | `409 authorization_needs_other_factors` | A passkey, where the act asks the phone. |
 | `UnsupportedKey` | `422 unsupported_device_key` | Not a P-256 or Ed25519 public key. |
 
 ## Common mistakes
@@ -462,6 +579,8 @@ async with DevicesUnitOfWork() as uow:
 ## See also
 
 - [Stepping up](step-up.md): what `hwk` and `mfa` prove.
+- [Authorizing one act](actions.md): what the app's own act and a
+  passkey confirm.
 - [Logging in](logging-in.md): passwords and the second factor.
 - [Phone numbers](phones.md): proving a user receives text messages.
 - [Mail and notifications](../mail.md#text-messages-and-push-notifications):

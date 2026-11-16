@@ -247,3 +247,33 @@ class TransactionAuthorizationUsed(DomainEvent):
     user_id: UUID
     challenge_id: UUID
     purpose: str
+
+
+class ActionAuthorized(DomainEvent):
+    """A user confirmed one act, with its arguments (``auth.actions``).
+
+    The digest lets an auditor match the act to its authorization: neither
+    the arguments nor what was shown is kept here, as either may be
+    personal data.
+    """
+
+    user_id: UUID
+    authorization_id: UUID
+    purpose: str
+    subject: str
+    digest: str
+    methods: tuple[str, ...]
+    device_id: UUID | None = None
+    """The bound device that confirmed it, if one did."""
+
+
+class ActionAuthorizationUsed(DomainEvent):
+    """An act's authorization was spent on that act, once."""
+
+    user_id: UUID
+    authorization_id: UUID
+    purpose: str
+    subject: str
+    digest: str
+    methods: tuple[str, ...]
+    device_id: UUID | None = None

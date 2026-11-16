@@ -78,6 +78,7 @@ unique constraint may name its own code
 | `account_code_taken` | 409 | `AccountCodeTaken` (contrib.accounting.exceptions): Another account has that code. |
 | `account_not_empty` | 422 | `AccountNotEmpty` (contrib.accounting.exceptions): Closing an account that still has a balance, or holds. |
 | `account_not_found` | 404 | `AccountNotFound` (contrib.accounting.exceptions): No account has that id or code. |
+| `action_not_authorized` | 403 | `ActionNotAuthorized` (contrib.auth.actions): This act is not authorized: ask for an authorization of it, confirm it, then try again. |
 | `already_decided` | 409 | `AlreadyDecided` (contrib.approvals.exceptions): This person approved or rejected the request already (409). |
 | `amount_out_of_range` | 422 | `AmountOutOfRange` (money): An amount where it is kept cannot hold it: too many digits, or places. Also `MovementOutOfRange` (contrib.limits.exceptions): a movement, the sum of an entry's postings for a subject, larger than limits keep. |
 | `approval_not_needed` | 422 | `ApprovalNotNeeded` (contrib.approvals.exceptions): No policy asks for approval of this command: call it directly. |
@@ -85,7 +86,14 @@ unique constraint may name its own code
 | `approval_request_not_found` | 404 | `RequestNotFound` (contrib.approvals.exceptions): No approval request has that id. |
 | `approval_required` | 403 | `ApprovalRequired` (contrib.approvals.exceptions): A guarded command was called directly: it runs only once approved (403). |
 | `authentication_failed` | 401 | `AuthenticationFailed` (contrib.auth.authentication): Credentials were presented and do not hold. |
+| `authorization_changed` | 409 | `AuthorizationChanged` (contrib.auth.actions): This act is not the one you were shown. |
+| `authorization_confirmed` | 409 | contrib.auth.actions: This authorization was confirmed already, or ended. |
+| `authorization_expired` | 409 | contrib.auth.actions: This authorization can no longer be confirmed; ask for a new one. |
+| `authorization_needs_other_factors` | 409 | `AuthorizationNeedsOtherFactors` (contrib.auth.actions): This act must be confirmed another way. |
+| `authorization_not_found` | 404 | `AuthorizationNotFound` (contrib.auth.actions): No authorization of the user's, or of the login's, has that id. |
 | `authorization_pending` | 400 | `AuthorizationPending` (contrib.ciba.exceptions): The phone has not answered yet: poll again after the interval. |
+| `authorization_required` | 401 | `AuthorizationRequired` (contrib.auth.actions): Authorize this act first: ask for an authorization of it, confirm it, and send it in the Action-Authorization header. |
+| `authorization_unspent` | 500 | contrib.auth.actions: A rule accepted an authorization that no service spent: decorate the act's service with requires_authorization. |
 | `bad_request` | 400 | Starlette or FastAPI. |
 | `business_rule_violation` | 422 | `BusinessRuleViolation` (ddd.exceptions): The request is well-formed but breaks an invariant of the model. |
 | `captcha_failed` | 400 | contrib.auth.captcha: The captcha was missing or not solved. |
@@ -106,6 +114,7 @@ unique constraint may name its own code
 | `device_not_found` | 404 | `DeviceNotFound` (contrib.devices.exceptions): The user has no device with that id. |
 | `device_signature_refused` | 401 | `DeviceSignatureRefused` (contrib.devices.exceptions): The request is not signed by a device of the user, now, once. |
 | `different_network` | 403 | `DifferentNetwork` (contrib.ciba.exceptions): The phone is not on the address of the page (`QR_SAME_NETWORK`). |
+| `digest_required` | 422 | `DigestRequired` (contrib.ciba.exceptions): Approving an act needs the digest the phone was shown. |
 | `domain_error` | 400 | `DomainError` (ddd.exceptions): A business rule refused the operation; the message is safe to show. |
 | `duplicate_value` | 409 | `DuplicateValue` (ddd.exceptions): A value that must be unique is taken (a unique constraint refused it). |
 | `earlier_period_open` | 422 | `EarlierPeriodOpen` (contrib.accounting.exceptions): Closing a period while one before it is still open. |

@@ -399,6 +399,53 @@ sca_challenges = Table(
 )
 """Transactions waiting for, or holding, an authorization (``auth.sca``)."""
 
+SUBJECT_MAX_LENGTH = 200
+"""The longest subject an action authorization names (``orders.order:42``)."""
+LOGIN_DIGEST_LENGTH = 64
+"""A login's digest: the SHA-256, in hex, of its scheme and token (``auth.actions``)."""
+
+authorizations = Table(
+    "domainkit_authorizations",
+    metadata,
+    # Random: the authorization names it, with its code (``<id>.<code>``).
+    Column("id", Uuid, primary_key=True),
+    # No foreign key, as for tokens: the user model may be swapped.
+    Column("user_id", Uuid, nullable=False),
+    # The digest of the login that asked: only it spends the authorization.
+    Column("login", String(LOGIN_DIGEST_LENGTH), nullable=False),
+    Column("purpose", String(PURPOSE_MAX_LENGTH), nullable=False),
+    Column("subject", String(SUBJECT_MAX_LENGTH), nullable=False),
+    # The act's fingerprint: SHA-256 of the purpose and the arguments.
+    Column("digest", String(64), nullable=False),
+    # What the user is shown: {"title": ..., "details": [[label, value], ...]}.
+    Column("shown", JSON, nullable=False),
+    Column("created_at", UTCDateTime, nullable=False),
+    Column("expires_at", UTCDateTime, nullable=False),
+    Column("confirmed_at", UTCDateTime),
+    # What confirmed it, RFC 8176's names and "phone", separated by spaces.
+    Column("amr", String(64)),
+    # Once set, the authorization never works again: spent, voided, or ended.
+    Column("consumed_at", UTCDateTime),
+    # The bound device that confirmed it, and its proof, checkable again
+    # once the device is unbound: the key, what it signed, and when.
+    Column("device_id", Uuid),
+    Column("algorithm", Integer),
+    Column("public_key", LargeBinary(2048)),
+    Column("signature", LargeBinary(512)),
+    Column("signed", LargeBinary(8192)),
+    Column("signed_at", UTCDateTime),
+    # What confirms it: the phone's sign-in request, or a passkey's challenge.
+    Column("sign_in_request_id", Uuid),
+    Column("passkey_challenge", String(64)),
+    Index("ix_domainkit_authorizations_user_id", "user_id"),
+    Index("ix_domainkit_authorizations_login", "login"),
+    Index("ix_domainkit_authorizations_expires_at", "expires_at"),
+    # What is shown may be personal data, and rows live minutes: never in
+    # fixtures.
+    info={"domain": "auth", "guarded": True, "fixtures": False},
+)
+"""Acts waiting for, or holding, an authorization (``auth.actions``, ADR 0144)."""
+
 password_history = Table(
     "domainkit_password_history",
     metadata,

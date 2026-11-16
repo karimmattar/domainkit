@@ -39,6 +39,7 @@ Who may call an endpoint: access rules, for any authentication (ADR 0080).
 - `AllowScoped`: Principals who proved who they are, credentials limited to scopes too.
 - `AnonymousPrincipal`: A caller who proved nothing: no id, no permissions, for any middleware.
 - `AnyOf`: One rule must allow, for the request and for the object alike.
+- `AsksAuthorization`: A rule that asks for an authorization of the act it guards (ADR 0144).
 - `BasePermission`: Allows everything; subclasses override one hook or both.
 - `CurrentUser`: The request's principal, or an anonymous one.
 - `DenialRecorder`: An installed domain that keeps the record of refused requests.

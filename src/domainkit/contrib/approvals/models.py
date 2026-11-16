@@ -1,7 +1,7 @@
 """Approval requests: a command waiting for its approvals, and who decided.
 
 A request holds one command of a guarded use case, as JSON, with its
-fingerprint (``fingerprint``: SHA-256 of its action and arguments), the
+fingerprint (``fingerprint``, the core's: SHA-256 of its action and arguments), the
 maker who submitted it, and the policy it waits under: how many approvals
 it needs, and who may give them. Each approval or rejection is a
 ``Decision`` of one person, about that fingerprint. The request is
@@ -22,7 +22,6 @@ runs it carries and the run spends, so a message queued again, or a
 status set back, runs nothing.
 """
 
-import hashlib
 import json
 import secrets
 from collections.abc import Collection
@@ -34,6 +33,7 @@ from uuid import UUID, uuid4
 
 from domainkit import clock, signing
 from domainkit.ddd import AggregateRoot, DomainEvent, Entity, MaxLength
+from domainkit.ddd import fingerprint as fingerprint  # The core's, since 2.4.
 
 from .exceptions import (
     AlreadyDecided,
@@ -136,21 +136,6 @@ class RequestFailed(DomainEvent):
     request_id: RequestId
     action: str
     error: str
-
-
-def fingerprint(action: str, arguments: dict[str, Any]) -> str:
-    """SHA-256 of the action and the arguments, as canonical JSON (64 hex digits).
-
-    Keys sorted, no spaces, so the same command always gives the same
-    fingerprint, and an approver's client can work it out from what it shows.
-    """
-    text = json.dumps(
-        {"action": action, "arguments": arguments},
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    )
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def seal_of(*parts: object) -> str:
@@ -332,10 +317,13 @@ class ApprovalRequest(AggregateRoot[RequestId]):
         """Whether its time is up at ``now``."""
         return self.expires_at <= now
 
-    def _decide(
-        self, person: str, verdict: Verdict, digest: str, parties: Collection[str]
+    def check_decision(
+        self, person: str, digest: str, parties: Collection[str] = ()
     ) -> datetime:
-        """Add ``person``'s decision about ``digest``; when it was taken.
+        """Refuse a decision of ``person`` about ``digest`` that cannot be taken now.
+
+        What deciding checks, changing nothing; returns the time it checked
+        at.
 
         Raises:
             RequestTampered: Its seal does not hold.
@@ -361,6 +349,22 @@ class ApprovalRequest(AggregateRoot[RequestId]):
             raise FingerprintMismatch(
                 "The request holds another command than the one decided on."
             )
+        return now
+
+    def _decide(
+        self, person: str, verdict: Verdict, digest: str, parties: Collection[str]
+    ) -> datetime:
+        """Add ``person``'s decision about ``digest``; when it was taken.
+
+        Raises:
+            RequestTampered: As for ``check_decision``.
+            RequestNotPending: As for ``check_decision``.
+            MakerCannotDecide: As for ``check_decision``.
+            InterestedParty: As for ``check_decision``.
+            AlreadyDecided: As for ``check_decision``.
+            FingerprintMismatch: As for ``check_decision``.
+        """
+        now = self.check_decision(person, digest, parties)
         self.decisions.append(
             Decision(
                 id=DecisionId(uuid4()),

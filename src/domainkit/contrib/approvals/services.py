@@ -222,7 +222,10 @@ async def approve_request(
     Under the request's lock, so concurrent approvals count one by one, and
     one of them completes it; that one lock is all they wait for, so they
     never deadlock. The command is queued through the outbox in the same
-    transaction (``execute_request``).
+    transaction (``execute_request``). With ``APPROVALS.APPROVE_ACTION``
+    on, it spends the approver's authorization of this approval
+    (``approvals.approve``), with the approval's commit where the requests
+    share auth's database: called without one, it is refused.
 
     Raises:
         RequestNotFound: No request has that id.
@@ -233,6 +236,32 @@ async def approve_request(
         InterestedParty: The command is about the approver.
         AlreadyDecided: The approver decided it already.
         FingerprintMismatch: ``fingerprint`` is not the request's.
+        AuthorizationRequired: With ``APPROVE_ACTION``, no authorization
+            of this approval came with the request (auth's, 401).
+        ActionNotAuthorized: With ``APPROVE_ACTION``, it is of another
+            request or fingerprint (auth's, 403).
+    """
+    if config().APPROVE_ACTION:
+        from .authorizing import approve_authorized
+
+        return await approve_authorized(command, uow)
+    return await record_approval(command, uow)
+
+
+async def record_approval(
+    command: ApproveRequest, uow: ApprovalsUnitOfWork
+) -> ApprovalRequest:
+    """Approve a request, as ``approve_request`` does, asking for no authorization.
+
+    Raises:
+        RequestNotFound: As for ``approve_request``.
+        RequestTampered: As for ``approve_request``.
+        PolicyRemoved: As for ``approve_request``.
+        RequestNotPending: As for ``approve_request``.
+        MakerCannotDecide: As for ``approve_request``.
+        InterestedParty: As for ``approve_request``.
+        AlreadyDecided: As for ``approve_request``.
+        FingerprintMismatch: As for ``approve_request``.
     """
     approver = _person(command.approver, APPROVER)
 
@@ -242,6 +271,30 @@ async def approve_request(
         if request.approve(approver, command.fingerprint, _parties(request)):
             uow.defer(execute_request, request_id=request.id, token=request.run_token)
         await uow.commit()
+    return request
+
+
+async def check_approval(command: ApproveRequest) -> ApprovalRequest:
+    """The request ``command`` approves, if the approver may approve it now.
+
+    What approving checks, changing nothing: asking for an authorization
+    of an approval that would be refused is refused as it would be.
+
+    Raises:
+        RequestNotFound: As for ``approve_request``.
+        RequestTampered: As for ``approve_request``.
+        PolicyRemoved: As for ``approve_request``.
+        RequestNotPending: As for ``approve_request``.
+        MakerCannotDecide: As for ``approve_request``.
+        InterestedParty: As for ``approve_request``.
+        AlreadyDecided: As for ``approve_request``.
+        FingerprintMismatch: As for ``approve_request``.
+    """
+    approver = _person(command.approver, APPROVER)
+    async with ApprovalsUnitOfWork() as uow:
+        request = await uow.requests.get(RequestId(command.request_id))
+    request.check_sealed()
+    request.check_decision(approver, command.fingerprint, _parties(request))
     return request
 
 

@@ -10,11 +10,17 @@ included::
 
 where ``RECENT_SECOND_FACTOR`` is a rule instance of the project's (such
 as ``StepUp(max_age=timedelta(minutes=5))``), or a class taking no
-arguments.
+arguments. ``ApproveAction`` asks, with ``APPROVALS.APPROVE_ACTION`` on,
+for an authorization of the approval itself (ADR 0144), in place of a
+step-up window.
 """
 
+from datetime import datetime
 from typing import ClassVar, Final
+from uuid import UUID
 
+from fastapi import Request, status
+from pydantic import BaseModel
 from starlette.requests import HTTPConnection
 
 from domainkit.apps import registry
@@ -27,6 +33,7 @@ from domainkit.http.access import (
     Rule,
     scopes_of,
 )
+from domainkit.http.errors import APIError
 from domainkit.resources import HasModelPermission
 from domainkit.utils.module_loading import import_string
 
@@ -34,7 +41,13 @@ from .guards import policy_of
 from .models import ApprovalRequest
 from .settings import ApprovalsSettings
 
-__all__ = ["IsApprover", "MayApprove", "RequestActions", "configured_rule"]
+__all__ = [
+    "ApproveAction",
+    "IsApprover",
+    "MayApprove",
+    "RequestActions",
+    "configured_rule",
+]
 
 REFUSED_BY: Final = "domainkit.approvals.refused_by"
 """Where a request keeps the approve rule that refused it (``MayApprove``)."""
@@ -162,6 +175,94 @@ class MayApprove(BasePermission):
         return None if rule is None else await rule.refusal(request, user)
 
 
+class ApprovalDetailOut(BaseModel):
+    """One labelled value the approver is shown."""
+
+    label: str
+    value: str
+
+
+class ApprovalShownOut(BaseModel):
+    """What the approver is shown: the request's action and arguments."""
+
+    title: str
+    details: list[ApprovalDetailOut]
+
+
+class ApprovalAuthorizationOut(BaseModel):
+    """An authorization of one approval: confirm it, then approve with it."""
+
+    id: UUID
+    purpose: str
+    shown: ApprovalShownOut
+    expires_at: datetime
+
+
+class ApproveAction(BasePermission):
+    """With ``APPROVALS.APPROVE_ACTION`` on: the approval holds its own authorization.
+
+    It asks what ``StepUp(for_="approvals.approve")`` asks (ADR 0144): an
+    ``Action-Authorization`` header holding a confirmed authorization of
+    approving this request with this fingerprint, of the approver and of
+    their login. ``401 authorization_required`` without one, ``403
+    action_not_authorized`` with one that does not hold. It asks about the
+    request itself, after the other rules: one that refuses plainly (not an
+    approver) answers first. Off, it allows everyone, and its route's twin
+    (``POST /requests/{id}/approve/authorization``) answers ``404``.
+    """
+
+    def __init__(self) -> None:
+        """Ask nothing until the setting is on."""
+        self._rule: BasePermission | None = None
+
+    def _asking(self) -> BasePermission | None:
+        """``StepUp(for_="approvals.approve")``, while the setting is on."""
+        if not registry.settings(ApprovalsSettings).APPROVE_ACTION:
+            return None
+        if self._rule is None:
+            from domainkit.contrib.auth import StepUp
+
+            from .authorizing import APPROVE
+
+            self._rule = StepUp(for_=APPROVE)
+        return self._rule
+
+    async def has_object_permission(
+        self, request: HTTPConnection, user: Principal, obj: object
+    ) -> bool:
+        """The setting is off, or the request holds an authorization of it."""
+        rule = self._asking()
+        return rule is None or await rule.has_permission(request, user)
+
+    async def refusal(
+        self, request: HTTPConnection, user: Principal
+    ) -> Exception | None:
+        """``401 authorization_required`` without the header; else ``403``."""
+        rule = self._asking()
+        return None if rule is None else await rule.refusal(request, user)
+
+    def authorization_model(self) -> type[BaseModel]:
+        """``{"id", "purpose", "shown", "expires_at"}``: the twin's ``201`` body."""
+        return ApprovalAuthorizationOut
+
+    async def ask_authorization(self, request: Request, command: object) -> BaseModel:
+        """Store an authorization of the approval ``command`` makes; the twin's body.
+
+        It is refused as ``request_action_authorization`` refuses, and as
+        ``approve_request`` would refuse the approval itself.
+
+        Raises:
+            APIError: 404 ``not_found``, while ``APPROVE_ACTION`` is off.
+        """
+        if self._asking() is None:
+            raise APIError(status.HTTP_404_NOT_FOUND, "Not Found", code="not_found")
+        from .authorizing import ask
+        from .services import ApproveRequest
+
+        assert isinstance(command, ApproveRequest)  # noqa: S101 - the route's.
+        return ApprovalAuthorizationOut.model_validate(await ask(request, command))
+
+
 def _rule_of(request: ApprovalRequest) -> BasePermission | None:
     """The approve rule of the request's policy, or the configured one.
 
@@ -185,10 +286,11 @@ class RequestActions:
         """View to read, add to submit and cancel, approver to decide.
 
         Submitting, deciding, and cancelling are in one's own name only
-        (``ActsForThemselves``).
+        (``ActsForThemselves``). Approving asks ``ApproveAction`` last: an
+        authorization of the approval, with ``APPROVE_ACTION`` on.
         """
         if action == "approve":
-            return (ActsForThemselves(), IsApprover(), MayApprove())
+            return (ActsForThemselves(), IsApprover(), MayApprove(), ApproveAction())
         if action == "reject":
             return (ActsForThemselves(), IsApprover())
         if action == "cancel":

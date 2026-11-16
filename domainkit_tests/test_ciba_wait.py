@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from domainkit_tests.test_auth_cookies import TRUSTED
 from domainkit_tests.test_ciba import PHONE, App, Phone, app, redeem, rows, start_push
+from domainkit_tests.test_ciba_step_up import FREE_TEXT_STEP_UP
 
 __all__ = ["app"]  # The fixture the tests take.
 
@@ -83,6 +84,7 @@ def test_a_denied_or_unknown_request_answers_as_a_poll_does(app: App) -> None:
     assert wait(web, "not-a-handle").json()["code"] == "sign_in_unknown"
 
 
+@FREE_TEXT_STEP_UP  # The free-text step-up is deprecated (ADR 0144).
 def test_a_step_up_waits_for_the_session_that_asked_only(app: App) -> None:
     """Another session cannot wait on its handle; the one that asked can."""
     web = app(NUMBER_MATCHING=False, WAIT_SECONDS=1)

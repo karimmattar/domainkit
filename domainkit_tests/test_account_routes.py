@@ -62,6 +62,17 @@ NO_WAY_IN: Final = {
     "POST /app-sign-in/transactions/{challenge_id}": "asks the phone",
     "POST /app-sign-in/transactions/token": "redeems what the phone confirmed",
     "POST /app-sign-in/transactions/wait": "reads whether the phone answered",
+    "POST /app-sign-in/authorizations/{authorization_id}": "asks the phone",
+    "POST /app-sign-in/authorizations/token": "redeems what the phone confirmed",
+    "POST /devices/authorizations/{authorization_id}": (
+        "a bound device confirms one act of its own login"
+    ),
+    "POST /passkeys/authorizations/{authorization_id}/options": (
+        "a challenge to confirm one act, for this session"
+    ),
+    "POST /passkeys/authorizations/{authorization_id}": (
+        "a passkey confirms one act, for this session"
+    ),
     "POST /sca/{challenge_id}/confirm": "confirms one transaction, with factors",
     "POST /email-verification": "sends a code to the account's own address",
     "POST /email-verification/code": "proves the account's own address",

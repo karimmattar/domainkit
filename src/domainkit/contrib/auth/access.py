@@ -27,17 +27,32 @@ step_up_required``, and ``POST /step-up`` (``auth.stepup``) steps up::
     )
     async def add_payee(...): ...
 
+``StepUp(for_=...)`` asks for an authorization of one act instead
+(``auth.actions``, ADR 0144): the request must hold a confirmed
+authorization of that purpose, in ``Action-Authorization``, and the act's
+service spends it, once::
+
+    memberships.command_route(
+        EndMembership,
+        service=end_membership,
+        method="DELETE",
+        rule=HasPermissions("organizations.end_membership")
+        & StepUp(for_="organizations.end_membership"),
+    )
+
 The rule names that moved to the core in 0.10 were removed from here, and
 from ``domainkit.contrib.auth``, in 0.11: import them from
 ``domainkit.http.access``.
 """
 
+import re
 from collections.abc import Awaitable, Callable, Collection
 from datetime import timedelta
-from typing import Annotated, ClassVar, Final, cast
+from typing import TYPE_CHECKING, Annotated, ClassVar, Final, cast
 
-from fastapi import Depends, status
+from fastapi import Depends, Request, status
 from fastapi.security import HTTPAuthorizationCredentials
+from pydantic import BaseModel
 from starlette.requests import HTTPConnection
 
 from domainkit.exceptions import ImproperlyConfigured
@@ -49,10 +64,15 @@ from .models import AbstractBaseUser, AnyUser
 from .settings import MAX_STEP_UP_AGE, Factor, auth_settings, with_a_factor
 from .tokens import utc_now
 
+if TYPE_CHECKING:
+    from .actions import Action
+
 PROOF: Final = "domainkit.auth.proof"
 """Where a request keeps its credentials' step-up, once read."""
 INSUFFICIENT: Final = "insufficient_user_authentication"
 """The ``WWW-Authenticate`` error that asks for a step-up (RFC 9470)."""
+PURPOSE: Final = re.compile(r"[a-z][a-z0-9_.:-]*")
+"""An act's purpose: a lower-case name (``auth.actions``)."""
 
 current_user = cast("Callable[[HTTPConnection], AnyUser]", access.current_user)
 """The core's ``current_user``, typed as this app's users: the same function."""
@@ -153,20 +173,55 @@ class StepUp(access.BasePermission):
     (``check_object_permissions``). An open WebSocket or event stream is
     asked again on each re-check (``LIVE_REAUTH_INTERVAL``), so it closes
     once its step-up is older than ``max_age``.
+
+    ``StepUp(for_=...)``, given an ``Action`` or its purpose in place of
+    ``max_age``, asks for an authorization of that one act instead
+    (``ActionStepUp``, ADR 0144).
     """
 
     message: ClassVar[str] = "Confirm it is you: authenticate again to do this."
 
+    def __new__(
+        cls,
+        max_age: timedelta | None = None,
+        *,
+        methods: Collection[Factor] | None = None,
+        for_: "str | Action | None" = None,
+    ) -> "StepUp":
+        """A ``StepUp``, or with ``for_`` an ``ActionStepUp``."""
+        made = ActionStepUp if for_ is not None and cls is StepUp else cls
+        return super().__new__(made)
+
     def __init__(
-        self, max_age: timedelta, *, methods: Collection[Factor] | None = None
+        self,
+        max_age: timedelta | None = None,
+        *,
+        methods: Collection[Factor] | None = None,
+        for_: "str | Action | None" = None,
     ) -> None:
-        """Require a step-up within ``max_age`` (a day at most).
+        """Require a step-up within ``max_age`` (a day at most), or an act's one.
 
         Raises:
-            ImproperlyConfigured: ``max_age`` is not positive or exceeds a
-                day, or ``methods`` lacks ``otp`` or repeats one.
+            ImproperlyConfigured: Neither ``max_age`` nor ``for_`` is given,
+                or both; ``max_age`` is not positive or exceeds a day;
+                ``methods`` lacks ``otp`` or repeats one, or comes with
+                ``for_`` (the action names its methods); or ``for_`` is not
+                an ``Action`` or a purpose.
         """
-        if not timedelta(0) < max_age <= MAX_STEP_UP_AGE:
+        if (max_age is None) == (for_ is None):
+            raise ImproperlyConfigured(
+                "StepUp takes max_age=... (a step-up) or for_=... (one act's "
+                "authorization): one of the two."
+            )
+        self.purpose: str | None = None
+        """The act whose authorization it asks for (``for_``); None: a step-up."""
+        self.action: Action | None = None
+        self.max_age = max_age
+        self.methods: frozenset[str] | None = None
+        if for_ is not None:
+            self._ask_for(for_, methods)
+            return
+        if not timedelta(0) < cast(timedelta, max_age) <= MAX_STEP_UP_AGE:
             raise ImproperlyConfigured(
                 "StepUp(max_age=...) must be more than 0 and a day at most."
             )
@@ -175,8 +230,29 @@ class StepUp(access.BasePermission):
                 methods = with_a_factor(tuple(methods))
             except ValueError as exc:
                 raise ImproperlyConfigured(f"StepUp(methods=...): {exc}.") from None
-        self.max_age = max_age
-        self.methods = None if methods is None else frozenset(methods)
+            self.methods = frozenset(methods)
+
+    def _ask_for(
+        self, for_: "str | Action", methods: Collection[Factor] | None
+    ) -> None:
+        """Ask for an authorization of ``for_``: an ``Action``, or its purpose.
+
+        Raises:
+            ImproperlyConfigured: ``methods`` is given, or ``for_`` names no
+                purpose.
+        """
+        if methods is not None:
+            raise ImproperlyConfigured(
+                "StepUp(for_=...) takes no methods: its Action names them."
+            )
+        purpose = for_ if isinstance(for_, str) else getattr(for_, "purpose", None)
+        if not isinstance(purpose, str) or not PURPOSE.fullmatch(purpose):
+            raise ImproperlyConfigured(
+                "StepUp(for_=...) takes an Action, or its purpose: a lower-case "
+                "name, such as organizations.end_membership."
+            )
+        self.purpose = purpose
+        self.action = None if isinstance(for_, str) else for_
 
     def required(self) -> frozenset[str]:
         """What the step-up must have proved: ``methods``, or the setting's."""
@@ -202,6 +278,7 @@ class StepUp(access.BasePermission):
         proof = await proof_of(request)
         return (
             proof is not None
+            and self.max_age is not None
             and self.required() <= proven(proof.methods)
             and utc_now() - proof.auth_time <= self.max_age
         )
@@ -212,9 +289,88 @@ class StepUp(access.BasePermission):
         """As ``has_permission``: given only to ``check_object_permissions``, too."""
         return await self.has_permission(request, user)
 
-    async def refusal(self, request: HTTPConnection, user: AnyUser) -> StepUpRequired:
+    async def refusal(self, request: HTTPConnection, user: AnyUser) -> Exception:
         """``401 step_up_required``, naming the age and the methods."""
-        return StepUpRequired(self.max_age, self.required())
+        return StepUpRequired(cast(timedelta, self.max_age), self.required())
+
+
+class ActionStepUp(StepUp):
+    """``StepUp(for_=...)``: the request holds an authorization of one act (ADR 0144).
+
+    The ``Action-Authorization`` header must hold a confirmed authorization
+    of the purpose, of the user and of the request's login, unspent and
+    live, whose code covers its row: one query by id. The rule writes
+    nothing (a rule may be asked more than once, beside others): it keeps
+    the authorization on the request, and the act's decorated service
+    spends it (``requires_authorization``). Refused: ``401
+    authorization_required`` without the header (``WWW-Authenticate`` as
+    RFC 9470 says), ``403 action_not_authorized`` with one that does not
+    hold, which never says why. Never while staff act as the user, nor on a
+    WebSocket (``auth.E111`` refuses it there, and on an event stream).
+
+    It asks for authorizations too (``domainkit.http.access.AsksAuthorization``):
+    a ``ResourceRouter`` gives its route a twin, ``POST <path>/authorization``.
+    """
+
+    def required(self) -> frozenset[str]:
+        """What confirming the act must prove: its action's, or the setting's."""
+        action = self._action()
+        if action is not None:
+            return action.required()
+        return frozenset(auth_settings().AUTHORIZATIONS.METHODS)
+
+    def unprovable(self) -> frozenset[str]:
+        """Nothing: what confirming an act proves is ``auth.E108``'s to check."""
+        return frozenset()
+
+    async def has_permission(self, request: HTTPConnection, user: AnyUser) -> bool:
+        """The request holds a confirmed authorization of the act, kept for it."""
+        from .actions import accepted_authorization
+
+        if (
+            not isinstance(user, AbstractBaseUser)
+            or impersonated(request)
+            or request.scope.get("type") != "http"
+        ):
+            return False
+        purpose = cast(str, self.purpose)
+        return await accepted_authorization(request, user, purpose) is not None
+
+    async def refusal(self, request: HTTPConnection, user: AnyUser) -> Exception:
+        """``401 authorization_required`` without the header; else ``403``."""
+        from .actions import authorization_refusal
+
+        return authorization_refusal(request, cast(str, self.purpose))
+
+    def authorization_model(self) -> type[BaseModel]:
+        """``{"id", "purpose", "shown", "expires_at"}``: the twin's ``201`` body."""
+        from .actions import ActionAuthorizationOut
+
+        return ActionAuthorizationOut
+
+    async def ask_authorization(self, request: Request, command: object) -> BaseModel:
+        """Store an authorization of ``command`` for the request's user and login.
+
+        Raises:
+            ImproperlyConfigured: No action is registered for the purpose.
+            See ``request_action_authorization`` for the refusals.
+        """
+        from .actions import ActionAuthorizationOut, request_action_authorization
+
+        action = self._action()
+        if action is None:
+            raise ImproperlyConfigured(
+                f"StepUp(for_={self.purpose!r}): no registered action has that "
+                "purpose; register_action(...) it in ready()."
+            )
+        authorization = await request_action_authorization(request, action, command)
+        return ActionAuthorizationOut.of(authorization)
+
+    def _action(self) -> "Action | None":
+        """The act's ``Action``: the one given, or the one registered."""
+        from .actions import action_for
+
+        return self.action or action_for(cast(str, self.purpose))
 
 
 STANDS_FOR: Final[dict[str, frozenset[str]]] = {

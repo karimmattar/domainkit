@@ -22,6 +22,10 @@ class DevicesConfig(DomainConfig):
     def ready(self) -> None:
         """Check the device tables share auth's database; forget deleted users.
 
+        Registers the two ways this app confirms an act's authorization
+        (ADR 0144): the app's own act, signed by a bound device, and a
+        passkey.
+
         Raises:
             ImproperlyConfigured: ``devices`` is routed elsewhere than ``auth``,
                 ``ENROLLMENT`` is on without ``domainkit.contrib.messaging``,
@@ -45,8 +49,13 @@ class DevicesConfig(DomainConfig):
 
         _check_signature_store(registry.settings(DevicesSettings).SIGNATURE_STORE)
 
+        from domainkit.contrib.auth.integration import on_action_confirmation
         from domainkit.contrib.auth.routing import AccountRoutes, on_account_routes
 
+        from .authorizations import DEVICE_CONFIRMATION, PASSKEY_CONFIRMATION
+
+        on_action_confirmation(DEVICE_CONFIRMATION, domain=self.label)
+        on_action_confirmation(PASSKEY_CONFIRMATION, domain=self.label)
         on_account_routes(
             lambda: [AccountRoutes("devices", f"{self.name}.api.router")],
             domain=self.label,

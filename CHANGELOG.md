@@ -67,6 +67,47 @@ and a status.
   `readonly=True` also meant "read from a replica", so a project that
   marks its permission checks read-only could not add one: they would
   read stale memberships (user report D1).
+- Action authorizations (`domainkit.contrib.auth.actions`): an approval
+  worth one act, with its arguments, once. An `Action` declares the act
+  (its purpose, its command, what it is on, and what the user is shown);
+  `StepUp(for_=...)` on its route asks for an authorization of it (`401
+  authorization_required`, then `403 action_not_authorized`); the client
+  asks for one, the user confirms it with a code (`POST
+  /auth/authorizations/{id}/confirm`), and the service decorated
+  `requires_authorization` spends it: with the act's first commit on
+  auth's database, else just before the act. Other arguments void it, and
+  one no service spent fails the request in tests. A new table,
+  `domainkit_authorizations`, keeps each
+  ([Authorizing one act](docs/auth/actions.md), ADR 0144) (user report A6).
+- `AUTH.AUTHORIZATIONS`: `TTL` (5 minutes, 30 at most) and `METHODS`
+  (`["otp"]`), which may name `phone`, a confirmation on a bound device's
+  own screen that neither a code nor a passkey proves. `check` refuses an
+  act no installed way confirms (`auth.E108`), a purpose no action has
+  (`auth.E109`), an action no service spends (`auth.E110`), and
+  `StepUp(for_=...)` on a WebSocket or an event stream (`auth.E111`)
+  (user report A6).
+- `auth.integration`: `register_action`, `on_action_confirmation`,
+  `action_authorization`, `link_action_authorization`, and
+  `confirm_action_with`, for an app that confirms an act its own way (the
+  phone, a passkey). The confirming device's key and signature are kept
+  with the authorization, and on the evidence ledger where installed
+  (user report A6).
+- `domainkit.ddd.fingerprint`: approvals' fingerprint of an action and its
+  arguments, in the core, so that approvals and action authorizations
+  compute it one way; `domainkit.contrib.approvals.fingerprint` is the
+  same function (user report A6).
+- `APPROVALS.APPROVE_ACTION` (off by default): each approval asks for an
+  authorization of its own, the action `approvals.approve`, in place of
+  the approver's step-up window. It is bound to the request and the
+  fingerprint the approver states, and shows the request's action and
+  arguments as stored. The approver asks for it at
+  `POST /requests/{id}/approve/authorization` (`404` while the setting is
+  off), confirms it, and approves with it once; the approval's commit
+  spends it. Asking is refused as approving would be (the maker, another
+  fingerprint), the other approve rules still apply, and `check` refuses
+  a `StepUp` in one of them beside it (`approvals.E001`)
+  ([Approving with an authorization](docs/contrib/approvals.md#approving-with-an-authorization),
+  ADR 0144) (user report A6).
 - A new phone shows a QR code, and the user's bound phone scans it and
   approves: `POST /app-sign-in/device` and `POST /app-sign-in/device/token`,
   each signed by the new phone's key. The new phone names no account and
@@ -213,6 +254,46 @@ and a status.
   documentation of the release that wrote them, where they named a path
   of domainkit's repository
   ([Granian](docs/reference/servers.md#granian)) (user report S1).
+- A command route whose rules ask for an authorization of the act
+  (`AsksAuthorization`, as `StepUp(for_=...)` does) gets a twin,
+  `POST <the route's path>/authorization`. It builds the command as the
+  route does, checks the route's other rules, the caller's reach, and the
+  rules on the aggregate, and answers `201` with what the rule stored; it
+  never runs the service. An asking rule inside `|` or `~`, or two on one
+  route, is refused when the route is declared. A route that asks for
+  nothing is unchanged. See
+  [Authorizations for one act](docs/resources.md#authorizations-for-one-act)
+  and ADR 0144 (user report A6).
+- The user's phone confirms one act: `POST /app-sign-in/authorizations/{id}`
+  asks it to confirm one of the session's action authorizations, counted
+  and bounded as the phone's step-up is (`START_RATE`, `MAX_PENDING`,
+  `NUMBER_MATCHING`, `409 phone_unavailable`). The phone lists the
+  request with `kind` `authorization` and an `authorization` object (the
+  purpose, the kept title and details, and the digest, read from auth's
+  row), and approves it with `{"digest"}` in a request its device signs;
+  another digest denies it (`409 authorization_changed`). The row keeps
+  the device's key, the bytes it signed, and its signature.
+  `POST /app-sign-in/authorizations/token` answers `<id>.<code>` to the
+  session that asked. The phone is a way to confirm (`hwk`, `phone`) for
+  users with a bound device, so `methods=["phone"]` passes `auth.E108`
+  where ciba is installed. `linked_action_authorization` and
+  `confirmed_action_authorization` (`auth.integration`) find an
+  authorization by the phone's request, and hand over a confirmed one
+  ([Confirming one act](docs/auth/ciba.md#confirming-one-act), ADR 0144)
+  (user report A6).
+- Devices confirm an act's authorization two ways, registered with auth
+  when installed. The mobile app's own act: `POST
+  /devices/authorizations/{id}` with the act's digest, signed by one of
+  the user's bound devices, for an authorization its own login asked for;
+  it proves `hwk` and `phone`, and the device's key, what it signed, and
+  its signature are kept on the row (`device_proof`). A passkey: `POST
+  /passkeys/authorizations/{id}/options` makes a challenge for that
+  authorization alone, and `POST /passkeys/authorizations/{id}` takes the
+  assertion; it proves `hwk` and `mfa`, never `phone`, for the session
+  that asked only. A user with a bound device or a passkey can now ask
+  for an authorization, and an act may ask `["phone"]` with devices alone
+  ([Confirming one act](docs/auth/devices.md#confirming-one-act), ADR
+  0144) (user report A6).
 
 ### Changed
 
@@ -302,6 +383,16 @@ and a status.
   moves it to an extra, `domainkit[uvicorn]`, which a project that serves
   with uvicorn, runs `runserver` with it, or uses `live_server` then
   installs ("Upgrading", 2.3 to 2.4) (user report S3).
+- The phone's free-text step-up, `POST /app-sign-in/step-up` and its
+  token and wait routes: the phone shows the page's words, and its
+  approval opens a window for every guarded act. They work through 2.x,
+  answer with `Deprecation` and `Link` headers (RFC 9745), and the asking
+  route warns once a process (`DomainkitDeprecationWarning`); 3.0 removes
+  them.
+  Declare the act as an `Action` and have the phone confirm it
+  (`/app-sign-in/authorizations/{id}`): see
+  [upgrading.md](docs/upgrading.md#move-from-the-phones-free-text-step-up-to-action-authorizations)
+  (user report A6).
 
 ### Fixed
 

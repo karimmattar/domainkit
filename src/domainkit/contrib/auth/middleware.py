@@ -39,6 +39,10 @@ refuses while held, as it counts refused credentials: throttled per
 address (``domainkit.log.ThrottledLog``), so a burst that stops still
 shows its size.
 
+An HTTP request of a user keeps the action authorizations its rules
+accept (``StepUp(for_=...)``), for its act to spend; one that no service
+spent is voided as the response starts (``auth.actions``).
+
 An open WebSocket or event stream has its credentials checked again while
 it lasts (``reauthenticate``, called by ``domainkit.http.live``), so a
 revoked or expired token, or a deactivated user, does not keep it open;
@@ -71,6 +75,7 @@ from domainkit.utils.module_loading import import_string
 from domainkit.utils.rates import parse_rate
 
 from .access import PROOF
+from .actions import keeping_authorizations, register_action
 from .authentication import (
     RECHECK,
     AuthenticationFailed,
@@ -148,8 +153,23 @@ class AuthenticationMiddleware:
         scope["user"] = AnonymousUser() if credentials is None else credentials.user
         scope["auth"] = credentials
         scope[REAUTHENTICATE] = self.reauthenticate
+        if credentials is None:
+            await self.app(scope, receive, send)
+            return
+        if scope["type"] != "http" or not register_action.hooks():
+            # No action registered: no rule accepts one, nothing to settle.
+            await self._serve(scope, receive, send, credentials)
+            return
+        # What the request's rules accept, its act spends: settled at the end.
+        with keeping_authorizations(scope, receive, send) as settling:
+            await self._serve(scope, receive, settling, credentials)
+
+    async def _serve(
+        self, scope: Scope, receive: Receive, send: Send, credentials: Credentials
+    ) -> None:
+        """Serve the request as its user: the actor its context names."""
         context = current_request()
-        if credentials is None or context is None:
+        if context is None:
             await self.app(scope, receive, send)
             return
         # An impersonation acts for its staff member: the trail names them.

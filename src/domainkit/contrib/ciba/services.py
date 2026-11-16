@@ -7,9 +7,9 @@ A request starts on one of two channels:
   the phone that scans it claims the request (``claim``).
 
 ``ask_signed_in`` asks the phone of a user who is signed in already: to
-approve an action (a step-up), or one of their transactions (ADR 0129).
-Only the session that asked redeems it, and a handle redeems as its kind
-alone: a step-up is never a login.
+approve an action (a step-up), one of their transactions (ADR 0129), or
+one act's authorization (ADR 0144). Only the session that asked redeems
+it, and a handle redeems as its kind alone: a step-up is never a login.
 
 The phone answers with ``approve`` or ``deny``; the initiator polls with
 ``poll`` until it is approved (the request is redeemed, once), denied, or
@@ -84,6 +84,9 @@ PUSH_KIND: Final = "domainkit.sign_in"
 """The ``type`` of a push's data: the app fetches the request it names."""
 AGENT_LENGTH: Final = 200
 """Characters of the initiator's ``User-Agent`` kept, to show on the phone."""
+PHONE_CONFIRMS: Final = frozenset({"hwk", "phone"})
+"""What the phone's approval of an act proves: a key in its hardware (RFC
+8176's ``hwk``), on the bound device's own screen (``phone``, ADR 0144)."""
 
 
 def ciba_settings() -> CibaSettings:
@@ -149,11 +152,12 @@ def _request(
     kind: str = SIGN_IN,
     credential_digest: str | None = None,
     sca_challenge_id: UUID | None = None,
+    request_id: UUID | None = None,
 ) -> SignInRequest:
-    """A new request, as its row keeps it."""
+    """A new request, as its row keeps it; its id ``request_id``, or a new one."""
     agent = requester.agent[:AGENT_LENGTH] if requester.agent else None
     return SignInRequest(
-        id=uuid4(),
+        id=request_id or uuid4(),
         handle_digest=secret_digest(handle),
         qr_digest=qr_digest,
         client_id=client_id,
@@ -240,12 +244,15 @@ async def ask_signed_in(
     message: str | None = None,
     sca_challenge_id: UUID | None = None,
     match: bool = False,
+    request_id: UUID | None = None,
 ) -> Started:
     """Ask the phone of ``user``, who is signed in, to approve ``kind``.
 
-    ``kind`` is ``step_up`` (``message`` says what for) or ``transaction``
-    (``sca_challenge_id``). Only the credentials ``credential_digest``
-    names redeem it. The push leaves with ``uow``'s commit.
+    ``kind`` is ``step_up`` (``message`` says what for), ``transaction``
+    (``sca_challenge_id``), or ``authorization``: auth's action
+    authorization names the request, by the id ``request_id`` it was
+    linked with first. Only the credentials ``credential_digest`` names
+    redeem it. The push leaves with ``uow``'s commit.
 
     Raises:
         PhoneUnavailable: No phone of the user can be asked now: none is
@@ -273,6 +280,7 @@ async def ask_signed_in(
             kind=kind,
             credential_digest=credential_digest,
             sca_challenge_id=sca_challenge_id,
+            request_id=request_id,
         )
     )
     await _notify(uow, user.id, request.id, config)
@@ -283,6 +291,12 @@ async def ask_signed_in(
         interval=request.interval,
         match_code=match_code,
     )
+
+
+async def bound_phone(user_id: UUID) -> bool:
+    """Whether the user has a bound device: a phone their acts can be confirmed on."""
+    async with CibaUnitOfWork() as uow:
+        return bool(await uow.devices.count(user_id))
 
 
 async def _askable(uow: CibaUnitOfWork, user: AbstractBaseUser, now: datetime) -> bool:
@@ -451,9 +465,7 @@ async def approve(
     """
     request = await waiting(uow, user_id, request_id)
     now = utc_now()
-    if request.match_code is not None and not hmac.compare_digest(
-        (match_code or "").strip(), request.match_code
-    ):
+    if not matches(request, match_code):
         await _answer_no(uow, request, user_id, now, reported=False)
         return None
     if not await uow.requests.approve(request.id, user_id, device_id, now):
@@ -468,6 +480,13 @@ async def approve(
         )
     )
     return await uow.requests.get(request.id)
+
+
+def matches(request: SignInRequest, match_code: str | None) -> bool:
+    """Whether ``match_code`` is the number ``request`` asks, if it asks one."""
+    return request.match_code is None or hmac.compare_digest(
+        (match_code or "").strip(), request.match_code
+    )
 
 
 async def deny(

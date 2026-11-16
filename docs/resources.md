@@ -446,6 +446,63 @@ Without it, a lost race answers 503 `database_busy`. Declare it for
 services that change nothing outside their unit of work. It costs no
 statement until a race is lost.
 
+### Authorizations for one act
+
+Some rules ask for an authorization of the act they guard, and refuse
+the act until the client sends one: `StepUp(for_=...)` of
+`domainkit.contrib.auth` is one
+([ADR 0144](adr/0144-authorize-one-act-not-a-window-of-time.md)). A
+command route whose rules hold such a rule gets a twin,
+`POST <the route's path>/authorization`, where the client asks for it:
+
+```python
+products.command_route(
+    DeleteProduct,
+    service=delete_product,
+    method="DELETE",
+    rule=StepUp(for_="catalog.delete_product"),
+)
+```
+
+```text
+DELETE /products/42                        401 (the rule asks for an authorization)
+POST   /products/42/authorization          201 (what the rule stored)
+DELETE /products/42 (with it)              204
+```
+
+- The twin takes the route's path and body. It builds the command as
+  the route does: the path's ids, the parent's field, `provide`, and the
+  fields a `PatchModel` body sets, held to the field policy. Its body
+  limit is the route's.
+- Before it asks, it checks what the act would, with the asking rule
+  passing: the route's other rules (`401` or `403`), the aggregate within
+  the caller's reach (`404`), and the rules on the aggregate. The caller
+  must have proved who they are. So no one asks for an authorization of
+  an act they could not make.
+- It then awaits the rule's `ask_authorization(request, command)`, and
+  answers `201` with what it returns, marked `Cache-Control: no-store`.
+  It never runs the service, and writes nothing through its unit of
+  work.
+- OpenAPI shows it as an operation of its own: the route's name and
+  `_authorization` (`delete_product_authorization`), a summary, and the
+  rule's `authorization_model()` as the `201` body. A twin of a route on
+  the collection is matched before the routes of one item.
+- The asking rule may be the resource's or the route's, alone or inside
+  `&` at any depth. Inside `|` or `~` it cannot be decided, and two on
+  one route would ask twice for one act: either raises
+  `ImproperlyConfigured` when the route is declared. So do two routes
+  whose twins would share a path (a `PATCH` and a `DELETE` of one item
+  that both ask): give one a `path`.
+- A route whose rules ask for nothing gets no twin, and nor do batches
+  and generic writes. A resource's rule holds every route of the
+  resource, reads included, so put an asking rule on the route
+  (`rule=`).
+
+A rule of your own asks for one by implementing `AsksAuthorization`
+(`domainkit.http.access`): `authorization_model()` returns the model of
+the `201` body, and `ask_authorization(request, command)` stores the
+authorization for the request's caller and returns it.
+
 ### Generic writes for reference data
 
 For reference data, where generic edits are fine, `crud=True` adds three

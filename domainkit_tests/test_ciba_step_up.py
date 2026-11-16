@@ -1,4 +1,9 @@
-"""A signed-in web session asks the phone: a step-up, or a transaction (ADR 0129)."""
+"""A signed-in web session asks the phone: a step-up, or a transaction (ADR 0129).
+
+The step-up of the page's own words is deprecated in 2.4 (ADR 0144, user
+report A6): it warns once a process. The tests that ask it ignore that
+warning (``FREE_TEXT_STEP_UP``); ``test_ciba_authorizations`` tests it.
+"""
 
 from datetime import timedelta
 from typing import Any
@@ -31,6 +36,11 @@ __all__ = ["app"]  # The fixture the tests take.
 
 IBAN = "DE89370400440532013000"
 MESSAGE = "Add payee DE89 3704 0044"
+FREE_TEXT_STEP_UP = pytest.mark.filterwarnings(
+    "ignore:POST /app-sign-in/step-up is deprecated"
+    ":domainkit.deprecation.DomainkitDeprecationWarning"
+)
+"""Ask the deprecated step-up without its warning failing the test."""
 
 
 def web_of(client: TestClient, username: str = "alice") -> dict[str, str]:
@@ -89,6 +99,7 @@ def change_transaction(challenge_id: UUID, *, gone: bool = False) -> None:
     run_async(change())
 
 
+@FREE_TEXT_STEP_UP
 def test_the_phone_steps_the_web_session_up(app: App) -> None:
     """Asked, shown the message, approved with the number: the session holds hwk."""
     phone = Phone(app(PHONE))
@@ -116,6 +127,7 @@ def test_the_phone_steps_the_web_session_up(app: App) -> None:
     assert again.json()["code"] == "sign_in_unknown"  # Once.
 
 
+@FREE_TEXT_STEP_UP
 def test_a_step_up_is_only_its_sessions_and_never_a_login(app: App) -> None:
     """Another session, the sign-in routes, and the transaction route: unknown."""
     phone = Phone(app(PHONE))
@@ -134,6 +146,7 @@ def test_a_step_up_is_only_its_sessions_and_never_a_login(app: App) -> None:
     assert still.status_code == 200, still.json()  # None of those spent it.
 
 
+@FREE_TEXT_STEP_UP
 def test_a_step_up_needs_a_phone_to_ask(app: App) -> None:
     """No bound device: 409; a message the phone cannot show whole: 422."""
     web = app()

@@ -13,6 +13,7 @@ On this page you learn how to:
 - install the domain and mount its routes;
 - sign in on the web by push or by QR code;
 - answer from the phone;
+- confirm one act from the phone, for a signed-in session;
 - make the mobile app the user's identity;
 - let other services ask the phone, as OIDC clients;
 - know what is limited, and what is stored.
@@ -98,7 +99,7 @@ X-Device-Signature: MEUCIQ...
 ```
 
 ```json
-[{"id": "0b6f...", "kind": "sign_in", "channel": "push", "client": null, "binding_message": null, "address": "203.0.113.7", "browser": "Mozilla/5.0 ...", "same_network": false, "match_required": true, "transaction": null, "created_at": "...", "expires_at": "..."}]
+[{"id": "0b6f...", "kind": "sign_in", "channel": "push", "client": null, "binding_message": null, "address": "203.0.113.7", "browser": "Mozilla/5.0 ...", "same_network": false, "match_required": true, "transaction": null, "authorization": null, "created_at": "...", "expires_at": "..."}]
 ```
 
 The user types the number the page shows, and approves:
@@ -165,19 +166,22 @@ device_signature_refused`.
 | --- | --- | --- |
 | `GET /auth/app-sign-in/requests` | | The requests waiting for an answer, oldest first. |
 | `POST /auth/app-sign-in/requests/claim` | `{"code"}`: what the QR code holds | The request, now the user's. |
-| `POST /auth/app-sign-in/requests/{id}/approve` | `{"match_code"?}` | `204`. |
+| `POST /auth/app-sign-in/requests/{id}/approve` | `{"match_code"?}`, and an act's `"digest"` | `204`. |
 | `POST /auth/app-sign-in/requests/{id}/deny` | `{"report"?}` | `204`. |
 
 A request shows:
 
-- `kind`: `sign_in`, `step_up` (an action of a signed-in session), or
-  `transaction` ([below](#asking-the-phone-from-a-signed-in-session));
+- `kind`: `sign_in`, `authorization` (one act of a signed-in session),
+  `transaction`, `step_up` ([below](#asking-the-phone-from-a-signed-in-session)),
+  or `device` ([A new phone asks to be bound](#a-new-phone-asks-to-be-bound));
 - `client`: the name of the service that asks, or `null` for your own
   pages;
 - `binding_message`: the text that service shows too, or what a step-up
   is for;
 - `transaction`: a transaction's `amount`, `payee`, and `purpose`, read
   from auth's record; `null` for the other kinds;
+- `authorization`: an act's `purpose`, the `shown` title and details, and
+  its `digest`, read from auth's record; `null` for the other kinds;
 - `address` and `browser`: where the sign-in was started;
 - `same_network`: whether the phone is on that address now;
 - `match_required`: whether approving needs the page's number.
@@ -233,26 +237,116 @@ project's own route against `START_RATE`, with the built-in ones.
 ## Asking the phone from a signed-in session
 
 A web session that is signed in already can ask the user's phone to
-approve an action, or to confirm a transaction. The routes need
-credentials without scopes, and only the session that asked redeems the
-answer: the request is bound to its credentials.
+confirm one act, or one transaction. The routes need credentials without
+scopes, and only the session that asked redeems the answer: the request
+is bound to its credentials.
 
 | Route | Body | Answer |
 | --- | --- | --- |
-| `POST /auth/app-sign-in/step-up` | `{"message"}` | `request`, `expires_in`, `interval`, `match_code`. |
-| `POST /auth/app-sign-in/step-up/token` | `{"request"}` | The step-up, `amr` `["hwk"]`, as `/auth/step-up` answers it; or a poll's answer. |
-| `POST /auth/app-sign-in/step-up/wait` | `{"request"}` | As `/app-sign-in/wait`, for this session's step-up. |
+| `POST /auth/app-sign-in/authorizations/{id}` | | `request`, `expires_in`, `interval`, `match_code`. |
+| `POST /auth/app-sign-in/authorizations/token` | `{"request"}` | `{"authorization", "expires_at"}`, as `/auth/authorizations/{id}/confirm` answers; or a poll's answer. |
 | `POST /auth/app-sign-in/transactions/{challenge_id}` | | `request`, `expires_in`, `interval`, `match_code`. |
 | `POST /auth/app-sign-in/transactions/token` | `{"request"}` | `{"authorization", "expires_at"}`, as `/auth/sca/{id}/confirm` answers; or a poll's answer. |
 | `POST /auth/app-sign-in/transactions/wait` | `{"request"}` | As `/app-sign-in/wait`, for this session's transaction. |
+| `POST /auth/app-sign-in/step-up` | `{"message"}` | Deprecated ([below](#the-pages-words-and-a-window-deprecated)): `request`, `expires_in`, `interval`, `match_code`. |
+| `POST /auth/app-sign-in/step-up/token` | `{"request"}` | Deprecated: the step-up, `amr` `["hwk"]`, as `/auth/step-up` answers it; or a poll's answer. |
+| `POST /auth/app-sign-in/step-up/wait` | `{"request"}` | Deprecated: as `/app-sign-in/wait`, for this session's step-up. |
 
-The message of a step-up names the action in words the user recognizes,
-such as `"Add payee DE89 3704 0044"`: at most 64 printable characters.
-The phone lists the request with `kind` `step_up` and the message in
-`binding_message`, and approves it as a sign-in, with the page's number
-under `NUMBER_MATCHING`. Once approved, the session's step-up proves
-`hwk`, which stands for an authenticator's code: a route behind
-`StepUp(...)` lets it through, as after `/auth/step-up`.
+A handle redeems only as what it was asked for: an act's or a step-up's
+is never a login, and a login request never steps a session up. Staff acting as the
+user cannot ask their phone (`401 reauthentication_required`). A user
+whose phone cannot be asked now (none bound, `MAX_PENDING` waiting, or a
+recent report) gets `409 phone_unavailable`. Each request is counted
+against `START_RATE`, and shows the page's number under
+`NUMBER_MATCHING`.
+
+### Confirming one act
+
+An act declared as an `Action` asks for an authorization of its own
+([Authorizing one act](actions.md)), and the phone confirms it (since
+2.4, [ADR 0144](../adr/0144-authorize-one-act-not-a-window-of-time.md)).
+The page asks for the authorization, then asks the phone, and polls:
+
+```http
+DELETE /organizations/7/memberships/42                     401 authorization_required
+POST   /organizations/7/memberships/42/authorization       201 {"id": "9f0c...", "shown": {...}}
+POST   /auth/app-sign-in/authorizations/9f0c...            200 {"request": "kq3D1...", "expires_in": 120,
+                                                                "interval": 5, "match_code": "47"}
+POST   /auth/app-sign-in/authorizations/token {"request"}  200 {"authorization": "9f0c....mYd3...", "expires_at": "..."}
+DELETE /organizations/7/memberships/42
+       Action-Authorization: 9f0c....mYd3...               204
+```
+
+The phone gets the sign-in's push, which names the request and nothing
+of the act. It lists the request with `kind` `authorization` and an
+`authorization` object, read from auth's record: the words the server
+built when the page asked, never words the page sent.
+
+```json
+{"id": "0b6f...", "kind": "authorization", "binding_message": null, "match_required": true,
+ "authorization": {"id": "9f0c...", "purpose": "organizations.end_membership",
+                   "shown": {"title": "End a membership",
+                             "details": [{"label": "Member", "value": "Alice Smith"},
+                                         {"label": "Organization", "value": "Acme"}]},
+                   "expires_at": "...", "digest": "5d41..."},
+ "address": "203.0.113.7", "browser": "Mozilla/5.0 ...", "...": "..."}
+```
+
+Show the title and every detail. The phone approves with the page's
+number and the act's digest, in a request its device signs, as it signs
+every other:
+
+```http
+POST /auth/app-sign-in/requests/0b6f.../approve
+X-Device-Id: 7b1c...
+X-Device-Time: 1767225600123
+X-Device-Signature: MEUCIQ...
+{"match_code": "47", "digest": "5d41..."}
+```
+
+- **The signature covers the digest.** It covers the request's body,
+  which holds the digest the phone was shown. Auth keeps the device, its
+  public key, the bytes it signed, its signature, and when, with the
+  authorization: the approval can be checked again once the device is
+  unbound, and with the evidence ledger installed it outlives the row.
+- **Another digest denies the request**: `409 authorization_changed`.
+  Without one, `422 digest_required`, and the request still waits. A
+  wrong number denies it, as for a sign-in.
+- **The phone proves `hwk` and `phone`.** An act whose methods are
+  `["phone"]` takes the phone's approval, and refuses a code. An act that
+  asks for the password (`pwd`) is not the phone's to confirm: asking the
+  phone is `409 authorization_needs_other_factors`.
+- **Only the session that asked.** Another login of the user, even its
+  phone's, gets `404 authorization_not_found` when it asks the phone,
+  and `sign_in_unknown` when it polls.
+
+The app registers the phone as a way to confirm action authorizations,
+for every user with a bound device: asking for an authorization needs no
+authenticator app then (`409 no_second_factor` otherwise), and `check`
+takes an act that asks the phone alone (`auth.E108` refuses it where
+this app is not installed).
+
+### Transactions
+
+A transaction is one of the user's `auth.sca` transactions
+([Transactions authorized for one amount and payee](step-up.md#transactions-authorized-for-one-amount-and-payee)).
+The phone lists it with `kind` `transaction` and a `transaction` object:
+the amount, payee, and purpose read from auth's record, never text the
+page sent. Once approved, the authorization is spent as any other: on
+that amount and payee, once. A transaction whose `AUTH.SCA.METHODS` asks
+for the password too is refused with `409 transaction_needs_other_factors`:
+a key in the phone proves possession, not what the user knows.
+
+### The page's words, and a window: deprecated
+
+`POST /app-sign-in/step-up` takes words the page chose (`{"message"}`, at
+most 64 printable characters, such as `"Add payee DE89 3704 0044"`), and
+the phone lists the request with `kind` `step_up` and the message in
+`binding_message`. Once approved, with the page's number under
+`NUMBER_MATCHING`, `POST /app-sign-in/step-up/token` steps the session
+up: it proves `hwk`, which stands for an authenticator's code, so every
+route behind `StepUp(max_age=...)` lets it through, as after
+`/auth/step-up`, with any arguments, until `max_age` passes.
 
 ```python
 from datetime import timedelta
@@ -267,20 +361,19 @@ from domainkit.http.access import Require
 async def add_payee(payee: PayeeIn) -> PayeeOut: ...
 ```
 
-A transaction is one of the user's `auth.sca` transactions
-([Transactions authorized for one amount and payee](step-up.md#transactions-authorized-for-one-amount-and-payee)).
-The phone lists it with `kind` `transaction` and a `transaction` object:
-the amount, payee, and purpose read from auth's record, never text the
-page sent. Once approved, the authorization is spent as any other: on
-that amount and payee, once. A transaction whose `AUTH.SCA.METHODS` asks
-for the password too is refused with `409 transaction_needs_other_factors`:
-a key in the phone proves possession, not what the user knows.
+Nothing ties the page's words to what the session does next. The phone
+says "Add payee DE89...", and the server allows every guarded change for
+five minutes; a copy of the session that asks in words of its own needs
+only the user's tap and the page's number.
 
-A handle redeems only as what it was asked for: a step-up is never a
-login, and a login request never steps a session up. Staff acting as the
-user cannot ask their phone (`401 reauthentication_required`). A user
-whose phone cannot be asked now (none bound, `MAX_PENDING` waiting, or a
-recent report) gets `409 phone_unavailable`.
+Both routes are deprecated in 2.4, and 3.0 removes them. Through 2.x they
+work as before, answer with `Deprecation: @1794700800` (RFC 9745) and a
+`Link` to this section (`rel="deprecation"`), and the asking route warns
+once a process (`DomainkitDeprecationWarning`). Declare the act as an
+`Action` instead, put `StepUp(for_=...)` on its route, and have the phone
+confirm it ([above](#confirming-one-act)): the phone then shows the
+server's words, and its approval is worth that act, with its arguments,
+once ([Upgrading](../upgrading.md#move-from-the-phones-free-text-step-up-to-action-authorizations)).
 
 ## The mobile app as identity
 
@@ -752,7 +845,8 @@ approved = await poll(started.handle, client_id=None)  # commits itself
 | `WrongMatchCode` | `422 wrong_match_code` | Not the page's number: the request is denied. |
 | `AuthorizationPending`, `SlowDown`, `SignInExpired`, `AccessDenied`, `SignInUnknown` | `400 authorization_pending`, `slow_down`, `expired_token`, `access_denied`, `sign_in_unknown` | A poll's answers ([above](#how-a-sign-in-works)). |
 | `DeviceLoginOff` | `404 device_login_off` | `POST /devices/login` without `DEVICES.DEVICE_LOGIN`. |
-| `PhoneUnavailable` | `409 phone_unavailable` | A step-up or a transaction asked of a user whose phone cannot be asked now. |
+| `PhoneUnavailable` | `409 phone_unavailable` | An act, a transaction, or a step-up asked of a user whose phone cannot be asked now. |
+| `DigestRequired` | `422 digest_required` | The phone approves an act without its digest. |
 | `TransactionClosed` | `409 transaction_closed` | A transaction confirmed or used already, or expired. |
 | `TransactionNeedsOtherFactors` | `409 transaction_needs_other_factors` | `AUTH.SCA.METHODS` asks for the password too. |
 
@@ -761,8 +855,8 @@ approved = await poll(started.handle, client_id=None)  # commits itself
 - **Putting the poll handle in the QR code or a URL.** Whoever scans or
   sees it gets the login. Keep it in the page; the QR code is `qr`.
 - **Approving from the push alone.** The push names a request id, and no
-  one. Fetch the request, show its client, message, address, and browser,
-  then let the user choose.
+  one. Fetch the request, show its client, message, act, address, and
+  browser, then let the user choose.
 - **Turning `NUMBER_MATCHING` off for web push sign-ins.** The user then
   approves whatever arrives, and an attacker who knows an identifier gets
   in on a tired tap.
