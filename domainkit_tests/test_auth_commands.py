@@ -152,6 +152,12 @@ def test_createsuperuser_asks_for_everything(
         "Error: The password is too similar to the username.",
         f"Error: {WEAK_ERRORS[0]}",
         *WEAK_ERRORS[1:],
+        # Since 2.5 (ADR 0165): codes go only where the user proved it.
+        (
+            "Note: no code reaches the superuser, to reset its password or enroll "
+            "a phone, until it proves its email address: run createsuperuser "
+            "--promote admin@example.com --verify"
+        ),
     ]
 
 
@@ -580,7 +586,14 @@ def test_createsuperuser_by_email_or_number(
         "Password: ",
         "Password (again): ",
     ]
-    assert stderr.getvalue() == "Error: That username is already taken.\n"
+    assert stderr.getvalue().splitlines() == [
+        "Error: That username is already taken.",
+        (
+            "Note: no code reaches the superuser, to reset its password or enroll "
+            "a phone, until it proves its mobile number: run createsuperuser "
+            "--promote +33612345678 --verify"
+        ),
+    ]
     assert isinstance(by_number, User)
     assert (by_number.username, by_number.email, by_number.is_superuser) == (
         None,

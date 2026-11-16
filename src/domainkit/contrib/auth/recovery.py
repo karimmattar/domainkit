@@ -743,13 +743,21 @@ def can_text(label: str) -> bool:
 async def text_code(number: str, code: str, purpose: str, uow: AuthUnitOfWork) -> None:
     """Queue a text message with ``code``; it leaves with ``uow``'s commit.
 
-    Written in the active language: ``purpose`` ("reset your password") is
-    translated in the ``code`` context (``pgettext``), so a project adds
-    its own purposes to its catalogs that way.
+    Written in the active language (``code_text``).
     """
     from domainkit.contrib.notifications import send_sms
 
-    body = gettext(
+    await send_sms(number, code_text(code, purpose), uow=uow)
+
+
+def code_text(code: str, purpose: str) -> str:
+    """The text message that carries ``code``, in the active language.
+
+    ``purpose`` ("reset your password") is translated in the ``code``
+    context (``pgettext``), so a project adds its own purposes to its
+    catalogs that way.
+    """
+    return gettext(
         "{code} is your code to {purpose}. It works for {valid_for}. "
         "Never give it to anyone."
     ).format(
@@ -757,7 +765,6 @@ async def text_code(number: str, code: str, purpose: str, uow: AuthUnitOfWork) -
         purpose=pgettext("code", purpose),
         valid_for=describe(auth_settings().CODE_TTL),
     )
-    await send_sms(number, body, uow=uow)
 
 
 async def mail_user(

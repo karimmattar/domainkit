@@ -526,7 +526,8 @@ submit one, as only a superuser makes one without approvals.
 `SUPERUSER_APPROVERS` set, holders of that permission), never the user
 it promotes. The run checks that its maker is still an active
 superuser, and fails it otherwise (`maker_not_allowed`). `manage.py
-createsuperuser` stays the operator's way to make the first one.
+createsuperuser` stays the operator's way to make the first one, or
+`createsuperuser --promote` to make one of an existing account.
 
 **With one superuser, no one can approve.** The maker never approves
 their own request, so, with `SUPERUSER_APPROVERS` unset, a request

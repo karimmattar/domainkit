@@ -171,6 +171,7 @@ statuses, and the amendments they name.
 | [0158](0158-count-outgoing-calls-circuits-fallbacks-and-statements-and-give-requests-a-span.md) | Count outgoing calls, circuits, fallbacks, and statements, and give requests a span | Accepted |
 | [0159](0159-read-a-replica-only-while-it-is-known-to-be-within-its-bound.md) | Read a replica only while it is known to be within its bound | Accepted |
 | [0160](0160-serve-in-production-from-the-settings.md) | Serve in production from the settings | Accepted |
+| [0165](0165-let-an-operator-prove-a-superusers-address-or-promote-a-proved-account.md) | Let an operator prove a superuser's address, or promote a proved account | Accepted |
 
 ### Decisions still without a record
 

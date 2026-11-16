@@ -959,10 +959,49 @@ python manage.py createsuperuser --noinput --email admin@example.com
 | --- | --- |
 | `--noinput`, `--no-input` | Asks nothing. It reads the missing values from `<PREFIX>SUPERUSER_<FIELD>`, the password from `<PREFIX>SUPERUSER_PASSWORD`. |
 | `--temporary`, `--no-temporary` | Whether the user must change the password at the first login. By default: with `--noinput`, under `AUTH.PASSWORD_CHANGE_ON_FIRST_USE`. |
-| `--operator` | Who runs it. |
+| `--verify` | Proves the user's email address and mobile number: sends a code to each now, and asks for it. Not with `--noinput`. |
+| `--promote IDENTIFIER` | Makes an existing user a superuser, and staff, instead of creating one. With `--verify` only, no field option. |
+| `--operator` | Who runs it. With `--promote`, required in staging and production. |
 
 A password that the validators refuse is kept on request only without
 `AUTH.PRESET`, and outside staging and production.
+
+Codes go only to an address or a number its user proved
+([ADR 0141](../adr/0141-codes-that-open-an-account-go-only-where-it-was-proved.md)).
+A superuser that proved neither gets no password reset, and enrolls no
+phone, which it needs to log in under `CIBA.APPROVE_LOGINS = "always"`.
+The command says so on stderr when it leaves one. `--verify` (*new in
+2.5*) proves them: each code is mailed, or texted, at once, not through
+the outbox, and the operator types it at the prompt
+([ADR 0165](../adr/0165-let-an-operator-prove-a-superusers-address-or-promote-a-proved-account.md)):
+
+```bash
+python manage.py createsuperuser --username boss --email boss@example.com --verify
+```
+
+```text
+Password:
+Password (again):
+Superuser created successfully.
+Code sent to boss@example.com: 482913
+The email address boss@example.com is proved.
+```
+
+`--promote` (*new in 2.5*) makes a user that exists a superuser, such as
+one that signed up in the application, which proved its address there.
+An email address or a mobile number names the user only if the user
+proved it, so that a value someone put on their own account, unproved,
+never names theirs; add `--verify` to prove it with a code first. A
+username names its user, as in the commands below. The change is audited
+as `auth.user_status_changed`, with the operator as its actor:
+
+```bash
+python manage.py createsuperuser --promote ann@example.com --operator alice
+```
+
+```text
+'ann@example.com' is a superuser now.
+```
 
 ### `changepassword`: set a user's password
 

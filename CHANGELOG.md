@@ -9,6 +9,22 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `createsuperuser --verify` proves the new superuser's email address
+  and mobile number: it mails, or texts, a code to each at once, not
+  through the outbox, and asks for it at the prompt. `createsuperuser
+  --promote IDENTIFIER` makes an existing user a superuser and staff,
+  such as one that signed up in the application; an address or a number
+  names the user only if it proved it, or with `--verify`, which proves
+  it first. The change is audited with the operator as its actor, who
+  must be named in staging and production. The command now says on
+  stderr when it leaves a superuser that proved neither an address nor a
+  number: since 2.4 no code reaches it, so under
+  `CIBA.APPROVE_LOGINS = "always"` it could never enroll a phone, nor
+  log in. Nothing changes for a command that gives neither option. ADR
+  0165 (user report A12).
+
 ## [2.4.0] - 2026-11-16
 
 2.4 answers a report from a project that runs an identity service on
