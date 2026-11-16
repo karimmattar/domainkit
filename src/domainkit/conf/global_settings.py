@@ -732,11 +732,21 @@ class ScannerConfig(BaseModel):
     def sends_in_clear(self) -> str | None:
         """The host clamd is reached at in clear, if not this one; else None.
 
-        Only ``ClamAVScanner`` is judged: clamd speaks no TLS, so uploads
-        reach another host in clear unless a TLS proxy is in front
-        (``tls``).
+        Only ``ClamAVScanner`` and its subclasses are judged, however
+        ``BACKEND`` names them: clamd speaks no TLS, so uploads reach
+        another host in clear unless a TLS proxy is in front (``tls``). A
+        backend that cannot be imported is judged where it is made.
         """
-        if self.BACKEND != CLAMAV_SCANNER or self.OPTIONS.get("tls"):
+        if self.OPTIONS.get("tls"):
+            return None
+        from domainkit.storage.scanning import ClamAVScanner
+        from domainkit.utils.module_loading import import_backend
+
+        try:
+            backend = import_backend(self.BACKEND)
+        except ImportError:
+            return None
+        if not (isinstance(backend, type) and issubclass(backend, ClamAVScanner)):
             return None
         host = str(self.OPTIONS.get("host", "localhost"))
         return None if host in LOCAL_HOSTS else host

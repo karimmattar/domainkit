@@ -506,13 +506,15 @@ clamd speaks no TLS, and asks no one who they are: on another host,
 every upload crosses the network in clear, and anyone who reaches its
 port can use it. In staging and production, `check` warns
 (`security.W007`) when `UPLOAD_SCANNER` reaches clamd on a host other
-than this one (`localhost`, `127.0.0.1`, `::1`) without TLS.
+than this one (`localhost`, `127.0.0.1`, `::1`) without TLS, through
+`ClamAVScanner` or a subclass of it.
 
 *New in 2.5.* Put a proxy that ends TLS in front of clamd, such as
 stunnel, and turn TLS on in the scanner. It checks the proxy's
 certificate, which must name `host`, against the system's CAs or
-`tls_ca`, and can show a certificate of its own (`tls_cert`, `tls_key`)
-for the proxy to require, which clamd itself cannot:
+`tls_ca`, and can show a certificate of its own (`tls_cert`, `tls_key`,
+and `tls_key_password` if the key is encrypted) for the proxy to
+require, which clamd itself cannot:
 
 ```python
 UPLOAD_SCANNER = {
@@ -544,8 +546,9 @@ verifyChain = yes
 The scanner speaks TLS 1.2 or later. A certificate it cannot trust, or
 a proxy that refuses its own, makes the upload fail as an unreachable
 scanner does (503 `scanner_unavailable`). A TLS file without `tls`, a
-certificate without its key, or a file TLS cannot read is refused when
-the scanner is made (`ImproperlyConfigured`). Where clamd runs on a
+certificate without its key, an encrypted key without its password, or
+a file TLS cannot read is refused when the scanner is made
+(`ImproperlyConfigured`). Where clamd runs on a
 network only the service reaches, add `security.W007` to
 `SILENCED_CHECKS` instead.
 

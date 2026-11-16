@@ -89,17 +89,20 @@ class ClamAVScanner(Scanner):
         tls_ca: str | Path | None = None,
         tls_cert: str | Path | None = None,
         tls_key: str | Path | None = None,
+        tls_key_password: str | None = None,
     ) -> None:
         """Talk to clamd at ``host``:``port``; ``timeout`` bounds each step.
 
         ``tls`` speaks TLS 1.2 or later to a proxy in front of clamd, whose
         certificate must name ``host``, signed by a system CA or by
         ``tls_ca``; ``tls_cert`` and ``tls_key`` are a client certificate
-        to show it.
+        to show it, and ``tls_key_password`` opens the key if it is
+        encrypted.
 
         Raises:
-            ValueError: A TLS file without ``tls``, or a certificate without
-                its key; or a file TLS cannot read.
+            ValueError: A TLS option without ``tls``, or a certificate
+                without its key; an encrypted key without its password;
+                or a file TLS cannot read.
         """
         self.host = host
         self.port = port
@@ -108,12 +111,14 @@ class ClamAVScanner(Scanner):
         self.ssl: ssl.SSLContext | None = None
         """The TLS context of the connections; None without ``tls``."""
         files = (tls_ca, tls_cert, tls_key)
-        if not tls and any(each is not None for each in files):
-            raise ValueError("tls_ca, tls_cert and tls_key need tls=True.")
+        if not tls and any(each is not None for each in (*files, tls_key_password)):
+            raise ValueError(
+                "tls_ca, tls_cert, tls_key and tls_key_password need tls=True."
+            )
         if (tls_cert is None) != (tls_key is None):
             raise ValueError("tls_cert and tls_key go together.")
         if tls:
-            self.ssl = _client_context(*files)
+            self.ssl = _client_context(*files, tls_key_password)
 
     async def scan(self, chunks: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
         """Stream ``chunks`` to clamd while passing them on; raise on a finding."""
@@ -176,21 +181,44 @@ class ClamAVScanner(Scanner):
 
 
 def _client_context(
-    ca: str | Path | None, cert: str | Path | None, key: str | Path | None
+    ca: str | Path | None,
+    cert: str | Path | None,
+    key: str | Path | None,
+    password: str | None,
 ) -> ssl.SSLContext:
     """A verifying TLS client context: TLS 1.2 or later, ``ca`` trusted.
 
+    An encrypted ``key`` is opened with ``password``; without one it is
+    refused, where OpenSSL would ask for it on the terminal, holding the
+    event loop.
+
     Raises:
-        ValueError: A file is missing, or TLS cannot read it.
+        ValueError: A file is missing, or TLS cannot read it; or the key
+            is encrypted, and no password was given.
     """
     try:
         context = ssl.create_default_context(cafile=None if ca is None else str(ca))
         if cert is not None and key is not None:
-            context.load_cert_chain(str(cert), str(key))
+            context.load_cert_chain(
+                str(cert),
+                str(key),
+                password=_no_password if password is None else password,
+            )
     except OSError as exc:  # A file missing, or one TLS refuses (ssl.SSLError).
         raise ValueError(f"The scanner's TLS files cannot be read: {exc}") from None
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     return context
+
+
+def _no_password() -> str:
+    """Refuse to ask for an encrypted key's password.
+
+    Raises:
+        ValueError: Always: ``tls_key_password`` was not given.
+    """
+    raise ValueError(
+        "The scanner's tls_key is encrypted: give its password as tls_key_password."
+    )
 
 
 _made: dict[str, tuple[object, Scanner]] = {}

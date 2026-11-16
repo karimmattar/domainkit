@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives import serialization
 from PIL import Image
 from starlette.datastructures import UploadFile
 
@@ -251,6 +252,8 @@ def test_a_scanners_tls_options_are_checked(tmp_path: Path) -> None:
         ClamAVScanner(host="clamav", tls=True, tls_ca=tmp_path / "missing.pem")
     with pytest.raises(ValueError, match="TLS files cannot be read"):
         ClamAVScanner(host="clamav", tls=True, tls_cert=proxy[1], tls_key=proxy[1])
+    with pytest.raises(ValueError, match="need tls=True"):
+        ClamAVScanner(host="clamav", tls_key_password="secret")
     with (
         override_settings(
             UPLOAD_SCANNER={"OPTIONS": {"host": "clamav", "tls_ca": str(proxy[0])}}
@@ -258,6 +261,39 @@ def test_a_scanners_tls_options_are_checked(tmp_path: Path) -> None:
         pytest.raises(ImproperlyConfigured, match="UPLOAD_SCANNER: tls_ca"),
     ):
         configured_scanner()
+
+
+def test_an_encrypted_client_key_takes_its_password_or_is_refused(
+    tmp_path: Path,
+) -> None:
+    """Without ``tls_key_password``, refused at once.
+
+    OpenSSL would ask for the password on the terminal, holding the event
+    loop where stdin is open (user report U5).
+    """
+    cert, key = certificate(tmp_path, "api")
+    plain = serialization.load_pem_private_key(key.read_bytes(), None)
+    sealed = tmp_path / "sealed.key"
+    sealed.write_bytes(
+        plain.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.BestAvailableEncryption(b"secret"),
+        )
+    )
+    tls = {"host": "clamav", "tls": True, "tls_cert": cert, "tls_key": sealed}
+
+    with pytest.raises(ValueError, match="tls_key is encrypted: give its password"):
+        ClamAVScanner(**tls)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="TLS files cannot be read"):
+        ClamAVScanner(**tls, tls_key_password="wrong")  # type: ignore[arg-type]
+    opened = ClamAVScanner(**tls, tls_key_password="secret")  # type: ignore[arg-type]
+
+    assert opened.ssl is not None
+
+
+class ProxiedScanner(ClamAVScanner):
+    """A project's own clamd scanner, as ``UPLOAD_SCANNER`` may name it."""
 
 
 @pytest.mark.parametrize(
@@ -269,13 +305,26 @@ def test_a_scanners_tls_options_are_checked(tmp_path: Path) -> None:
         ({"OPTIONS": {}}, False),
         ({"OPTIONS": {"host": "127.0.0.1"}}, False),
         ({"BACKEND": "acme.scanning.CloudScanner", "OPTIONS": {"host": "x"}}, False),
+        ({"BACKEND": "domainkit.storage.MemoryStorage", "OPTIONS": {}}, False),
+        ({"BACKEND": f"{__name__}.ProxiedScanner", "OPTIONS": {"host": "x"}}, True),
+        ({"BACKEND": f"{__name__}:ProxiedScanner", "OPTIONS": {"host": "x"}}, True),
+        (
+            {
+                "BACKEND": "domainkit.storage.scanning:ClamAVScanner",
+                "OPTIONS": {"host": "x"},
+            },
+            True,
+        ),
         (None, False),
     ],
 )
 def test_check_warns_where_deployed_when_uploads_reach_clamd_in_clear(
     scanner: dict[str, object] | None, warned: bool
 ) -> None:
-    """``security.W007``: clamd on another host, without TLS (user report U5)."""
+    """``security.W007``: clamd on another host, without TLS (user report U5).
+
+    ``ClamAVScanner`` and its subclasses, however ``BACKEND`` spells them.
+    """
     with override_settings(
         ENVIRONMENT="production", API_DOCS=False, UPLOAD_SCANNER=scanner
     ):
