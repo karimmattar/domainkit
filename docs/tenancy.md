@@ -351,12 +351,17 @@ companies = ResourceRouter(
   list, queries on the collection, creation); `Actions`, such as
   `ModelActions`, name each action's rules. A batch of commands on single
   companies is refused when declared: its items name companies it is not
-  served as.
+  served as. Each command on the collection names its action
+  (`action="add"` to create one), or is refused when declared.
+- With `outside`, a member's keys count only where the path named the
+  tenant (`path_tenant()`): with `TenantMiddleware` too, the tenant a
+  header or a subdomain names decides nothing on the collection.
 - The list serves no tenant, so no member rule narrows it: give the
   resource a `scope` that keeps each caller to the companies they belong
   to, from your `MEMBER_TENANTS` function
-  ([resources](resources.md#a-resource-whose-items-are-tenants)).
-  Without it, everyone signed in lists every company.
+  ([resources](resources.md#a-resource-whose-items-are-tenants)). A
+  resource without one, under a rule as `outside`, is refused when
+  declared.
 - `InTenant()` allows a request served as a tenant, and its objects;
   `~InTenant()`, one served as none.
 
@@ -586,6 +591,7 @@ it, and so do formats that name it (`%(tenant)s`).
 | --- | --- |
 | `current_tenant()` | The tenant being served, or None. |
 | `member_permissions(user)` | The keys `user` holds as a member of the current tenant (`MEMBER_PERMISSIONS`); async. |
+| `path_tenant()` | The tenant a route's path named (`PathTenant`), if it is the one served; None where only `TenantMiddleware` or `tenant()` chose it. |
 | `tenants_beyond(actor, user, held)` | The tenants where `user` holds what `actor` does not (`MEMBER_TENANTS`), or None when no one can be ruled out; async. The admin API's `may_change` asks it. |
 | `row_tenant()` | The tenant `TenantOwned` rows are scoped to; None inside `all_tenants()`. With no tenant current, it raises `TenantRequired`. |
 | `tenant_schema(tenant_id)` | The PostgreSQL schema of a tenant. |

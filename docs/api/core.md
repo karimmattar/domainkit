@@ -482,6 +482,7 @@ Multi-tenancy: a tenant per request; its rows, caches, limits, and database.
 - `all_tenants`: Read and change every tenant's rows inside the block, on purpose.
 - `current_tenant`: The tenant being served, if any.
 - `member_permissions`: The permission keys `user` holds as a member of the current tenant.
+- `path_tenant`: The tenant a route's path named (`PathTenant`), if it is the one served.
 - `row_tenant`: The tenant `TenantOwned` rows are scoped to; None inside `all_tenants`.
 - `scoped_key`: `key`, the current tenant's own: caches and rate limits use it.
 - `tenant`: Serve `tenant_id` inside the block (work outside a request, tests).

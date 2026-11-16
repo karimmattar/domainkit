@@ -18,7 +18,10 @@ and a status.
   resource takes its parent's tenant, and may not name another. The
   parameter may be the resource's id, its parent's, or one of its
   prefix; one no route holds is refused, and so is a batch whose items
-  name tenants. `PathTenant(..., id_type=UUID)` (or `int`) reads the id as
+  name tenants. Where the resource's own id is the tenant, a project
+  names the action of every command, use case, and batch on the
+  collection (`action="add"` to create one; `TypeError` without), and
+  keeps the resource at a prefix that names no parameter. `PathTenant(..., id_type=UUID)` (or `int`) reads the id as
   that type, so a UUID in capitals is the same tenant; a resource's
   tenant reads its id's type. On the router, `PathTenant` refused the
   list (`tenancy.E001`), and command routes take no `dependencies=`.
@@ -31,7 +34,11 @@ and a status.
   `HasPermissions` and `ModelActions` add. `outside` rules the routes
   that serve no tenant, such as a companies resource's list: a rule
   decides their `view` and `add` routes only, `Actions` each action;
-  without it they are refused. `InTenant` allows requests served as a
+  without it they are refused. With `outside`, a member's keys count
+  only where the path named the tenant (`path_tenant()`), whatever
+  tenant `TenantMiddleware` serves; under a rule as `outside`, the
+  resource needs a `scope` (the tenants the caller belongs to), as no
+  member rule narrows its list. `InTenant` allows requests served as a
   tenant.
   ADR 0170 (user report D3).
 - `Throttle(..., per_tenant=False)` counts a caller once across tenants:

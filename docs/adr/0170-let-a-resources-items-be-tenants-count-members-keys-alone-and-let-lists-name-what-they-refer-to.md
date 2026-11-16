@@ -133,11 +133,34 @@ companies is the same. Options:
   collection, creation). Any other action there is refused, unless
   `outside` is `Actions`, which name each action's rules. Fails closed.
 
+A command on the collection is `add` by default when it is a `POST`
+(it creates), and a rule as `outside` decides `add`. A command that
+names another company by a field of its own (`target`), a use case, or
+a batch of such items would then change that company for anyone signed
+in. The framework cannot tell a creation from an archive by its shape,
+so the route must say: on a resource whose own id is the tenant, a
+command, use case, or batch on the collection that names no action is
+refused when declared. Nothing breaks: `tenant=` is new.
+
+With `TenantMiddleware` too, the collection's routes run as the tenant a
+header or a subdomain names, so a rule that asks "is a tenant served"
+would let the caller's role there decide a change of another company.
+What decides is whether the route's own path named the tenant
+(`PathTenant`), which tenancy now records (`path_tenant()`).
+
+The list, queries on the collection, and exports serve no tenant either,
+so no member rule narrows them: without a scope, a rule as `outside`
+shows every company to everyone signed in, while reading one answers
+`404`. A scope is required there; a public directory passes one that
+returns None.
+
 A nested resource with a tenant of its own, under a parent that has one,
 would serve its collection (`/companies/{company_id}/projects`) as no
 tenant: a stranger to the company would list its projects. Serving each
 route as the innermost tenant its path names would need two tenants at
-once, which tenancy does not have. It is refused.
+once, which tenancy does not have. It is refused, and so is a resource
+whose own id is the tenant under any prefix that names a parameter
+(`/orgs/{org_id}/companies`), with a parent or without.
 
 For limits across tenants:
 
@@ -185,8 +208,11 @@ For searching through a reference:
   (`tenancy.E002` holds). The parameter may be the resource's id, its
   parent's, or one in its prefix; one no route holds is refused
   (`TypeError`). A nested resource takes its parent's tenant; one of its
-  own, under a parent that has one, is refused (`TypeError`). Routes of
-  one's own declared on the resource, WebSockets
+  own is refused (`TypeError`), and so is a resource whose own id is the
+  tenant under a prefix that names a parameter. Each command, use case,
+  or batch on the collection of a resource whose own id is the tenant
+  names its action, or is refused (`TypeError`). Routes of one's own
+  declared on the resource, WebSockets
   included, are served alike: the router adds the dependency to every
   route whose path holds the parameter. OpenAPI documents `401` and
   `404` on those routes.
@@ -210,8 +236,12 @@ For searching through a reference:
   their `view` and `add` routes; `Actions` decide each action. A
   resource given `MemberActions(outside=...)` and no tenant is refused
   (`TypeError`), and so is a batch whose items name the resource's
-  tenants. The list needs a `scope` of the project's (the tenants the
-  caller belongs to): no member rule narrows it.
+  tenants. With `outside`, the member's keys count only where the route's
+  path named the tenant (`domainkit.tenancy.path_tenant()`), and
+  `outside` rules wherever it did not, whatever tenant a middleware
+  serves. Under a rule as `outside`, a resource whose own id is the
+  tenant needs a `scope` (`TypeError` without): no member rule narrows
+  its list.
 - **`Throttle(..., per_tenant=False)`** counts the caller once across
   tenants. The default stays per tenant. `@cached` gets no such option;
   `shared_keys()` stays the way to share keys on purpose.
@@ -247,9 +277,11 @@ For searching through a reference:
 - `MemberActions(outside=IsAuthenticated())` checks no scopes on the
   collection's routes: scoped credentials are refused there, and still
   reach a tenant's routes with the key in their scopes.
-- A command on the collection that changes companies must say so
-  (`action="change"`): a `POST` there is `add` by default, which a rule
-  as `outside` decides.
+- Every command on a tenants' collection names its action, creations
+  included (`action="add"`).
+- `ResourceRouter.fetch` from a route of one's own on the collection
+  serves no tenant and asks no member's key: it reaches what the scope
+  allows, and asks the rules that look at objects.
 - Batches on single companies are declared per company, as command
   routes; companies nested under companies are not offered.
 - A tenant whose id was typed in two spellings before (a UUID in

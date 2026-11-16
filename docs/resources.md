@@ -1012,6 +1012,7 @@ companies = ResourceRouter(
     scope=companies_of_caller,
 )
 companies.command_route(RenameCompany, service=rename, body=RenameIn, path="/rename")
+companies.command_route(FoundCompany, service=found, body=FoundIn, action="add")
 ```
 
 `member_tenants` is the project's `TENANCY.MEMBER_TENANTS` function: the
@@ -1024,17 +1025,34 @@ ids of the companies the user belongs to.
   serve no tenant. On a router, `PathTenant` would refuse them
   (`tenancy.E001`).
 - No member rule narrows a list: the `scope` keeps each caller to the
-  companies they belong to. Without it, everyone signed in would list
-  every company.
+  companies they belong to, in lists, queries, and exports. Under
+  `MemberActions(outside=<a rule>)`, a resource without one is refused
+  with `TypeError`; a public directory gives a scope that returns
+  `None`, on purpose.
+- Each command, use case, or batch on the collection names its action
+  (`action="add"` to create a company; `"change"`, `"delete"`, or one of
+  its own otherwise), or is refused with `TypeError`. A `POST` there is
+  `add` by default, which `outside` may let anyone do: a command that
+  names another company in its body would change it for them.
 - A batch of commands on single companies is refused with `TypeError`:
   each item names a company the batch is not served as. Declare a
   command route on one company instead.
 - The parameter may be the resource's id, its parent's, or one of its
   prefix (`/orgs/{org_id}/projects`, where every route is the org's). One
   that no route holds is refused with `TypeError`.
-- A nested resource takes its parent's tenant. One of its own, under a
-  parent that has one, is refused with `TypeError`: the routes that name
-  only the parent's id would serve no tenant.
+- A resource whose own id is the tenant lives at a prefix that names no
+  parameter: under `/orgs/{org_id}`, its collection would serve no
+  tenant, and is refused with `TypeError`.
+- A nested resource takes its parent's tenant. One of its own is refused
+  with `TypeError`: the routes that name only the parent's id would
+  serve no tenant.
+- With `TenantMiddleware` too, the collection's routes run as the tenant
+  the middleware names, but that tenant decides nothing there: a member's
+  keys count only where the path named the tenant (`path_tenant()`).
+- `fetch(request, uow, id_)` from a route of your own on the collection
+  serves no tenant and asks no member's key: it reaches the companies in
+  the caller's `scope`, and asks only the rules that look at objects. To
+  act as a member of one company, put the route under `/{company_id}`.
 - Routes of your own on the resource (`@companies.get(...)`, a
   WebSocket) are served alike, by their path.
 - The id is read as the resource's id type. A UUID is the tenant's id in
