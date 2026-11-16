@@ -9,6 +9,49 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `AUTH.ADMIN_ACTION` (off by default): each change of the admin API asks
+  for an authorization of its own, the action `auth.admin_change`, in
+  place of a step-up window, so the phone confirms making staff, giving
+  groups and permissions, setting a password, impersonating, deleting a
+  user, and each change to a group, one at a time. The act binds the
+  user or group and the change: its kind, what it sets, adds, and takes
+  away, and whether it leaves a usable password, never the password. The
+  screen says which user or group, by name, and what changes. Each
+  changing route has a twin, `POST <its path>/authorization` (a `DELETE`'s
+  at `<path>/delete/authorization`; `404` while the setting is off), that
+  runs the route's own checks and stores the authorization. The route
+  checks it binds the change before the `on_admin_change` checks, so a
+  change held for approval (`APPROVALS.ADMIN_APPROVALS`) is refused
+  before it waits if it does not, and spends it with the change's commit
+  ([Each change, authorized as one act](docs/auth/routes.md#each-change-authorized-as-one-act),
+  ADR 0163) (user report A6).
+- `APPROVALS.SUBMIT_ACTION`, `REJECT_ACTION`, and `CANCEL_ACTION` (each
+  off by default), as `APPROVE_ACTION`: submitting at `POST /requests`,
+  rejecting, and cancelling each ask for an authorization of their own,
+  `approvals.submit`, `approvals.reject`, and `approvals.cancel`. A
+  submission is bound to the action and its arguments, a rejection or a
+  cancellation to the request and the reason; the screen shows the
+  action, the reason, and the arguments. The twins are
+  `POST /requests/authorization`, and `.../reject/authorization` and
+  `.../cancel/authorization` under a request, `404` while off; asking is
+  refused as the act would be. `SubmitAction`, `RejectAction`, and
+  `CancelAction` are the routes' rules. With these and `ADMIN_ACTION`, a
+  project needs the phone's free-text step-up, which 3.0 removes, for
+  none of the framework's back-office acts
+  ([Submitting, rejecting, and cancelling with an authorization](docs/contrib/approvals.md#submitting-rejecting-and-cancelling-with-an-authorization),
+  ADR 0163) (user report A6).
+
+### Fixed
+
+- `check` refused a route that asks `StepUp(for_=...)` for an act that
+  code spends with `spend_authorization`, as the docs offer for code that
+  is not a service (`auth.E110`: "no service spends it"). Code says so
+  once with `spent_in_code(action)`, and the check passes it; the admin
+  API's `auth.admin_change` is declared so. A purpose nothing spends is
+  still refused (ADR 0163) (user report A6).
+
 ## [2.4.0] - 2026-11-16
 
 2.4 answers a report from a project that runs an identity service on

@@ -36,6 +36,33 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.4 to 2.5
+
+### Authorize the admin API's changes and a request's steps as acts
+
+Nothing changes until a project turns the new settings on. A project
+that asks the phone's free-text step-up (`POST /auth/app-sign-in/step-up`,
+deprecated, removed in 3.0) for the admin API's changes, or for
+submitting, rejecting, or cancelling approval requests, moves those acts
+to action authorizations
+([The framework's own acts](auth/actions.md#the-frameworks-own-acts-the-admin-api-and-approvals)):
+
+1. Turn on `AUTH["ADMIN_ACTION"]`, and `APPROVALS["SUBMIT_ACTION"]`,
+   `REJECT_ACTION`, and `CANCEL_ACTION` (and `APPROVE_ACTION`) as the
+   project needs. Each needs `domainkit.contrib.auth`.
+2. Take away the `StepUp(max_age=...)` that `select_routes` added to
+   those routes: it would ask for a window as well.
+3. In the web client, on `401 authorization_required`, ask the route's
+   twin (`POST <the route's path>/authorization`; for the admin API's
+   `DELETE`s, `<path>/delete/authorization`), have the phone confirm it,
+   and send the act again with `Action-Authorization`, as for any act
+   ([Move from the phone's free-text step-up](#move-from-the-phones-free-text-step-up-to-action-authorizations)).
+4. Once nothing asks the free-text step-up, leave its routes out of
+   ciba's router (`select_routes(..., without=[...])`), and the test that
+   ignored its deprecation goes.
+
+No table changes.
+
 ## 2.3 to 2.4
 
 2.4 answers a report from a project that runs an identity service on

@@ -473,6 +473,10 @@ what.
   ("nobody edits their own account here", "making staff needs another
   permission"). `admin.may_grant` and `admin.may_hold`, the ceilings
   below, are public for your own routes.
+- **Each change can ask for an authorization of its own** (since 2.5,
+  `AUTH.ADMIN_ACTION`), confirmed on the staff member's phone, with a
+  code, or with a passkey
+  ([Each change, authorized as one act](#each-change-authorized-as-one-act)).
 - **With `domainkit.contrib.approvals`, changes can wait for a second
   person** (since 2.4): `APPROVALS.ADMIN_APPROVALS` holds making staff,
   adding groups or permissions, setting a password, and impersonating
@@ -507,6 +511,81 @@ what.
   and do not work again if the user is made active again.
 - **The last active superuser stays.** It cannot be demoted,
   deactivated, or deleted (`409 last_superuser`): make another one first.
+
+### Each change, authorized as one act
+
+A step-up window lets every change through for a while, with any
+arguments, and so does a copy of the staff member's session. With
+`AUTH["ADMIN_ACTION"]` on (since 2.5, [ADR 0163](../adr/0163-authorize-admin-changes-and-requests-steps-as-acts.md)), each route that changes a
+user or a group asks for an authorization of that change, the action
+`auth.admin_change`, in place of the window
+([Authorizing one act](actions.md)). Off, the default, nothing changes,
+and the twins below answer `404`.
+
+```python
+AUTH = {"ADMIN_ACTION": True}
+```
+
+Each changing route has a twin that asks for the authorization: it takes
+the same body, runs the route's own checks, and answers `201` with what
+the staff member is shown. A `DELETE`, whose path is its `PATCH`'s, has
+its twin at `<path>/delete/authorization`.
+
+| Route | Its twin |
+| --- | --- |
+| `POST /users` | `POST /users/authorization` |
+| `PATCH /users/{id}` | `POST /users/{id}/authorization` |
+| `DELETE /users/{id}` | `POST /users/{id}/delete/authorization` |
+| `POST /users/{id}/password` | `POST /users/{id}/password/authorization` |
+| `POST /users/{id}/logout` | `POST /users/{id}/logout/authorization` |
+| `POST /users/{id}/impersonate` | `POST /users/{id}/impersonate/authorization` |
+| `PUT /users/{id}/groups` | `POST /users/{id}/groups/authorization` |
+| `PUT /users/{id}/permissions` | `POST /users/{id}/permissions/authorization` |
+| `POST /groups` | `POST /groups/authorization` |
+| `PATCH /groups/{id}` | `POST /groups/{id}/authorization` |
+| `PUT /groups/{id}/permissions` | `POST /groups/{id}/permissions/authorization` |
+| `DELETE /groups/{id}` | `POST /groups/{id}/delete/authorization` |
+
+```http
+PUT  /admin/auth/users/6f1c.../groups {"groups": ["auditors"]}                 401 authorization_required
+POST /admin/auth/users/6f1c.../groups/authorization {"groups": ["auditors"]}   201 {"id": "9f0c...", "shown": {...}}
+POST /auth/app-sign-in/authorizations/9f0c...                                  200 {"request": "kq3D1...", ...}
+POST /auth/app-sign-in/authorizations/token {"request": "kq3D1..."}           200 {"authorization": "9f0c....mYd3..."}
+PUT  /admin/auth/users/6f1c.../groups {"groups": ["auditors"]}
+     Action-Authorization: 9f0c....mYd3...                                     200
+```
+
+- **The act is the change**: its kind (`AdminChange.kind`, or a group's:
+  `group_create`, `group_rename`, `group_permissions`, `group_delete`),
+  the user or group (`auth.user:<id>`, `auth.group:<id>`; `new` for one
+  being created), the name it gives, the values it sets, what it adds
+  and takes away, sorted, and whether it leaves a usable password. Never
+  the password itself. Another change, or the same change to another
+  user, is refused (`403 action_not_authorized`), and voids it.
+- **The screen says which user and what change**: "Change a user's
+  groups", then "User: alice@example.com" (the user's first identifier)
+  or the group's name, "Adds: auditors", "Takes away: clerks", the reason
+  of an impersonation, or the fields set, by name. Six values at most;
+  the last line counts those not shown. The phone shows these words, read
+  from the server's record ([Confirming one act](ciba.md#confirming-one-act)).
+- **The twin checks what the change checks first**: the staff member's
+  bounds, the fields, a password's validators, impersonation's rules, a
+  user or group that is not there. It runs no `on_admin_change` check,
+  and changes nothing.
+- **Checked before the project's checks, spent with the change.** The
+  authorization must bind the change before the `on_admin_change` checks
+  run, so a change it does not bind is never held for approval. It is
+  spent in the change's own transaction: a change refused after that
+  (`409 last_superuser`) spends nothing, and one held for approval
+  (`403 approval_pending`) spends nothing until the call that makes it.
+- **Staff acting as a user** cannot ask, and their changes are refused
+  (`401 authorization_required`): the act is the staff member's own.
+
+The staff rules still answer first: someone who is not staff gets `403`
+from a twin as from its route. Take any `StepUp(max_age=...)` you added
+to these routes with `select_routes` away when you turn the setting on:
+it would ask for a window too. `StepUp(for_="auth.admin_change")` added
+that way passes `check`; the routes ask for it already.
 
 ### Impersonation
 
@@ -578,6 +657,7 @@ names the staff member.
 | `REQUIRE_ROUTE_RULES` | `True` | Every route must declare a rule. |
 | `SCOPED_CREDENTIALS` | `"refuse"` | What a scoped token gets on a route without a rule that checks scopes. |
 | `AUTH.IMPERSONATION_TTL` | `None` | How long an impersonation token works; `None` turns impersonation off. |
+| `AUTH.ADMIN_ACTION` | `False` | Each change of the admin API asks for an authorization of its own (`auth.admin_change`), in place of a step-up window ([Each change, authorized as one act](#each-change-authorized-as-one-act)). |
 | `AUTH.BACKENDS` | `ModelBackend` | What `HasPermissions` and the admin API ask. |
 
 See [reference/settings.md](../reference/settings.md) and
@@ -594,6 +674,7 @@ See [reference/settings.md](../reference/settings.md) and
 | `409 last_superuser` | The last active superuser would go. |
 | `403 approval_required` | Making a superuser while approvals guard it, or creating a user who is staff while approvals hold making staff. |
 | `403 approval_pending` | A change `APPROVALS.ADMIN_APPROVALS` holds: it waits for approval (`approval_request_id`); send the same call again once it is approved. |
+| `401 authorization_required`, `403 action_not_authorized` | With `AUTH.ADMIN_ACTION`: a change sent without an authorization of it, or with one that does not bind it ([Authorizing one act](actions.md#errors-and-refusals)). |
 | `422 unknown_user_field`, `422 invalid_user_field` | A field the admin API may not change, or a value that does not fit. |
 | `404 user_not_found`, `404 group_not_found` | No such id. |
 | `security.E101`: "... declares no access rule ..." | A route without a rule; startup refuses it in staging and production. |

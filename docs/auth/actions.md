@@ -276,7 +276,9 @@ Around it:
   service of its own.
 - **`spend_authorization(uow, action, command)`** does the same in code
   that is not a service: in the open transaction of `uow` on auth's
-  database, else now, alone.
+  database, else now, alone. Say so once, where the action is declared,
+  with `spent_in_code(action)` (since 2.5): `check` then knows something
+  spends it.
 - **An authorization the rule accepted that no service spent** is voided
   when a response that succeeded starts, and logged on the security log
   (`auth.authorization_unspent`, with the route). Under `DEBUG` and in
@@ -285,7 +287,23 @@ Around it:
   not validate, another rule's refusal) leaves it: no act ran.
 
 `check` refuses a route that asks for a purpose no registered action has
-(`auth.E109`), or whose action no decorated service spends (`auth.E110`).
+(`auth.E109`), or whose action nothing spends (`auth.E110`): no service
+decorated `requires_authorization`, and no code that said so with
+`spent_in_code(action)`.
+
+```python
+from domainkit.contrib.auth.actions import spend_authorization, spent_in_code
+
+spent_in_code(END_MEMBERSHIP)  # Once, beside the action.
+
+
+async def end_membership_now(command: EndMembership) -> None:
+    async with OrganizationsUnitOfWork() as uow:
+        await spend_authorization(uow, END_MEMBERSHIP, command)
+        membership = await uow.memberships.get(command.membership_id)
+        membership.end()
+        await uow.commit()
+```
 
 ## How it is bound
 
@@ -349,6 +367,30 @@ The other approve rules still apply; one that holds a `StepUp` is
 refused by `check` (`approvals.E001`). See
 [Approving with an authorization](../contrib/approvals.md#approving-with-an-authorization).
 
+## The framework's own acts: the admin API and approvals
+
+Since 2.5 ([ADR 0163](../adr/0163-authorize-admin-changes-and-requests-steps-as-acts.md)), the framework's back-office acts have built-in
+actions too, each off by default. Turned on, each route asks for an
+authorization of its act in place of a step-up window, and has a twin
+that asks for one, so a project needs neither a window on those routes
+nor the phone's free-text step-up
+([deprecated](ciba.md#the-pages-words-and-a-window-deprecated)): the
+phone confirms each act as it confirms any other.
+
+| Setting | Action | The act, and what is shown | Twins |
+| --- | --- | --- | --- |
+| `AUTH["ADMIN_ACTION"]` | `auth.admin_change` | A change of the admin API: its kind, the user or group, and what it sets, adds, and takes away | `<the route's path>/authorization` on each changing route; `<path>/delete/authorization` for a `DELETE` ([the admin API](routes.md#each-change-authorized-as-one-act)) |
+| `APPROVALS["SUBMIT_ACTION"]` | `approvals.submit` | Submitting a command: the action, and the arguments as stored | `POST /requests/authorization` |
+| `APPROVALS["APPROVE_ACTION"]` | `approvals.approve` | Approving a request: the action, and the arguments | `POST /requests/{id}/approve/authorization` |
+| `APPROVALS["REJECT_ACTION"]` | `approvals.reject` | Rejecting a request: the action, the reason, and the arguments | `POST /requests/{id}/reject/authorization` |
+| `APPROVALS["CANCEL_ACTION"]` | `approvals.cancel` | Withdrawing a request: the action, the reason, and the arguments | `POST /requests/{id}/cancel/authorization` |
+
+The admin API spends its act in its own code, with the change's
+transaction, after the `on_admin_change` checks, and checks that it binds
+the change before them. Approvals spends each in its services, as
+`approve_request` does ([Submitting, rejecting, and cancelling with an
+authorization](../contrib/approvals.md#submitting-rejecting-and-cancelling-with-an-authorization)).
+
 ## For other apps: confirming another way
 
 An app that confirms its own way (the phone of
@@ -399,7 +441,7 @@ An app that confirms its own way (the phone of
 | --- | --- |
 | `auth.E108` | An action whose methods no installed way to confirm proves (`["phone"]` with neither the phone's app nor devices). |
 | `auth.E109` | A route that asks `StepUp(for_=...)` for a purpose no registered action has. |
-| `auth.E110` | A route whose action no service decorated `requires_authorization` spends. |
+| `auth.E110` | A route whose action nothing spends: no service decorated `requires_authorization`, and no code that said so with `spent_in_code(action)`. |
 | `auth.E111` | `StepUp(for_=...)` on a WebSocket or an event stream. |
 
 ## Common mistakes

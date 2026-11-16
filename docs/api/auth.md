@@ -108,6 +108,7 @@ Authorize one act, with its arguments, once (ADR 0144).
 - `requires_authorization`: Spend the request's authorization of `action` on the service's command.
 - `router`: The routes: authorize one act, with its arguments, once (ADR 0144).
 - `spend_authorization`: Spend the request's authorization of `action` on `command`, in code.
+- `spent_in_code`: Say that code spends `action`'s authorizations, with `spend_authorization`.
 
 ## `domainkit.contrib.auth.admin`
 

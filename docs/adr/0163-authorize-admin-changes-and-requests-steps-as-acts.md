@@ -1,0 +1,209 @@
+# 0163. Authorize admin changes, and a request's steps, as acts
+
+- Status: Accepted
+- Date: 2026-11-16
+- Amends: [0144](0144-authorize-one-act-not-a-window-of-time.md),
+  [0154](0154-hold-admin-changes-for-approval-and-show-requests-to-those-they-concern.md)
+
+## Context
+
+A project that runs an identity service on the framework moved its
+sensitive changes from a step-up window to action authorizations (ADR
+0144): the phone shows the act in the server's words, and its approval
+is worth that act, with its arguments, once. Two sets of acts could not
+move, and it reported them (user report A6):
+
+- **The admin API's changes**: making staff, giving groups and
+  permissions, setting a password, impersonating, deleting a user, and the
+  group changes. Its routes (`contrib/auth/admin.py`) are plain functions:
+  no service a project can decorate with `requires_authorization`, and no
+  `/authorization` twin. A project that put `StepUp(for_=...)` on them
+  with `select_routes` was refused by `check` (`auth.E110`: "no decorated
+  service spends it"), and rightly: nothing would spend it.
+- **Approvals' submit, reject, and cancel.** 2.4 gave approving a
+  built-in action (`APPROVALS.APPROVE_ACTION`, `approvals.approve`); the
+  other three steps have none.
+
+So those acts kept `StepUp(max_age=...)`, and the only phone step-up a
+web session has is the free-text `POST /app-sign-in/step-up` that 2.4
+deprecates and 3.0 removes (ADR 0144). The project keeps that route
+mounted for these acts alone, and a test ignores its deprecation. The
+most sensitive acts of a back office are the ones that cannot be
+authorized one by one.
+
+### What others do
+
+- **OWASP's Transaction Authorization Cheat Sheet** [1] asks that the
+  user see and confirm the data significant to the operation ("What You
+  See Is What You Sign"), that each authorization be unique to its
+  operation and used once (1.5, 2.10), that it be enforced on the server
+  (2.1), and that the data not change between authorization and execution
+  (2.6, 2.8). The window of a step-up meets none of the last three.
+- **OWASP ASVS 5.0** [2] asks for "further authentication with at least
+  one factor or secondary verification before performing highly
+  sensitive transactions or operations" (7.5.3, level 3), and full
+  re-authentication before changing what authentication rests on (7.5.1).
+- **Microsoft Entra's protected actions** [3] attach a policy (MFA, a
+  stronger method) to single administrative permissions, such as
+  updating a Conditional Access policy or deleting an object for good.
+  It is asked "at the time the user attempts to perform the protected
+  action", "independent of the role being used": per act, not per
+  session.
+- **GitHub's sudo mode** [4] is the window: after one confirmation, the
+  dangerous actions pass for a few hours.
+- **Built-in admins that are acts**: approvals' own `approvals.approve`
+  (ADR 0144) binds the request and the fingerprint the approver was
+  shown. Rich Authorization Requests [5] carry what is authorized as typed
+  data, so a server can show it and bind the grant to it.
+
+### Options
+
+**The admin API.**
+
+| Option | What it costs |
+| --- | --- |
+| Let `check` accept `StepUp(for_=...)` on the admin routes, and leave the twins and the spend to the project | The admin routes are the framework's: a project cannot reach inside them to spend, nor build their commands for a twin. Nothing would spend it. |
+| One action per kind of change (`auth.set_staff`, `auth.set_password`, ...), each opt-in | Twelve purposes, twelve settings or a list of them, for one question: does this admin API's change need a confirmation of its own. Approvals already names the risky kinds for a second person (`ADMIN_APPROVALS`). |
+| **One built-in action, `auth.admin_change`, whose command is the change (`AdminAct`: its kind, the user or group, what it sets, adds and takes away), opt-in by `AUTH.ADMIN_ACTION`, with a twin on every route that changes something** | A round trip per change. The twins are written by hand, as the routes are. One more read to show the user's name. |
+
+**Approvals' submit, reject, and cancel.**
+
+| Option | What it costs |
+| --- | --- |
+| A recipe with `select_routes` and the project's own actions | The project would write the command, the show, the twin, and the spend for routes it does not own: what the report asks the framework to stop requiring. |
+| One setting for all three | Rejecting stops a request; ADR 0154 keeps a step-up off it. A project may want submitting and cancelling confirmed and rejecting free. |
+| **Three actions, `approvals.submit`, `approvals.reject`, `approvals.cancel`, each opt-in by its own setting, as `APPROVE_ACTION` is** | Three booleans more in `APPROVALS`. |
+
+**Where the admin change is spent**, and when it is checked.
+
+| Option | What it costs |
+| --- | --- |
+| A rule that spends | ADR 0144, question 1: a later rule or the change itself may fail, and burn it. |
+| Spent before the `on_admin_change` checks | Approvals' check of a held change writes in a transaction of its own; the spend, written first in auth's, holds a lock it then waits on (SQLite), or is spent for a change that only waits for approval. |
+| Spent after the checks, unchecked until then | A change other than the one authorized is held for approval first, or spends an approval (`by_maker`), before it is refused. |
+| **Checked before the checks, spent after them, in the change's transaction** | Two calls instead of one: `check_authorization`, then `spend_authorization`. |
+
+**What `check` says of code that spends.** `auth.E110` took only a
+service decorated `requires_authorization`; the docs already offered
+`spend_authorization` for code that is not a service, which `check`
+then refused. A declaration where the action is declared,
+`spent_in_code(action)`, keeps the check (a forgotten spend still fails)
+and lets that code, the admin API's included, pass it.
+
+## Decision
+
+### The admin API: `auth.admin_change`
+
+- `AUTH.ADMIN_ACTION` (off by default). On, every route of the admin API
+  that changes a user or a group asks for an authorization of the action
+  `auth.admin_change` (`Action-Authorization`), in place of a step-up
+  window; auth registers the action when it starts. Off, the admin API is
+  as it was.
+- **The act's arguments are the change** (`AdminAct`): its kind
+  (`AdminChange.kind`: `create`, `update`, `delete`, `password`,
+  `logout`, `impersonate`, `groups`, `permissions`; or a group's:
+  `group_create`, `group_rename`, `group_permissions`, `group_delete`),
+  the user or group, the name a user or group is given, the values it
+  sets (`AdminChange.values`, as JSON), what it adds and takes away
+  (sorted), and whether it leaves a usable password. Never a password:
+  the digest is stored, and a hash of a password is attackable offline
+  (ADR 0154). The subject is `auth.user:<id>` or `auth.group:<id>`
+  (`new` for one being created).
+- **What staff are shown** names the user (`get_username()`, their first
+  identifier) or group, and the change: "Change a user's groups", "User:
+  alice@example.com", "Adds: auditors". Six values at most; with more,
+  the last line counts those not shown. Titles and labels are in the
+  request's language.
+- **A twin per changing route**: `POST <its path>/authorization`, and
+  `POST <its path>/delete/authorization` for a `DELETE` (whose path is
+  the `PATCH`'s). It takes the route's body, runs the route's own checks
+  (the staff member's bounds, the fields, a password's validators,
+  impersonation's rules), and answers `201`. It runs no
+  `on_admin_change` check: those may write (approvals submits). Off, it
+  answers `404`.
+- **Checked, then spent.** `_admin_change` checks the request's
+  authorization against the change before the `on_admin_change` checks
+  (another change is refused, and voided, before it is held for approval
+  or spends one), and spends it after them, in the route's transaction:
+  spent if and only if the change commits. A change held for approval
+  (`approval_pending`) spends nothing, and the same call, once approved,
+  spends it.
+
+### Approvals: `approvals.submit`, `approvals.reject`, `approvals.cancel`
+
+- `APPROVALS.SUBMIT_ACTION`, `REJECT_ACTION`, and `CANCEL_ACTION` (each
+  off by default), as `APPROVE_ACTION`: each needs
+  `domainkit.contrib.auth`, and registers its action when approvals
+  starts.
+- `approvals.submit`: the command is `SubmitRequest` (the action, the
+  arguments, the maker), on `approvals.action:<action>`; its twin is
+  `POST /requests/authorization`; it shows "Submit a request", the
+  action, and the arguments as they would be stored.
+- `approvals.reject` and `approvals.cancel`: the command is the
+  decision (the request, the person, and the reason), on
+  `approvals.request:<id>`; their twins are `POST
+  /requests/{id}/reject/authorization` and `.../cancel/authorization`;
+  they show the action, the reason, and the arguments.
+- Each twin refuses what the act would refuse (the maker rejecting,
+  someone other than the maker cancelling, an unknown action, arguments
+  that make no command), and the service spends it, as `approve_request`
+  does: with the request's commit where the requests share auth's
+  database. With a setting on, the service called from code with no
+  request's authorization is refused (`AuthorizationRequired`): the act
+  is the caller's own.
+- Only `POST /requests` is `approvals.submit`. A guarded service called
+  directly, and the admin API's held changes, submit as before; their
+  own routes are the acts.
+
+### `check`
+
+- `spent_in_code(action)` (`auth.actions`) says that code spends an
+  action's authorizations with `spend_authorization`. `auth.E110` refuses
+  a route that asks for an action nothing spends: no decorated service,
+  and no such declaration. `auth.admin_change` is declared so: a project
+  that adds `StepUp(for_="auth.admin_change")` to a copy of the admin
+  router passes `check`.
+
+## Consequences
+
+- A project drops the free-text step-up for these acts: it turns the
+  settings on, removes its `StepUp(max_age=...)` from those routes, and
+  its client asks the twin, confirms (the phone, a code, a passkey), and
+  sends the change with `Action-Authorization`. 3.0 can remove
+  `/app-sign-in/step-up` without leaving a back office without the phone.
+- **Staff confirm every change**: each costs a round trip and a push or a
+  code, one read of the row, and one write. A bulk edit of many users is
+  many confirmations; that is the point of the setting, and it is off by
+  default.
+- **The screen shows what fits.** Many groups added are joined and cut to
+  64 characters; many fields changed are counted past five. The page
+  shows the whole change; the phone shows the user, the kind, and the
+  first values.
+- **A user's name on the phone** is personal data on the staff member's
+  own device, as an approval's arguments are (ADR 0144); neither reaches
+  the trail.
+- **Rejecting can wait for a second factor** where a project turns
+  `REJECT_ACTION` on. ADR 0154 kept a step-up off it, as stopping a
+  request should not wait: the setting is separate for that reason.
+- **The twins of a `PATCH` and a `DELETE` of one path** cannot share
+  `<path>/authorization`; the admin API's `DELETE`s take
+  `<path>/delete/authorization`. A resource router's twins are another
+  matter (user report A17).
+- **New names**: `AUTH.ADMIN_ACTION`; `APPROVALS.SUBMIT_ACTION`,
+  `REJECT_ACTION`, `CANCEL_ACTION`; `spent_in_code` in `auth.actions`;
+  `SubmitAction`, `RejectAction`, `CancelAction` in `approvals.rules`;
+  twelve twins on the admin API and three on the requests. No table
+  changes.
+
+## References
+
+1. OWASP Cheat Sheet Series, *Transaction Authorization Cheat Sheet*:
+   <https://cheatsheetseries.owasp.org/cheatsheets/Transaction_Authorization_Cheat_Sheet.html>
+2. OWASP ASVS 5.0, V7.5 Defenses Against Session Abuse:
+   <https://github.com/OWASP/ASVS/blob/master/5.0/en/0x16-V7-Session-Management.md>
+3. Microsoft Entra ID, *What are protected actions*:
+   <https://learn.microsoft.com/en-us/entra/identity/role-based-access-control/protected-actions-overview>
+4. GitHub, *Introducing GitHub Sudo Mode*:
+   <https://github.blog/news-insights/introducing-github-sudo-mode/>
+5. RFC 9396, *OAuth 2.0 Rich Authorization Requests*:
+   <https://www.rfc-editor.org/rfc/rfc9396>
