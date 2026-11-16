@@ -1,6 +1,6 @@
 # 0003. Layer rules enforced by `check`
 
-- Status: Accepted; amended by [0037](0037-one-clock-frozen-per-context.md), and 2026-10-25 and 2026-11-15 (at the end)
+- Status: Accepted; amended by [0037](0037-one-clock-frozen-per-context.md), [0167](0167-check-an-upload-whole-and-let-a-resource-take-one.md), and 2026-10-25, 2026-11-15 and 2026-11-16 (at the end)
 - Date: 2026-10-14
 
 ## Context
@@ -58,3 +58,13 @@ packages are exempt from the cross-domain rule.
   only a forbidden entry less specific than itself, so a project that
   names `domainkit.http.client` in `FORBIDDEN_LIBRARIES` still forbids
   it. `ARCHITECTURE` adds no exceptions: a setting adds rules only.
+
+## Amendment (2026-11-16, 2.5)
+
+- The infrastructure layer may import `domainkit.http.uploads` too
+  ([0167](0167-check-an-upload-whole-and-let-a-resource-take-one.md)): a file gateway checks and stores the bytes its route hands
+  it, and `save_upload` takes bytes or a stream since 2.5, so the
+  gateway needs no web type. `domainkit.http.errors` and Starlette stay
+  forbidden there: a gateway raises domain errors, which the HTTP layer
+  maps, and the route turns the request into bytes. A project had added
+  a layer of its own only to hold its file gateways.

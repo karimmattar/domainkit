@@ -277,6 +277,8 @@ unique constraint may name its own code
 | `unknown_permission` | 404 | `UnknownPermission` (contrib.auth.exceptions): No permission has that key (``<domain>.<codename>``). |
 | `unknown_setting` | 404 | `UnknownSetting` (contrib.flags.exceptions): No dynamic setting is declared with that key. |
 | `unknown_user_field` | 422 | `UnknownUserField` (contrib.auth.exceptions): The user model has no such field, or it changes another way. |
+| `unreadable_file` | 422 | `FileRefused` (storage.inspection), through http.uploads: The file's type's check could not read it (a damaged PDF or ZIP, XML that is not). |
+| `unsafe_file` | 422 | `FileRefused` (storage.inspection), through http.uploads: The file's type's check refused what it holds (scripts, actions, macros, embedded objects, outside links, a DTD, a password, too many pages or parts). |
 | `unsafe_url` | 422 | `UnsafeURL` (http.guard): A URL that may not be called; the message never quotes it. |
 | `unsafe_webhook_url` | 422 | `UnsafeTarget` (contrib.webhooks.guard): A webhook URL that may not be called; the message never quotes it. |
 | `unsupported_device_key` | 422 | `UnsupportedKey` (contrib.devices.exceptions): Not a P-256 or Ed25519 public key. |

@@ -1528,7 +1528,25 @@ out of the application layer, which reaches the service through a port.
 - `domainkit.http.client.client` is a ready client for one-off calls.
 - A client has `get`, `head`, `options`, `post`, `put`, `patch`,
   `delete`, and `request(method, url, ...)`. Each takes `params`,
-  `headers`, `content`, `data`, `json`, `timeout`, and `retry`.
+  `headers`, `content`, `data`, `files`, `json`, `timeout`, and `retry`.
+- *New in 2.5:* `files` sends a `multipart/form-data` form, as httpx2
+  does, and `data` its other fields. A file is bytes, a binary file that
+  can seek, or a tuple `(filename, content[, content_type[, headers]])`.
+  Every attempt sends each file from its start, so a retried form goes
+  whole. A file that cannot seek (a pipe), a text file, or `files` with
+  `content` or `json` raises `ValueError` before anything is sent:
+
+  ```python
+  with open("contract.pdf", "rb") as document:
+      await signer.post(
+          "/envelopes",
+          files={"document": ("contract.pdf", document, "application/pdf")},
+          data={"title": "Lease"},
+      )
+  ```
+
+  A file on disk is read on the event loop, 64 KiB at a time, as httpx2
+  reads it; pass bytes for a small one.
 - `HttpClient(...)` takes `base_url`, `headers` (sent with every call),
   `timeout` and `retries` (in place of `HTTP_CLIENT`'s), `guard`,
   `allow_http`, `allowed_networks`, `propagate`, `breaker`, `transport`,
@@ -1707,6 +1725,29 @@ client's URL checks still apply. The address checks need the network, so
 a stub skips them. A client made with `transport=` always uses that
 transport. [ADR 0050](adr/0050-outgoing-http-client.md) explains the
 choices.
+
+A stub holds in its block and the tasks the block starts: it is a
+context variable. A pytest fixture runs in a context of its own. AnyIO
+runs async fixtures and async tests in one task, so they share it, but
+not with sync tests and fixtures, and a sync fixture's stub misses an
+async runner made before it. *New in 2.5:* `stub(handler,
+everywhere=True)` holds for every call of the process, from any task,
+thread or context, until its block ends; a plain `stub` still wins
+inside its own block:
+
+```python
+from collections.abc import AsyncIterator
+
+import pytest
+
+from domainkit.http.client import stub
+
+
+@pytest.fixture
+async def rates() -> AsyncIterator[None]:
+    with stub(rates_api, everywhere=True):
+        yield
+```
 
 ## Options
 

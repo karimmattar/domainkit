@@ -339,6 +339,7 @@ Files: a storage port, on the file system or in memory.
 - `StorageError`: A storage refused an operation.
 - `StorageHandler`: Make each configured storage on first use; one per alias and process.
 - `StoredFile`: A file open for reading; close it, or use it in `async with`.
+- `StoredUpload`: A file a client sent, stored: what a command keeps of it.
 - `storages`: The process-wide storages: `storages["default"]`.
 
 ## `domainkit.storage.azure`
@@ -359,6 +360,15 @@ Thumbnails of stored images (`domainkit[images]`, Pillow).
 
 - `NotAnImage`: The file is not an image Pillow reads, or is larger than `MAX_PIXELS`.
 - `thumbnail`: Store a thumbnail of the image `name` that fits `size`; its name.
+
+## `domainkit.storage.inspection`
+
+What an uploaded document holds, checked before it is kept (`documents` extra).
+
+- `FileRefused`: The file is of its type, but holds what is not accepted.
+- `NotOfType`: The file is not of the type its first bytes suggested.
+- `OfficeCheck`: Refuse an Office document with macros, objects, or outside links.
+- `PdfCheck`: Refuse a PDF that runs, sends, or hides something; or is too long.
 
 ## `domainkit.storage.remote`
 

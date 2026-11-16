@@ -224,7 +224,9 @@ domains' own models keep those keys as secrets.
   `domainkit.clock`, `domainkit.money`, and itself;
 - the application layer uses no web or database library, and the
   infrastructure layer no web library but the outgoing HTTP client
-  (`domainkit.http.client`), which adapters call other services with;
+  (`domainkit.http.client`), which adapters call other services with,
+  and the uploads' checks and storing (`domainkit.http.uploads`), which
+  a file gateway runs on the bytes its route hands it (*New in 2.5*);
 - another domain is reached only through its `application` or
   `domain.events`.
 

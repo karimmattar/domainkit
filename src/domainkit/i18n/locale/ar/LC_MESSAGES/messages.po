@@ -1086,6 +1086,40 @@ msgstr "اختبار التحقق مفقود أو لم يُحَل."
 msgid "The virus scan refused the file."
 msgstr "رفض فحص الفيروسات الملف."
 
+#. domainkit.storage.inspection: an upload's check refused it
+msgid "Files with scripts are not accepted."
+msgstr "لا تُقبل الملفات التي تحتوي على نصوص برمجية."
+
+msgid "Files with macros are not accepted."
+msgstr "لا تُقبل الملفات التي تحتوي على وحدات ماكرو."
+
+msgid "Files with actions that run by themselves, open other files, or send data are not accepted."
+msgstr "لا تُقبل الملفات التي تحتوي على إجراءات تعمل من تلقاء نفسها أو تفتح ملفات أخرى أو ترسل بيانات."
+
+msgid "Files with embedded files or objects are not accepted."
+msgstr "لا تُقبل الملفات التي تضمّ ملفات أو كائنات مضمّنة."
+
+msgid "Files that load content from elsewhere are not accepted."
+msgstr "لا تُقبل الملفات التي تحمّل محتوى من مكان آخر."
+
+msgid "PDF files with XFA forms are not accepted."
+msgstr "لا تُقبل ملفات PDF التي تحتوي على نماذج XFA."
+
+msgid "Files with a document type declaration are not accepted."
+msgstr "لا تُقبل الملفات التي تحتوي على تعريف لنوع المستند (DTD)."
+
+msgid "Files protected by a password are not accepted."
+msgstr "لا تُقبل الملفات المحمية بكلمة مرور."
+
+msgid "The file has too many pages."
+msgstr "عدد صفحات الملف كبير جدًا."
+
+msgid "The file is too large or too complex to check."
+msgstr "الملف أكبر أو أعقد من أن يُفحص."
+
+msgid "The file could not be read."
+msgstr "تعذّرت قراءة الملف."
+
 msgid "An impersonation cannot impersonate."
 msgstr "لا يمكن لمنتحل الهوية أن ينتحل هوية أخرى."
 

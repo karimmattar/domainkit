@@ -35,6 +35,7 @@ from domainkit.money import (
     MoneyError,
     UnknownCurrency,
 )
+from domainkit.storage import inspection
 from domainkit_tests.conftest import ALPHA, MakePackage
 
 SRC: Final = Path(__file__).parents[1] / "src" / "domainkit"
@@ -355,6 +356,14 @@ EXTRA_MESSAGES: Final = {
     "Give money as an object of an amount and a currency, and nothing else.",
     "Give the amount as text, such as 10.50, with at most 38 digits before the point.",
     "The amount has more digits than this field holds.",  # resources.schemas
+    *(  # storage.inspection: the refusals of an upload's check, constants.
+        value
+        for name, value in vars(inspection).items()
+        if name.isupper()
+        and isinstance(value, str)
+        and value.endswith(".")
+        and " " in value
+    ),
 }
 """Framework messages the scan below cannot see: constants and returns."""
 SCANNED: Final = (

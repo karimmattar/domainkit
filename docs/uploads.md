@@ -14,12 +14,15 @@ On this page you learn how to:
 - save, read, and delete files with a `Storage`;
 - receive an upload safely with `save_upload`, and serve a file with
   `serve`;
+- check what a PDF or an Office document holds before it is kept;
+- take a file in a resource's route, a body a phone can sign;
 - give an upload route its own body limit with `body_limit`;
 - let a client send or fetch a file directly, with presigned URLs;
 - scan uploads for viruses, and make thumbnails of images.
 
 The decisions are in
-[ADR 0040](adr/0040-store-files-under-random-names.md).
+[ADR 0040](adr/0040-store-files-under-random-names.md) and
+[ADR 0167](adr/0167-check-an-upload-whole-and-let-a-resource-take-one.md).
 
 ## A first example
 
@@ -310,10 +313,13 @@ client is done.
 
 ## Receiving uploads
 
-`save_upload(upload, *, types, max_size, storage="default", directory="")`
-stores an `UploadFile` if it is one of `types` and at most `max_size`
-bytes. It returns a `StoredUpload` with `name`, `content_type`, `size`,
-and `filename`. `storage=` takes an alias or a `Storage`.
+`save_upload(upload, *, types, max_size, storage="default", directory="",
+filename=None)` stores an upload if it is one of `types` and at most
+`max_size` bytes. It returns a `StoredUpload` with `name`,
+`content_type`, `size`, `filename`, and `sha256` (the hex SHA-256 of what
+was stored, *new in 2.5*). `storage=` takes an alias or a `Storage`.
+`StoredUpload` is in `domainkit.storage`, so a command of the application
+layer may hold one.
 
 These are the refusals, as the client sees them:
 
@@ -321,6 +327,8 @@ These are the refusals, as the client sees them:
 415 unsupported_file_type  This type of file is not accepted.
 400 empty_file             The file is empty.
 413 file_too_large         The file is too large.
+422 unsafe_file            Files with macros are not accepted.
+422 unreadable_file        The file could not be read.
 422 infected_file          The virus scan refused the file.
 503 scanner_unavailable    Uploads cannot be checked now; try again later.
 ```
@@ -332,18 +340,23 @@ These are the refusals, as the client sees them:
   415 `unsupported_file_type`.
 - **The ready types.** `PNG`, `JPEG`, `GIF`, `WEBP`, `PDF`, `ZIP`, and
   `TEXT`; `IMAGES` is `(PNG, JPEG, GIF, WEBP)`. SVG is not offered: it can
-  carry scripts. `ZIP` covers Office documents, which are zip files.
-  `TEXT` is UTF-8 without control characters (but tabs and line breaks),
-  and covers CSV.
+  carry scripts. `TEXT` is UTF-8 without control characters (but tabs and
+  line breaks), and covers CSV. These read the first bytes only. For
+  documents, take the checked types, which read the whole file:
+  `CHECKED_PDF`, `DOCX`, `XLSX`, `PPTX`, and `OFFICE` for the three
+  ([Checking documents](#checking-documents)). `ZIP` takes any zip file,
+  an Office document with macros included.
 - **Your own types.** Describe another type with
-  `FileType(content_type, extension, matches)`, where `matches` reads the
-  first 512 bytes:
+  `FileType(content_type, extension, matches, inspect=None)`, where
+  `matches` reads the first 512 bytes:
 
   ```python
   from domainkit.http.uploads import FileType
 
   MP3 = FileType("audio/mpeg", ".mp3", lambda head: head.startswith(b"ID3"))
   ```
+
+  `inspect` reads the whole file ([Checks of your own](#checks-of-your-own)).
 
 - **Size is checked while the file streams** into the storage. Past
   `max_size`, the upload gets 413 `file_too_large`, and nothing is kept.
@@ -375,6 +388,55 @@ These are the refusals, as the client sees them:
   ([i18n.md](i18n.md)).
 - `save_upload` raises `ValueError` when `types` is empty or `directory`
   is malformed: that is a mistake in your code, not the client's.
+
+### Bytes and streams
+
+*New in 2.5.* `save_upload` takes the file as a form's `UploadFile`, as
+bytes, or as an async iterable of bytes, such as a request's own body.
+`filename=` is the client's name for it; it replaces a form file's own:
+
+```python
+from urllib.parse import unquote
+from uuid import UUID
+
+from fastapi import Depends, Request
+
+from domainkit.http.access import Require
+from domainkit.http.middleware import body_limit
+from domainkit.http.uploads import CHECKED_PDF, OFFICE, save_upload
+
+
+@router.put("/documents/{document_id}/file", dependencies=[Depends(Require())])
+@body_limit(10_100_000)
+async def put_file(request: Request, document_id: UUID) -> DocumentOut:
+    stored = await save_upload(
+        request.stream(),
+        types=(CHECKED_PDF, *OFFICE),
+        max_size=10_000_000,
+        filename=unquote(request.headers.get("X-Filename", "")),
+    )
+    ...
+```
+
+A phone that signs the requests it sends (`DeviceSigned`) signs the
+body's bytes. It cannot know the bytes of a form before the platform
+encodes it, so it sends the file as the body, and its name in a header.
+A rule that read the body first leaves it whole for the route. A
+`ResourceRouter` does this for you with `upload_route`
+([resources.md](resources.md#files)).
+
+`receive_upload(upload, *, types, max_size, filename=None)` receives the
+file and checks it as `save_upload` does, but stores nothing. It returns
+a `ReceivedUpload`, held in a temporary file: `store(storage,
+directory=)` stores it and returns the `StoredUpload`, `unstored()` says
+what `store` would return but its name, and `close()` drops it. Close
+it, or store it.
+
+A gateway of the infrastructure layer may call `save_upload` with the
+bytes its route hands it: the [layer rules](reference/settings.md#layer-rules)
+allow `domainkit.http.uploads` there since 2.5. They keep Starlette's
+`UploadFile` and `domainkit.http.errors` out, so a gateway raises domain
+errors, which the HTTP layer maps.
 
 ### Body limits per route
 
@@ -419,10 +481,100 @@ A request of 2,200,179 bytes to this route gets 413
 - `ResourceRouter` takes `body_limits={"command": 16_384, "batch":
   2_000_000}`, per kind of route that takes a body (`create`, `update`,
   `command`, `batch`). `command_route` and `batch_route` take
-  `body_limit=` per route ([resources.md](resources.md)).
+  `body_limit=` per route ([resources.md](resources.md)). `upload_route`
+  holds its body to its `max_size` and 64 KiB for a form, unless it is
+  given a `body_limit`.
 - A small limit suits the routes that anonymous callers reach. A login or
   a sign-up takes a few hundred bytes, and does not need the global
   limit.
+
+## Checking documents
+
+*New in 2.5.* A PDF or a Word document starts with the same bytes
+whether it holds a script or not. The checked types read the whole file
+before it is stored, and refuse what runs, fetches, or hides something
+when the file is opened or converted. They need the `documents` extra
+(pypdf and lxml):
+
+```bash
+pip install "domainkit[documents]"
+```
+
+```python
+from domainkit.http.uploads import CHECKED_PDF, OFFICE, save_upload
+
+stored = await save_upload(file, types=(CHECKED_PDF, *OFFICE), max_size=10_000_000)
+```
+
+A Word document with macros, sent as `contract.docx`:
+
+```json
+{"detail": "Files with macros are not accepted.", "code": "unsafe_file", "request_id": "…"}
+```
+
+- **When.** The upload is held in a temporary file (in memory up to
+  1 MiB, then on disk), the check runs in a worker thread, and only a
+  file that passes is stored, through the virus scan if one is set. A
+  file a check refuses is never stored: 422 `unsafe_file`, or
+  `unreadable_file` for a file its reader cannot read. The detail says
+  why, in the caller's language.
+- **`CHECKED_PDF`** (`PdfCheck`) refuses an encrypted PDF (an owner
+  password alone included), one of more than 1,000 pages, JavaScript
+  anywhere, an action run on opening or on an event (`/OpenAction` with
+  an action, `/AA`; a destination is kept), an action that launches a
+  program, opens another file or sends data, a link to anything but
+  `http`, `https` or `mailto`, an embedded file, rich media, and an XFA
+  form. It reads every object the file declares, not only those its
+  pages reach, with names decoded (`/J#61vaScript` is `/JavaScript`).
+- **`DOCX`, `XLSX`, `PPTX`** (`OfficeCheck`) refuse a document whose main
+  part is macro-enabled (a `.docm` named `.docx`), macros (`vbaProject.bin`,
+  Excel 4.0 macro sheets), OLE objects, ActiveX controls, a relationship
+  to outside the package but a hyperlink to `http`, `https` or `mailto`
+  (a remote template, a linked picture), a Word field that pulls content
+  in or runs a program (`INCLUDEPICTURE`, `INCLUDETEXT`, `LINK`, `DDE`),
+  Excel's links to other workbooks, and a DTD in any XML part. An
+  embedded workbook (a chart's data) is checked the same way. A
+  template, or another kind of document, is not the type: with `OFFICE`
+  the next type is tried, else 415.
+- **Bounds.** A ZIP is read from its directory before a byte is
+  inflated: at most 2,000 parts and 200 MiB inflated, and no part over
+  1 MiB inflating more than 200 times. pypdf reads streams of at most
+  32 MiB, and a PDF check reads at most a million values. XML is parsed
+  without entities, a DTD, or the network.
+- **Limits of your own.** `FileType(DOCX.content_type, ".docx",
+  DOCX.matches, OfficeCheck("docx", max_size=20_000_000))`, or
+  `PdfCheck(max_pages=50)`.
+- `PDF` and `ZIP` read the first bytes, as before 2.5. A route that keeps
+  them takes PDFs with scripts and Word documents with macros.
+- Without pypdf or lxml, a check raises `ImproperlyConfigured`, naming
+  the extra.
+
+The checks refuse what is known to be used against readers and
+converters. They do not make a file harmless: keep the virus scan, serve
+files with `serve`, and convert them in a sandbox.
+
+### Checks of your own
+
+A `FileType`'s `inspect` reads the whole file, from its start, in a
+worker thread. It raises `FileRefused(message, code="unsafe_file")` to
+refuse the file (422 with `message`, which is translated if the catalogs
+have it), and `NotOfType` when the file is not of the type after all, so
+that the next type that matches is tried:
+
+```python
+from typing import IO
+
+from domainkit.http.uploads import TEXT, FileType
+from domainkit.storage.inspection import FileRefused
+
+
+def no_formulas(file: IO[bytes]) -> None:
+    if b"=cmd|" in file.read():
+        raise FileRefused("Files with commands are not accepted.")
+
+
+CSV = FileType("text/csv", ".csv", TEXT.matches, no_formulas)
+```
 
 ## Virus scanning
 
@@ -577,7 +729,10 @@ The arguments of the functions on this page:
 
 | Name | Arguments |
 | --- | --- |
-| `save_upload` | `upload`, `types`, `max_size`, `storage="default"`, `directory=""` |
+| `save_upload` | `upload` (an `UploadFile`, bytes, or an async iterable of bytes), `types`, `max_size`, `storage="default"`, `directory=""`, `filename=None` |
+| `receive_upload` | `upload`, `types`, `max_size`, `filename=None` |
+| `PdfCheck` | `max_pages=1000` |
+| `OfficeCheck` | `kind` (`"docx"`, `"xlsx"`, `"pptx"`), `max_parts=2000`, `max_size=200 MiB`, `max_ratio=200` |
 | `serve` | `storage`, `name`, `content_type`, `filename=None`, `inline=False` |
 | `body_limit` | `size`: 1 byte to 1 GiB |
 | `thumbnail` | `storage`, `name`, `size=(256, 256)`, `format="webp"`, `directory="thumbnails"` |
@@ -592,7 +747,10 @@ The arguments of the functions on this page:
 | 400 `empty_file` | The file has no bytes. | Send the file. |
 | 413 `file_too_large` | The file is over `max_size`. | Send a smaller file. |
 | 413 `content_too_large` | The request is over the route's `body_limit`, or `MAX_REQUEST_BODY_SIZE`. | Send less, or raise the route's limit. |
+| 422 `unsafe_file` | The type's check refused what the file holds: scripts, actions, macros, objects, outside links, a DTD, a password, too many pages, or a ZIP too large to check. | Nothing is kept. Send the file without it. |
+| 422 `unreadable_file` | The type's check could not read the file. | Nothing is kept. Send a file that opens. |
 | 422 `infected_file` | The scanner found something. | Nothing is kept. |
+| `ImproperlyConfigured` | A checked type without pypdf or lxml. | Install the `documents` extra. |
 | 503 `scanner_unavailable` | The scanner could not scan the file. | Try again later; check clamd. |
 | 404 `file_not_found` (`FileMissing`) | No file has the name, or the name is malformed. | Check the name you kept. |
 | `FileTooLarge` | `save(..., max_size=...)` went over the limit. | Nothing is kept. |
@@ -636,6 +794,9 @@ More in [testing.md](testing.md).
   route then takes large bodies. Use `body_limit` on the upload route.
 - **Trusting a presigned upload.** Nothing checked it. Read it back and
   check it before you use it.
+- **Taking documents by their first bytes.** `PDF` and `ZIP` take a PDF
+  that runs a script and a Word document with macros. Take `CHECKED_PDF`
+  and `OFFICE`.
 - **Serving uploads with `StaticFiles`.** Everyone who learns a name can
   fetch the file. Serve uploads from a route that checks the caller.
 

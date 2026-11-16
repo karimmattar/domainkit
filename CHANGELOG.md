@@ -9,6 +9,52 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- Uploads can be checked whole before they are stored. A `FileType` takes
+  an `inspect` hook, which `save_upload` runs in a worker thread on the
+  upload, held in a temporary file; a file it refuses is never stored
+  (422 `unsafe_file` or `unreadable_file`, the detail translated).
+  `CHECKED_PDF` refuses an encrypted PDF, scripts, actions run on opening
+  or on an event, actions that launch, open other files or send data,
+  links but `http`, `https` and `mailto`, embedded files, XFA, and more
+  than 1,000 pages. `DOCX`, `XLSX`, `PPTX` (and `OFFICE`, the three)
+  refuse macro-enabled documents, macros, OLE objects, ActiveX, outside
+  relationships but hyperlinks, fields that pull content in or run a
+  program, links to other workbooks, and DTDs, with the ZIP bounded by
+  its directory before it is inflated. The checks are `PdfCheck` and
+  `OfficeCheck` of `domainkit.storage.inspection`, and need the
+  `documents` extra. `PDF` and `ZIP` still read the first bytes only
+  ([ADR 0167](docs/adr/0167-check-an-upload-whole-and-let-a-resource-take-one.md))
+  (user report U1).
+- `save_upload` takes bytes, or an async iterable of bytes such as a
+  request's body, with `filename=`, as well as an `UploadFile`.
+  `receive_upload` receives and checks a file without storing it
+  (`ReceivedUpload`). `StoredUpload` is public, in `domainkit.storage`,
+  and carries the SHA-256 of what was stored (user report U3).
+- `ResourceRouter.upload_route(...)` takes a file: the body itself, its
+  name in `X-Filename`, which a phone can sign, or a form. It checks the
+  reach as a command route does, stores the file before the service runs
+  and deletes it if the request fails first, and gives a command field
+  the `StoredUpload` (and another its digest). A route whose rule asks
+  for an authorization gets its twin, which stores nothing (user report
+  U3).
+- `HttpClient.request(files=...)` sends a `multipart/form-data` form,
+  `data=` its other fields, within the client's deadlines and retries; a
+  retry sends each file whole again (user report U5).
+- `stub(handler, everywhere=True)` stubs every call of the process until
+  its block ends, for a pytest fixture whose context the test does not
+  share: an async fixture of a sync test, or a sync fixture after an
+  async one (user report U5).
+
+### Changed
+
+- The layer rules let the infrastructure layer import
+  `domainkit.http.uploads`, as they let it import `domainkit.http.client`:
+  a file gateway checks and stores the bytes its route hands it.
+  Starlette and `domainkit.http.errors` stay forbidden there (user report
+  D2).
+
 ## [2.4.0] - 2026-11-16
 
 2.4 answers a report from a project that runs an identity service on

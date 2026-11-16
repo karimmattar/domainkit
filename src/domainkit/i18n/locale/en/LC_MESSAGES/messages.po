@@ -1076,6 +1076,40 @@ msgstr ""
 msgid "The virus scan refused the file."
 msgstr ""
 
+#. domainkit.storage.inspection: an upload's check refused it
+msgid "Files with scripts are not accepted."
+msgstr ""
+
+msgid "Files with macros are not accepted."
+msgstr ""
+
+msgid "Files with actions that run by themselves, open other files, or send data are not accepted."
+msgstr ""
+
+msgid "Files with embedded files or objects are not accepted."
+msgstr ""
+
+msgid "Files that load content from elsewhere are not accepted."
+msgstr ""
+
+msgid "PDF files with XFA forms are not accepted."
+msgstr ""
+
+msgid "Files with a document type declaration are not accepted."
+msgstr ""
+
+msgid "Files protected by a password are not accepted."
+msgstr ""
+
+msgid "The file has too many pages."
+msgstr ""
+
+msgid "The file is too large or too complex to check."
+msgstr ""
+
+msgid "The file could not be read."
+msgstr ""
+
 msgid "An impersonation cannot impersonate."
 msgstr ""
 

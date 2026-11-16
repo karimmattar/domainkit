@@ -532,6 +532,81 @@ A rule of your own asks for one by implementing `AsksAuthorization`
 the `201` body, and `ask_authorization(request, command)` stores the
 authorization for the request's caller and returns it.
 
+### Files
+
+*New in 2.5.* `upload_route(Command, service=..., field=..., types=...,
+max_size=...)` takes a file. The command's `field` receives the
+`StoredUpload` (`domainkit.storage`), stored before the service runs:
+
+```python
+from domainkit.http.uploads import CHECKED_PDF, OFFICE
+from domainkit.storage import StoredUpload
+
+
+class AttachContract(Command):
+    """Attach the signed contract."""
+
+    product_id: UUID
+    contract: StoredUpload
+    contract_sha256: str
+
+
+products.upload_route(
+    AttachContract,
+    service=attach_contract,
+    field="contract",
+    digest="contract_sha256",
+    types=(CHECKED_PDF, *OFFICE),
+    max_size=10_000_000,
+    storage="documents",
+    directory="contracts",
+    method="PUT",
+    path="/contract",
+)
+```
+
+```text
+PUT /products/42/contract
+X-Filename: %D8%B9%D9%82%D8%AF.pdf
+Content-Type: application/pdf
+
+%PDF-1.7 ...                                  200 (the product)
+```
+
+- The body is the file, and `X-Filename` its name, percent-encoded
+  UTF-8. A phone that signs its requests (`DeviceSigned`) signs these
+  bytes. A `multipart/form-data` form works too: its part named `field`
+  holds the file.
+- The file is received as `save_upload` receives one
+  ([uploads](uploads.md#receiving-uploads)): its type from its content,
+  its type's check ([Checking documents](uploads.md#checking-documents)),
+  at most `max_size` bytes. A refusal is 400, 413, 415, or 422, and
+  nothing is stored. The route's body limit is `max_size` and 64 KiB for
+  a form, unless `body_limit` says otherwise.
+- It checks what a command route checks, from its rules (before a byte
+  is read) to the aggregate within the caller's reach (`404`), the rules
+  on the aggregate, and `If-Match`. The command is built as a command
+  route builds it: the path's ids, the parent's field, and `provide`;
+  `digest` names a field that gets the file's SHA-256, in hex.
+- The file is stored, in `storage` under `directory`, before the service
+  runs, outside its transaction. If the request fails before the
+  service returns (out of reach, `412`, the service raises), the file is
+  deleted. Once the service returned, it is the service's: a later
+  failure keeps it.
+- The other options are `command_route`'s: `returns`, `method` (`POST`,
+  `PUT`, or `PATCH`), `path`, `action`, `rule`, `status_code`, `name`,
+  `summary`, `provide`, `body_limit`, `retry`. A `POST` on the
+  collection answers `201` with `Location`.
+- A route whose rule asks for an authorization gets its twin,
+  `POST <path>/authorization`, which takes the same body. It receives
+  and checks the file, stores nothing, and builds the command with an
+  upload whose `name` is empty. So an `Action` for the act ignores the
+  upload's field, whose name is new on every request, and binds the file
+  by its digest: `Action(..., ignore={"contract"})` with
+  `digest="contract_sha256"`.
+- OpenAPI shows the body as `application/octet-stream` or a form, with
+  the `X-Filename` header, on the route and its twin.
+
 ### Generic writes for reference data
 
 For reference data, where generic edits are fine, `crud=True` adds three
