@@ -284,6 +284,22 @@ class SignInRequestStore:
         )
         return int(result.rowcount or 0)  # type: ignore[attr-defined]
 
+    async def end(self, request_id: UUID, now: datetime) -> None:
+        """End the request at ``now``, unless it was redeemed or ended already.
+
+        Its initiator withdrew it: the phone can no longer answer it, nor
+        anyone redeem it, and it is forgotten as an expired request is.
+        """
+        await self.session.execute(
+            update(sign_in_requests)
+            .where(
+                sign_in_requests.c.id == request_id,
+                sign_in_requests.c.redeemed_at.is_(None),
+                sign_in_requests.c.expires_at > now,
+            )
+            .values(expires_at=now)
+        )
+
     async def polled(self, request_id: UUID, now: datetime, interval: int) -> bool:
         """Record a poll at ``now``; False if the last came within ``interval`` s."""
         columns = sign_in_requests.c

@@ -27,13 +27,18 @@ per address):
   poll. ``/app-sign-in/authorizations/wait``,
   ``/app-sign-in/transactions/wait`` and ``/app-sign-in/step-up/wait`` do
   the same for a session's asks.
+- ``POST /app-sign-in/cancel`` ``{"request"}``: withdraw the sign-in; the
+  phone no longer lists it, and nothing is reported.
+  ``/app-sign-in/authorizations/cancel`` and
+  ``/app-sign-in/transactions/cancel`` do the same for a session's asks.
 
 A domain's ``on_start`` hook may name a page's sign-ins, refuse them, or
 ask more or less of them than the settings do (``SignInPolicy``, ADR
 0155).
 
 A signed-in web session (credentials without scopes) asks the user's
-phone for more (ADR 0129); only that session redeems the answer:
+phone for more (ADR 0129), counted per user against ``START_RATE``; only
+that session redeems the answer, or withdraws the request:
 
 - ``POST /app-sign-in/authorizations/{authorization_id}``: confirm one of
   the session's action authorizations (ADR 0144); the phone is shown the
@@ -77,12 +82,14 @@ import functools
 import hashlib
 import hmac
 import warnings
+from contextlib import suppress
 from datetime import UTC, date, datetime
 from typing import Annotated, Final, Literal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from starlette.exceptions import HTTPException
 
 from domainkit import deadlines
 from domainkit.contrib.auth import AbstractBaseUser
@@ -111,6 +118,7 @@ from domainkit.contrib.auth.integration import (
     issue_login,
     link_action_authorization,
     linked_action_authorization,
+    note_login_sign_in,
     pass_login_gates,
     record_step_up,
     sca_transaction,
@@ -133,7 +141,7 @@ from domainkit.contrib.devices.binding import (
     signed_message,
     signing_device,
 )
-from domainkit.ddd import NotFound
+from domainkit.ddd import DomainError, NotFound
 from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import IsUnscoped, Public, Require
@@ -143,6 +151,7 @@ from domainkit.money import Money
 
 from .exceptions import (
     DigestRequired,
+    SignInNotFound,
     SignInUnknown,
     TransactionClosed,
     TransactionNeedsOtherFactors,
@@ -156,6 +165,7 @@ from .services import (
     Started,
     approve,
     ask_signed_in,
+    cancel,
     ciba_settings,
     claim,
     deny,
@@ -191,6 +201,7 @@ HANDLE_LENGTH: Final = 100
 CODE_LENGTH: Final = 400
 """Characters a scanned QR code may hold: ``QR_FORMAT`` and its 43."""
 STARTS_THROTTLED: Final = "Too many sign-ins were started; try again later."
+ASKS_THROTTLED: Final = "Too many requests were sent to your phone; try again later."
 PHONE_COVERS: Final = frozenset({"otp", "phone"})
 """What an act may ask the phone's approval to prove: ``hwk`` stands for
 an authenticator's code (``otp``), never for the password (``pwd``)."""
@@ -413,20 +424,27 @@ def _requester(request: Request) -> Requester:
     return Requester(_address(request), request.headers.get("user-agent") or None)
 
 
-async def count_start(request: Request) -> None:
-    """Count a start against ``START_RATE`` for the client's address.
+async def count_start(
+    request: Request, *, user: AbstractBaseUser | None = None
+) -> None:
+    """Count a start against ``START_RATE``: per client address, or per ``user``.
 
     For a project's own start routes too, so they share the routes' count.
+    A page's sign-in names no one yet, and is counted per address. What a
+    signed-in session asks ``user``'s phone (an act, a transaction) is
+    counted per user, from any address: the people behind one address, an
+    office's, each have the rate (user report A15).
 
     Raises:
         APIError: 429 past the rate.
     """
-    await attempt(
-        request,
-        [(address_key(request, "ciba-start"), ciba_settings().START_RATE)],
-        action="ciba.start",
-        detail=STARTS_THROTTLED,
-    )
+    rate = ciba_settings().START_RATE
+    if user is not None:
+        key = f"ciba-ask:user:{user.id}"
+        await attempt(request, [(key, rate)], action="ciba.ask", detail=ASKS_THROTTLED)
+        return
+    key = address_key(request, "ciba-start")
+    await attempt(request, [(key, rate)], action="ciba.start", detail=STARTS_THROTTLED)
 
 
 async def _start_policy(request: Request) -> SignInPolicy:
@@ -673,10 +691,13 @@ async def bind_approved_device(
     )
 
 
-async def _approved_user(body: PollIn) -> tuple[AbstractBaseUser, str]:
+async def _approved_user(
+    request: Request, body: PollIn
+) -> tuple[AbstractBaseUser, str]:
     """The user whose phone approved the page's request, redeemed now, and how.
 
-    How: ``LoginMethod.PUSH`` or ``QR``, the request's channel.
+    How: ``LoginMethod.PUSH`` or ``QR``, the request's channel. The login
+    notes the request it redeems, for its gates (``note_login_sign_in``).
 
     Raises:
         PollRefused: Not approved (yet), or not this page's to redeem.
@@ -690,6 +711,7 @@ async def _approved_user(body: PollIn) -> tuple[AbstractBaseUser, str]:
         )
     if user is None or not user.is_active:
         raise SignInUnknown()
+    note_login_sign_in(request, approved.id, approved.binding_message)
     method = LoginMethod.QR if approved.channel == QR else LoginMethod.PUSH
     return user, method
 
@@ -709,7 +731,7 @@ async def redeem_sign_in(
     approval stands for its device's signature.
     """
     _no_store(response)
-    user, method = await _approved_user(body)
+    user, method = await _approved_user(request, body)
     mark_approved(request, user)
     await pass_login_gates(request, user, method=method, amr=HWK)
     issued = await issue_login(user, factor_proven=True, method=method, amr=HWK)
@@ -738,6 +760,23 @@ async def wait_for_sign_in(body: PollIn, response: Response) -> WaitOut:
 
 
 @router.post(
+    "/app-sign-in/cancel",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Public],
+    responses=error_responses(status.HTTP_400_BAD_REQUEST),
+)
+async def cancel_sign_in(body: PollIn) -> None:
+    """Withdraw the page's sign-in, as its dialog closes (user report A16).
+
+    It ends now: the phone no longer lists it, nor can answer it, and it
+    no longer counts against ``MAX_PENDING``. Nobody redeems it, and
+    nothing is reported. A sign-in answered or ended already answers the
+    same; an unknown or redeemed handle, ``sign_in_unknown``.
+    """
+    await cancel(body.request, client_id=None)
+
+
+@router.post(
     "/app-sign-in/session",
     dependencies=[Public],
     responses=error_responses(status.HTTP_400_BAD_REQUEST, status.HTTP_403_FORBIDDEN),
@@ -748,7 +787,7 @@ async def start_approved_session(
     """A browser session in cookies, once the phone approved (as ``/session``)."""
     _no_store(response)
     check_origin(request)
-    user, method = await _approved_user(body)
+    user, method = await _approved_user(request, body)
     mark_approved(request, user)
     await pass_login_gates(request, user, method=method, amr=HWK)
     return await start_browser_session(request, user, response, method=method, amr=HWK)
@@ -876,13 +915,19 @@ async def approve_sign_in(
     An act (kind ``authorization``) is approved with the digest the phone
     was shown: auth confirms its authorization with the device's key, the
     bytes it signed, and its signature, kept to check it again. Another
-    digest denies the request (``409 authorization_changed``).
+    digest denies the request (``409 authorization_changed``). An
+    ``on_approve`` hook's refusal denies it too, and is answered.
     """
     device = await _device(request, user)
     async with CibaUnitOfWork() as uow:
         asked = await waiting(uow, user.id, request_id)
-    for hook in on_approve:  # Raising refuses it: nothing is approved or confirmed.
-        await hook.call(request, user, asked)
+    try:
+        for hook in on_approve:  # Raising refuses it: denied, nothing confirmed.
+            await hook.call(request, user, asked)
+    except (DomainError, HTTPException) as refusal:
+        if not isinstance(refusal, HTTPException) or refusal.status_code < 500:
+            await _deny_refused(user, asked)
+        raise
     if asked.kind == AUTHORIZATION and matches(asked, body.match_code):
         await _confirm_act(request, user, asked, device, body.digest)
     async with CibaUnitOfWork() as uow:
@@ -892,6 +937,20 @@ async def approve_sign_in(
         await uow.commit()  # A wrong number denies it, then is refused.
     if approved is None:
         raise WrongMatchCode()
+
+
+async def _deny_refused(user: AbstractBaseUser, asked: SignInRequest) -> None:
+    """Deny the request an ``on_approve`` hook refused; report nothing.
+
+    Its initiator's poll and wait answer ``access_denied`` at once, rather
+    than when it expires (user report A17). A request answered or ended
+    meanwhile (a hook that denied it itself) stays as it is. A hook's own
+    failure (an error of 500 or more) refuses nothing: it denies nothing.
+    """
+    with suppress(SignInNotFound):
+        async with CibaUnitOfWork() as uow:
+            await deny(uow, user.id, asked.id)
+            await uow.commit()
 
 
 async def _confirm_act(
@@ -996,8 +1055,8 @@ async def _ask(
     message: str | None = None,
     sca_challenge_id: UUID | None = None,
 ) -> StartedOut:
-    """Ask the user's phone, counted against ``START_RATE``."""
-    await count_start(request)
+    """Ask the user's phone, counted against ``START_RATE`` per user."""
+    await count_start(request, user=user)
     async with CibaUnitOfWork() as uow:
         started = await ask_signed_in(
             uow,
@@ -1136,6 +1195,29 @@ async def redeem_phone_step_up(
 
 
 @router.post(
+    "/app-sign-in/transactions/cancel",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses=error_responses(
+        status.HTTP_400_BAD_REQUEST, status.HTTP_401_UNAUTHORIZED
+    ),
+)
+async def cancel_phone_transaction(  # Before /{challenge_id}, which "cancel" matches.
+    body: PollIn,
+    request: Request,
+    user: Annotated[AbstractBaseUser, SIGNED_IN],
+) -> None:
+    """Withdraw what this session asked the phone of a transaction (``/cancel``).
+
+    The transaction stays as it is: ask the phone again, or confirm it
+    another way.
+    """
+    _, digest = _session_of(request)
+    await cancel(
+        body.request, client_id=None, kind=TRANSACTION, credential_digest=digest
+    )
+
+
+@router.post(
     "/app-sign-in/transactions/token",
     responses=error_responses(
         status.HTTP_400_BAD_REQUEST,
@@ -1232,6 +1314,29 @@ async def wait_for_phone_authorization(  # Before /{authorization_id}: "wait" ma
 
 
 @router.post(
+    "/app-sign-in/authorizations/cancel",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses=error_responses(
+        status.HTTP_400_BAD_REQUEST, status.HTTP_401_UNAUTHORIZED
+    ),
+)
+async def cancel_phone_authorization(  # Before /{authorization_id}: "cancel" matches.
+    body: PollIn,
+    request: Request,
+    user: Annotated[AbstractBaseUser, SIGNED_IN],
+) -> None:
+    """Withdraw what this session asked the phone of an act (``/cancel``).
+
+    The act's authorization stays as it is: ask the phone again, or
+    confirm it another way.
+    """
+    _, digest = _session_of(request)
+    await cancel(
+        body.request, client_id=None, kind=AUTHORIZATION, credential_digest=digest
+    )
+
+
+@router.post(
     "/app-sign-in/authorizations/token",
     responses=error_responses(
         status.HTTP_400_BAD_REQUEST,
@@ -1282,16 +1387,17 @@ async def ask_phone_authorization(
 ) -> StartedOut:
     """Ask the user's phone to confirm one of this session's action authorizations.
 
-    Counted and bounded as a step-up is: ``START_RATE``, ``MAX_PENDING``,
-    the number under ``NUMBER_MATCHING``. The authorization is linked to
-    the request first, so the phone reads the act from auth's record.
+    Counted and bounded as a step-up is: ``START_RATE`` per user,
+    ``MAX_PENDING``, the number under ``NUMBER_MATCHING``. The
+    authorization is linked to the request first, so the phone reads the
+    act from auth's record.
     """
     _no_store(response)
     _, digest = _session_of(request)
     authorization = await action_authorization(authorization_id, user.id, login=digest)
     if _asks(authorization) - PHONE_COVERS:
         raise AuthorizationNeedsOtherFactors
-    await count_start(request)
+    await count_start(request, user=user)
     request_id = uuid4()
     await link_action_authorization(
         authorization.id, user_id=user.id, sign_in_request_id=request_id

@@ -13,8 +13,8 @@ it, and a handle redeems as its kind alone: a step-up is never a login.
 
 The phone answers with ``approve`` or ``deny``; the initiator polls with
 ``poll`` until it is approved (the request is redeemed, once), denied, or
-expired. Each of these but ``poll`` runs in a ``CibaUnitOfWork`` the
-caller opens and commits::
+expired, or withdraws it with ``cancel``. Each of these but ``poll`` and
+``cancel`` runs in a ``CibaUnitOfWork`` the caller opens and commits::
 
     async with CibaUnitOfWork() as uow:
         started = await start_push(uow, user, requester=requester)
@@ -36,7 +36,7 @@ import secrets
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Final, Literal
+from typing import Final, Literal, TypeGuard, cast
 from uuid import UUID, uuid4
 
 from domainkit.contrib.auth import AbstractBaseUser
@@ -57,8 +57,17 @@ from .exceptions import (
     SignInUnknown,
     SlowDown,
 )
-from .settings import CibaSettings
-from .stores import PUSH, QR, SIGN_IN, CibaUnitOfWork, SignInRequest
+from .settings import CibaSettings, PushKind
+from .stores import (
+    AUTHORIZATION,
+    PUSH,
+    QR,
+    SIGN_IN,
+    STEP_UP,
+    TRANSACTION,
+    CibaUnitOfWork,
+    SignInRequest,
+)
 
 __all__ = [
     "PUSH_KIND",
@@ -66,6 +75,7 @@ __all__ = [
     "Started",
     "approve",
     "ask_signed_in",
+    "cancel",
     "ciba_settings",
     "claim",
     "deny",
@@ -88,6 +98,23 @@ AGENT_LENGTH: Final = 200
 PHONE_CONFIRMS: Final = frozenset({"hwk", "phone"})
 """What the phone's approval of an act proves: a key in its hardware (RFC
 8176's ``hwk``), on the bound device's own screen (``phone``, ADR 0144)."""
+PUSH_DEFAULTS: Final = {
+    SIGN_IN: ("Approve sign-in?", "Open the app to approve or deny it."),
+    STEP_UP: (
+        "Confirm it's you?",
+        "Open the app to see what for, and approve or deny it.",
+    ),
+    TRANSACTION: (
+        "Approve a transaction?",
+        "Open the app to see its amount and payee, and approve or deny it.",
+    ),
+    AUTHORIZATION: (
+        "Approve an action?",
+        "Open the app to see what it is, and approve or deny it.",
+    ),
+}
+"""Each kind's notification, title and body, where the settings give none:
+domainkit's catalogs translate them (user report I8)."""
 
 
 def ciba_settings() -> CibaSettings:
@@ -232,7 +259,7 @@ async def start_push(
         )
     )
     if asked is not None:
-        await _notify(uow, asked, request.id, config)
+        await _notify(uow, asked, request.id, SIGN_IN, config)
     return Started(
         handle=handle,
         request_id=request.id,
@@ -291,7 +318,7 @@ async def ask_signed_in(
             request_id=request_id,
         )
     )
-    await _notify(uow, user, request.id, config)
+    await _notify(uow, user, request.id, kind, config)
     return Started(
         handle=handle,
         request_id=request.id,
@@ -320,22 +347,39 @@ async def _askable(uow: CibaUnitOfWork, user: AbstractBaseUser, now: datetime) -
     )
 
 
+def _push_text(kind: str, config: CibaSettings) -> tuple[str, str]:
+    """The title and body of the push that asks about a request of ``kind``.
+
+    Each comes from ``PUSH_TEXTS[kind]``, else ``PUSH_TITLE`` or
+    ``PUSH_BODY``, else the kind's own text (``PUSH_DEFAULTS``; a kind of
+    a project's own, the sign-in's).
+    """
+    own = config.PUSH_TEXTS.get(cast("PushKind", kind))
+    title, body = PUSH_DEFAULTS.get(kind, PUSH_DEFAULTS[SIGN_IN])
+    return (
+        (own and own.TITLE) or config.PUSH_TITLE or title,
+        (own and own.BODY) or config.PUSH_BODY or body,
+    )
+
+
 async def _notify(
     uow: CibaUnitOfWork,
     user: AbstractBaseUser,
     request_id: UUID,
+    kind: str,
     config: CibaSettings,
 ) -> None:
     """Queue a push to each of the user's apps, naming the request and no one.
 
-    ``PUSH_TITLE`` and ``PUSH_BODY`` are translated into the user's
-    language, or the request's (``language_of``): domainkit's catalogs
-    translate the defaults, a project's its own.
+    Its text says what kind of request asks (``_push_text``), translated
+    into the user's language, or the request's (``language_of``):
+    domainkit's catalogs translate the defaults, a project's its own.
     """
     from domainkit.contrib.notifications import PushMessage
 
+    title, body = _push_text(kind, config)
     with override(language_of(user)):
-        title, body = gettext(config.PUSH_TITLE), gettext(config.PUSH_BODY)
+        title, body = gettext(title), gettext(body)
     for token in await uow.push_tokens.of_user(user.id):
         await PushMessage(
             token=token.token,
@@ -553,6 +597,26 @@ async def _answer_no(
     )
 
 
+def _initiated(
+    request: SignInRequest | None,
+    client_id: str | None,
+    kind: str,
+    credential_digest: str | None,
+) -> TypeGuard[SignInRequest]:
+    """Whether a handle's ``request`` may be polled, waited for, or cancelled.
+
+    ``client_id`` started it, as ``kind``, ``credential_digest`` names the
+    credentials that asked, and it was not redeemed.
+    """
+    return (
+        request is not None
+        and request.client_id == client_id
+        and request.kind == kind
+        and request.credential_digest == credential_digest
+        and request.redeemed_at is None
+    )
+
+
 async def poll(
     handle: str,
     *,
@@ -584,13 +648,7 @@ async def poll(
     now = utc_now()
     async with CibaUnitOfWork() as uow:
         request = await uow.requests.by_handle(secret_digest(handle))
-        if (
-            request is None
-            or request.client_id != client_id
-            or request.kind != kind
-            or request.credential_digest != credential_digest
-            or request.redeemed_at is not None
-        ):
+        if not _initiated(request, client_id, kind, credential_digest):
             raise SignInUnknown()
         if request.denied_at is not None:
             raise AccessDenied()
@@ -608,6 +666,36 @@ async def poll(
             raise SlowDown()
         await uow.commit()
     raise AuthorizationPending()
+
+
+async def cancel(
+    handle: str,
+    *,
+    client_id: str | None,
+    kind: str = SIGN_IN,
+    credential_digest: str | None = None,
+) -> None:
+    """Withdraw the request ``handle`` polls for: it ends now (user report A16).
+
+    For the initiator that no longer wants the answer (the page closed its
+    dialog). The phone no longer lists it, nor can answer it, and it no
+    longer counts against ``MAX_PENDING``; nobody can redeem it. Nothing
+    is reported: the user's pushes go on. A handle cancels only as it
+    polls: for its initiator, as its ``kind``, and from the credentials
+    that asked (``credential_digest``). A request answered or ended already
+    is cancelled again, the same way, and a decoy as any other. Commits.
+
+    Raises:
+        SignInUnknown: No request of the initiator, of ``kind``, and of
+            these credentials has the handle, or it was redeemed.
+    """
+    now = utc_now()
+    async with CibaUnitOfWork() as uow:
+        request = await uow.requests.by_handle(secret_digest(handle))
+        if not _initiated(request, client_id, kind, credential_digest):
+            raise SignInUnknown()
+        await uow.requests.end(request.id, now)
+        await uow.commit()
 
 
 def _seconds(span: timedelta) -> int:
@@ -662,13 +750,7 @@ async def wait(
             now = utc_now()
             async with CibaUnitOfWork() as uow:
                 request = await uow.requests.by_handle(secret_digest(handle))
-            if (
-                request is None
-                or request.client_id != client_id
-                or request.kind != kind
-                or request.credential_digest != credential_digest
-                or request.redeemed_at is not None
-            ):
+            if not _initiated(request, client_id, kind, credential_digest):
                 raise SignInUnknown()
             if request.denied_at is not None:
                 raise AccessDenied()
