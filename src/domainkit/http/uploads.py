@@ -1,29 +1,41 @@
 """Receiving uploaded files, and serving stored ones, safely.
 
-``save_upload`` stores a FastAPI ``UploadFile`` in a storage under a new
-random name. It decides the file's type from its first bytes (its "magic
-number"), never from the name or the ``Content-Type`` the client sent, and
-accepts only the types the route lists. It stops at ``max_size`` while
-the file streams into the storage, so nothing larger is kept. The client's
-file name comes back cleaned, to show people, never to name the file::
+``save_upload`` stores a FastAPI ``UploadFile``, bytes, or a stream of
+them in a storage under a new random name. It decides the file's type from
+its first bytes (its "magic number"), never from the name or the
+``Content-Type`` the client sent, and accepts only the types the route
+lists. It stops at ``max_size`` while the file streams into the storage,
+so nothing larger is kept. The client's file name comes back cleaned, to
+show people, never to name the file::
 
     @router.post("/avatars", dependencies=[Depends(Require())])
     async def upload_avatar(file: UploadFile) -> AvatarOut:
         stored = await save_upload(file, types=IMAGES, max_size=2_000_000)
         ...  # keep stored.name, stored.content_type, and stored.filename
 
+A type with an ``inspect`` hook is checked whole before it is stored: the
+upload is held in a temporary file (in memory up to 1 MiB), the hook reads
+it in a worker thread, and a file it refuses is never stored (422).
+``CHECKED_PDF``, ``DOCX``, ``XLSX`` and ``PPTX`` ship such hooks
+(``domainkit.storage.inspection``, the ``documents`` extra); ``PDF`` and
+``ZIP`` read the first bytes only. ``receive_upload`` does the same work
+without storing, for a route that stores later (ADR 0167).
+
 ``serve`` answers with a stored file from a route, which must say who may
 call it (``Require(...)``, or ``Public`` on purpose), as every route must
-(ADR 0021). Routes need ``python-multipart`` to read uploads: install the
+(ADR 0021). Routes need ``python-multipart`` to read forms: install the
 ``uploads`` extra. See ``docs/uploads.md`` and ADR 0040.
 """
 
+import asyncio
+import hashlib
 import logging
 import re
+import tempfile
 import unicodedata
-from collections.abc import AsyncIterator, Callable, Iterable
-from dataclasses import dataclass
-from typing import Final
+from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable
+from dataclasses import dataclass, replace
+from typing import IO, Final
 from urllib.parse import quote
 
 from fastapi import status
@@ -33,18 +45,33 @@ from starlette.datastructures import UploadFile
 
 from domainkit.http.errors import APIError
 from domainkit.storage.base import CHUNK_SIZE, FileTooLarge, Storage
+from domainkit.storage.base import StoredUpload as StoredUpload
 from domainkit.storage.handler import storages
+from domainkit.storage.inspection import (
+    FileRefused,
+    NotOfType,
+    OfficeCheck,
+    PdfCheck,
+)
 
 __all__ = [
+    "CHECKED_PDF",
+    "DOCX",
     "GIF",
     "IMAGES",
     "JPEG",
+    "OFFICE",
     "PDF",
     "PNG",
+    "PPTX",
     "TEXT",
     "WEBP",
+    "XLSX",
     "ZIP",
     "FileType",
+    "ReceivedUpload",
+    "UploadRefused",
+    "receive_upload",
     "sanitize_filename",
     "save_upload",
     "serve",
@@ -63,6 +90,11 @@ _RESERVED_NAMES: Final = frozenset(
 """Names Windows will not open as files, whatever their extension."""
 _FORBIDDEN: Final = frozenset('<>:"/\\|?*')
 _TEXT_CONTROLS: Final = frozenset(b"\t\n\r\f")
+SPOOL_MEMORY: Final = 1024 * 1024
+"""How much of an upload held for a check stays in memory; the rest goes to disk."""
+
+type Upload = UploadFile | bytes | AsyncIterable[bytes]
+"""What ``save_upload`` takes: a form's file, bytes, or a stream of bytes."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +106,12 @@ class FileType:
     """Given to stored files, as ``.png``."""
     matches: Callable[[bytes], bool]
     """Whether a file starting with these bytes is of this type."""
+    inspect: Callable[[IO[bytes]], None] | None = None
+    """Checks the whole file, read from its start, before it is stored (New
+    in 2.5). It runs in a worker thread, and raises ``FileRefused`` (422)
+    for a file it will not accept, or ``NotOfType`` for one that is not of
+    the type (the next type that matches is tried). None: the first bytes
+    decide."""
 
 
 def _png(head: bytes) -> bool:
@@ -122,11 +160,36 @@ GIF: Final = FileType("image/gif", ".gif", _gif)
 WEBP: Final = FileType("image/webp", ".webp", _webp)
 PDF: Final = FileType("application/pdf", ".pdf", _pdf)
 ZIP: Final = FileType("application/zip", ".zip", _zip)
-"""Also Office documents (``.docx``, ``.xlsx``), which are zip files."""
+"""Any zip file, Office documents included, by its first bytes only."""
 TEXT: Final = FileType("text/plain", ".txt", _text)
 """UTF-8 text, CSV included; it cannot be told apart by its bytes."""
 IMAGES: Final = (PNG, JPEG, GIF, WEBP)
 """Images browsers show; SVG is not one of them, as it can carry scripts."""
+CHECKED_PDF: Final = FileType("application/pdf", ".pdf", _pdf, PdfCheck())
+"""A PDF without scripts, actions, embedded files, XFA or a password (New in 2.5)."""
+DOCX: Final = FileType(
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".docx",
+    _zip,
+    OfficeCheck("docx"),
+)
+"""A Word document without macros, objects or outside links (New in 2.5)."""
+XLSX: Final = FileType(
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xlsx",
+    _zip,
+    OfficeCheck("xlsx"),
+)
+"""An Excel workbook without macros, objects or outside links (New in 2.5)."""
+PPTX: Final = FileType(
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".pptx",
+    _zip,
+    OfficeCheck("pptx"),
+)
+"""A PowerPoint presentation without macros, objects or outside links (New in 2.5)."""
+OFFICE: Final = (DOCX, XLSX, PPTX)
+"""Word, Excel and PowerPoint documents, each checked (New in 2.5)."""
 INLINE_TYPES: Final = frozenset(
     {PNG.content_type, JPEG.content_type, GIF.content_type, WEBP.content_type}
     | {PDF.content_type}
@@ -139,76 +202,261 @@ def sniff(head: bytes, types: Iterable[FileType]) -> FileType | None:
     return next((kind for kind in types if kind.matches(head)), None)
 
 
-@dataclass(frozen=True, slots=True)
-class StoredUpload:
-    """An upload, stored."""
+class UploadRefused(APIError):
+    """An upload was empty (400), too large (413), not taken (415), or refused (422).
 
-    name: str
-    """The storage's name for it: keep this to find the file again."""
-    content_type: str
-    """Its type, from its content."""
+    A type not taken is 415; a refusal is the virus scan's, or the check
+    of the file's type.
+    """
+
+
+class _Reader:
+    """An upload, read a few bytes at a time, whatever it came as."""
+
+    def __init__(self, upload: Upload, filename: str | None) -> None:
+        """Read ``upload``; ``filename`` replaces a form file's own name."""
+        self._file = upload if isinstance(upload, UploadFile) else None
+        self._chunks: AsyncIterator[bytes] | None = None
+        self._pending = b""
+        self._at = 0
+        self.size: int | None = None
+        """The size the upload declares, if it declares one."""
+        self.filename = filename
+        """The client's name for the file, as it sent it."""
+        if isinstance(upload, UploadFile):
+            self.size = upload.size
+            if filename is None:
+                self.filename = upload.filename
+        elif isinstance(upload, bytes | bytearray | memoryview):
+            self._pending = bytes(upload)
+            self.size = len(self._pending)
+        else:
+            self._chunks = aiter(upload)
+
+    async def read(self, size: int) -> bytes:
+        """Up to ``size`` more bytes; ``b""`` at the end."""
+        if self._file is not None:
+            return await self._file.read(size)
+        while self._at >= len(self._pending):
+            chunk = None if self._chunks is None else await anext(self._chunks, None)
+            if chunk is None:
+                return b""
+            self._pending, self._at = bytes(chunk), 0
+        part = self._pending[self._at : self._at + size]
+        self._at += len(part)
+        return part
+
+
+@dataclass(slots=True)
+class ReceivedUpload:
+    """An upload received whole and checked, held in a temporary file.
+
+    Nothing is stored yet: ``store`` keeps it, through the virus scan, and
+    ``close`` drops it. ``receive_upload`` makes one (New in 2.5).
+    """
+
+    kind: FileType
+    """Its type, from its content, and its type's check if it has one."""
     size: int
+    sha256: str
+    """The SHA-256 of its bytes, in hex."""
     filename: str
     """The client's name for it, cleaned: to show people, never a path."""
+    file: IO[bytes]
+    """The temporary file that holds it."""
 
+    def unstored(self) -> StoredUpload:
+        """What ``store`` returns, but its name, which is empty: nothing is stored."""
+        return StoredUpload(
+            "", self.kind.content_type, self.size, self.filename, self.sha256
+        )
 
-class UploadRefused(APIError):
-    """An upload was empty (400), too large (413), or of a type not accepted (415)."""
+    async def store(
+        self, storage: Storage | str = "default", *, directory: str = ""
+    ) -> StoredUpload:
+        """Store it under a new name, streamed through ``UPLOAD_SCANNER`` if set.
+
+        Raises:
+            UploadRefused: 422 ``infected_file``; nothing is stored.
+            ScannerUnavailable: The scanner could not scan it (503).
+            ValueError: ``directory`` is malformed.
+        """
+        target = storages[storage] if isinstance(storage, str) else storage
+        stored = await _store(
+            target,
+            self.kind,
+            self._chunks(),
+            directory=directory,
+            max_size=self.size,
+            filename=self.filename,
+        )
+        return replace(stored, sha256=self.sha256)
+
+    def close(self) -> None:
+        """Drop the temporary file."""
+        self.file.close()
+
+    async def _chunks(self) -> AsyncIterator[bytes]:
+        """The file from its start, a chunk at a time; read in a thread from disk."""
+        on_disk = self.size > SPOOL_MEMORY
+        self.file.seek(0)
+        while chunk := (
+            await asyncio.to_thread(self.file.read, CHUNK_SIZE)
+            if on_disk
+            else self.file.read(CHUNK_SIZE)
+        ):
+            yield chunk
 
 
 async def save_upload(
-    upload: UploadFile,
+    upload: Upload,
     *,
     types: Iterable[FileType],
     max_size: int,
     storage: Storage | str = "default",
     directory: str = "",
+    filename: str | None = None,
 ) -> StoredUpload:
     """Store ``upload`` if it is one of ``types`` and at most ``max_size`` bytes.
 
-    With ``UPLOAD_SCANNER`` set, the upload streams through the scanner
-    as it is stored, and a finding fails the write.
+    ``upload`` is a form's ``UploadFile``, bytes, or an async iterable of
+    bytes (``request.stream()``); ``filename`` is the client's name for
+    it, which replaces a form file's own. A type with an ``inspect`` hook
+    is received whole and checked before it is stored (``receive_upload``).
+    With ``UPLOAD_SCANNER`` set, the upload streams through the scanner as
+    it is stored, and a finding fails the write.
 
     Raises:
         UploadRefused: 400 ``empty_file``, 413 ``file_too_large``, 415
-            ``unsupported_file_type``, or 422 ``infected_file``; nothing
-            is stored.
+            ``unsupported_file_type``, or 422 ``infected_file``,
+            ``unsafe_file`` or ``unreadable_file``; nothing is stored.
         ScannerUnavailable: The scanner could not scan it (503).
         ValueError: ``types`` is empty, or ``directory`` malformed.
+    """
+    accepted = _accepted(types)
+    target = storages[storage] if isinstance(storage, str) else storage
+    reader = _Reader(upload, filename)
+    head = await _first(reader, max_size)
+    candidates = _candidates(head, accepted)
+    if candidates[0].inspect is None:
+        return await _store(
+            target,
+            candidates[0],
+            _chunks(head, reader),
+            directory=directory,
+            max_size=max_size,
+            filename=sanitize_filename(reader.filename),
+        )
+    received = await _received(reader, head, candidates, max_size)
+    try:
+        return await received.store(target, directory=directory)
+    finally:
+        received.close()
+
+
+async def receive_upload(
+    upload: Upload,
+    *,
+    types: Iterable[FileType],
+    max_size: int,
+    filename: str | None = None,
+) -> ReceivedUpload:
+    """Receive ``upload`` whole and check it as ``save_upload`` does; store nothing.
+
+    For a route that stores the file later, or not at all (an
+    authorization's twin). Close what it returns, or store it.
+
+    Raises:
+        UploadRefused: 400 ``empty_file``, 413 ``file_too_large``, 415
+            ``unsupported_file_type``, or 422 ``unsafe_file`` or
+            ``unreadable_file``.
+        ValueError: ``types`` is empty.
+    """
+    accepted = _accepted(types)
+    reader = _Reader(upload, filename)
+    head = await _first(reader, max_size)
+    return await _received(reader, head, _candidates(head, accepted), max_size)
+
+
+def _accepted(types: Iterable[FileType]) -> tuple[FileType, ...]:
+    """``types``, as a tuple.
+
+    Raises:
+        ValueError: There are none.
     """
     accepted = tuple(types)
     if not accepted:
         raise ValueError("save_upload needs the types it accepts.")
-    target = storages[storage] if isinstance(storage, str) else storage
-    if upload.size is not None and upload.size > max_size:
+    return accepted
+
+
+async def _first(reader: _Reader, max_size: int) -> bytes:
+    """The upload's first bytes, once its declared size fits.
+
+    Raises:
+        UploadRefused: It declares more than ``max_size`` bytes (413), or
+            is empty (400).
+    """
+    if reader.size is not None and reader.size > max_size:
         raise _too_large()
-    head = await _head(upload)
+    head = await _head(reader)
     if not head:
         raise UploadRefused(
             status.HTTP_400_BAD_REQUEST, "The file is empty.", code="empty_file"
         )
-    kind = sniff(head, accepted)
-    if kind is None:
-        raise UploadRefused(
-            status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            "This type of file is not accepted.",
-            code="unsupported_file_type",
-        )
-    size = 0
+    return head
 
-    async def content() -> AsyncIterator[bytes]:
+
+def _candidates(head: bytes, accepted: tuple[FileType, ...]) -> list[FileType]:
+    """The accepted types whose first bytes ``head`` has, in order.
+
+    Raises:
+        UploadRefused: None has (415).
+    """
+    found = [kind for kind in accepted if kind.matches(head)]
+    if not found:
+        raise _unsupported()
+    return found
+
+
+async def _chunks(head: bytes, reader: _Reader) -> AsyncIterator[bytes]:
+    """The upload from its start: ``head``, then the rest, a chunk at a time."""
+    chunk = head
+    while chunk:
+        yield chunk
+        chunk = await reader.read(CHUNK_SIZE)
+
+
+async def _store(
+    target: Storage,
+    kind: FileType,
+    chunks: AsyncIterator[bytes],
+    *,
+    directory: str,
+    max_size: int,
+    filename: str,
+) -> StoredUpload:
+    """Store ``chunks`` as ``kind``, through the scanner if one is set.
+
+    Raises:
+        UploadRefused: 413 ``file_too_large``, or 422 ``infected_file``.
+        ScannerUnavailable: The scanner could not scan it (503).
+    """
+    size = 0
+    digest = hashlib.sha256()
+
+    async def counted() -> AsyncIterator[bytes]:
         nonlocal size
-        chunk = head
-        while chunk:
+        async for chunk in chunks:
             size += len(chunk)
+            digest.update(chunk)
             yield chunk
-            chunk = await upload.read(CHUNK_SIZE)
 
     # Loaded here: an application that takes no uploads never imports it.
     from domainkit.storage.scanning import Infected, configured_scanner
 
     scanner = configured_scanner()
-    stream = content() if scanner is None else scanner.scan(content())
+    stream = counted() if scanner is None else scanner.scan(counted())
     try:
         name = await target.save(
             stream, directory=directory, extension=kind.extension, max_size=max_size
@@ -222,12 +470,65 @@ async def save_upload(
             "The virus scan refused the file.",
             code="infected_file",
         ) from None
-    return StoredUpload(
-        name, kind.content_type, size, sanitize_filename(upload.filename)
-    )
+    return StoredUpload(name, kind.content_type, size, filename, digest.hexdigest())
 
 
-async def _head(upload: UploadFile) -> bytes:
+async def _received(
+    reader: _Reader, head: bytes, candidates: list[FileType], max_size: int
+) -> ReceivedUpload:
+    """The whole upload in a temporary file, and the first candidate it is.
+
+    Raises:
+        UploadRefused: 413, 415, or 422 (a check refused it).
+    """
+    spool = tempfile.SpooledTemporaryFile(max_size=SPOOL_MEMORY)  # noqa: SIM115 - the caller closes it.
+    try:
+        size = 0
+        digest = hashlib.sha256()
+        async for chunk in _chunks(head, reader):
+            size += len(chunk)
+            if size > max_size:
+                raise _too_large()
+            digest.update(chunk)
+            if size > SPOOL_MEMORY:
+                await asyncio.to_thread(spool.write, chunk)  # It goes to disk.
+            else:
+                spool.write(chunk)
+        kind = await asyncio.to_thread(_inspected, spool, candidates)
+    except BaseException:
+        spool.close()
+        raise
+    filename = sanitize_filename(reader.filename)
+    return ReceivedUpload(kind, size, digest.hexdigest(), filename, spool)
+
+
+def _inspected(file: IO[bytes], candidates: list[FileType]) -> FileType:
+    """The first of ``candidates`` whose check takes ``file``; in a worker thread.
+
+    A type without a check takes it. A check that says the file is not of
+    its type (``NotOfType``) passes it to the next.
+
+    Raises:
+        UploadRefused: A check refused it (422), or no type took it (415).
+    """
+    for kind in candidates:
+        if kind.inspect is None:
+            return kind
+        file.seek(0)
+        try:
+            kind.inspect(file)
+        except NotOfType:
+            continue
+        except FileRefused as exc:
+            logger.info("An upload was refused by its check: %s", exc.message)
+            raise UploadRefused(
+                status.HTTP_422_UNPROCESSABLE_CONTENT, exc.message, code=exc.code
+            ) from None
+        return kind
+    raise _unsupported()
+
+
+async def _head(upload: "_Reader | UploadFile") -> bytes:
     """The first ``SNIFF_BYTES`` of the upload (fewer if it is shorter)."""
     head = b""
     while len(head) < SNIFF_BYTES and (
@@ -235,6 +536,15 @@ async def _head(upload: UploadFile) -> bytes:
     ):
         head += part
     return head
+
+
+def _unsupported() -> UploadRefused:
+    """415: the upload is of no type the route takes."""
+    return UploadRefused(
+        status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+        "This type of file is not accepted.",
+        code="unsupported_file_type",
+    )
 
 
 def _too_large() -> UploadRefused:

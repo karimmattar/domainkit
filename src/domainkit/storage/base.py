@@ -11,6 +11,7 @@ import re
 import secrets
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterable, AsyncIterator
+from dataclasses import dataclass, field
 from types import TracebackType
 from typing import Final, Self
 
@@ -50,6 +51,26 @@ class FileMissing(NotFound):
     def __init__(self) -> None:
         """Say so without repeating the name."""
         super().__init__("No file has that name.")
+
+
+@dataclass(frozen=True, slots=True)
+class StoredUpload:
+    """A file a client sent, stored: what a command keeps of it.
+
+    ``save_upload`` (``domainkit.http.uploads``) returns one, and
+    ``ResourceRouter.upload_route`` hands one to its command. It is here,
+    with the storage, so that the application layer may name it.
+    """
+
+    name: str
+    """The storage's name for it: keep this to find the file again."""
+    content_type: str
+    """Its type, from its content."""
+    size: int
+    filename: str
+    """The client's name for it, cleaned: to show people, never a path."""
+    sha256: str = field(default="", compare=False)
+    """The SHA-256 of its bytes, in hex (New in 2.5): what an act binds."""
 
 
 def check_name(name: str) -> str:
