@@ -8,6 +8,7 @@ so a misspelled setting fails at startup instead of being silently ignored.
 
 import re
 from collections.abc import Callable, Iterator, Mapping
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Annotated, Any, Final, Literal, NamedTuple, Self
 from urllib.parse import SplitResult, parse_qs, urlsplit
@@ -726,6 +727,96 @@ class ScannerConfig(BaseModel):
     """Keyword arguments of the class, such as ``{"host": "clamav"}``."""
 
 
+RENDERER_SCHEMES: Final = frozenset({"http", "https"})
+"""The schemes a renderer's URL may have."""
+
+
+class RendererConfig(BaseModel):
+    """``DOCUMENTS["RENDERER"]``: the Gotenberg server that renders documents.
+
+    ``domainkit.documents.renderer()`` calls it (ADR 0168). Gotenberg's own
+    flags, which harden it, are set where it runs: no setting here can
+    read them (docs/documents.md, "Hardening Gotenberg").
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    URL: str = Field(min_length=1, max_length=2048)
+    """Gotenberg's address, as ``https://gotenberg.internal:3000``: http or
+    https, a host, and a path if ``--api-root-path`` sets one."""
+    USERNAME: str | None = Field(default=None, pattern=r"^[\x21-\x39\x3b-\x7e]{1,256}$")
+    """The user of its basic auth (``--api-enable-basic-auth``): printable
+    ASCII, no space or colon; with ``PASSWORD``."""
+    PASSWORD: SecretStr | None = Field(default=None, min_length=1, max_length=1024)
+    """The password of its basic auth; with ``USERNAME``."""
+    TIMEOUT: float = Field(default=30.0, gt=0, le=MAX_REQUEST_SECONDS)
+    """Seconds a rendering may take, its retries included (Gotenberg's
+    ``--api-timeout`` is 30 by default), and never past the deadline."""
+    TRACE_HEADER: str = Field(
+        default="Gotenberg-Trace", pattern=r"^[A-Za-z0-9-]{1,64}$"
+    )
+    """The header Gotenberg reads a request's id from and logs it with
+    (``--api-correlation-id-header``, ``--api-trace-header`` before 8.29)."""
+    ALLOW_HTTP: bool = False
+    """Let staging and production call Gotenberg over plain http on another
+    host, for a network that encrypts by itself (a service mesh)."""
+
+    @field_validator("URL")
+    @classmethod
+    def _check_url(cls, url: str) -> str:
+        """Http or https, a host, no login, query, or fragment."""
+        parts = urlsplit(url)
+        if parts.scheme not in RENDERER_SCHEMES or not parts.hostname:
+            raise ValueError(
+                "URL is an http or https URL with a host, as 'https://gotenberg:3000'"
+            )
+        parts.port  # noqa: B018 - raises ValueError on a port that is not one.
+        if parts.username is not None or parts.password is not None:
+            raise ValueError("give the login as USERNAME and PASSWORD, not in the URL")
+        if parts.query or parts.fragment:
+            raise ValueError("URL has no query or fragment")
+        return url
+
+    @model_validator(mode="after")
+    def _login(self) -> Self:
+        """A user and a password, or neither."""
+        if (self.USERNAME is None) != (self.PASSWORD is None):
+            raise ValueError("set USERNAME and PASSWORD together, or neither")
+        return self
+
+    def plain_http(self) -> bool:
+        """Whether calls would cross a network unencrypted.
+
+        That is http to a host other than this one (``localhost``, a
+        loopback address), unless ``ALLOW_HTTP`` says the network encrypts.
+        """
+        parts = urlsplit(self.URL)
+        return (
+            parts.scheme == "http"
+            and not self.ALLOW_HTTP
+            and not is_loopback(parts.hostname or "")
+        )
+
+
+def is_loopback(host: str) -> bool:
+    """Whether ``host`` names this machine: ``localhost``, or a loopback address."""
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+class DocumentsConfig(BaseModel):
+    """``DOCUMENTS``: how ``domainkit.documents`` renders documents."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    RENDERER: RendererConfig | None = None
+    """The Gotenberg server ``renderer()`` calls; None: no renderer."""
+
+
 GRANIAN_MAX_KEEP_ALIVE: Final = 60
 """The most seconds Granian keeps an idle connection open (60,000 ms)."""
 MAX_SERVE_WORKERS: Final = 1024
@@ -1022,6 +1113,8 @@ class Settings(BaseModel):
     """The search engine ``search_backend()`` makes; none unless set."""
     TENANCY: TenancyConfig | None = None
     """Multi-tenancy (``domainkit.tenancy``); None: one tenant, no scoping."""
+    DOCUMENTS: DocumentsConfig = Field(default_factory=DocumentsConfig)
+    """How ``domainkit.documents`` renders documents: its Gotenberg server."""
     LOGGING: dict[str, Any] = Field(default_factory=_minimal_logging)
     """``logging.config.dictConfig`` mapping applied by ``setup()``."""
     EVENT_HANDLER_TIMEOUT: float = Field(default=10.0, gt=0, le=3600)
@@ -1431,6 +1524,20 @@ class Settings(BaseModel):
                     "'https://app.example.com'.",
                 )
             )
+        renderer = self.DOCUMENTS.RENDERER
+        if renderer is not None and renderer.USERNAME is None:
+            warnings.append(
+                CheckMessage(
+                    "documents.W001",
+                    "DOCUMENTS.RENDERER has no USERNAME and PASSWORD: Gotenberg "
+                    "renders, and fetches what a page links, for anyone who "
+                    "reaches it.",
+                    "Start Gotenberg with --api-enable-basic-auth, give it "
+                    "GOTENBERG_API_BASIC_AUTH_USERNAME and "
+                    "GOTENBERG_API_BASIC_AUTH_PASSWORD, and set them here; or "
+                    "silence documents.W001 where only this service reaches it.",
+                )
+            )
         warnings.extend(self._load_warnings())
         warnings.extend(self._database_warnings())
         return warnings
@@ -1550,6 +1657,20 @@ class Settings(BaseModel):
             )
         errors.extend(self._store_errors(where))
         errors.extend(self._secret_key_errors(where))
+        renderer = self.DOCUMENTS.RENDERER
+        if renderer is not None and renderer.plain_http():
+            errors.append(
+                CheckMessage(
+                    "documents.E001",
+                    f"DOCUMENTS.RENDERER.URL must use https {where}: documents, "
+                    "and the renderer's password, would cross the network "
+                    "unencrypted",
+                    "Serve Gotenberg over TLS (--api-tls-cert-file and "
+                    "--api-tls-key-file) and give its https URL. A renderer on "
+                    "this host (localhost) may keep http, and so may a network "
+                    "that encrypts by itself, with ALLOW_HTTP = True.",
+                )
+            )
         return errors
 
     def _store_errors(self, where: str) -> Iterator[CheckMessage]:

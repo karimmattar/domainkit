@@ -1246,3 +1246,7 @@ msgstr ""
 
 msgid "Requests are made and decided in one's own name only."
 msgstr ""
+
+#. domainkit.documents: the renderer (Gotenberg) cannot render now
+msgid "Documents cannot be rendered now; try again later."
+msgstr ""
