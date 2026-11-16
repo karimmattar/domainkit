@@ -431,6 +431,7 @@ Passkeys (WebAuthn) and bound devices: keys a user's devices hold.
 - `PasskeyNotFound`: The user has no passkey with that id.
 - `PasskeyRefused`: A passkey's answer does not hold (401); the reason is logged, not sent.
 - `PasskeysOff`: `DEVICES.RP_ID` is not set: no passkeys here (404).
+- `PushTokenRefused`: The push service does not know the token (`DEVICES.PUSH_TOKEN_CHECK`).
 - `ReauthenticationRequired`: A change to how one logs in needs the password, or a recent step-up (401).
 - `SecondFactorRequired`: The user has a second factor: enrollment needs its code too (401).
 - `TooManyKeys`: The user has `MAX_PASSKEYS` (or `MAX_DEVICES`) already: remove one first.
@@ -497,6 +498,7 @@ What a passkey, or a bound device, may be refused.
 - `PasskeyNotFound`: The user has no passkey with that id.
 - `PasskeyRefused`: A passkey's answer does not hold (401); the reason is logged, not sent.
 - `PasskeysOff`: `DEVICES.RP_ID` is not set: no passkeys here (404).
+- `PushTokenRefused`: The push service does not know the token (`DEVICES.PUSH_TOKEN_CHECK`).
 - `ReauthenticationRequired`: A change to how one logs in needs the password, or a recent step-up (401).
 - `SecondFactorRequired`: The user has a second factor: enrollment needs its code too (401).
 - `TooManyKeys`: The user has `MAX_PASSKEYS` (or `MAX_DEVICES`) already: remove one first.
@@ -518,6 +520,7 @@ Passkeys: registering one, and logging in or stepping up with it.
 Settings of `domainkit.contrib.devices`: `DEVICES = {...}`.
 
 - `DevicesSettings`: Passkeys and bound devices; every key is optional.
+- `PushTokenCheckSettings`: `DEVICES["PUSH_TOKEN_CHECK"]`: ask the push service about a new token.
 
 ## `domainkit.contrib.devices.stores`
 

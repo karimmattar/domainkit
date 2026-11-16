@@ -16,6 +16,7 @@ __all__ = [
     "PasskeyNotFound",
     "PasskeyRefused",
     "PasskeysOff",
+    "PushTokenRefused",
     "ReauthenticationRequired",
     "SecondFactorRequired",
     "TooManyKeys",
@@ -117,3 +118,9 @@ class UnsupportedKey(BusinessRuleViolation):
     """Not a P-256 or Ed25519 public key (SubjectPublicKeyInfo, base64url)."""
 
     code = "unsupported_device_key"
+
+
+class PushTokenRefused(BusinessRuleViolation):
+    """The push service does not know the token (``DEVICES.PUSH_TOKEN_CHECK``)."""
+
+    code = "push_token_refused"

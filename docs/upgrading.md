@@ -143,6 +143,13 @@ domainkit.
   records sees `EmailChanged` or `MobileNumberChanged` after
   `UserUpdated` when the address or the number changed.
 
+- **`seed` and `privacy export`/`erase` start the domains.** Their
+  `on_startup` hooks run first, as for the application and the worker: a
+  key service is asked to unwrap the data keys, and, where deployed, the
+  audit trail's and the ledger's protections are checked. Where those
+  refuse, the command refuses as the application would. Run `seed` after
+  `migrate`, and from where the key service answers.
+
 ### Make and apply the object permissions' migration
 
 With `domainkit.contrib.objectpermissions` installed, the grants table

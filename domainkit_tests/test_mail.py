@@ -25,6 +25,7 @@ from domainkit.contrib.mail import (
     BaseEmailBackend,
     EmailMessage,
     MailDeliveryFailed,
+    MailRefused,
     SmtpBackend,
     SmtpSettings,
     TemplateDoesNotExist,
@@ -34,10 +35,12 @@ from domainkit.contrib.mail import (
     send,
     send_mail,
 )
+from domainkit.contrib.mail.delivery import SEND_TASK
 from domainkit.contrib.mail.message import MAX_RECIPIENTS, check_address
 from domainkit.contrib.messaging import MessagingSettings, Worker
 from domainkit.contrib.messaging import worker as worker_module
 from domainkit.contrib.messaging.admin import blanked_dead_letters, retry_dead
+from domainkit.contrib.messaging.registry import get_task
 from domainkit.contrib.messaging.tables import BLANKED, DEAD, DONE, messages
 from domainkit.db import connections
 from domainkit.exceptions import ImproperlyConfigured
@@ -88,6 +91,17 @@ class FlakyBackend(BaseEmailBackend):
             raise MailDeliveryFailed("SMTPServerDisconnected")
         FlakyBackend.sent.extend(messages)
         return len(messages)
+
+
+class RefusingServer(BaseEmailBackend):
+    """A server that refuses every message for good."""
+
+    calls: ClassVar[int] = 0
+
+    async def send_messages(self, messages: Sequence[EmailMessage]) -> int:
+        """Refuse, as a mailbox that does not exist."""
+        RefusingServer.calls += 1
+        raise MailRefused("SMTPRecipientsRefused (550)", code="550")
 
 
 class NotABackend:
@@ -274,6 +288,26 @@ async def test_mail_settings_set_attempts_and_queue(tables: Install) -> None:
     assert (row["queue"], row["max_attempts"], row["status"]) == ("mail", 2, DEAD)
     assert row["last_error"] == "MailDeliveryFailed: SMTPServerDisconnected"
     assert FlakyBackend.sent == []
+
+
+async def test_a_lasting_refusal_is_dead_lettered_at_once(tables: Install) -> None:
+    """One try, not ``MAX_ATTEMPTS``: the server would refuse it again (N2).
+
+    The task had no ``dont_retry_on``: a mailbox that does not exist was
+    tried five times, the last ones minutes apart, as an outage is.
+    """
+    tables(BACKEND="domainkit_tests.test_mail.RefusingServer")
+    RefusingServer.calls = 0
+    await send_mail(**WELCOME)
+
+    await Worker().run_once()
+
+    (row,) = await outbox_rows()
+    assert (row["status"], row["attempts"], RefusingServer.calls) == (DEAD, 1, 1)
+    assert row["last_error"] == "MailRefused: SMTPRecipientsRefused (550)"
+    spec = get_task(SEND_TASK)
+    assert spec is not None
+    assert spec.dont_retry_on == (MailRefused,)
 
 
 async def test_sent_mail_leaves_no_link_or_address_in_the_outbox(
@@ -780,7 +814,7 @@ async def test_smtp_without_starttls_offered_fails(tables: Install) -> None:
         ),
         (
             SmtpServer(refuse={"alice@example.com", "bob@example.com"}),
-            "SMTPRecipientsRefused: the server refused every recipient",
+            "SMTPRecipientsRefused: the server refused every recipient (550)",
         ),
     ],
 )
@@ -799,6 +833,51 @@ async def test_smtp_refusals_name_no_address(
     assert failed.value.__suppress_context__
     assert server.received == []
     assert server.commands[-1] in {"QUIT", "RSET"}
+
+
+BOTH = {"alice@example.com", "bob@example.com"}
+
+
+@pytest.mark.parametrize(
+    ("server", "kind", "code"),
+    [
+        (SmtpServer(refuse=BOTH), MailRefused, "550"),  # Mailbox unavailable.
+        (SmtpServer(refuse=BOTH, refuse_with="553 Not a mailbox"), MailRefused, "553"),
+        (SmtpServer(refuse=BOTH, refuse_with="450 Busy"), MailDeliveryFailed, "450"),
+        # RFC 5321 4.5.3.1.10: 552 to RCPT is the server's limit, temporary.
+        (
+            SmtpServer(refuse=BOTH, refuse_with="552 Too many"),
+            MailDeliveryFailed,
+            "552",
+        ),
+        (SmtpServer(sender_reply="553 Sender refused"), MailRefused, "553"),
+        (SmtpServer(sender_reply="451 Try later"), MailDeliveryFailed, "451"),
+        (SmtpServer(data_reply="554 Rejected as spam"), MailRefused, "554"),
+        (SmtpServer(data_reply="552 Too large"), MailRefused, "552"),
+        (SmtpServer(data_reply="452 No room"), MailDeliveryFailed, "452"),
+        # Logging in is tried again, whatever the reply: an operator fixes it.
+        (SmtpServer(user="mailer", password="right"), MailDeliveryFailed, "535"),
+    ],
+)
+async def test_smtp_permanent_replies_are_not_tried_again(
+    tables: Install, server: SmtpServer, kind: type[Exception], code: str
+) -> None:
+    """A 5xx to the sender, every recipient, or the message: ``MailRefused`` (N2).
+
+    RFC 5321 (4.2.1) says a client does not repeat a request a 5xx refused;
+    the worker tried each such message five times, as an outage.
+    """
+    with override_settings(DEBUG=True), smtp_server(server):
+        options = {"USER": "mailer", "PASSWORD": "wrong"} if server.user else {}
+        backend = SmtpBackend(smtp_settings(server, SECURITY="none", **options))
+        with pytest.raises(MailDeliveryFailed) as failed:
+            await backend.send_messages([PREPARED])
+
+    assert type(failed.value) is kind
+    assert failed.value.code == code
+    assert code in str(failed.value)
+    assert "example.com" not in str(failed.value)
+    assert server.received == []
 
 
 async def test_smtp_logs_partly_refused_messages_without_addresses(

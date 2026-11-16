@@ -6,6 +6,7 @@ from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.contrib.messaging import task
 
+from .backends import MailRefused
 from .delivery import SEND_TASK, get_backend, send_queued
 from .settings import MailSettings
 
@@ -34,6 +35,7 @@ class MailConfig(DomainConfig):
             max_attempts=config.MAX_ATTEMPTS,
             queue=config.QUEUE,
             sensitive=True,
+            dont_retry_on=(MailRefused,),  # It would come again.
         )(send_queued)
         backend = get_backend()
         if not backend.deployable and settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:

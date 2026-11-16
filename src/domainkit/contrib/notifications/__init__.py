@@ -34,6 +34,7 @@ from .backends import (
     sms_outbox,
 )
 from .delivery import (
+    check_push_token,
     deliver_push,
     deliver_sms,
     get_push_backend,
@@ -56,6 +57,7 @@ __all__ = [
     "PushMessage",
     "SmsBackend",
     "SmsMessage",
+    "check_push_token",
     "deliver_push",
     "deliver_sms",
     "get_push_backend",

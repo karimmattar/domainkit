@@ -7,6 +7,7 @@ tries again (``NOTIFICATIONS.MAX_ATTEMPTS``) while it fails. Delivery is
 at least once; every try carries the same ``message_id``.
 """
 
+import asyncio
 import logging
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Final, cast
@@ -16,7 +17,7 @@ from domainkit.contrib.messaging import enqueue
 from domainkit.ddd import event_bus
 from domainkit.utils.delivery import load_backend
 
-from .backends import PushBackend, PushTokenGone, SmsBackend
+from .backends import NotificationFailed, PushBackend, PushTokenGone, SmsBackend
 from .events import PushTokenExpired, token_digest
 from .messages import PushMessage, SmsMessage
 from .settings import NotificationsSettings
@@ -122,6 +123,34 @@ async def deliver_push(messages: Sequence[PushMessage]) -> int:
         backend = get_push_backend(message.platform)
         sent += await backend.send_messages([message.prepared()])
     return sent
+
+
+async def check_push_token(
+    token: str, platform: str | None = None, *, within: float
+) -> bool:
+    """Whether the push service of ``platform`` may know ``token``.
+
+    Asks its backend, which delivers nothing (``PushBackend.check_token``):
+    False only when the service says it does not know the token. A service
+    that cannot be asked takes every token; one that fails, or does not
+    answer ``within`` seconds, is logged and counts as True: a
+    registration never waits on an outage, and the worker still learns of
+    a token gone at its first notification.
+    """
+    try:
+        async with asyncio.timeout(within):
+            await get_push_backend(platform).check_token(token)
+    except PushTokenGone:
+        return False
+    except NotificationFailed as failed:  # Its message names no token.
+        logger.warning(
+            "A push service could not check a registration, kept: %s", failed
+        )
+    except TimeoutError:
+        logger.warning(
+            "A push service did not check a registration within %ss, kept", within
+        )
+    return True
 
 
 async def send_queued_sms(message: SmsMessage) -> None:

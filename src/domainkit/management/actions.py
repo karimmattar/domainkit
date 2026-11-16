@@ -18,11 +18,12 @@ a method, its options declared beside it, its help in ``--help``::
 one's options. ``name=`` names an action other than its method (a name with
 a ``-``, or a Python keyword). Options are ``ArgumentParser.add_argument``'s,
 positional ones included; a command with ``operator_actions`` takes
-``--operator`` after any action.
+``--operator`` after any action. ``needs_domains=True`` runs an async action
+with the installed domains started (``BaseCommand.needs_domains``).
 """
 
 from argparse import ArgumentParser
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final, Protocol
 
@@ -55,12 +56,13 @@ def option(*names: str, **settings: Any) -> Option:  # noqa: ANN401 - add_argume
 
 @dataclass(frozen=True, slots=True)
 class _Declared:
-    """How an action is declared: its name, help, options, and whether it operates."""
+    """How an action is declared: its name, help, options, and what it needs."""
 
     name: str
     help: str
     options: tuple[Option, ...]
     operator: bool
+    needs_domains: bool = False
 
 
 type Handler = Callable[..., Awaitable[None] | None]
@@ -80,6 +82,7 @@ def action(
     help: str,
     options: Sequence[Option] = (),
     operator: bool = False,
+    needs_domains: bool = False,
 ) -> _Declare:
     """Declare a method of an ``ActionCommand`` as one of its actions.
 
@@ -87,7 +90,9 @@ def action(
     line ``--help`` shows; ``options`` are the action's own (``option``).
     ``operator`` marks an action that changes or erases stored data: it
     takes ``--operator`` and runs as that operator (``operator_actions``
-    marks every action of the command).
+    marks every action of the command). ``needs_domains`` runs the action,
+    which must be async, with the installed domains started, as serving
+    does (``BaseCommand.needs_domains`` marks every action).
     """
 
     def declare[MethodT: Callable[..., object]](method: MethodT) -> MethodT:
@@ -99,6 +104,7 @@ def action(
                 help,
                 tuple(options),
                 operator,
+                needs_domains,
             ),
         )
         return method
@@ -150,6 +156,9 @@ class ActionCommand(BaseCommand):
         declared = self.declared_actions().get(str(options.get("action")))
         if declared is not None and self._operates(declared):
             self.operator_actions = True
+        self.needs_domains = type(self).needs_domains or (
+            declared is not None and declared.needs_domains
+        )
         super().execute(**options)
 
     def _operates(self, declared: _Declared) -> bool:
@@ -183,11 +192,21 @@ class ActionCommand(BaseCommand):
 
     def handle(self, *, action: str, **options: Any) -> Awaitable[None] | None:  # noqa: ANN401 - the action's options.
         """Run the method the ``action`` names, with its options."""
+        method: Handler = self.handler({"action": action})
+        return method(**options)
+
+    def handler(self, options: Mapping[str, object]) -> Handler:
+        """The method of the action ``options`` names.
+
+        Raises:
+            LookupError: The command has no such action.
+        """
+        action = options.get("action")
         for attribute in _methods(type(self)):
             declared: _Declared | None = getattr(attribute, _ACTION, None)
             if declared is not None and declared.name == action:
                 method: Handler = getattr(self, attribute.__name__)
-                return method(**options)
+                return method
         raise LookupError(f"{type(self).__name__} has no action {action!r}.")
 
 

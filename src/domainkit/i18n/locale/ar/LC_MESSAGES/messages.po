@@ -1259,3 +1259,7 @@ msgstr "لا يمكن تغيير عنوان البريد الإلكتروني ل
 
 msgid "This account's mobile number cannot be changed here."
 msgstr "لا يمكن تغيير رقم الجوال لهذا الحساب هنا."
+
+#. domainkit.contrib.devices: DEVICES.PUSH_TOKEN_CHECK
+msgid "The push service does not know this token: ask it for a new one."
+msgstr "لا تعرف خدمة الإشعارات هذا الرمز: اطلب منها رمزًا جديدًا."

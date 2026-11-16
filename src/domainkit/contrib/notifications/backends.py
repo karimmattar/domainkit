@@ -105,6 +105,18 @@ class PushBackend(DeliveryBackend[PushMessage]):
             NotificationFailed: The provider refused them, or could not be reached.
         """
 
+    async def check_token(self, token: str) -> None:
+        """Ask the service whether it knows ``token``, delivering nothing.
+
+        This one cannot ask, and takes every token. A backend whose service
+        checks a message without delivering it (a dry run) overrides it.
+
+        Raises:
+            PushTokenGone: The service does not know the token.
+            NotificationFailed: It could not tell: unreachable, or it
+                refused the question for another reason.
+        """
+
 
 class MemorySmsBackend(MemoryDelivery[SmsMessage], SmsBackend):
     """Keeps text messages in ``sms_outbox``, for tests."""

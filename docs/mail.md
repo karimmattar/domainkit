@@ -192,15 +192,45 @@ server that offers no `STARTTLS` gets nothing. Plain text
 catcher. Each exchange with the server is limited by `TIMEOUT`.
 
 **Failures.** A failure raises `MailDeliveryFailed`, which names the
-error and the server's code, but never an address. The worker tries
-again until `MAX_ATTEMPTS`. When the server refuses some recipients but
-takes the message for others, the refused ones are logged as a count.
+error and the server's code (`code`), but never an address. The worker
+tries again until `MAX_ATTEMPTS`. When the server refuses some
+recipients but takes the message for others, the refused ones are logged
+as a count.
+
+**Refusals that last.** A permanent reply (`5xx`) to the message raises
+`MailRefused`, a `MailDeliveryFailed` that the worker does not try
+again: the message is dead-lettered at once, and reported. RFC 5321 asks
+a client not to repeat a request a `5xx` refused. That is a `5xx` to the
+sender (`MAIL`), to every recipient (`RCPT`, as `550` mailbox
+unavailable), or to the message (`DATA`, as `554` rejected or `552` too
+large):
+
+```text
+MailRefused: SMTPRecipientsRefused: the server refused every recipient (550)
+```
+
+A `4xx` reply is tried again, and so is a `552` to `RCPT`, which RFC 5321
+(4.5.3.1.10) says is the server's limit of recipients, not the
+recipient. Connecting, `STARTTLS`, and logging in (`535`) are tried
+again whatever the reply: an operator may fix them meanwhile
+([ADR 0156](adr/0156-refusals-that-last-push-tokens-checked-and-commands-that-start-the-domains.md)).
 
 **Providers.** The provider backends call their HTTP API through
 `domainkit.http.client` (the `httpclient` extra), with no SDK. They read
 their settings from `MAIL.OPTIONS`; wrong ones stop the application at
 startup. A refusal raises `MailDeliveryFailed` with the provider's error
-code, never an address.
+code (`code`), never an address. The codes each provider documents for a
+message it will refuse again raise `MailRefused`, which is not tried
+again:
+
+| Backend | Refusals that last |
+| --- | --- |
+| `SesBackend` | `MessageRejected` (its content), `BadRequestException` (its input) ([SendEmail's errors](https://docs.aws.amazon.com/ses/latest/APIReference-V2/API_SendEmail.html#API_SendEmail_Errors)) |
+| `SendGridBackend` | Statuses `400` (invalid) and `413` (too large) ([Mail Send](https://www.twilio.com/docs/sendgrid/api-reference/mail-send/mail-send)) |
+| `MailgunBackend` | Statuses `400` and `413` ([API overview](https://documentation.mailgun.com/docs/mailgun/api-reference/api-overview)) |
+| `PostmarkBackend` | Codes `300` (an invalid message), `402` and `403` (JSON it cannot read), `406` (an inactive recipient: bounced, unsubscribed, or a spam complaint), `411` (an attachment it forbids); the status `413` (too large). Its code `413`, an account not approved yet, is tried again ([API overview](https://postmarkapp.com/developer/api/overview)) |
+
+Credentials, quotas, an account paused, and outages are tried again.
 
 ```python
 MAIL = {
@@ -223,7 +253,10 @@ parts: sender, recipients (Bcc never in a header), subject, text, HTML,
 `Reply-To`, headers, and the `Message-ID`.
 
 **Your own backend.** Subclass `BaseEmailBackend` and implement
-`async send_messages(messages)`, which returns how many it sent:
+`async send_messages(messages)`, which returns how many it sent. Raise
+`MailDeliveryFailed` for the worker to try again, or `MailRefused` for a
+message the service will refuse again, which is dead-lettered at once;
+pass the service's code as `code=`:
 
 ```python
 from collections.abc import Sequence
@@ -475,6 +508,12 @@ await send_push(
   the worker, and return how many were sent.
 - `get_sms_backend()` and `get_push_backend(platform=None)` return a new
   instance of the backend that would send.
+- `check_push_token(token, platform=None, *, within)` asks the push
+  service whether it knows a token, delivering nothing, and answers
+  `False` only when it does not; a service that fails or does not answer
+  `within` seconds counts as `True`. `domainkit.contrib.devices` calls it
+  when a token is registered, with `DEVICES.PUSH_TOKEN_CHECK`
+  ([Checking a token](auth/devices.md#checking-a-token)).
 
 ### Providers
 
@@ -530,20 +569,39 @@ NOTIFICATIONS = {
   take (FCM's `INVALID_ARGUMENT` naming fields, `SENDER_ID_MISMATCH`;
   APNs' `400`, `404`, `405`, `413`; Push Kit's `80100003`, `80300008`)
   raises `NotificationRefused`, which the worker does not try again: the
-  message is dead-lettered at once, and reported. Other refusals
-  (credentials, permissions, quotas, outages) are tried again, as an
-  operator may fix them meanwhile. Each error keeps the service's `code`
-  and the `fields` it named, never their values:
+  message is dead-lettered at once, and reported. So do the text
+  messages each SMS provider documents it will refuse again (the table
+  below). Other refusals (credentials, permissions, quotas, outages) are
+  tried again, as an operator may fix them meanwhile. Each error keeps
+  the service's `code` and the `fields` it named, never their values:
 
   ```text
   NotificationRefused: FCM refused the notification: INVALID_ARGUMENT (message.data[0].value).
   ```
 
+- **Checking a token without sending.** `PushBackend.check_token(token)`
+  raises `PushTokenGone` for a token the service does not know, and
+  `NotificationFailed` when it cannot tell. FCM and Push Kit answer a dry
+  run (`validate_only`), which delivers nothing; APNs has none, so its
+  backend checks the token's form alone; the port's default takes every
+  token.
 - **Reading a refusal your own way.** Each push backend reads its
   service's answer in `refusal(response)`, which returns a `Refusal`
   (`code`, `gone`, `lasting`, `fields`). Override it for one case, and
   call `super()` for the rest; `send` and its request stay the
-  backend's.
+  backend's. An SMS backend lists its lasting codes in `lasting`: a
+  subclass may give its own.
+
+| SMS backend | Refusals that last (`NotificationRefused`) |
+| --- | --- |
+| `TwilioSmsBackend` | `21211` an invalid `To`, `21614` not a mobile number, `21610` a recipient who replied STOP, `21408` a region the account's geo permissions block, `21612` a `To` it cannot reach from this sender ([error dictionary](https://www.twilio.com/docs/api/errors)) |
+| `VonageSmsBackend` | Statuses `3` a value refused, `6` an unroutable message (an unknown prefix), `7` a barred number, `12` a text too long, `33` a number de-activated ([SMS API statuses](https://developer.vonage.com/en/messaging/sms/guides/troubleshooting-sms)) |
+| `SnsSmsBackend` | `InvalidParameter`, `InvalidParameterValue`, `ParameterValueInvalid`: a parameter it refuses, such as the number ([Publish's errors](https://docs.aws.amazon.com/sns/latest/api/API_Publish.html#API_Publish_Errors)) |
+| `UnifonicSmsBackend` | `ER-02` to `ER-05` a number malformed, too long or short, or unroutable; `ER-07` a text filtered; `ER-13` a country the account may not send to; `ER-14` a number on the blacklist; statuses `410`, `481`, `482` (the number) and `412` (the text) ([sending an SMS](https://docs.unifonic.com/articles/products-documentation/sending-your-first-sms-via-unifonic-api)) |
+| `HuaweiSmsBackend` | `E000503` a parameter it refuses, such as the number; `E200028` a text the template's variable cannot take ([error codes](https://support.huaweicloud.com/intl/en-us/api-msgsms/sms_05_0050.html)) |
+
+Throttling, credit, credentials, a sender the account may not use, and
+outages are tried again.
 
 **Your own adapter.** Subclass `SmsBackend` or `PushBackend`, implement
 `async send_messages(messages)`, return how many it sent, and raise
@@ -609,7 +667,9 @@ The `NOTIFICATIONS` keys; the model behind them is
 | --- | --- | --- |
 | `pydantic.ValidationError` when you make a message | An address, a header, the subject, a number, or a size is refused. | Fix the value; never pass a list of addresses in one string. |
 | `MailDeliveryFailed` in the worker's log | The server or the provider refused the message. | The worker tries again until `MAX_ATTEMPTS`; then see `messages list dead`. |
+| `MailRefused` | The server or the provider will refuse the message again: a `5xx` to it, or a code the provider documents so. | Nothing to retry: it is dead-lettered at once. Fix the address or the message, then send it again. |
 | `NotificationFailed` | The SMS or push provider refused. | The same: the worker tries again. |
+| `NotificationRefused` | The provider will refuse the message again: a number it does not take, a recipient who opted out, a payload it cannot take. | It is dead-lettered at once; its `code` says why. |
 | `PushTokenGone` | The device token is no longer known. | Nothing: the token is forgotten through `PushTokenExpired`. |
 | `TemplateError`, `TemplateDoesNotExist` | A template has bad braces, lacks a value, or is missing. | Fix the template or the context. |
 | `ImproperlyConfigured` at startup | A backend path names no backend, or its options are wrong. | Fix `MAIL` or `NOTIFICATIONS`. |

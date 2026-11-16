@@ -16,7 +16,12 @@ from domainkit.management import ActionCommand, CommandError, action, option
 
 
 class Command(ActionCommand):
-    """Answer privacy requests across installed domains, and apply retention."""
+    """Answer privacy requests across installed domains, and apply retention.
+
+    ``export`` and ``erase`` run every domain's hooks, written for the
+    started application: they start the domains first, as serving does
+    (``needs_domains``). ``purge`` runs none, and does not.
+    """
 
     help = (
         "Export (export --subject ID) or erase (erase --subject ID) the "
@@ -36,6 +41,7 @@ class Command(ActionCommand):
                 help="a new file to write it to (mode 0600); default: standard output",
             ),
         ],
+        needs_domains=True,
     )
     async def export(self, *, subject: str, output: Path | None) -> None:
         """Write the person's data."""
@@ -54,6 +60,7 @@ class Command(ActionCommand):
                 "--noinput", action="store_true", help="do not ask for confirmation"
             ),
         ],
+        needs_domains=True,
     )
     async def erase(self, *, subject: str, reason: str, noinput: bool) -> None:
         """Erase the person's data, once confirmed.

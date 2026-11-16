@@ -98,6 +98,7 @@ from .exceptions import (
     DeviceSignatureRefused,
     EnrollmentOff,
     PasskeyNotFound,
+    PushTokenRefused,
 )
 from .passkeys import (
     LOGIN,
@@ -655,8 +656,21 @@ async def register_push_token(
     A token the user registered before keeps its id, so an app may
     register on every start. Checked by auth's ``on_manage_logins``
     first: in the phone modes, one of the user's devices signs the
-    request (ADR 0134).
+    request (ADR 0134). With ``PUSH_TOKEN_CHECK``, the token's push
+    service is asked first, outside the transaction, and a token it does
+    not know is refused.
+
+    Raises:
+        PushTokenRefused: The push service does not know the token.
     """
+    check = _settings().PUSH_TOKEN_CHECK
+    if check.ENABLED:
+        from domainkit.contrib.notifications import check_push_token
+
+        if not await check_push_token(body.token, body.platform, within=check.TIMEOUT):
+            raise PushTokenRefused(
+                "The push service does not know this token: ask it for a new one."
+            )
     async with DevicesUnitOfWork() as uow:
         token = await uow.push_tokens.register(
             user.id, body.token, body.platform, keep=_settings().MAX_PUSH_TOKENS

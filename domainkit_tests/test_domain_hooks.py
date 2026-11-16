@@ -485,7 +485,11 @@ def test_readiness_runs_a_domains_checks_in_turn(
 
 
 def test_seed_skips_the_domains_not_named(twice_calls: list[str]) -> None:
-    """A domain left out is skipped; those after it are seeded."""
+    """A domain left out is skipped; those after it are seeded.
+
+    Every domain is started around the seeds, as serving starts them
+    (user report W1): ``twice`` opens and closes once.
+    """
     from domainkit.management import call_command
 
     with override_settings(INSTALLED_DOMAINS=[ALPHA, "bare", "twice"]):
@@ -493,7 +497,7 @@ def test_seed_skips_the_domains_not_named(twice_calls: list[str]) -> None:
         on_seed(functools.partial(asyncio.sleep, 0), domain="alpha")
         call_command("seed", "twice")
 
-    assert twice_calls == ["seed", "seed again"]
+    assert twice_calls == ["open first", "open second", "seed", "seed again", "close"]
 
 
 def test_seed_runs_every_hook_and_names_each_domain_once(
@@ -507,7 +511,8 @@ def test_seed_runs_every_hook_and_names_each_domain_once(
         call_command("seed")
         call_command("seed", "alpha")
 
-    assert twice_calls == ["seed", "seed again"]
+    started = ["open first", "open second"]
+    assert twice_calls == [*started, "seed", "seed again", "close", *started, "close"]
 
 
 NEW_POINTS: Final = frozenset({"domainkit.apps.hooks.on_retain_subject"})

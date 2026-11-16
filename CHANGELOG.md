@@ -11,6 +11,16 @@ and a status.
 
 ### Added
 
+- `DEVICES["PUSH_TOKEN_CHECK"] = {"ENABLED": True}` asks a push token's
+  service, when `POST /auth/devices/push-tokens` registers it, whether it
+  knows the token, delivering nothing, and refuses one it does not with
+  `422 push_token_refused`: FCM and Push Kit through their dry run
+  (`validate_only`), APNs, which has none, by the token's form. A service
+  that fails, or does not answer within `TIMEOUT` (3 seconds, at most
+  10), lets the token in, with a warning: the check fails open.
+  `PushBackend.check_token(token)` is the backends' part, and
+  `check_push_token(token, platform, within=...)` the check. The refusal
+  is in English and Arabic (ADR 0156, user report N2).
 - A route can take its tenant from its path, once routed:
   `Depends(PathTenant("org_id"))` on a router prefixed `/orgs/{org_id}`
   serves each of its routes as that tenant, as `TenantMiddleware` serves
@@ -566,6 +576,17 @@ and a status.
 
 ### Changed
 
+- `seed`, `privacy export`, and `privacy erase` start the domains first,
+  as serving and `runworker` do (`needs_domains`): their `on_startup`
+  hooks run before, and their `on_shutdown` hooks after. They run other
+  domains' hooks, written for the started application: with a key
+  service that is not `local`, a hook that looked up by an encrypted
+  field's blind index raised `KeysNotLoaded`, as nothing had unwrapped
+  the data keys. `@action(needs_domains=True)` marks one action of an
+  `ActionCommand` so. The other built-in commands need nothing the
+  startup gives, and still run without it; the commands reference says
+  why for each ([Commands that start the domains](docs/reference/commands.md#commands-that-start-the-domains),
+  ADR 0156, user report W1).
 - A request reads a user's grants on one object once: within an HTTP
   request with credentials, `ObjectPermissionBackend` answers every
   permission of a user on an object with one query, however many rules
@@ -702,6 +723,19 @@ and a status.
 
 ### Fixed
 
+- A refusal that will come again is no longer tried as an outage is, for
+  text messages and mail too. Each SMS adapter lists the codes its
+  provider documents for a message it will refuse again (`lasting`): an
+  invalid or non-mobile number, a recipient who opted out or is barred, a
+  region the account may not send to, a text it cannot take (Twilio,
+  Vonage, SNS, Unifonic, Huawei Cloud), and raises `NotificationRefused`
+  for them. Mail gets `MailRefused`, a `MailDeliveryFailed` the mail task
+  no longer retries (`dont_retry_on`): SMTP's permanent `5xx` replies to
+  the sender, every recipient (`550` mailbox unavailable; not `552`,
+  which RFC 5321 makes temporary there), or the message, and the codes
+  SES, SendGrid, Mailgun, and Postmark document for a message they will
+  refuse again. Each is dead-lettered after one try, not five, and keeps
+  the provider's code in `code` (ADR 0156, user report N2).
 - The images `init` writes install the wheels a build offers
   (`--build-context wheels=<directory>`) before reading the package
   index. A wheel of the same version as a release, a fork's or a release
