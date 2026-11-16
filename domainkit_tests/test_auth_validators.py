@@ -3,9 +3,11 @@
 import gzip
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Final
 
 import pytest
 
+from domainkit.conf import override_settings
 from domainkit.contrib.auth import (
     InvalidPassword,
     password_help_texts,
@@ -14,6 +16,7 @@ from domainkit.contrib.auth import (
 from domainkit.contrib.auth.settings import PasswordValidatorConfig
 from domainkit.contrib.auth.validators import (
     CommonPasswordValidator,
+    LettersAndDigitsValidator,
     MinimumLengthValidator,
     NumericPasswordValidator,
     PasswordValidationError,
@@ -21,9 +24,33 @@ from domainkit.contrib.auth.validators import (
     load_validators,
 )
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit_tests.conftest import UseAuth
+from domainkit.i18n import override
+from domainkit_tests.conftest import MIDDLEWARE, Api, UseAuth
+from domainkit_tests.support.auth import PASSWORD, bearer, create_user, login
 
 VALIDATORS = "domainkit.contrib.auth.validators"
+RULES: Final = [
+    {"NAME": f"{VALIDATORS}.UserAttributeSimilarityValidator"},
+    {"NAME": f"{VALIDATORS}.MinimumLengthValidator", "OPTIONS": {"min_length": 12}},
+    {"NAME": f"{VALIDATORS}.CommonPasswordValidator"},
+    {"NAME": f"{VALIDATORS}.NumericPasswordValidator"},
+    {"NAME": f"{VALIDATORS}.LettersAndDigitsValidator"},
+]
+"""The four common rules, 12 characters long, and the PCI preset's own."""
+ARABIC_REFUSALS: Final = [
+    "كلمة المرور تشبه الاسم الأول كثيرًا.",
+    "كلمة المرور هذه قصيرة جدًا. يجب ألا يقل عدد أحرفها عن ١٢.",
+    "كلمة المرور هذه شائعة جدًا.",
+    "كلمة المرور هذه مكوّنة من أرقام فقط.",
+    "يجب أن تحتوي كلمة المرور هذه على حروف وأرقام معًا.",
+]
+ARABIC_RULES: Final = [
+    "لا يمكن أن تشبه كلمة مرورك معلوماتك الشخصية الأخرى كثيرًا.",
+    "يجب ألا يقل عدد أحرف كلمة مرورك عن ١٢.",
+    "لا يمكن أن تكون كلمة مرورك من كلمات المرور الشائعة.",
+    "لا يمكن أن تتكوّن كلمة مرورك من أرقام فقط.",
+    "يجب أن تحتوي كلمة مرورك على حرف واحد ورقم واحد على الأقل.",
+]
 
 
 def test_minimum_length() -> None:
@@ -181,3 +208,78 @@ def test_validator_configs_hash_by_value() -> None:
     assert hash(first) != hash(other)
     assert hash(path) == hash(same_path)
     assert hash(path) != hash(PasswordValidatorConfig(NAME="a.B"))
+
+
+# Their language (user report I4) -----------------------------------------------------
+
+
+def too_similar(name: str) -> str:
+    """The refusal of a password that is the user's ``name`` field."""
+    password = "Kh4lid-Rahman"
+    with pytest.raises(PasswordValidationError) as caught:
+        UserAttributeSimilarityValidator((name,)).validate(
+            password, SimpleNamespace(**{name: password})
+        )
+    return str(caught.value)
+
+
+def test_the_rules_speak_arabic_with_their_values_filled_in(use_auth: UseAuth) -> None:
+    """Each refusal and rule is translated first, then given its value.
+
+    The length and the detail named were filled in before translating, so
+    no catalog could hold the text; the shipped catalogs held none of them.
+    """
+    use_auth(PASSWORD_VALIDATORS=RULES)
+    with override("ar"):
+        with pytest.raises(InvalidPassword) as refused:
+            validate_password("1234567", SimpleNamespace(first_name="1234567"))
+        rules = password_help_texts()
+        similar = [
+            too_similar(name)
+            for name in ("username", "last_name", "email", "mobile_number", "pin")
+        ]
+
+    assert refused.value.errors == ARABIC_REFUSALS
+    assert rules == ARABIC_RULES
+    assert similar == [
+        "كلمة المرور تشبه اسم المستخدم كثيرًا.",
+        "كلمة المرور تشبه اسم العائلة كثيرًا.",
+        "كلمة المرور تشبه البريد الإلكتروني كثيرًا.",
+        "كلمة المرور تشبه رقم الجوال كثيرًا.",
+        "كلمة المرور تشبه pin كثيرًا.",  # A field no catalog names.
+    ]
+
+
+def test_a_length_of_one_is_one_character() -> None:
+    """The length chooses the plural form, as the language counts."""
+    with pytest.raises(PasswordValidationError) as short:
+        MinimumLengthValidator(1).validate("")
+
+    assert str(short.value) == (
+        "This password is too short. It must contain at least 1 character."
+    )
+    assert MinimumLengthValidator(1).help_text() == (
+        "Your password must contain at least 1 character."
+    )
+    assert LettersAndDigitsValidator().help_text() == (
+        "Your password must contain at least one letter and one digit."
+    )
+
+
+def test_a_client_in_arabic_reads_the_rules_in_arabic(identity: Api) -> None:
+    """``Accept-Language: ar`` on a password change: every refusal in Arabic."""
+    with override_settings(
+        MIDDLEWARE=["domainkit.http.locale.LocaleMiddleware", *MIDDLEWARE]
+    ):
+        client = identity(PASSWORD_VALIDATORS=RULES)
+        create_user("alice", first_name="1234567")
+        headers = bearer(login(client, "alice")["access_token"])
+        refused = client.post(
+            "/auth/password",
+            json={"old_password": PASSWORD, "new_password": "1234567"},
+            headers={**headers, "Accept-Language": "ar"},
+        )
+
+    assert (refused.status_code, refused.json()["code"]) == (422, "invalid_password")
+    assert refused.json()["detail"] == " ".join(ARABIC_REFUSALS)
+    assert refused.headers["Content-Language"] == "ar"

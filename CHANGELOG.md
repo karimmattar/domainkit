@@ -25,6 +25,30 @@ and a status.
   log in. Nothing changes for a command that gives neither option. ADR
   0165 (user report A12).
 
+### Fixed
+
+- The password rules' refusals and descriptions are in the shipped
+  catalogs, in English and Arabic. `MinimumLengthValidator` and
+  `UserAttributeSimilarityValidator` filled their value in before
+  translating, so no catalog could hold their text; they translate
+  `...at least {min_length} characters.` (with its singular) and `The
+  password is too similar to the {label}.`, then fill the value in, the
+  length written as the language writes numbers and the field's name
+  translated in the `field` context. A project catalog that translated
+  the filled English text (`...at least 12 characters.`) translates the
+  text with its placeholder instead (user report I4).
+- A request's `email` not shaped as an address (`/signup`,
+  `/password-reset`, `/email-verification`) is refused as `Enter a
+  valid email address.`, translated, not with the pattern that checks
+  it. OpenAPI still shows the pattern (user report I8).
+- The `auth/signup_exists` mail, and the `409 signup_taken` of
+  `/signup/code`, suggest signing up with another username only where
+  the signup chose one, which `AUTH.IDENTIFIERS` allows; elsewhere they
+  say what an account uses (the address, or the number given) and to log
+  in or reset the password. The template takes the sentence as `taken`,
+  in the reader's language; a project's own template of it still works
+  (user report I8).
+
 ## [2.4.0] - 2026-11-16
 
 2.4 answers a report from a project that runs an identity service on

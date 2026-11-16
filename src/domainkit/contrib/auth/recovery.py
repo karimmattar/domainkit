@@ -44,6 +44,7 @@ language's templates where there are some (ADR 0149).
 
 import logging
 import math
+import re
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import timedelta
 from typing import Annotated, Final, TypedDict, cast
@@ -98,6 +99,9 @@ __all__ = [
 
 EMAIL_PATTERN: Final = r"^[^@\s\x00-\x1f\x7f]{1,64}@[^@\s\x00-\x1f\x7f]{1,253}$"
 """The shape of an address, checked first; ``EmailAddress`` checks the rest."""
+EMAIL_SHAPE: Final = re.compile(EMAIL_PATTERN)
+INVALID_EMAIL: Final = "Enter a valid email address."
+"""The refusal of a value not shaped as an address, rather than the pattern."""
 RESET_CODE_TASK: Final = "domainkit.auth.send_password_reset_code"
 MOBILE_VERIFICATION_TASK: Final = "domainkit.auth.send_mobile_verification"
 NOTIFICATIONS: Final = "domainkit.contrib.notifications"
@@ -121,7 +125,13 @@ router = APIRouter(tags=["auth"])
 
 
 def _plain_address(value: str) -> str:
-    """``validate_email``, for pydantic: a refusal is a ``ValueError``."""
+    """``validate_email``, for pydantic: a refusal is a ``ValueError``.
+
+    A value not shaped as an address (``EMAIL_PATTERN``) is refused with a
+    message of its own, which the catalogs translate, not with the pattern.
+    """
+    if not EMAIL_SHAPE.fullmatch(value):
+        raise ValueError(INVALID_EMAIL)
     try:
         return validate_email(value)
     except InvalidEmail as exc:
@@ -130,10 +140,14 @@ def _plain_address(value: str) -> str:
 
 EmailAddress = Annotated[
     str,
-    Field(max_length=EMAIL_MAX_LENGTH, pattern=EMAIL_PATTERN),
+    Field(max_length=EMAIL_MAX_LENGTH, json_schema_extra={"pattern": EMAIL_PATTERN}),
     AfterValidator(_plain_address),
 ]
-"""One plain address, trimmed (``validate_email``): no display name, ASCII."""
+"""One plain address, trimmed (``validate_email``): no display name, ASCII.
+
+OpenAPI shows its pattern; a value that does not match it is refused as
+``Enter a valid email address.``, in the request's language.
+"""
 
 
 class PasswordResetIn(BaseModel):

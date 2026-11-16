@@ -95,6 +95,37 @@ __all__ = [
 
 SIGNUP_CODE_TASK: Final = "domainkit.auth.send_signup_code"
 MOBILE_NUMBER: Final = "mobile_number"
+TAKEN: Final = {
+    (False, False): (
+        "An account already uses this address. If it was you, log in, or "
+        "reset your password."
+    ),
+    (True, False): (
+        "An account already uses this address, or the username chosen. If it "
+        "was you, log in, reset your password, or sign up again with another "
+        "username."
+    ),
+    (False, True): (
+        "An account already uses this address, or the mobile number given. If "
+        "it was you, log in, or reset your password."
+    ),
+    (True, True): (
+        "An account already uses this address, the username chosen, or the "
+        "mobile number given. If it was you, log in, reset your password, or "
+        "sign up again with another username."
+    ),
+}
+"""What ``auth/signup_exists`` says is taken (its ``taken``), by whether the
+signup chose a username and gave a number too: only what ``AUTH.IDENTIFIERS``
+lets it give."""
+TAKEN_NAME: Final = (
+    "An account already uses this username or this address; sign up again "
+    "with another username, or log in."
+)
+TAKEN_ADDRESS: Final = (
+    "An account already uses this address or this number; log in, or reset "
+    "your password."
+)
 
 router = APIRouter(tags=["auth"])
 
@@ -134,12 +165,15 @@ class SignupCodeIn(BaseModel):
 class SignupTaken(APIError):
     """The username or the address got an account before the code was used (409)."""
 
-    def __init__(self) -> None:
-        """Use status 409 and the code ``signup_taken``."""
+    def __init__(self, *, username: bool) -> None:
+        """Use status 409 and the code ``signup_taken``.
+
+        Another username is suggested only to a signup that chose one:
+        elsewhere usernames identify no one (``AUTH.IDENTIFIERS``).
+        """
         super().__init__(
             status.HTTP_409_CONFLICT,
-            "An account already uses this username or this address; "
-            "sign up again with another username, or log in.",
+            TAKEN_NAME if username else TAKEN_ADDRESS,
             code="signup_taken",
         )
 
@@ -261,7 +295,7 @@ async def confirm_signup_code(body: SignupCodeIn, request: Request) -> None:
             holders = await _unproved_holders(uow, pending)
             if holders is None:
                 await uow.commit()
-                raise SignupTaken
+                raise SignupTaken(username=pending.username is not None)
             for holder in holders:  # The code proved what they never did.
                 await _release(uow, holder, pending)
             await uow.session.flush()  # A released number is free to insert.
@@ -308,7 +342,11 @@ async def _send_signup_code(signup_id: UUID) -> None:
         holders = await _unproved_holders(uow, pending)
         if holders is None:
             if number is None:
-                context: dict[str, object] = {"email": pending.email}
+                given = (bool(pending.username), bool(pending.mobile_number))
+                context: dict[str, object] = {
+                    "email": pending.email,
+                    "taken": gettext(TAKEN[given]),
+                }
                 to = [cast(str, pending.email)]
                 await deliver([render_mail("auth/signup_exists", context, to=to)])
             else:  # auth.E107: notifications are installed.

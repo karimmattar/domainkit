@@ -229,6 +229,11 @@ with `InvalidEmail` (422 `invalid_email`):
 Enter one email address, such as user@example.com, without a name.
 ```
 
+A request body's `email` that is not shaped as an address at all
+(`not-an-email`) is refused as `Enter a valid email address.`, in the
+request's language, rather than with the pattern that checks it (since
+2.5); OpenAPI still shows the pattern.
+
 So the address that mail goes to is the whole stored value, and no
 display name reaches the text of a mail. Addresses compare by their
 ASCII letters in any case, and by nothing else: `find_by_email` never
@@ -981,11 +986,31 @@ Your password can't be entirely numeric.
 | `LettersAndDigitsValidator` | | Passwords without at least one letter and one digit, of any script ([PCI DSS](pci-dss.md)). |
 | `BreachedPasswordValidator` | a `BreachedPasswordSettings` | Passwords seen in data breaches ([Breached passwords](#breached-passwords)). `AUTH.BREACHED_PASSWORDS` turns it on and gives its settings: you do not list it. |
 
+The rules' refusals and descriptions are in the shipped catalogs, in
+English and Arabic (*new in 2.5*). A rule whose text holds a value
+translates its text first, then fills the value in, written as the
+language writes numbers: `MinimumLengthValidator` translates `This
+password is too short. It must contain at least {min_length}
+characters.` (with its singular), and `UserAttributeSimilarityValidator`
+`The password is too similar to the {label}.`. The label is the
+attribute's name, spaced (`first name`), translated in the `field`
+context; the catalogs name `username`, `first name`, `last name`,
+`email`, and `mobile number`, and your catalog adds your own attributes:
+
+```po
+msgctxt "field"
+msgid "national id"
+msgstr "رقم الهوية الوطنية"
+```
+
 `PASSWORD_VALIDATORS = []` checks nothing (but `BREACHED_PASSWORDS`,
 when it is on). A validator of your own is a class with
 `validate(password, user)`, which raises `PasswordValidationError` (from
 `domainkit.contrib.auth`), and `help_text()`. The validators collect
-only that error; any other exception goes up to the caller.
+only that error; any other exception goes up to the caller. Each message
+is translated as it is collected, by its exact text; a rule whose text
+holds a value translates it itself, then fills the value in, as
+`MinimumLengthValidator` does.
 
 ```python
 from domainkit.contrib.auth import PasswordValidationError

@@ -946,7 +946,7 @@ Arabic one ([mail.md](../mail.md#templates-in-other-languages)).
 | `auth/password_reset_code`, `auth/email_verification_code` | `user`, `username`, `code`, and `valid_for` (`10 minutes`). |
 | `auth/signup_code` | `code` and `valid_for` only: the username was chosen by whoever asked, who may not be the address's owner. |
 | `auth/signup_code_held` | The same, sent instead when an account holds the address unproved: it says what using the code does to that account. |
-| `auth/signup_exists` | `email` only. |
+| `auth/signup_exists` | `email`, and `taken` (*new in 2.5*): a sentence, in the reader's language, that says what an account uses already, and what to do. It names the username, or the number, only where the signup gave one, which `AUTH.IDENTIFIERS` allows, and suggests another username only then. |
 
 `check` reports these routes mounted without messaging and mail
 (`auth.E103`), or with a user model without `EMAIL_FIELD` and
