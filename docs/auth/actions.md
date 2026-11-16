@@ -176,16 +176,25 @@ memberships.use_case(
 phone_memberships.use_case(controllers.end_membership, method="DELETE")
 ```
 
-- **The twin lends the route's unit of work.** A `show(command, uow)`
-  is given it open, and it is left without a commit: `show` only reads.
-  A `ResourceRouter`'s twin gives its route's; a route of your own
-  passes it, `request_action_authorization(request, END_MEMBERSHIP,
-  command, uow=OrganizationsUnitOfWork())`. Without one, asking is
+- **The twin lends the route's unit of work.** A `show` with a
+  parameter named `uow` is given it open, as one whose `commit` is
+  refused, and it is left without a commit: `show` only reads. A block
+  `async with uow:` in it enters nothing. A `ResourceRouter`'s twin
+  gives its route's; a route of your own names the class, and a new one
+  is made: `request_action_authorization(request, END_MEMBERSHIP,
+  command, unit_of_work=OrganizationsUnitOfWork)`. Without it, asking is
   refused with `ImproperlyConfigured`.
-- **One command.** A use case that runs another command than the
-  action's is refused when it is guarded (`ImproperlyConfigured`).
-- **A `show` of the command alone** is called as before, and opens what
-  it reads itself.
+- **The route that asks runs the copy.** A `ResourceRouter` refuses,
+  when it declares the route, one that asks `StepUp(for_=...)` and runs
+  the use case itself, or a service that spends another act's
+  authorization: it would run the act with arguments nobody confirmed. A
+  service left undecorated warns (`DomainkitDeprecationWarning`): it
+  may call one that is decorated, as in 2.4, and 3.0 refuses it.
+- **One command.** A use case is guarded only for its own command, not
+  for a class it derives from (`ImproperlyConfigured`).
+- **A `show` of the command alone**, or with parameters of its own
+  (`language="en"`), is called as before, and opens what it reads
+  itself.
 
 ## The route asks: `StepUp(for_=...)`
 
@@ -497,6 +506,9 @@ as_alice.delete(act, headers={"Action-Authorization": authorization})
   proving the act's `methods`: what the phone or a passkey proves, for
   an act a code cannot confirm. Only under `ENVIRONMENT = "test"`; the
   client must be entered (the `client` fixture is).
+- Asking is not skipped: the user needs a way to confirm what the act
+  asks (`409 no_second_factor` otherwise), an authenticator app
+  (`enrol_totp`), or for the phone a bound device.
 
 ## Common mistakes
 

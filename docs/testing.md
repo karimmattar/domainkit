@@ -1227,22 +1227,40 @@ An act that asks for its own authorization
 ([Authorizing one act](auth/actions.md#testing)) is authorized with
 `authorize_act`. With `app`, a code confirms it (and `password` where
 the act asks it), through the routes. Without, auth confirms it in the
-test as proving the `methods` the act asks, so an act that asks the
-phone needs no phone; it is refused unless `ENVIRONMENT = "test"`, and
-runs in the client's event loop, so enter the client first:
+test as proving the `methods` the act asks, which a code may not: the
+phone, for an act that asks it. It is refused unless `ENVIRONMENT =
+"test"`, and runs in the client's event loop, so enter the client first.
+
+Asking is the application's own step, so the user still needs a way to
+confirm what the act asks, or the twin answers `409 no_second_factor`:
+an authenticator app (`enrol_totp`) for a code, or, for an act that asks
+the phone, a bound device ([devices](auth/devices.md)).
 
 ```python
-from domainkit.testing import TestClient, authorize_act
+from uuid import UUID
 
-ACT = "/api/v1/payees/7/remove"
+from domainkit.contrib.auth.testing import create_user
+from domainkit.testing import FreezeTime, TestClient, authorize_act, enrol_totp
+
+PASSWORD = "correct-horse-battery-42"
 
 
-def test_removing_a_payee_is_authorized_once(client: TestClient) -> None:
-    as_alice = client.authenticated("payments.delete_payee")
-    authorization = authorize_act(as_alice, ACT)  # As the phone would confirm it.
-    removed = as_alice.post(ACT, headers={"Action-Authorization": authorization})
-    again = as_alice.post(ACT, headers={"Action-Authorization": authorization})
-    assert (removed.status_code, again.status_code) == (204, 403)
+def test_relabelling_is_authorized_once(
+    client: TestClient, freeze_time: FreezeTime, product_id: UUID
+) -> None:
+    """Asked at the twin, confirmed in the test, spent by the act once."""
+    freeze_time("2027-01-04T10:00:00Z")  # Codes need a clock that moves on.
+    alice = client.run(
+        create_user, "shop.view_product", "shop.change_product", password=PASSWORD
+    )
+    as_alice = client.authenticated_as(alice)
+    enrol_totp(as_alice, PASSWORD)  # A way to confirm: asking needs one.
+    act = f"/products/{product_id}/relabel"
+    authorization = authorize_act(as_alice, act, json={"name": "Desk lamp"})
+    sent = {"Action-Authorization": authorization}
+    relabelled = as_alice.post(act, json={"name": "Desk lamp"}, headers=sent)
+    again = as_alice.post(act, json={"name": "Desk lamp"}, headers=sent)
+    assert (relabelled.status_code, again.status_code) == (200, 403)
 ```
 
 A refused step raises `UnexpectedResponse`, an `AssertionError` that

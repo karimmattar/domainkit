@@ -30,6 +30,9 @@ authorized with ``authorize_act``: its twin asks, and a code of the app
 confirms. Without an app, the installed domain that keeps authorizations
 confirms it in the test, as the user's phone or passkey would
 (``AuthorizationConfirmer``), for a project whose acts ask the phone.
+Asking is not skipped: the user needs a way to confirm the act all the
+same (an authenticator app, a bound device), or the twin answers ``409
+no_second_factor``.
 """
 
 import base64
@@ -180,10 +183,12 @@ def authorize_act(
     ``ResourceRouter``'s twin), then ``confirm_authorization``: a code of
     ``app`` (and ``password`` where the act asks it), or, without ``app``,
     what the act asks, proved in the test. Send the act with the answer in
-    ``Action-Authorization``.
+    ``Action-Authorization``. The user needs a way to confirm the act, as
+    to ask for it outside tests.
 
     Raises:
-        UnexpectedResponse: The twin or the confirm route refused.
+        UnexpectedResponse: The twin or the confirm route refused (``409
+            no_second_factor`` for a user with no way to confirm it).
     """
     asked = client.post(f"{url}/authorization", json=json)
     if asked.status_code != HTTPStatus.CREATED:

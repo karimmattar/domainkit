@@ -18,14 +18,19 @@ and a status.
   (`ResourceRouter.use_case(..., rule=StepUp(for_=...))`), which gets
   its twin as a command route does. `Action(command=...)` takes the use
   case, for its command. A use case of another command than the
-  action's is refused when guarded. It returned a plain function, which
+  action's is refused when guarded. A `ResourceRouter` route that asks
+  `StepUp(for_=...)` and runs the use case itself, or another act's
+  service, is refused when declared: it would run the act with
+  arguments nobody confirmed, and `check` could not see it. It returned
+  a plain function, which
   no route of a use case could take
   ([A use case as the act](docs/auth/actions.md#a-use-case-as-the-act),
   ADR 0161) (user report A13).
 - An action's `show` may take the unit of work the act runs in,
   `show(command, uow)`, and read through its port: it is given it open,
   and left without a commit. A `ResourceRouter`'s twin lends its
-  route's, and `request_action_authorization(..., uow=...)` takes one.
+  route's, and `request_action_authorization(..., unit_of_work=<its
+  class>)` makes one. A `show` that commits is refused.
   So an action can live beside its use case in `controllers.py`, which
   may not import the unit of work on the database. A rule whose
   `ask_authorization` also takes `uow` is given the route's unit of
@@ -42,9 +47,20 @@ and a status.
   authorization_id, app=None, ...)` confirms one asked elsewhere. Each
   returns `<id>.<code>`. With an `Authenticator`, a code confirms it
   through the routes, as `confirm_sca` does; without, auth confirms it
-  in the test as proving what the act asks, so an act that asks the
-  phone needs none, refused unless `ENVIRONMENT = "test"`
+  in the test as proving what the act asks, the phone included, refused
+  unless `ENVIRONMENT = "test"`. Asking still needs the user to have a
+  way to confirm the act: an authenticator app, or a bound device
   ([Testing](docs/auth/actions.md#testing)) (user report A17).
+
+### Deprecated
+
+- A `ResourceRouter` route that asks `StepUp(for_=...)` and runs a
+  service not decorated with `requires_authorization` warns when it is
+  declared (`DomainkitDeprecationWarning`); 3.0 refuses it. Such a
+  service may call a decorated one, as in 2.4, but nothing checked that
+  it spends the act's authorization, so a route could run the act with
+  arguments nobody confirmed. Decorate the route's service itself
+  ([upgrading.md](docs/upgrading.md#24-to-25)) (user report A13).
 
 ## [2.4.0] - 2026-11-16
 

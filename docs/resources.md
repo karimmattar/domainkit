@@ -514,6 +514,10 @@ DELETE /products/42 (with it)              204
   work. A rule whose method also takes `uow` is given the route's unit
   of work, not yet open, to read what the caller is shown in (*new in
   2.5*): `StepUp(for_=...)` does, for an action's `show(command, uow)`.
+- A rule may name a problem with the route's service
+  (`service_problem(service)`), and the route is refused when declared
+  (*new in 2.5*). `StepUp(for_=...)` refuses a service that does not
+  spend that act's authorization.
 - OpenAPI shows it as an operation of its own: the route's name and
   `_authorization` (`delete_product_authorization`), a summary, and the
   rule's `authorization_model()` as the `201` body. A twin of a route on

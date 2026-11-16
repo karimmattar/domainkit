@@ -90,7 +90,7 @@ For what `show` reads in:
 | --- | --- | --- |
 | `show(command)` opens a unit of work itself (2.4) | Where the concrete unit of work is importable | Not in `controllers.py`; an `actions.py` per domain that imports both layers. |
 | `Action(unit_of_work=...)`, or `register_action(action, unit_of_work=...)` | The action's module must import it, or `ready()` must | Another place that names the concrete unit of work; the route already has one. |
-| **`show(command, uow)`: the asker lends the unit of work the act runs in** | Anywhere: `show` reads through the port | The twin lends its route's; a route of one's own passes `uow=`. |
+| **`show(command, uow)`: the asker lends the unit of work the act runs in** | Anywhere: `show` reads through the port | The twin lends its route's; a route of one's own passes the class, `unit_of_work=`. |
 
 ## Decision
 
@@ -99,19 +99,37 @@ For what `show` reads in:
   decorated service does. The use case itself is unchanged: give the
   copy to the route that asks (`ResourceRouter.use_case`, with
   `StepUp(for_=...)`), and the use case to the routes, tasks, and tests
-  that run it without an act. A use case of another command than the
-  action's is refused when it is guarded (`ImproperlyConfigured`).
-- **`Action(command=<a use case>)`** takes the use case's command.
-- **`show(command, uow)`.** An `Action` whose `show` takes two
-  arguments is given the unit of work the act runs in, opened for it and
-  left without a commit, so it reads through the port, and the action
-  can live beside its use case. `request_action_authorization(...,
-  uow=...)` passes it; without one, such an action is refused
-  (`ImproperlyConfigured`). A `show(command)` is called as before.
+  that run it without an act. A use case is guarded only for its own
+  command: another, or a class its command derives from (`Command`,
+  whose digest binds no field), is refused (`ImproperlyConfigured`).
+- **A route that asks must run a service that spends.** When a
+  `ResourceRouter` declares a route whose rule asks, the rule may name
+  a problem with the route's service (`service_problem`), and the route
+  is refused. `StepUp(for_=P)` refuses the use case itself, and a
+  service that spends another act's authorization: neither ever spent
+  `P`. A service without the mark of `requires_authorization` may call
+  one that has it, as a 2.4 project may have written: it warns
+  (`DomainkitDeprecationWarning`), and 3.0 refuses it. `check`'s
+  `auth.E110` looks at a purpose across the application, so it could
+  not see the use case itself on one route once its copy was on
+  another; it stays for plain routes.
+- **`Action(command=<a use case>)`** takes the use case's command. The
+  attribute stays a class, for type checkers too: only the constructor
+  takes the union.
+- **`show(command, uow)`.** An `Action` whose `show` has a parameter
+  named `uow` (given by name) reads in the unit of work the act runs in,
+  so it reads through the port, and the action can live beside its use
+  case. A new one is made by `request_action_authorization(...,
+  unit_of_work=<its class>)`, which a caller cannot hand over open, and
+  opened for `show`; `show` is lent it as one whose `commit` is refused,
+  and a block `async with uow:` in it enters nothing; it is left without
+  a commit. Without `unit_of_work`, such an action is refused
+  (`ImproperlyConfigured`). A `show(command)`, or a 2.4 `show` with a
+  parameter of its own (`language="en"`), is called as before.
 - **The twin lends its route's unit of work.** It passes the route's
   unit of work, not yet open, as `uow=` to a rule whose
-  `ask_authorization` takes `uow`, and calls one written for 2.4 as
-  before. `AsksAuthorization` keeps its signature, so a rule of 2.4
+  `ask_authorization` takes `uow` by name, and calls one written for 2.4
+  (or whose signature cannot be read) as before. `AsksAuthorization` keeps its signature, so a rule of 2.4
   still type-checks as one; its docstring names the parameter.
   `StepUp(for_=...)` takes it.
 - **The answers say what may confirm.** `ActionAuthorizationOut`, the
@@ -126,7 +144,8 @@ For what `show` reads in:
   domain that keeps authorizations confirms it in the test as proving
   the `methods` the act asks (`AuthorizationConfirmer`, a protocol
   `AuthConfig` implements), refused unless `ENVIRONMENT = "test"`, as
-  the test tokens are.
+  the test tokens are. Asking is not skipped: the user needs a way to
+  confirm the act, as outside tests.
 
 ## Consequences
 
@@ -134,12 +153,17 @@ For what `show` reads in:
   in `controllers.py`; `routes.py` wires the guarded copy on the route
   that asks. No `actions.py` that imports two layers.
 - A route of one's own whose action reads a unit of work passes
-  `uow=`; forgetting it is an `ImproperlyConfigured` at the first ask,
-  in development and tests, not a wrong screen.
-- Whether a `show` reads a unit of work is read from its signature, as
-  is whether a rule takes `uow`. A `show(command, uow=None)` counts as
-  reading one. A rule of 2.4 keeps working; one that wants the unit of
-  work adds the parameter.
+  `unit_of_work=`; forgetting it is an `ImproperlyConfigured` at the
+  first ask, in development and tests, not a wrong screen.
+- Whether a `show` reads a unit of work, and whether a rule takes
+  `uow`, is read from the name of a parameter. A `show(command,
+  uow=None)` counts as reading one. A rule of 2.4 keeps working; one
+  that wants the unit of work adds the parameter.
+- A `ResourceRouter` route that asks `StepUp(for_=...)` and runs a
+  service without the mark warns when declared: a 2.4 route whose
+  undecorated service called a decorated one worked, and keeps working
+  until 3.0; its service is decorated instead. A plain FastAPI route is
+  still `check`'s to judge (`auth.E110`).
 - `methods` is a new field of three answers. Clients that read JSON
   leniently see nothing change.
 - The test confirmation skips the second factor, so it is held to the
