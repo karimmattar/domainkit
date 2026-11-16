@@ -625,6 +625,73 @@ def test_serve_exits_when_a_worker_fails_as_it_starts(
     assert signal.getsignal(signal.SIGUSR1) is before
 
 
+class Unloadable:
+    """A stand-in for Granian's free-threaded server, which loads first.
+
+    It loads the application in the main process, before it handles
+    ``SIGTERM``.
+    """
+
+    made: list[dict[str, Any]]
+
+    def __init__(self, **options: Any) -> None:  # noqa: ANN401 - Granian's options.
+        """Record ``options``."""
+        type(self).made.append(options)
+
+    def serve(self, target_loader: Any) -> None:  # noqa: ANN401 - Granian's loader.
+        """Load the application, as that server does first."""
+        target_loader("domainkit_tests.no_such_module:application")
+
+
+def test_a_failed_import_in_the_main_process_is_logged_and_exits_3(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The import's error comes back from Granian: logged, then ``serve`` exits 3.
+
+    ``SIGTERM`` has no handler yet (ignored here, to keep the test's own
+    process): the failure is only noted.
+    """
+    monkeypatch.setattr(Unloadable, "made", [], raising=False)
+    monkeypatch.setattr("granian.Granian", Unloadable)
+    previous = signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    try:
+        with (
+            override_settings(
+                ASGI_APPLICATION=APPLICATION, SERVE={"EXIT_ON_FAILED_START": True}
+            ),
+            pytest.raises(CommandError) as stopped,
+        ):
+            call_command("serve")
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+    assert stopped.value.returncode == 3
+    (record,) = [r for r in caplog.records if r.name == serve.__name__]
+    assert record.getMessage() == "The application could not be loaded."
+    assert record.exc_info is not None
+    assert record.exc_info[0] is ModuleNotFoundError
+
+
+def test_an_error_granian_raises_with_no_failed_start_is_its_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No worker signalled: Granian's own error reaches the caller, as it is."""
+
+    class Broken(Served):
+        def serve(self, **serving: Any) -> None:  # noqa: ANN401 - Granian's.
+            raise RuntimeError("Granian broke")
+
+    monkeypatch.setattr(Served, "made", [], raising=False)
+    monkeypatch.setattr("granian.Granian", Broken)
+    with (
+        override_settings(
+            ASGI_APPLICATION=APPLICATION, SERVE={"EXIT_ON_FAILED_START": True}
+        ),
+        pytest.raises(RuntimeError, match="Granian broke"),
+    ):
+        call_command("serve")
+
+
 def test_serve_lets_granian_stop_as_it_would_when_no_start_failed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

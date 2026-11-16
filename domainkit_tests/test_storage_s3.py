@@ -439,6 +439,8 @@ async def test_presigned_uploads_are_refused_where_the_store_replaces_files(
     for _ in range(2):
         with pytest.raises(WriteOnceIgnored) as refused:
             await storage.presigned_upload(size=1, content_type="text/plain")
+    with pytest.raises(WriteOnceIgnored):
+        await storage.probe_write_once()  # Asked again, as a deployment job does.
 
     assert str(refused.value) == (
         "Write-once probe: the S3 store at http://minio:9000 replaced an object "
@@ -449,7 +451,7 @@ async def test_presigned_uploads_are_refused_where_the_store_replaces_files(
     answer = upstream_refusal(refused.value)
     assert (answer.status_code, answer.code) == (503, "direct_upload_unavailable")
     assert isinstance(refused.value, StorageError)
-    assert [method for method, _ in fake.requests] == ["PUT", "PUT", "DELETE"]
+    assert [method for method, _ in fake.requests] == ["PUT", "PUT", "DELETE"] * 2
     assert fake.objects == {}
 
 

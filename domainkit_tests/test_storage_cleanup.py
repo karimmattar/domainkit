@@ -59,10 +59,14 @@ class TemplateRow(Rows):
     preview: Mapped[str] = mapped_column(String(200))
 
 
+shares = Table("cleanup_shares", Rows.metadata, Column("file", String(200)))
+"""A link table with no class, and no domain: read on ``default``."""
+
+
 @pytest.fixture(autouse=True)
 def declared() -> Iterator[None]:
-    """The two columns keep names of the default storage; forgotten after."""
-    keeps_files(DocumentRow.file, TemplateRow.preview)
+    """Three columns keep names of the default storage; forgotten after."""
+    keeps_files(DocumentRow.file, TemplateRow.preview, shares.c.file)
     yield
     forget_files()
 
@@ -105,13 +109,18 @@ async def test_only_files_no_row_keeps_are_removed(replicated: None) -> None:
     await create("default", "copy")
     storage = storages["default"]
     assert isinstance(storage, MemoryStorage)
-    kept, previewed, dropped = [await storage.save(b"%PDF") for _ in range(3)]
+    kept, previewed, shared, dropped = [await storage.save(b"%PDF") for _ in range(4)]
     await add(DocumentRow, file=kept)
     await add(TemplateRow, preview=previewed)
+    async with SqlAlchemyUnitOfWork() as uow:
+        await uow.session.execute(insert(shares).values(file=shared))
+        await uow.commit()
 
-    await remove_unreferenced([kept, previewed, dropped, dropped, "never-stored"])
+    await remove_unreferenced(
+        [kept, previewed, shared, dropped, dropped, "never-stored"]
+    )
 
-    assert set(storage.files) == {kept, previewed}
+    assert set(storage.files) == {kept, previewed, shared}
     await connections.close_all()
 
 
@@ -147,6 +156,7 @@ def test_a_column_is_declared_once() -> None:
     assert [column for column, _ in cleanup._kept["default"]] == [
         documents.file,
         TemplateRow.__table__.c.preview,
+        shares.c.file,
     ]
     assert cleanup._kept["media"] == [(documents.file, None)]
 
