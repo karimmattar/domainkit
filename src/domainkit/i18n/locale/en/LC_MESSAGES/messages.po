@@ -1133,6 +1133,9 @@ msgstr ""
 msgid "Too many sign-ins were started; try again later."
 msgstr ""
 
+msgid "Too many requests were sent to your phone; try again later."
+msgstr ""
+
 #. domainkit.contrib.auth and domainkit.contrib.ciba: action authorizations
 msgid "A rule accepted an authorization that no service spent: decorate the act's service with requires_authorization."
 msgstr ""
@@ -1223,6 +1226,24 @@ msgstr ""
 msgid "Open the app to approve or deny it."
 msgstr ""
 
+msgid "Confirm it's you?"
+msgstr ""
+
+msgid "Open the app to see what for, and approve or deny it."
+msgstr ""
+
+msgid "Approve a transaction?"
+msgstr ""
+
+msgid "Open the app to see its amount and payee, and approve or deny it."
+msgstr ""
+
+msgid "Approve an action?"
+msgstr ""
+
+msgid "Open the app to see what it is, and approve or deny it."
+msgstr ""
+
 #. domainkit.contrib.auth: new addresses and numbers, held until proved
 msgid "Another user has that email address."
 msgstr ""
@@ -1246,3 +1267,106 @@ msgstr ""
 
 msgid "Requests are made and decided in one's own name only."
 msgstr ""
+
+#. domainkit.contrib.auth: what a screen shows of a change of the admin API
+msgid "Create a user"
+msgstr ""
+
+msgid "Change a user"
+msgstr ""
+
+msgid "Delete a user"
+msgstr ""
+
+msgid "Set a user's password"
+msgstr ""
+
+msgid "Make a user's password unusable"
+msgstr ""
+
+msgid "End a user's sessions"
+msgstr ""
+
+msgid "Act as a user"
+msgstr ""
+
+msgid "Change a user's groups"
+msgstr ""
+
+msgid "Change a user's permissions"
+msgstr ""
+
+msgid "Create a group"
+msgstr ""
+
+msgid "Rename a group"
+msgstr ""
+
+msgid "Change a group's permissions"
+msgstr ""
+
+msgid "Delete a group"
+msgstr ""
+
+msgid "User"
+msgstr ""
+
+msgid "Group"
+msgstr ""
+
+msgid "Username"
+msgstr ""
+
+msgid "New name"
+msgstr ""
+
+msgid "Reason"
+msgstr ""
+
+msgid "Adds"
+msgstr ""
+
+msgid "Takes away"
+msgstr ""
+
+msgid "Password"
+msgstr ""
+
+msgctxt "password"
+msgid "set"
+msgstr ""
+
+msgctxt "password"
+msgid "none"
+msgstr ""
+
+msgid "{items} and {count} more"
+msgid_plural "{items} and {count} more"
+msgstr[0] ""
+msgstr[1] ""
+
+msgid "{count} more value"
+msgid_plural "{count} more values"
+msgstr[0] ""
+msgstr[1] ""
+
+#. domainkit.contrib.approvals: what a screen shows of a decision
+msgid "Approve a request"
+msgstr ""
+
+msgid "Submit a request"
+msgstr ""
+
+msgid "Reject a request"
+msgstr ""
+
+msgid "Cancel a request"
+msgstr ""
+
+msgid "Action"
+msgstr ""
+
+msgid "{count} more argument"
+msgid_plural "{count} more arguments"
+msgstr[0] ""
+msgstr[1] ""

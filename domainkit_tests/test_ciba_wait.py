@@ -8,10 +8,12 @@ poll, and never redeems.
 
 import threading
 import time
+from datetime import timedelta
 from typing import Any
 
 from fastapi.testclient import TestClient
 
+from domainkit import clock
 from domainkit_tests.test_auth_cookies import TRUSTED
 from domainkit_tests.test_ciba import PHONE, App, Phone, app, redeem, rows, start_push
 from domainkit_tests.test_ciba_authorizations import (
@@ -56,6 +58,25 @@ def test_a_wait_answers_once_the_phone_approves(app: App) -> None:
     assert wait(web, started["request"]).json() == {"status": "approved"}  # Kept.
     assert redeem(web, started["request"]).status_code == 200  # No slow_down.
     assert wait(web, started["request"]).json()["code"] == "sign_in_unknown"
+
+
+def test_a_wait_answers_as_a_poll_once_an_approved_request_expired(app: App) -> None:
+    """Approved but never redeemed in time: ``expired_token``, as the poll says.
+
+    A wait that said ``approved`` sent the page to a redeem that answers
+    ``expired_token``.
+    """
+    web = app(NUMBER_MATCHING=False, WAIT_SECONDS=1)
+    phone = Phone(app(PHONE))
+    started = start_push(web)
+    [waiting] = phone.waiting()
+    assert phone.approve(waiting["id"]).status_code == 204
+
+    with clock.freeze_time(rows()[0]["expires_at"] + timedelta(seconds=1)):
+        waited = wait(web, started["request"])
+        polled = redeem(web, started["request"])
+
+    assert waited.json()["code"] == polled.json()["code"] == "expired_token"
 
 
 def test_a_wait_in_progress_hears_the_approval(app: App) -> None:

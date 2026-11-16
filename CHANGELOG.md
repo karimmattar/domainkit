@@ -14,9 +14,9 @@ and a status.
 - A domain layer may import `domainkit.i18n.lazy`, and no other module of
   `domainkit.i18n`: `gettext_noop` marks a refusal the boundary
   translates, and `gettext_lazy`, `ngettext_lazy` and `pgettext_lazy`
-  make labels translated when they are shown. Importing it loads no
-  settings and no catalog: `domainkit.i18n` now imports its names on
-  first use. A project that allowed all of `domainkit.i18n` in
+  make labels translated when they are shown; a refusal with values is
+  `gettext_lazy(...).format(...)`. Importing it loads no settings and no
+  catalog. A project that allowed all of `domainkit.i18n` in
   `ARCHITECTURE["DOMAIN_ALLOWED"]` may drop it
   ([i18n.md](docs/i18n.md#messages-of-the-domain-layer), ADR 0166, user
   report I2).
@@ -25,10 +25,12 @@ and a status.
   holds the settings module, and the one that holds `ROOT_ROUTER`'s
   module, without the installed domains. What they mark is added to the
   catalogs of the first `LOCALE_PATHS` directory, which keep every entry
-  they hold, the project's rewordings of others' messages too. Without
-  `LOCALE_PATHS`, a run names those messages on stderr, and `--check`
-  fails ([i18n.md](docs/i18n.md#the-projects-own-messages), ADR 0166,
-  user report I6).
+  they hold, the project's rewordings of others' messages too, and an
+  obsolete (`#~`) entry of a message marked again comes back. Without
+  `LOCALE_PATHS`, a run names on stderr those messages that no catalog
+  translates already, and `--check` fails on them
+  ([i18n.md](docs/i18n.md#the-projects-own-messages), ADR 0166, user
+  report I6).
 
 - Devices' mails, `devices/enrollment_code` and `devices/device_bound`,
   ship in Arabic. A test holds every mail template domainkit ships to
@@ -41,6 +43,123 @@ and a status.
   body still wins over a later directory's translation
   ([mail.md](docs/mail.md#templates-in-other-languages), ADR 0166, user
   report I8).
+
+- `requires_authorization(ACTION)` takes a `@use_case`: it returns a
+  copy whose `run`, and so its call, spends the act's authorization,
+  and leaves the use case as it was, so a route that runs it without an
+  act (the phone's) asks nothing. Give the copy to the route that asks
+  (`ResourceRouter.use_case(..., rule=StepUp(for_=...))`), which gets
+  its twin as a command route does. `Action(command=...)` takes the use
+  case, for its command. A use case of another command than the
+  action's is refused when guarded. A `ResourceRouter` route that asks
+  `StepUp(for_=...)` and runs the use case itself, or another act's
+  service, is refused when declared: it would run the act with
+  arguments nobody confirmed, and `check` could not see it. It returned
+  a plain function, which
+  no route of a use case could take
+  ([A use case as the act](docs/auth/actions.md#a-use-case-as-the-act),
+  ADR 0161) (user report A13).
+
+- An action's `show` may take the unit of work the act runs in,
+  `show(command, uow)`, and read through its port: it is given it open,
+  and left without a commit. A `ResourceRouter`'s twin lends its
+  route's, and `request_action_authorization(..., unit_of_work=<its
+  class>)` makes one. A `show` that commits is refused.
+  So an action can live beside its use case in `controllers.py`, which
+  may not import the unit of work on the database. A rule whose
+  `ask_authorization` also takes `uow` is given the route's unit of
+  work; a rule written for 2.4 is called as before (ADR 0161) (user
+  report A13).
+
+- The twin's `201` (`ActionAuthorizationOut`) carries `methods`, what
+  confirming the authorization must prove, as `GET
+  /auth/authorizations/{id}` answers it, so a page knows at once which
+  ways to offer. Approvals' approve twin and the act the phone lists
+  carry it too (user report A17).
+
+- `domainkit.testing.authorize_act(client, url, app=None, *, json=None,
+  password=None, prefix="/auth")` asks an act's twin for an
+  authorization and confirms it; `confirm_authorization(client,
+  authorization_id, app=None, ...)` confirms one asked elsewhere. Each
+  returns `<id>.<code>`. With an `Authenticator`, a code confirms it
+  through the routes, as `confirm_sca` does; without, auth confirms it
+  in the test as proving what the act asks, the phone included, refused
+  unless `ENVIRONMENT = "test"`. Asking still needs the user to have a
+  way to confirm the act: an authenticator app, or a bound device
+  ([Testing](docs/auth/actions.md#testing)) (user report A17).
+
+- `…/authorizations/cancel` and `…/transactions/cancel` (under
+  `/auth/app-sign-in`) withdraw what a signed-in session asked the
+  phone, from that session alone, and `POST /auth/app-sign-in/cancel
+  {"request"}` a page's QR sign-in no phone scanned yet. An unanswered
+  request ends now: the phone no longer lists it nor can answer it, a
+  session's ask no longer counts against `CIBA.MAX_PENDING`, nobody
+  redeems it, and nothing is reported, so the user's pushes go on. A
+  request the phone answered or scanned stays as it is; the phone
+  approves an act and auth confirms it in one transaction
+  (`confirm_action_with(..., uow=...)`). A page's push sign-in is never
+  withdrawn: anyone who knows an identifier starts one, so it stays
+  counted and reportable until it expires. A user's unanswered asks of
+  the last `REQUEST_TTL`, withdrawn ones too, are at most twice
+  `MAX_PENDING`, and the phone reports a withdrawn one from its push
+  until then. `cancel(handle, ...)` (`domainkit.contrib.ciba`) does it
+  without HTTP. A page could only let the request expire, or have the
+  user deny it as "Not me", which stopped their pushes for
+  `REPORT_COOLDOWN`. ADR 0164 (user report A16).
+
+- A login a page redeems at `/auth/app-sign-in/token` or `/session`
+  names the sign-in request in its origin, for login gates
+  (`login_origin`) and `on_session_limits`:
+  `LoginOrigin.sign_in_request_id`, and `binding_message`, what the
+  page's `on_start` hook named it ("Sign in to the dashboard"). A route
+  of your own notes them with `note_login_sign_in(request, request_id,
+  binding_message)` (`auth.integration`). The login does not keep them.
+  A gate read the redeem's `Origin` instead. ADR 0164 (user report A11).
+
+- `AUTH.ADMIN_ACTION` (off by default): each change of the admin API asks
+  for an authorization of its own, the action `auth.admin_change`, in
+  place of a step-up window, so the phone confirms making staff, giving
+  groups and permissions, setting a password, impersonating, deleting a
+  user, and each change to a group, one at a time. The act binds the
+  user or group and the change: its kind, what it sets (whether a user
+  created is active included), adds, and takes away, and whether it
+  leaves a usable password, never the password. The screen says which
+  user or group, by name, and what changes: the flags `is_superuser`,
+  `is_staff` and `is_active` first and always, and a list too long for a
+  line with its count ("auditors, clerks and 4 more"). Each changing
+  route has a twin, `POST <its path>/authorization` (where a `PATCH` and
+  a `DELETE` share a path, `<path>/authorization/patch` and `.../delete`;
+  `404` while the setting is off), that runs the route's own checks, the
+  last active superuser's included, and stores the authorization. The
+  route checks it binds the change before the `on_admin_change` checks,
+  so a change held for approval (`APPROVALS.ADMIN_APPROVALS`) is refused
+  before it waits if it does not, and spends it with the change's commit.
+  While the setting is off, the admin API loads nothing of it
+  ([Each change, authorized as one act](docs/auth/routes.md#each-change-authorized-as-one-act),
+  ADR 0163) (user report A6).
+
+- `on_create_staff` (`auth.gates`) registers a check of creating a user
+  who is staff in the admin API, run with the creation's own checks and
+  in its twin. Approvals refuses there, while `ADMIN_APPROVALS` holds
+  making staff, what it refused in its `on_admin_change` check, so asking
+  for an authorization of such a creation is refused too (ADR 0163)
+  (user report A6).
+
+- `APPROVALS.SUBMIT_ACTION`, `REJECT_ACTION`, and `CANCEL_ACTION` (each
+  off by default), as `APPROVE_ACTION`: submitting at `POST /requests`,
+  rejecting, and cancelling each ask for an authorization of their own,
+  `approvals.submit`, `approvals.reject`, and `approvals.cancel`. A
+  submission is bound to the action and its arguments, a rejection or a
+  cancellation to the request and the reason; the screen shows the
+  action, the reason, and the arguments. The twins are
+  `POST /requests/authorization`, and `.../reject/authorization` and
+  `.../cancel/authorization` under a request, `404` while off; asking is
+  refused as the act would be. `SubmitAction`, `RejectAction`, and
+  `CancelAction` are the routes' rules. With these and `ADMIN_ACTION`, a
+  project needs the phone's free-text step-up, which 3.0 removes, for
+  none of the framework's back-office acts
+  ([Submitting, rejecting, and cancelling with an authorization](docs/contrib/approvals.md#submitting-rejecting-and-cancelling-with-an-authorization),
+  ADR 0163) (user report A6).
 
 - `SERVE["HTTP"]` (`"auto"`, `"1"`, `"2"`): the HTTP versions Granian
   speaks under `manage.py serve`. `"1"` keeps it to HTTP/1.1, as under
@@ -89,7 +208,54 @@ and a status.
   ([Removing files a change dropped](docs/uploads.md#removing-files-a-change-dropped),
   ADR 0169) (user report U5).
 
+### Changed
+
+- `import domainkit.i18n` imports none of its modules. Its names, and its
+  modules (`domainkit.i18n.translation`, `formats`, ...), are imported
+  when first read as its attributes, and are the same objects; `dir()`
+  lists them all. A domain layer that imports `domainkit.i18n.lazy` so
+  loads no settings (ADR 0166, user report I2).
+
+- Each kind of request is pushed with its own words: "Approve sign-in?",
+  "Approve an action?", "Approve a transaction?", and "Confirm it's
+  you?" for a step-up, each with a body to match, in English and Arabic.
+  `CIBA["PUSH_TEXTS"] = {kind: {"TITLE": ..., "BODY": ...}}` sets a
+  kind's. `PUSH_TITLE` and `PUSH_BODY` now default to `None`; set, they
+  still stand for every kind `PUSH_TEXTS` names none for. Every kind was
+  pushed as "Approve sign-in?". ADR 0164 (user report I8).
+
+- What a signed-in session asks the phone (an act, a transaction, the
+  deprecated step-up) is counted against `CIBA.START_RATE` per user,
+  from any address, and refused with "Too many requests were sent to
+  your phone; try again later." (in Arabic too). It was counted per
+  address with the pages' sign-ins, so an office's staff shared 10 a
+  minute. `count_start(request, user=user)` counts a route of your own
+  the same way; a page's sign-ins stay counted per address. ADR 0164
+  (user report A15).
+
+- An `on_approve` hook's refusal, `PermissionDenied` or an HTTP error of
+  403, denies the request, unreported, before the phone is answered: the
+  page's poll and wait answer `access_denied` at once. The request waited
+  until it expired. A hook that denies it itself keeps working, and any
+  other error (a conflict to retry, a throttle, the hook's own failure)
+  still leaves it waiting. ADR 0164 (user report A17).
+
+### Deprecated
+
+- A `ResourceRouter` route that asks `StepUp(for_=...)` and runs a
+  service not decorated with `requires_authorization` warns when it is
+  declared (`DomainkitDeprecationWarning`); 3.0 refuses it. Such a
+  service may call a decorated one, as in 2.4, but nothing checked that
+  it spends the act's authorization, so a route could run the act with
+  arguments nobody confirmed. Decorate the route's service itself
+  ([upgrading.md](docs/upgrading.md#24-to-25)) (user report A13).
+
 ### Fixed
+
+- A lazy string (`gettext_lazy`) given as a `DomainError`'s message, an
+  `InvalidField`'s, or `error_response`'s detail is answered as its text
+  in the caller's language. It made a `500`: the body refused anything
+  but text (user report I2).
 
 - `LocaleMiddleware` reads `LANGUAGE_CODE` and `LANGUAGES` per request,
   not when the application is built: a test that overrides them is
@@ -97,6 +263,15 @@ and a status.
 
 - `makemessages` extracts the texts marked with `gettext_noop`, as the
   docs said it did (user report I2).
+
+- `check` refused a route that asks `StepUp(for_=...)` for an act that
+  code spends with `spend_authorization`, as the docs offer for code that
+  is not a service (`auth.E110`: "no service spends it"). Code says so
+  once with `spent_in_code(action)`, and the check passes it; the admin
+  API's `auth.admin_change` is declared so. A purpose nothing spends is
+  still refused; one declared and never spent still fails its requests
+  under `DEBUG` and in tests (`500 authorization_unspent`) (ADR 0163)
+  (user report A6).
 
 - `FcmPushBackend` no longer forgets a working token when FCM refuses a
   message as too big. FCM answers `INVALID_ARGUMENT` with no field both

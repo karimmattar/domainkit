@@ -1143,6 +1143,9 @@ msgstr "لا يوجد تسجيل دخول ينتظر بهذا المعرّف."
 msgid "Too many sign-ins were started; try again later."
 msgstr "بُدئت محاولات تسجيل دخول كثيرة جدًا؛ حاول مرة أخرى لاحقًا."
 
+msgid "Too many requests were sent to your phone; try again later."
+msgstr "أُرسلت طلبات كثيرة جدًا إلى هاتفك؛ حاول مرة أخرى لاحقًا."
+
 #. domainkit.contrib.auth and domainkit.contrib.ciba: action authorizations
 msgid "A rule accepted an authorization that no service spent: decorate the act's service with requires_authorization."
 msgstr "قبلت قاعدةٌ تفويضًا لم تستهلكه أي خدمة: زيّن خدمة الإجراء بـ requires_authorization."
@@ -1247,6 +1250,24 @@ msgstr "هل توافق على تسجيل الدخول؟"
 msgid "Open the app to approve or deny it."
 msgstr "افتح التطبيق لتوافق عليه أو ترفضه."
 
+msgid "Confirm it's you?"
+msgstr "هل تؤكد هويتك؟"
+
+msgid "Open the app to see what for, and approve or deny it."
+msgstr "افتح التطبيق لترى الغرض منه، ثم توافق عليه أو ترفضه."
+
+msgid "Approve a transaction?"
+msgstr "هل توافق على المعاملة؟"
+
+msgid "Open the app to see its amount and payee, and approve or deny it."
+msgstr "افتح التطبيق لترى مبلغها والمستفيد منها، ثم توافق عليها أو ترفضها."
+
+msgid "Approve an action?"
+msgstr "هل توافق على الإجراء؟"
+
+msgid "Open the app to see what it is, and approve or deny it."
+msgstr "افتح التطبيق لترى ما هو، ثم توافق عليه أو ترفضه."
+
 #. domainkit.contrib.auth: new addresses and numbers, held until proved
 msgid "Another user has that email address."
 msgstr "يستخدم مستخدمٌ آخر عنوان البريد الإلكتروني هذا."
@@ -1270,3 +1291,118 @@ msgstr "يحتاج ضمّ مستخدم إلى الموظفين إلى موافق
 
 msgid "Requests are made and decided in one's own name only."
 msgstr "تُقدَّم الطلبات ويُبتّ فيها باسم صاحبها فقط."
+
+#. domainkit.contrib.auth: what a screen shows of a change of the admin API
+msgid "Create a user"
+msgstr "إنشاء مستخدم"
+
+msgid "Change a user"
+msgstr "تعديل مستخدم"
+
+msgid "Delete a user"
+msgstr "حذف مستخدم"
+
+msgid "Set a user's password"
+msgstr "تعيين كلمة مرور مستخدم"
+
+msgid "Make a user's password unusable"
+msgstr "تعطيل كلمة مرور مستخدم"
+
+msgid "End a user's sessions"
+msgstr "إنهاء جلسات مستخدم"
+
+msgid "Act as a user"
+msgstr "التصرف بصفة مستخدم"
+
+msgid "Change a user's groups"
+msgstr "تعديل مجموعات مستخدم"
+
+msgid "Change a user's permissions"
+msgstr "تعديل صلاحيات مستخدم"
+
+msgid "Create a group"
+msgstr "إنشاء مجموعة"
+
+msgid "Rename a group"
+msgstr "إعادة تسمية مجموعة"
+
+msgid "Change a group's permissions"
+msgstr "تعديل صلاحيات مجموعة"
+
+msgid "Delete a group"
+msgstr "حذف مجموعة"
+
+msgid "User"
+msgstr "المستخدم"
+
+msgid "Group"
+msgstr "المجموعة"
+
+msgid "Username"
+msgstr "اسم المستخدم"
+
+msgid "New name"
+msgstr "الاسم الجديد"
+
+msgid "Reason"
+msgstr "السبب"
+
+msgid "Adds"
+msgstr "يضيف"
+
+msgid "Takes away"
+msgstr "يسحب"
+
+msgid "Password"
+msgstr "كلمة المرور"
+
+msgctxt "password"
+msgid "set"
+msgstr "مُعيّنة"
+
+msgctxt "password"
+msgid "none"
+msgstr "لا توجد"
+
+msgid "{items} and {count} more"
+msgid_plural "{items} and {count} more"
+msgstr[0] "{items} و{count} أخرى"
+msgstr[1] "{items} وواحد آخر"
+msgstr[2] "{items} واثنان آخران"
+msgstr[3] "{items} و{count} أخرى"
+msgstr[4] "{items} و{count} أخرى"
+msgstr[5] "{items} و{count} أخرى"
+
+msgid "{count} more value"
+msgid_plural "{count} more values"
+msgstr[0] "{count} قيمة أخرى"
+msgstr[1] "قيمة أخرى واحدة"
+msgstr[2] "قيمتان أخريان"
+msgstr[3] "{count} قيم أخرى"
+msgstr[4] "{count} قيمة أخرى"
+msgstr[5] "{count} قيمة أخرى"
+
+#. domainkit.contrib.approvals: what a screen shows of a decision
+msgid "Approve a request"
+msgstr "الموافقة على طلب"
+
+msgid "Submit a request"
+msgstr "تقديم طلب"
+
+msgid "Reject a request"
+msgstr "رفض طلب"
+
+msgid "Cancel a request"
+msgstr "إلغاء طلب"
+
+msgid "Action"
+msgstr "الإجراء"
+
+msgid "{count} more argument"
+msgid_plural "{count} more arguments"
+msgstr[0] "{count} وسيط آخر"
+msgstr[1] "وسيط آخر واحد"
+msgstr[2] "وسيطان آخران"
+msgstr[3] "{count} وسائط أخرى"
+msgstr[4] "{count} وسيطًا آخر"
+msgstr[5] "{count} وسيط آخر"
