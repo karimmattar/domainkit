@@ -1,7 +1,6 @@
 """ASGI servers: Granian beside uvicorn, and what each reads before the app does."""
 
 import asyncio
-import http.client
 import io
 import json
 import logging
@@ -9,12 +8,10 @@ import logging.config
 import os
 import shutil
 import signal
-import socket
 import stat
 import subprocess
 import sys
 import tempfile
-import time
 import types
 from collections.abc import Iterator
 from pathlib import Path
@@ -39,6 +36,7 @@ from domainkit.http.servers import (
 from domainkit.log import TEXT_FORMAT, build_logging_config
 from domainkit.management import call_command
 from domainkit.management.base import CommandError
+from domainkit_tests.support.servers import get
 
 ROOT = Path(__file__).parents[1]
 MiB = 1024 * 1024
@@ -677,26 +675,6 @@ def run_command(*args: str) -> str:
     return output.getvalue()
 
 
-class UnixHTTPConnection(http.client.HTTPConnection):
-    """HTTP over a unix socket: the server's own path, which no other can take."""
-
-    def __init__(self, path: Path) -> None:
-        """Connect to the socket at ``path``."""
-        super().__init__("localhost", timeout=30)
-        self._path = path
-
-    def connect(self) -> None:
-        """Open the unix socket instead of a TCP connection."""
-        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        connection.settimeout(self.timeout)
-        try:
-            connection.connect(str(self._path))
-        except OSError:
-            connection.close()
-            raise
-        self.sock = connection
-
-
 @pytest.fixture
 def granian() -> Iterator[tuple[subprocess.Popen[str], Path]]:
     """Granian serving the framework's application on a unix socket of its own.
@@ -756,28 +734,6 @@ def granian() -> Iterator[tuple[subprocess.Popen[str], Path]]:
                     raise
     finally:
         shutil.rmtree(directory, ignore_errors=True)
-
-
-def get(path: Path, target: str) -> tuple[int, bytes]:
-    """GET ``target`` through the socket at ``path``, once the worker accepts.
-
-    Granian's worker listens a moment after it says it started; until then
-    the socket is missing or refuses connections, which is retried for up
-    to 30 seconds.
-    """
-    deadline = time.monotonic() + 30
-    while True:
-        connection = UnixHTTPConnection(path)
-        try:
-            connection.request("GET", target, headers={"Host": "testserver"})
-            response = connection.getresponse()
-            return response.status, response.read()
-        except (ConnectionRefusedError, FileNotFoundError):
-            if time.monotonic() > deadline:  # pragma: no cover - a dead worker.
-                raise
-            time.sleep(0.05)
-        finally:
-            connection.close()
 
 
 def test_the_application_runs_under_granian(
