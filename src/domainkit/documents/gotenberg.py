@@ -27,8 +27,8 @@ https://gotenberg.dev/docs/getting-started/upgrade):
 - ``POST /forms/chromium/convert/html``: ``index.html`` and the files it
   links by name; ``paperWidth``, ``paperHeight``, the four margins,
   ``landscape``, ``scale``, ``printBackground``, ``preferCssPageSize``,
-  and ``failOnResourceLoadingFailed``, always on: a page that links what
-  cannot be loaded, or what the deny list refuses, is refused (409), not
+  and ``failOnResourceLoadingFailed``, always on: a page that links
+  something that fails to load for a network error is refused (409), not
   printed without it;
 - ``POST /forms/libreoffice/convert``: one document.
 

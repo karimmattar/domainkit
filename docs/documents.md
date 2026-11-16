@@ -106,9 +106,10 @@ Each rendering is one call through `domainkit.http.client`:
 - read up to `HTTP_CLIENT`'s `MAX_RESPONSE_BYTES` (10 MiB). Raise it if
   your PDFs are larger.
 
-A page that links something that cannot be loaded is refused (409), not
-printed without it: the form asks Gotenberg to fail on a resource that
-fails to load (`failOnResourceLoadingFailed`).
+A page that links something that fails to load for a network error is
+refused (409), not printed without it: the form asks Gotenberg to fail on
+such a resource (`failOnResourceLoadingFailed`; Gotenberg 9 leaves out
+timeouts and certificate errors).
 
 The adapter uses only the routes and form fields that Gotenberg 8 and
 Gotenberg 9 both take, so it works with either. Run Gotenberg 8.40 or

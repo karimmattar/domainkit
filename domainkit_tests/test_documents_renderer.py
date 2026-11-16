@@ -322,7 +322,7 @@ async def test_the_request_id_goes_to_gotenberg_and_its_trace_comes_back() -> No
     """Gotenberg logs the call under the request's id; errors name its trace."""
     refusal = httpx2.Response(
         409,
-        text="Chromium returned net::ERR_BLOCKED_BY_CLIENT\nfor https://tracker",
+        text="Chromium returned net::ERR_NAME_NOT_RESOLVED\nfor https://tracker",
         headers={"Gotenberg-Trace": "req-42"},
     )
     fake = Gotenberg(refusal)
@@ -337,7 +337,7 @@ async def test_the_request_id_goes_to_gotenberg_and_its_trace_comes_back() -> No
     assert (refused.value.status, refused.value.trace) == (409, "req-42")
     assert str(refused.value) == (
         "Gotenberg refused the document (409, trace 'req-42'): Chromium returned "
-        "net::ERR_BLOCKED_BY_CLIENT for https://tracker"
+        "net::ERR_NAME_NOT_RESOLVED for https://tracker"
     )
 
 
