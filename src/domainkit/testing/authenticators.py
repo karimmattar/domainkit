@@ -1,9 +1,9 @@
-"""A second factor in tests: authenticator codes, step-up, SCA, approvals.
+"""A second factor in tests: authenticator codes, step-up, SCA, acts, approvals.
 
 A project that moves money tests flows a person completes with an
 authenticator app: enrolling it, stepping up before a sensitive act,
-confirming a transaction (SCA), and another person approving it. These do
-each step through the application's own routes, with a sync
+confirming a transaction (SCA) or one act, and another person approving
+it. These do each step through the application's own routes, with a sync
 ``TestClient``, as a person would (TEST-21)::
 
     from domainkit.testing import approve_request, confirm_sca, enrol_totp, step_up
@@ -24,20 +24,28 @@ so ``Authenticator.code()`` never gives one twice: when the clock's step
 was given already, it moves a frozen clock to the next step's start. The
 routes are where ``domainkit init`` mounts them (``/auth``); ``prefix``
 names another place. A refused step raises ``UnexpectedResponse``.
+
+An act that asks for its own authorization (``StepUp(for_=...)``) is
+authorized with ``authorize_act``: its twin asks, and a code of the app
+confirms. Without an app, the installed domain that keeps authorizations
+confirms it in the test, as the user's phone or passkey would
+(``AuthorizationConfirmer``), for a project whose acts ask the phone.
 """
 
 import base64
 import hashlib
 import hmac
 import struct
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from http import HTTPStatus
-from typing import Any, Final
+from typing import Any, Final, Protocol, runtime_checkable
 
 from starlette.testclient import TestClient
 
 from domainkit import clock
+from domainkit.apps import registry
 from domainkit.clock import Moment, moment
 from domainkit.exceptions import DomainkitError, ImproperlyConfigured
 
@@ -155,6 +163,131 @@ def confirm_sca(
         raise UnexpectedResponse("Confirming the SCA challenge", confirmed)
     authorization: str = confirmed.json()["authorization"]
     return authorization
+
+
+def authorize_act(
+    client: TestClient,
+    url: str,
+    app: Authenticator | None = None,
+    *,
+    json: Any = None,  # noqa: ANN401 - the act's body.
+    password: str | None = None,
+    prefix: str = AUTH_PREFIX,
+) -> str:
+    """Ask for an authorization of the act at ``url``, and confirm it; return it.
+
+    ``POST <url>/authorization`` with ``json``, the act's body (a
+    ``ResourceRouter``'s twin), then ``confirm_authorization``: a code of
+    ``app`` (and ``password`` where the act asks it), or, without ``app``,
+    what the act asks, proved in the test. Send the act with the answer in
+    ``Action-Authorization``.
+
+    Raises:
+        UnexpectedResponse: The twin or the confirm route refused.
+    """
+    asked = client.post(f"{url}/authorization", json=json)
+    if asked.status_code != HTTPStatus.CREATED:
+        raise UnexpectedResponse("Asking for an authorization of the act", asked)
+    found: dict[str, Any] = asked.json()
+    if app is None:
+        return _confirmed_in_test(client, found["id"], found["methods"])
+    return _confirmed(client, found["id"], app, password, prefix)
+
+
+def confirm_authorization(
+    client: TestClient,
+    authorization_id: str,
+    app: Authenticator | None = None,
+    *,
+    password: str | None = None,
+    prefix: str = AUTH_PREFIX,
+) -> str:
+    """Confirm the action authorization ``authorization_id``; return ``<id>.<code>``.
+
+    With ``app``, a code of it at ``POST <prefix>/authorizations/{id}/confirm``
+    (and ``password`` where the act asks it), as the user would. Without,
+    it is confirmed in the test as proving what the act asks (``GET
+    <prefix>/authorizations/{id}`` names it): what the phone or a passkey
+    proves, for an act a code cannot confirm. The installed domain that
+    keeps authorizations does it (``AuthorizationConfirmer``:
+    ``domainkit.contrib.auth``, under ``ENVIRONMENT = "test"`` only), in
+    the client's event loop: enter the client first.
+
+    Raises:
+        UnexpectedResponse: The confirm route, or the read, refused.
+    """
+    if app is not None:
+        return _confirmed(client, authorization_id, app, password, prefix)
+    read = client.get(f"{prefix}/authorizations/{authorization_id}")
+    if read.status_code != HTTPStatus.OK:
+        raise UnexpectedResponse("Reading the authorization", read)
+    return _confirmed_in_test(client, authorization_id, read.json()["methods"])
+
+
+def _confirmed(
+    client: TestClient,
+    authorization_id: str,
+    app: Authenticator,
+    password: str | None,
+    prefix: str,
+) -> str:
+    """``<id>.<code>``: the authorization confirmed with a code of ``app``."""
+    body = {"code": app.code()}
+    if password is not None:
+        body["password"] = password
+    confirmed = client.post(
+        f"{prefix}/authorizations/{authorization_id}/confirm", json=body
+    )
+    if confirmed.status_code != HTTPStatus.OK:
+        raise UnexpectedResponse("Confirming the authorization", confirmed)
+    authorization: str = confirmed.json()["authorization"]
+    return authorization
+
+
+@runtime_checkable
+class AuthorizationConfirmer(Protocol):
+    """An installed domain that confirms action authorizations in tests.
+
+    ``domainkit.contrib.auth`` is one; ``authorize_act`` and
+    ``confirm_authorization`` ask it when no app is given.
+    """
+
+    async def confirm_test_authorization(
+        self,
+        authorization_id: Any,  # noqa: ANN401 - a UUID, or its text.
+        methods: Sequence[str],
+    ) -> str:
+        """Confirm it as proved by ``methods``; ``<id>.<code>``."""
+        ...
+
+
+def _confirmed_in_test(
+    client: TestClient, authorization_id: str, methods: Sequence[str]
+) -> str:
+    """``<id>.<code>``: confirmed by the installed ``AuthorizationConfirmer``.
+
+    Raises:
+        RuntimeError: The client is not entered.
+    """
+    if client.portal is None:
+        raise RuntimeError("Enter the client first: with TestClient(app) as ...")
+    confirmed: str = client.portal.call(_confirm_in_test, authorization_id, methods)
+    return confirmed
+
+
+async def _confirm_in_test(authorization_id: str, methods: Sequence[str]) -> str:
+    """Ask the first installed ``AuthorizationConfirmer`` to confirm it.
+
+    Raises:
+        ImproperlyConfigured: No installed domain confirms authorizations.
+    """
+    for config in registry:
+        if isinstance(config, AuthorizationConfirmer):
+            return await config.confirm_test_authorization(authorization_id, methods)
+    raise ImproperlyConfigured(
+        "Confirming an act in a test needs an installed domain that keeps action "
+        "authorizations, such as domainkit.contrib.auth."
+    )
 
 
 def approve_request(client: TestClient, url: str) -> dict[str, Any]:
