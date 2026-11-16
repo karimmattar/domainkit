@@ -6,7 +6,8 @@ database (ADR 0144). A ``@use_case`` as the act, guarded as a copy, and a
 ``show`` that reads in the act's unit of work (ADR 0161, user report A13).
 """
 
-from collections.abc import AsyncIterator
+import functools
+from collections.abc import AsyncIterator, Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -42,12 +43,16 @@ from domainkit.contrib.auth.actions import (
 from domainkit.contrib.auth.apps import action_problems
 from domainkit.contrib.auth.settings import AuthorizationsSettings
 from domainkit.ddd import Command, EventBus, UnitOfWork, UseCase, fingerprint, use_case
+from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import AsksAuthorization, Require
 from domainkit.http.errors import APIError
 from domainkit.http.sse import EventSourceResponse, ServerSentEvent
+from domainkit.resources import ModelActions, ResourceRouter
+from domainkit_tests import sample_action_resources as shop
 from domainkit_tests.conftest import UseAuth
 from domainkit_tests.sample_action_routes import RENAME, Rename
+from domainkit_tests.sample_domains.shop.models import Product
 
 pytestmark = pytest.mark.anyio
 
@@ -520,26 +525,165 @@ def test_a_use_case_of_another_command_is_refused() -> None:
 
 
 async def test_show_reads_in_the_unit_of_work_it_is_given() -> None:
-    """``show(command, uow)`` is given the act's unit of work, opened, not committed.
+    """``show(command, uow)`` reads in a new unit of work, open, never committed.
 
-    Without one it is refused: the asker must lend it. A ``show`` of the
-    command alone, or without a signature, takes none.
+    Without a way to make one it is refused: the asker must give it. A
+    ``show`` of the command alone, or without a signature, takes none.
     """
     action = closing_by_use_case()
     uow = Ledger()
     command = close_account.command(account_id=ACCOUNT, reason="moving")
 
-    shown = await action.shown(command, uow)
+    shown = await action.shown(command, lambda: uow)
 
     assert shown == Shown("Close an account", {"Account": "Savings"})
     assert (uow.opened, uow.committed) == (1, 0)
     assert action.reads_unit_of_work
-    with pytest.raises(ImproperlyConfigured, match="pass uow= to request_action"):
+    with pytest.raises(ImproperlyConfigured, match="pass unit_of_work= to request"):
         await action.shown(command)
     with pytest.raises(ImproperlyConfigured, match="must return a Shown"):
         await closing_by_use_case(show=lambda command, uow: "words").shown(
-            command, Ledger()
+            command, Ledger
         )
-    assert await action(command, Ledger()) == shown  # As the hook point calls it.
+    assert await action(command, Ledger) == shown  # As the hook point calls it.
     assert not closing().reads_unit_of_work
     assert not closing_by_use_case(show=vars).reads_unit_of_work
+
+
+async def test_show_may_not_commit_and_a_block_in_it_enters_nothing() -> None:
+    """What is shown is read: a commit is refused, and nothing is written.
+
+    The unit of work is open already: ``async with uow:`` in ``show``, as a
+    service writes it, opens no second one.
+    """
+
+    async def commits(command: Any, uow: Ledger) -> Shown:  # noqa: ANN401
+        async with uow:
+            uow.closed.append(command.account_id)
+            await uow.commit()
+        return Shown("Close an account", {})
+
+    async def enters(command: Any, uow: Ledger) -> Shown:  # noqa: ANN401
+        async with uow:
+            return await show_closing(command, uow)
+
+    uow = Ledger()
+    command = close_account.command(account_id=ACCOUNT, reason="moving")
+
+    with pytest.raises(ImproperlyConfigured, match="only reads; it may not commit"):
+        await closing_by_use_case(show=commits).shown(command, lambda: uow)
+    shown = await closing_by_use_case(show=enters).shown(command, Ledger)
+
+    assert uow.committed == 0
+    assert uow.opened == 1
+    assert shown.details == (("Account", "Savings"),)
+
+
+def test_show_takes_a_unit_of_work_by_the_name_uow() -> None:
+    """Not by how many arguments it takes: a 2.4 ``show`` keeps its own.
+
+    ``show(command, language="en")``, a wrapper of ``*args``, or a
+    positional-only ``uow`` take none; a ``partial`` that leaves ``uow``
+    takes one.
+    """
+
+    async def in_language(command: object, language: str = "en") -> Shown:
+        return Shown("Close an account", {"Language": language})
+
+    async def two(extra: int, command: object, uow: Ledger) -> Shown:
+        return Shown("Close an account", {})
+
+    async def by_position(command: object, uow: Ledger, /) -> Shown:
+        return Shown("Close an account", {})
+
+    async def keyword(command: object, *, uow: Ledger) -> Shown:
+        return Shown("Close an account", {})
+
+    def reads(show: Callable[..., Any]) -> bool:
+        return closing_by_use_case(show=show).reads_unit_of_work
+
+    assert not reads(in_language)
+    assert not reads(lambda *args: Shown("Close an account", {}))
+    assert not reads(by_position)
+    assert reads(functools.partial(two, 1))
+    assert reads(keyword)
+
+
+def test_a_use_case_is_guarded_only_for_its_own_command() -> None:
+    """Not for a class its command derives from: the digest would bind no field.
+
+    ``Action(command=Command)`` reads back no field of any command, so one
+    authorization would hold for any arguments.
+    """
+    broad = Action(
+        "accounts.close_any",
+        command=Command,
+        subject=lambda command: f"accounts.account:{command.account_id}",
+        show=lambda command: Shown("Close an account", {}),
+    )
+
+    with pytest.raises(ImproperlyConfigured, match="runs a CloseAccount"):
+        requires_authorization(broad)(close_account)
+    action = closing_by_use_case()
+    command: object = close_account.command(account_id=ACCOUNT, reason="moving")
+
+    assert isinstance(command, action.command)  # A class, for type checkers too.
+
+
+def test_a_route_that_asks_runs_a_service_that_spends_it(use_auth: UseAuth) -> None:
+    """Refused when declared: the use case itself, or another act's service.
+
+    Either would run the act with whatever arguments it is sent, the
+    confirmed ones or not, and ``check`` cannot tell once another route
+    spends the purpose (A13). A service without the mark may call one that
+    has it, as in 2.4: it warns, and 3.0 refuses it.
+    """
+    use_auth()
+
+    async def plain(command: object, uow: object) -> None:
+        """Spends nothing itself."""
+
+    products = ResourceRouter(
+        "/products",
+        model=Product,
+        unit_of_work=shop.ShopUnitOfWork,
+        repository=lambda uow: uow.products,
+        rule=ModelActions(Product),
+        lookup="product_id",
+    )
+    relabelling = StepUp(for_=shop.RELABEL_PRODUCT)
+    guarded = requires_authorization(shop.RELABEL_PRODUCT)(shop.relabel_product)
+    products.use_case(guarded, path="/relabel", rule=relabelling)
+
+    with pytest.raises(
+        ImproperlyConfigured,
+        match=r"runs <use case relabel_product \(RelabelProduct\)> itself, which",
+    ):
+        products.use_case(shop.relabel_product, path="/a", name="a", rule=relabelling)
+    with pytest.raises(
+        ImproperlyConfigured,
+        match=r"which spends the authorization of 'shop\.rename_product'",
+    ):
+        products.command_route(
+            shop.RenameProduct,
+            service=shop.rename_product,
+            body=shop.NameIn,
+            path="/b",
+            rule=relabelling,
+        )
+    with pytest.warns(DomainkitDeprecationWarning, match=r"runs test_a_route.*plain"):
+        products.command_route(
+            shop.RenameProduct,
+            service=plain,
+            body=shop.NameIn,
+            path="/c",
+            name="c",
+            rule=relabelling,
+        )
+
+    assert [route.name for route in products.routes][-4:] == [  # type: ignore[attr-defined]
+        "relabel_product",
+        "relabel_product_authorization",
+        "c",
+        "c_authorization",
+    ]

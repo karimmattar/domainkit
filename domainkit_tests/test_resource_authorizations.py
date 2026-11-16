@@ -344,6 +344,97 @@ def test_the_twin_lends_its_route_s_unit_of_work_to_a_rule_that_takes_one(
     assert [uow.commits for uow in made] == [0, 0]
 
 
+class AsksByPosition(Asks):
+    """Takes ``uow`` only by position: it cannot be given ``uow=``."""
+
+    async def ask_authorization(
+        self, request: Request, command: object, uow: object = None, /
+    ) -> BaseModel:
+        """Answer as ``Asks``, recording what came as ``uow``."""
+        self.asked.append(uow)
+        return await super().ask_authorization(request, command)
+
+
+class Unreadable:
+    """An ``ask_authorization`` whose signature cannot be read."""
+
+    __signature__ = "not a signature"
+
+    def __init__(self, rule: Asks) -> None:
+        """Answer as ``rule`` does."""
+        self.rule = rule
+
+    async def __call__(self, request: Request, command: object) -> BaseModel:
+        """Answer as the rule does."""
+        return await self.rule.ask_authorization(request, command)
+
+
+def test_the_twin_lends_no_unit_of_work_it_cannot_give_by_name(
+    use_auth: UseAuth,
+) -> None:
+    """A positional-only ``uow``, or no signature to read: called as in 2.4."""
+    use_auth()
+    by_position = AsksByPosition()
+    unreadable = Asks("shop.other")
+    unreadable.ask_authorization = Unreadable(Asks("shop.other"))  # type: ignore[method-assign]
+    store = InMemoryGadgets([make_gadget("a")])
+    resource = gadgets(store)
+    resource.use_case(restock, path="/restock", rule=by_position)
+    resource.command_route(MakeGadget, service=make, body=MakeIn, rule=unreadable)
+    client = client_of(resource)
+    (gadget_id,) = store.items
+
+    restocking = client.post(
+        f"{LOCATION}{gadget_id}/restock/authorization",
+        json={"quantity": 4},
+        headers=as_("changer"),
+    )
+    making = client.post(
+        "/gadgets/authorization",
+        json={"name": "n", "price": "1.00"},
+        headers=as_("adder"),
+    )
+
+    assert (restocking.status_code, making.status_code) == (201, 201)
+    assert by_position.asked[0] is None  # Nothing came as uow.
+    assert making.json()["purpose"] == "shop.other"
+
+
+class AsksOfItsService(Asks):
+    """Asks, and refuses a service that is not ``rename``, as an act's rule may."""
+
+    def service_problem(self, service: object) -> str | None:
+        """Why ``service`` would not spend it; None for ``rename``."""
+        named = getattr(service, "__name__", service)
+        return None if service is rename else f"runs {named}, not rename"
+
+
+def test_a_route_whose_rule_refuses_its_service_is_refused_when_declared() -> None:
+    """``service_problem`` names it, and the route is not declared (A13)."""
+    store = InMemoryGadgets([make_gadget("a")])
+    resource = gadgets(store)
+    resource.command_route(
+        RenameGadget,
+        service=rename,
+        body=RenameIn,
+        path="/rename",
+        rule=AsksOfItsService(),
+    )
+
+    with pytest.raises(
+        ImproperlyConfigured,
+        match="asks for an authorization of its act, but runs touch, not rename",
+    ):
+        resource.command_route(
+            RenameGadget,
+            service=touch,
+            body=RenameIn,
+            path="/touch",
+            rule=AsksOfItsService(),
+        )
+    assert "rename_gadget_authorization" in route_names(resource)
+
+
 def test_the_twin_refuses_what_the_act_would_refuse(use_auth: UseAuth) -> None:
     """Other rules answer 401 or 403, reach 404, and object rules are asked (A6)."""
     use_auth()

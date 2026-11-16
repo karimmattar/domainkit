@@ -15,6 +15,8 @@ The asking rule is found among the route's rules, at the top or inside
 ``AllOf`` (``&``), at any depth. Inside ``AnyOf`` (``|``) or ``Not``
 (``~``) it cannot be decided, and two on one route ask for two
 authorizations of one act: both are refused when the route is declared.
+So is a service the rule says would not spend what it asks for (its
+``service_problem``): ``StepUp(for_=...)`` on a use case left unguarded.
 """
 
 import copy
@@ -93,8 +95,9 @@ class AuthorizationRoute:
 
         Raises:
             ImproperlyConfigured: The asking rule is inside ``AnyOf`` or
-                ``Not``; two rules ask; or another route already answers
-                ``POST`` on the twin's path.
+                ``Not``; two rules ask; the rule says the route's service
+                would not spend what it asks for; or another route already
+                answers ``POST`` on the twin's path.
         """
         spec = route.spec
         router = route.router
@@ -113,6 +116,11 @@ class AuthorizationRoute:
             raise ImproperlyConfigured(
                 f"{label} has {len(found)} rules that ask for an authorization "
                 f"({names}): an act is authorized once, so keep one."
+            )
+        check = getattr(found[0], "service_problem", None)
+        if check is not None and (problem := check(route.service)) is not None:
+            raise ImproperlyConfigured(
+                f"{label} asks for an authorization of its act, but {problem}."
             )
         path = f"{router.prefix}{spec.path}{PATH}"
         taken = next(
@@ -230,8 +238,19 @@ def _standing_in(
 
 
 def _takes_unit_of_work(rule: AsksAuthorization) -> bool:
-    """Whether ``rule.ask_authorization`` takes ``uow``: a rule of 2.4 does not."""
-    return "uow" in inspect.signature(rule.ask_authorization).parameters
+    """Whether ``rule.ask_authorization`` takes ``uow`` by name: one of 2.4 does not."""
+    try:
+        parameters = inspect.signature(rule.ask_authorization).parameters
+    except (TypeError, ValueError):  # No signature to read: called as in 2.4.
+        return False
+    found = parameters.get("uow")
+    return found is not None and found.kind in BY_NAME
+
+
+BY_NAME: Final = frozenset(
+    {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
+)
+"""The kinds of parameter ``uow=`` can be given to."""
 
 
 def _instance(rule: Rule) -> BasePermission:

@@ -31,7 +31,7 @@ from domainkit.ddd import Command, use_case
 from domainkit.resources import ModelActions, ResourceRouter
 from domainkit_tests.sample_domains.shop.models import Product, ProductId
 
-__all__ = ["RELABEL_PRODUCT", "RENAME_PRODUCT", "ShopUnitOfWork", "router"]
+__all__ = ["RELABEL_PRODUCT", "RENAME_PRODUCT", "Products", "ShopUnitOfWork", "router"]
 
 
 class Products(SqlAlchemyRepository[Product, ProductId]):
@@ -93,7 +93,7 @@ async def relabel_product(uow: ShopUnitOfWork, product_id: UUID, name: str) -> P
 
 
 SHOWN_IN: list[ShopUnitOfWork] = []
-"""The units of work ``show_relabel`` read in."""
+"""The units of work ``show_relabel`` was lent to read in."""
 
 
 async def show_relabel(command: Any, uow: ShopUnitOfWork) -> Shown:  # noqa: ANN401 - the use case's command.

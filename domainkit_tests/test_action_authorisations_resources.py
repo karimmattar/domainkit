@@ -261,8 +261,9 @@ def test_a_use_case_is_authorized_through_its_copy_and_stays_as_it_was(
         ],
     }
     assert asked.json()["methods"] == ["otp"]
-    assert [type(uow) for uow in shop.SHOWN_IN] == [ShopUnitOfWork]
-    assert shop.SHOWN_IN[0].committed == 0  # Read in, never written through.
+    [lent] = shop.SHOWN_IN  # The route's unit of work, lent to read in.
+    assert isinstance(lent.products, shop.Products)
+    assert lent.committed == 0  # Read in, never written through.
     assert relabelled.status_code == 200, relabelled.json()
     assert named == "Desk lamp"
     assert ended(authorization)

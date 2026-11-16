@@ -77,7 +77,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import KW_ONLY, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
-from typing import Any, Final, cast, get_type_hints
+from typing import TYPE_CHECKING, Any, Final, cast, get_type_hints
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Request, Response, status
@@ -274,6 +274,8 @@ def _expired() -> APIError:
 type Show = Callable[..., Awaitable[Shown] | Shown]
 """What builds what the user is shown of a command: ``show(command)``, or
 ``show(command, uow)`` to read in the act's unit of work."""
+type UnitOfWorkFactory = Callable[[], UnitOfWork]
+"""What makes the unit of work a ``show(command, uow)`` reads in: a class."""
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -287,15 +289,17 @@ class Action:
     the act is on, ``"<type>:<id>"``, at most 200 characters: an internal
     id, kept for the trail. ``show`` builds what the user is shown
     (``Shown``), from the command and the stored state, in the request's
-    language: ``show(command)``, or ``show(command, uow)``, given the unit
-    of work the act runs in, open, to read in (a ``ResourceRouter``'s twin
-    gives its route's). ``ttl`` and ``methods`` take the place of
-    ``AUTH.AUTHORIZATIONS.TTL`` and ``METHODS`` for this act.
+    language: ``show(command)``, or with a parameter named ``uow``,
+    ``show(command, uow)``, given the unit of work the act runs in to read
+    in (a ``ResourceRouter``'s twin gives its route's). ``ttl`` and
+    ``methods`` take the place of ``AUTH.AUTHORIZATIONS.TTL`` and
+    ``METHODS`` for this act.
     """
 
     purpose: str
     _: KW_ONLY
-    command: type | UseCase[Any]
+    command: type
+    """The command's class (a use case given here is replaced by its command)."""
     subject: Callable[[Any], str]
     show: Show
     ignore: Collection[str] = ()
@@ -303,7 +307,22 @@ class Action:
     methods: Collection[str] | None = None
     adapter: TypeAdapter[Any] = field(init=False, repr=False)
     reads_unit_of_work: bool = field(init=False, repr=False)
-    """Whether ``show`` takes the unit of work the act runs in."""
+    """Whether ``show`` takes the unit of work the act runs in (``uow``)."""
+
+    if TYPE_CHECKING:  # The constructor takes a use case too; the field is a class.
+
+        def __init__(
+            self,
+            purpose: str,
+            *,
+            command: type | UseCase[Any],
+            subject: Callable[[Any], str],
+            show: Show,
+            ignore: Collection[str] = (),
+            ttl: timedelta | None = None,
+            methods: Collection[str] | None = None,
+        ) -> None:
+            """Declare the act; ``command`` may be a use case, for its command."""
 
     def __post_init__(self) -> None:
         """Check what the act declares; build its command's adapter.
@@ -328,9 +347,8 @@ class Action:
                 f"{PURPOSE_MAX_LENGTH} characters, such as "
                 f"organizations.end_membership: {self.purpose!r}."
             )
-        command = (
-            self.command.command if isinstance(self.command, UseCase) else self.command
-        )
+        given: object = self.command
+        command = given.command if isinstance(given, UseCase) else given
         if not isinstance(command, type):
             raise ImproperlyConfigured(
                 f"Action {self.purpose!r}: command is the class its service takes, "
@@ -362,7 +380,7 @@ class Action:
             object.__setattr__(self, "methods", frozenset(methods))
         object.__setattr__(self, "ignore", frozenset(self.ignore))
         object.__setattr__(self, "adapter", TypeAdapter(command))
-        object.__setattr__(self, "reads_unit_of_work", _takes_two(self.show))
+        object.__setattr__(self, "reads_unit_of_work", _takes_uow(self.show))
 
     def required(self) -> frozenset[str]:
         """What confirming it must prove: ``methods``, or the setting's."""
@@ -380,10 +398,9 @@ class Action:
         Raises:
             TypeError: ``command`` is not the action's command.
         """
-        kind = cast(type, self.command)  # A class, once checked.
-        if not isinstance(command, kind):
+        if not isinstance(command, self.command):
             raise TypeError(
-                f"Action {self.purpose!r} takes a {kind.__name__}, not a "
+                f"Action {self.purpose!r} takes a {self.command.__name__}, not a "
                 f"{type(command).__name__}."
             )
         dumped: dict[str, Any] = self.adapter.dump_python(command, mode="json")
@@ -413,37 +430,78 @@ class Action:
             )
         return subject
 
-    async def shown(self, command: object, uow: UnitOfWork | None = None) -> Shown:
+    async def shown(
+        self, command: object, unit_of_work: UnitOfWorkFactory | None = None
+    ) -> Shown:
         """What the user is shown of ``command``: ``show``'s answer.
 
-        A ``show(command, uow)`` reads in ``uow``, the unit of work the act
-        runs in: opened for it, and left without a commit.
+        A ``show(command, uow)`` reads in a unit of work ``unit_of_work``
+        makes, the one the act runs in: it is opened for ``show``, lent to
+        it as one that cannot commit, and left without a commit.
 
         Raises:
-            ImproperlyConfigured: ``show`` returned no ``Shown``, or takes a
-                unit of work and none was given.
+            ImproperlyConfigured: ``show`` returned no ``Shown``, takes a
+                unit of work and none was given, or tried to commit.
         """
         if not self.reads_unit_of_work:
             result = await _awaited(self.show(command))
-        elif uow is None:
+        elif unit_of_work is None:
             raise ImproperlyConfigured(
                 f"Action {self.purpose!r}: show(command, uow) reads in the act's "
-                "unit of work, and none was given: pass uow= to "
+                "unit of work, and none was given: pass unit_of_work= to "
                 "request_action_authorization (a ResourceRouter's twin gives "
                 "its route's)."
             )
         else:
-            async with uow:
-                result = await _awaited(self.show(command, uow))
+            async with unit_of_work() as uow:
+                read = _Reading(uow, self.purpose)
+                result = await _awaited(self.show(command, uow=read))
         if not isinstance(result, Shown):
             raise ImproperlyConfigured(
                 f"Action {self.purpose!r}: show(...) must return a Shown."
             )
         return result
 
-    async def __call__(self, command: object, uow: UnitOfWork | None = None) -> Shown:
+    async def __call__(
+        self, command: object, unit_of_work: UnitOfWorkFactory | None = None
+    ) -> Shown:
         """As ``shown``: the hook point an action registers on holds callables."""
-        return await self.shown(command, uow)
+        return await self.shown(command, unit_of_work)
+
+
+class _Reading:
+    """The act's unit of work, open, lent to ``show``: it reads, and never commits.
+
+    A block ``async with uow:`` in ``show`` enters nothing: the unit of work
+    is open already, and is left, without a commit, when ``show`` returns.
+    """
+
+    def __init__(self, uow: UnitOfWork, purpose: str) -> None:
+        """Lend ``uow``, open, to the ``show`` of ``purpose``'s action."""
+        self._uow = uow
+        self._purpose = purpose
+
+    def __getattr__(self, name: str) -> Any:  # noqa: ANN401 - the unit of work's.
+        """The unit of work's repositories, and the rest of what it has."""
+        return getattr(self._uow, name)
+
+    async def __aenter__(self) -> "_Reading":
+        """Enter nothing: the unit of work is open."""
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        """Leave nothing: it is left when ``show`` returns."""
+
+    async def commit(self) -> None:
+        """Refuse: what is shown is read, and asking writes nothing of the act.
+
+        Raises:
+            ImproperlyConfigured: Always.
+        """
+        raise ImproperlyConfigured(
+            f"Action {self._purpose!r}: show(command, uow) only reads; it may not "
+            "commit."
+        )
 
 
 async def _awaited(result: object) -> object:
@@ -451,17 +509,20 @@ async def _awaited(result: object) -> object:
     return await result if inspect.isawaitable(result) else result
 
 
-def _takes_two(show: Callable[..., object]) -> bool:
-    """Whether ``show`` takes two arguments: the command, and a unit of work."""
+def _takes_uow(show: Callable[..., object]) -> bool:
+    """Whether ``show`` takes a unit of work: a parameter ``uow``, given by name."""
     try:
-        signature = inspect.signature(show)
+        parameters = inspect.signature(show).parameters
     except (TypeError, ValueError):  # A built-in without one: the command alone.
         return False
-    try:
-        signature.bind(None, None)
-    except TypeError:
-        return False
-    return True
+    found = parameters.get("uow")
+    return found is not None and found.kind in BY_NAME
+
+
+BY_NAME: Final = frozenset(
+    {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
+)
+"""The kinds of parameter a unit of work can be given to by name."""
 
 
 def _fields_of(command: type) -> set[str]:
@@ -709,7 +770,7 @@ async def request_action_authorization(
     action: Action,
     command: object,
     *,
-    uow: UnitOfWork | None = None,
+    unit_of_work: UnitOfWorkFactory | None = None,
 ) -> ActionAuthorization:
     """Store an authorization of ``command`` for the request's user and login.
 
@@ -717,8 +778,9 @@ async def request_action_authorization(
     digest of the arguments, what is shown (``action.show``, in the
     request's language), and the login's digest. It works for the
     action's TTL. A login holds at most ten unconfirmed authorizations:
-    an eleventh ends the oldest. ``uow`` is the unit of work the act runs
-    in, not yet open, for a ``show(command, uow)`` to read in.
+    an eleventh ends the oldest. ``unit_of_work`` makes the unit of work
+    the act runs in (its class), for a ``show(command, uow)`` to read in: a
+    new one, opened for it.
 
     Raises:
         NotAuthenticated: The request names no user.
@@ -727,8 +789,8 @@ async def request_action_authorization(
             to scopes, or cannot be told apart from the user's others.
         NoSecondFactor: The user has no way to confirm what the act asks.
         TypeError: ``command`` is not the action's command.
-        ImproperlyConfigured: ``show`` reads a unit of work, and ``uow`` is
-            None.
+        ImproperlyConfigured: ``show`` reads a unit of work, and
+            ``unit_of_work`` is None.
     """
     from .stepup import NoSecondFactor
 
@@ -749,7 +811,7 @@ async def request_action_authorization(
     digest = action.digest_of(command)
     if not await _can_confirm(user.id, action.required()):
         raise NoSecondFactor
-    shown = await action.shown(command, uow)
+    shown = await action.shown(command, unit_of_work)
     now = utc_now()
     authorization = ActionAuthorization(
         id=uuid4(),
@@ -956,9 +1018,9 @@ def _guarded_use_case(action: Action, use_case: UseCase[Any]) -> UseCase[Any]:
 
     Raises:
         ImproperlyConfigured: The use case runs another command than the
-            action's.
+            action's (a subclass of it too: the digest would leave fields out).
     """
-    if not issubclass(use_case.command, cast(type, action.command)):
+    if use_case.command is not action.command:
         raise ImproperlyConfigured(
             f"Action {action.purpose!r} takes a {action.command.__name__}, and "
             f"the use case {use_case.name} runs a {use_case.command.__name__}: "
