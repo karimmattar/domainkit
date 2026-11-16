@@ -203,9 +203,12 @@ class ResourceRouter(APIRouter):
         ``company_id``), a parent's, or one in its prefix. A route
         without it (the collection's, for the resource's own id) serves no
         tenant. Routes of your own on the resource are served alike. A
-        nested resource takes its parent's ``tenant``; it may have one of
-        its own only where the parent has none. The ``PathTenant`` reads
-        the id as its type.
+        nested resource takes its parent's ``tenant``, and names no other.
+        A resource whose own id is the tenant has a prefix of no parameters,
+        names the action of each command on its collection
+        (``reach.named_action``), and, under ``MemberActions(outside=rule)``,
+        a ``scope``: its collection serves no tenant, so no member's rule
+        narrows the list. The ``PathTenant`` reads the id as its type.
 
         Raises:
             TypeError: A declaration does not fit the model.
@@ -266,6 +269,20 @@ class ResourceRouter(APIRouter):
                 "MemberActions(outside=...) rules the routes that serve no "
                 "tenant; this resource serves none, so it would rule them all. "
                 'Give the resource tenant=PathTenant("...").'
+            )
+        if (
+            isinstance(rule, MemberActions)
+            and rule.outside is not None
+            and not isinstance(rule.outside, Actions)
+            and self.tenant is not None
+            and self.tenant.parameter == self.lookup
+            and scope is None
+        ):
+            raise TypeError(
+                "The collection of a resource whose items are tenants serves "
+                "none, so no member's rule narrows its list: give scope= the "
+                "tenants the caller belongs to (a scope that returns None lists "
+                "every one, on purpose)."
             )
         self.unit_of_work = unit_of_work_dependency(unit_of_work)
         self.repository = repository
@@ -355,6 +372,12 @@ class ResourceRouter(APIRouter):
                 f"No route of this resource has {{{name}}} in its path, so "
                 f"PathTenant({name!r}) would serve none; name its id "
                 f"({self.lookup!r}), a parent's, or a parameter of its prefix."
+            )
+        if name == self.lookup and "{" in self.prefix:
+            raise TypeError(
+                f"{self.prefix} names a parameter, yet PathTenant({name!r}) would "
+                "serve its collection as no tenant: take the tenant from that "
+                "parameter, or keep a resource whose items are tenants at the top."
             )
         kind = typed.get(name, tenant.id_type)
         return tenant if tenant.id_type is kind else PathTenant(name, id_type=kind)

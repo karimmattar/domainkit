@@ -89,6 +89,7 @@ __all__ = [
     "all_tenants",
     "current_tenant",
     "member_permissions",
+    "path_tenant",
     "row_tenant",
     "scoped_key",
     "tenant",
@@ -126,6 +127,8 @@ class _Member:
     user: object
     tenant_id: str
     permissions: frozenset[str]
+    by_path: bool = False
+    """Whether a ``PathTenant`` chose the tenant, from the route's path."""
 
 
 _member: ContextVar[_Member | None] = ContextVar("tenant_member", default=None)
@@ -241,6 +244,20 @@ def _serving(member: _Member) -> Iterator[None]:
             yield
     finally:
         _member.reset(token)
+
+
+def path_tenant() -> str | None:
+    """The tenant a route's path named (``PathTenant``), if it is the one served.
+
+    None outside a request served by a ``PathTenant``, and where only
+    ``TenantMiddleware`` (or ``tenant(...)``) chose the tenant. A tenants'
+    resource asks it to tell its items' routes from its collection's,
+    whatever tenant a middleware serves (ADR 0170).
+    """
+    member = _member.get()
+    if member is None or not member.by_path or member.tenant_id != current_tenant():
+        return None
+    return member.tenant_id
 
 
 async def member_permissions(user: object) -> frozenset[str]:
@@ -463,7 +480,7 @@ class PathTenant:
         user = connection.scope.get("user")
         held = await self._admit(user, found)
         record_check(connection, functools.partial(self._still_member, found))
-        with _serving(_Member(user, found, held)):
+        with _serving(_Member(user, found, held, by_path=True)):
             yield found
 
     async def _admit(self, user: object, found: str) -> frozenset[str]:

@@ -16,6 +16,7 @@ from uuid import UUID
 import pytest
 from fastapi import APIRouter, Depends, FastAPI, Request, WebSocket
 from fastapi.testclient import TestClient
+from pydantic import BaseModel
 from starlette.datastructures import Headers
 from starlette.requests import HTTPConnection
 from starlette.testclient import WebSocketDenialResponse
@@ -23,6 +24,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from domainkit.conf import override_settings
 from domainkit.contrib.auth import AnonymousUser, AnyUser
+from domainkit.ddd import Command, use_case
 from domainkit.ddd.query import CriteriaLike
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import (
@@ -46,13 +48,16 @@ from domainkit.tenancy import (
     HasMemberPermissions,
     InTenant,
     PathTenant,
+    TenantMiddleware,
     current_tenant,
+    path_tenant,
     tenant,
 )
 from domainkit_tests.conftest import UseAuth
 from domainkit_tests.gadgets import (
     FakeGadgetsUnitOfWork,
     Gadget,
+    GadgetId,
     InMemoryGadgets,
     make_gadget,
 )
@@ -159,12 +164,12 @@ def companies(store: InMemoryGadgets, **options: Any) -> ResourceRouter:  # noqa
     """Gadgets as tenants: each one's routes are served as it, by its id."""
     options.setdefault("rule", MemberActions(GADGETS, outside=IsAuthenticated()))
     options.setdefault("tenant", PathTenant("gadget_id"))
+    options.setdefault("scope", served)
     resource = ResourceRouter(
         "/gadgets",
         model=Gadget,
         unit_of_work=lambda: FakeGadgetsUnitOfWork(store),
         repository=lambda uow: uow.gadgets,
-        scope=served,
         **options,
     )
     resource.command_route(RenameGadget, service=rename, body=RenameIn, path="/rename")
@@ -463,7 +468,9 @@ def test_a_batch_whose_items_name_tenants_is_refused(store: InMemoryGadgets) -> 
 
     with pytest.raises(TypeError, match=r"names a tenant per item \(gadget_id\)"):
         resource.batch_route(RenameGadget, service=rename, body=RenameIn)
-    resource.batch_route(MakeGadget, service=make, body=MakeIn, path="/batch")
+    resource.batch_route(
+        MakeGadget, service=make, body=MakeIn, path="/batch", action="add"
+    )
 
 
 def test_outside_rules_only_viewing_and_making_on_the_collection(
@@ -480,7 +487,9 @@ def test_outside_rules_only_viewing_and_making_on_the_collection(
         resource.command_route(
             MakeGadget, service=make, body=MakeIn, path="/merge", action="change"
         )
-        resource.command_route(MakeGadget, service=make, body=MakeIn, name="found")
+        resource.command_route(
+            MakeGadget, service=make, body=MakeIn, name="found", action="add"
+        )
         return client_of(resource)
 
     plain = merging(MemberActions(GADGETS, outside=IsAuthenticated()))
@@ -558,7 +567,8 @@ def test_a_nested_resource_keeps_its_parents_tenant(store: InMemoryGadgets) -> N
     """A tenant of its own would serve ``/gadgets/{a}/twins`` as none.
 
     Bob, a stranger to a, would then list a's twins and add one. Under a
-    parent without a tenant, a resource may have its own.
+    parent without a tenant, its own id would serve the same collection as
+    none: refused too, as under any prefix that names a parameter.
     """
     options: dict[str, Any] = {
         "model": Gadget,
@@ -573,7 +583,156 @@ def test_a_nested_resource_keeps_its_parents_tenant(store: InMemoryGadgets) -> N
     with pytest.raises(TypeError, match=r"nested under the tenant \{gadget_id\}"):
         ResourceRouter("/twins", parent=companies(store), **options)
     plain = companies(store, tenant=None, rule=ModelActions(GADGETS))
-    assert ResourceRouter("/twins", parent=plain, **options).tenant is not None
+    with pytest.raises(TypeError, match="names a parameter"):
+        ResourceRouter("/twins", parent=plain, **options)
+    with pytest.raises(TypeError, match="names a parameter"):
+        ResourceRouter(
+            "/orgs/{org_id}/gadgets",
+            model=Gadget,
+            unit_of_work=lambda: FakeGadgetsUnitOfWork(store),
+            repository=lambda uow: uow.gadgets,
+            tenant=PathTenant("gadget_id"),
+            rule=ModelActions(GADGETS),
+        )
+
+
+class ArchiveGadget(Command):
+    """Archive a gadget named by a field of its own, not the resource's id."""
+
+    target: UUID
+
+
+class ArchiveIn(BaseModel):
+    """The gadget to archive."""
+
+    target: UUID
+
+
+async def archive(command: ArchiveGadget, uow: FakeGadgetsUnitOfWork) -> Gadget:
+    """Archive the gadget named."""
+    async with uow:
+        gadget = await uow.gadgets.get(GadgetId(command.target))
+        gadget.rename("archived")
+        gadget.version += 1
+        await uow.commit()
+    return gadget
+
+
+@use_case
+async def archive_one(uow: FakeGadgetsUnitOfWork, target: UUID) -> None:
+    """Archive the gadget named, as a use case."""
+    await archive(ArchiveGadget(target=target), uow)
+
+
+def test_a_command_on_the_collection_names_its_action(
+    store: InMemoryGadgets, members: None
+) -> None:
+    """A ``POST`` there is ``add`` by default, which ``outside`` lets anyone do.
+
+    So a command that names another company by a field of its own would
+    archive it for any signed-in caller. Each kind of route on the
+    collection must say what it does; named, a change is refused there.
+    """
+    resource = companies(store)
+    unnamed = "name its action, action='add'"
+    with pytest.raises(TypeError, match=unnamed):
+        resource.command_route(
+            ArchiveGadget, service=archive, body=ArchiveIn, path="/archive"
+        )
+    with pytest.raises(TypeError, match=unnamed):
+        resource.use_case(archive_one, path="/archive")
+    with pytest.raises(TypeError, match=unnamed):
+        resource.batch_route(
+            ArchiveGadget, service=archive, body=ArchiveIn, path="/archives"
+        )
+    resource.command_route(
+        ArchiveGadget, service=archive, body=ArchiveIn, path="/archive", action="change"
+    )
+    client = client_of(resource)
+    a = str(ids(store)["a"])
+
+    sent = client.post("/gadgets/archive", json={"target": a}, headers=as_("bob"))
+    assert sent.status_code == 403
+    assert "archived" not in {gadget.name for gadget in store.items.values()}
+
+
+def test_a_middlewares_tenant_decides_nothing_on_the_collection(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """The collection's routes are ruled by ``outside``, whatever a header names.
+
+    Ann changes a, and holds nothing in b. With ``TenantMiddleware`` serving
+    a from a header, her role in a decided a change of b on the collection.
+    The item's routes still take the path's tenant, which must agree.
+    """
+    use_auth(
+        BACKENDS=BACKENDS,
+        settings={
+            "TENANCY": {
+                "MEMBER_PERMISSIONS": f"{HERE}.keys",
+                "HEADER": "X-Tenant",
+                "REQUIRED": False,
+            }
+        },
+    )
+    a, b = (str(each) for each in ids(store).values())
+    del MEMBERS[("ann", b)]
+    resource = companies(store)
+    resource.command_route(
+        ArchiveGadget, service=archive, body=ArchiveIn, path="/archive", action="change"
+    )
+    app = FastAPI()
+    install_exception_handlers(app)
+    app.include_router(resource)
+    app.add_middleware(TenantMiddleware)
+    app.add_middleware(Users, users=people())
+    client = TestClient(app)
+    in_a = as_("ann", **{"X-Tenant": a})
+
+    archived = client.post("/gadgets/archive", json={"target": b}, headers=in_a)
+    listed = client.get("/gadgets", headers=in_a)
+    read = client.get(f"/gadgets/{a}", headers=in_a)
+    elsewhere = client.get(f"/gadgets/{b}", headers=in_a)
+
+    assert archived.status_code == 403
+    assert "archived" not in {gadget.name for gadget in store.items.values()}
+    assert listed.status_code == 200
+    assert read.status_code == 200
+    assert elsewhere.status_code == 404
+
+
+def test_the_list_of_tenants_needs_a_scope(store: InMemoryGadgets) -> None:
+    """No member's rule narrows the collection: without a scope, all is listed.
+
+    ``Actions`` as ``outside`` rule the list by permission, as a back
+    office's would, and need none.
+    """
+    with pytest.raises(TypeError, match="give scope= the tenants"):
+        companies(store, scope=None)
+    by_permission = MemberActions(GADGETS, outside=ModelActions(GADGETS))
+    companies(store, scope=None, rule=by_permission)
+
+
+def test_path_tenant_names_the_tenant_a_path_named(members: None) -> None:
+    """The path's tenant inside a ``PathTenant`` route; None for one named in code."""
+    MEMBERS[("ann", "acme")] = VIEWER
+    router = APIRouter(
+        prefix="/orgs/{org_id}", dependencies=[Depends(PathTenant("org_id"))]
+    )
+
+    @router.get("/named")
+    async def named() -> dict[str, str | None]:
+        with tenant("globex"):
+            inner = path_tenant()
+        return {"path": path_tenant(), "inner": inner}
+
+    client = client_of(router)
+    assert client.get("/orgs/acme/named", headers=as_("ann")).json() == {
+        "path": "acme",
+        "inner": None,
+    }
+    with tenant("acme"):
+        assert path_tenant() is None
 
 
 def test_path_tenants_read_their_id_as_text_an_int_or_a_uuid() -> None:

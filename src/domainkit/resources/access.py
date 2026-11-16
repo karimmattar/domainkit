@@ -38,7 +38,7 @@ from domainkit.http.access import (
     Rule,
     scopes_of,
 )
-from domainkit.tenancy import HasMemberPermissions, current_tenant
+from domainkit.tenancy import HasMemberPermissions, path_tenant
 
 VIEW: Final = "view"
 ADD: Final = "add"
@@ -116,18 +116,33 @@ class HasMemberModelPermission(HasModelPermission):
         )
 
 
+class _ByPath(HasMemberModelPermission):
+    """A member's key, on a route whose path named the tenant (``PathTenant``).
+
+    Beside ``outside``, a member's keys count only where the resource's
+    tenant was taken from the path: on its collection, a tenant a
+    middleware serves (a header's, a subdomain's) decides nothing.
+    """
+
+    async def has_permission(self, request: HTTPConnection, user: Principal) -> bool:
+        """The path named the tenant, and the member holds the key there."""
+        return path_tenant() is not None and await super().has_permission(request, user)
+
+
 class _ServedAsNone(AllOf):
-    """``outside``'s rules, on a request served as no tenant; refused in one.
+    """``outside``'s rules, on a route whose path named no tenant; refused else.
 
     It asks only those rules about an object, and checks scopes: credentials
     limited to scopes pass it only where those rules check them. So, beside
     a member's rule (``|``), it neither refuses every object nor keeps
-    scoped credentials from a tenant's routes.
+    scoped credentials from a tenant's routes. A tenant a middleware serves
+    does not count: the collection's routes are the resource's, whatever
+    the request's tenant.
     """
 
     async def has_permission(self, request: HTTPConnection, user: Principal) -> bool:
-        """No tenant is served, and every rule allows the request, scopes too."""
-        if current_tenant() is not None:
+        """No path named a tenant, and every rule allows the request, scopes too."""
+        if path_tenant() is not None:
             return False
         if scopes_of(request) is not None and not super().checks_scopes():
             return False
@@ -153,7 +168,9 @@ class MemberActions:
     collection, creation); a route of any other action there (a command
     that changes or deletes from the collection) is refused, unless
     ``outside`` is ``Actions``, such as ``ModelActions``, which names the
-    rules of each action itself.
+    rules of each action itself. With ``outside``, a member's keys count
+    only where the path named the tenant (``path_tenant``), and ``outside``
+    rules wherever it did not, whatever tenant a middleware serves.
     """
 
     def __init__(
@@ -166,8 +183,10 @@ class MemberActions:
 
     def rules_for(self, action: str) -> Sequence[Rule]:
         """``rules``, then the member's permission of ``action``, or ``outside``'s."""
-        member = HasMemberModelPermission(action, self.model)
         given = self.outside
+        if given is None:
+            return (*self.rules, HasMemberModelPermission(action, self.model))
+        member = _ByPath(action, self.model)
         outside = (
             rules_for(given, action)
             if isinstance(given, Actions) or action in {VIEW, ADD}
