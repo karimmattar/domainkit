@@ -5,6 +5,15 @@ Each is a command run by a service, ``service(command, uow)``, as a
 acts (``maker``, ``approver``): the routes take it from the principal,
 and check that an approver is one the request's policy names.
 
+With its setting on (``SUBMIT_ACTION``, ``APPROVE_ACTION``,
+``REJECT_ACTION``, ``CANCEL_ACTION``), ``submit_request``,
+``approve_request``, ``reject_request``, and ``cancel_request`` spend the
+request's authorization of the act, and refuse a call that has none, from
+code too. ``record_submission``, ``record_approval``, ``record_rejection``,
+and ``record_cancellation`` do their work asking for none: the services
+run them, and the project's own code calls them (ADR 0163, amended
+2026-11-17).
+
 The approval that completes a request queues its command through the
 outbox, in the same transaction (``uow.defer``), so the command is
 queued exactly when the request is approved, once. The worker runs it
@@ -213,7 +222,17 @@ async def submit_request(
 async def record_submission(
     command: SubmitRequest, uow: ApprovalsUnitOfWork
 ) -> ApprovalRequest:
-    """Submit, as ``submit_request`` does, asking for no authorization.
+    """Submit a command, asking for no authorization: for the project's own code.
+
+    What ``submit_request`` does, whatever ``APPROVALS.SUBMIT_ACTION``
+    says: ``submit_request`` runs it, once the maker's authorization is
+    spent where the setting is on. Call it from code the project trusts (a
+    task, a management command, an event handler), never from a route a
+    user reaches: that route would submit without the phone. It trusts its
+    caller for who acts, as every service here: the guard's permission and
+    its ``maker_rule``, which ``POST /requests`` asks of the maker, are
+    asked only when the command runs (``maker_not_allowed``). A guard
+    ``http=False`` is submitted too.
 
     Raises:
         UnknownAction: As for ``submit_request``.
@@ -409,7 +428,17 @@ async def approve_request(
 async def record_approval(
     command: ApproveRequest, uow: ApprovalsUnitOfWork
 ) -> ApprovalRequest:
-    """Approve a request, as ``approve_request`` does, asking for no authorization.
+    """Approve a request, asking for no authorization: for the project's own code.
+
+    What ``approve_request`` does, whatever ``APPROVALS.APPROVE_ACTION``
+    says, refusing all it refuses: the maker, a party to the command, a
+    second decision, another fingerprint, a request no longer pending, or
+    changed in the database. The approval that completes the request
+    queues its command. Call it from code the project trusts, never from a
+    route a user reaches. It trusts its caller for who acts: the approver
+    is not asked to be one the policy names, nor to pass the approve rule,
+    which the route asks. Code that names a person it did not authenticate
+    checks them first (``approvers_of``).
 
     Raises:
         RequestNotFound: As for ``approve_request``.
@@ -506,7 +535,13 @@ async def reject_request(
 async def record_rejection(
     command: RejectRequest, uow: ApprovalsUnitOfWork
 ) -> ApprovalRequest:
-    """Reject a request, as ``reject_request`` does, asking for no authorization.
+    """Reject a request, asking for no authorization: for the project's own code.
+
+    What ``reject_request`` does, whatever ``APPROVALS.REJECT_ACTION``
+    says, refusing all it refuses. Call it from code the project trusts,
+    never from a route a user reaches. It trusts its caller for who acts:
+    the approver is not asked to be one the policy names, which the route
+    asks.
 
     Raises:
         RequestNotFound: As for ``reject_request``.
@@ -559,7 +594,13 @@ async def cancel_request(
 async def record_cancellation(
     command: CancelRequest, uow: ApprovalsUnitOfWork
 ) -> ApprovalRequest:
-    """Withdraw a request, as ``cancel_request`` does, asking for no authorization.
+    """Withdraw a request, asking for no authorization: for the project's own code.
+
+    What ``cancel_request`` does, whatever ``APPROVALS.CANCEL_ACTION``
+    says: only for the request's maker, while it is pending. Call it from
+    code the project trusts (a task that withdraws stale requests, a
+    handler that withdraws one whose subject is gone), never from a route
+    a user reaches.
 
     Raises:
         RequestNotFound: As for ``cancel_request``.
