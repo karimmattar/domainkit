@@ -477,6 +477,13 @@ and a status.
   restart, disagreed, and the confirmed authorization was voided as
   changed.
 
+- Under `manage.py serve`, Granian starts its worker processes by spawn on
+  every Python, as it already did on 3.14. On 3.13 it forked them, and a
+  worker forked while the main process's logging thread wrote to
+  standard output inherited the stream's lock held: it never listened,
+  and Granian, seeing it alive, never started another. A container that
+  sets `PYTHONUNBUFFERED`, as the generated Dockerfiles do, was spared.
+
 - A lazy string (`gettext_lazy`) given as a `DomainError`'s message, an
   `InvalidField`'s, or `error_response`'s detail is answered as its text
   in the caller's language. It made a `500`: the body refused anything

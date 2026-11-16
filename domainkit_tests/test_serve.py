@@ -7,6 +7,7 @@ long as the server, or longer.
 """
 
 import asyncio
+import contextlib
 import importlib
 import io
 import json
@@ -17,6 +18,8 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import uuid
 from collections.abc import Iterator, MutableMapping, Sequence
 from pathlib import Path
@@ -82,6 +85,36 @@ def uvicorn(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
     given: list[dict[str, Any]] = []
     monkeypatch.setattr("uvicorn.run", lambda **options: given.append(options))
     return given
+
+
+def test_granian_spawns_its_workers_on_every_python(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Granian serves while ``multiprocessing`` spawns, then the method is as it was.
+
+    Forked on Python 3.13 while this process's logging thread wrote to
+    standard output, a worker held the stream's lock and never listened.
+    """
+    import multiprocessing
+
+    seen: list[str | None] = []
+
+    class Spawning(Served):
+        def serve(self, **serving: Any) -> None:  # noqa: ANN401 - Granian's.
+            seen.append(multiprocessing.get_start_method(allow_none=True))
+
+    monkeypatch.setattr(Spawning, "made", [], raising=False)
+    monkeypatch.setattr("granian.Granian", Spawning)
+    multiprocessing.set_start_method("fork", force=True)
+    try:
+        with override_settings(ASGI_APPLICATION=APPLICATION):
+            call_command("serve")
+        after = multiprocessing.get_start_method(allow_none=True)
+    finally:
+        multiprocessing.set_start_method(None, force=True)
+
+    assert seen == ["spawn"]
+    assert after == "fork"
 
 
 def test_serve_starts_granian_with_the_limits_of_the_reference(
@@ -787,6 +820,74 @@ MAIN_PROCESS: Final = {
 """A line of each server's own, not the application's."""
 STOPPED: Final = {"granian": 0, "uvicorn": -signal.SIGTERM}
 """Each server's exit status on ``SIGTERM``: uvicorn raises it again once stopped."""
+SERVE_WAIT: Final = 40.0
+"""Seconds the server gets to listen, and then to stop: both, and the stacks,
+well within pytest's timeout, whose report a pytest-xdist worker loses
+with the worker."""
+
+
+class ServerLines:
+    """The server's output, read on a thread so that every wait has a deadline."""
+
+    def __init__(self, process: subprocess.Popen[str], started: str) -> None:
+        """Read ``process``'s output until it ends; note the line ``started``."""
+        self.lines: list[str] = []
+        self.listening = threading.Event()
+        self.settled = threading.Event()
+        """Set once the server listens, or once its output ended first."""
+        self.ended = threading.Event()
+        self._process = process
+        self._marker = started
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _read(self) -> None:
+        assert self._process.stdout is not None
+        try:
+            for line in self._process.stdout:
+                self.lines.append(line)
+                if self._marker in line:
+                    self.listening.set()
+                    self.settled.set()
+        finally:
+            self.ended.set()
+            self.settled.set()
+
+    def stacks(self) -> str:  # pragma: no cover - only when the server hangs.
+        """Have each process of the server write its threads' stacks, then end.
+
+        The server runs in a session of its own with ``PYTHONFAULTHANDLER``:
+        ``SIGABRT`` makes a process write every thread's stack to the output
+        before it dies. One process at a time, so that their stacks do not
+        interleave: the server's own first, so that it starts no worker
+        again, then its workers.
+        """
+        for pid in self._processes():
+            with contextlib.suppress(OSError):
+                os.kill(pid, signal.SIGABRT)
+            time.sleep(1)
+        with contextlib.suppress(OSError):
+            os.killpg(self._process.pid, signal.SIGKILL)
+        if not self.ended.wait(10):
+            # Something outside the group holds the output: closing it would
+            # wait on the reader's read, so it is left to the reader.
+            self._process.stdout = None
+        return "".join(self.lines)
+
+    def _processes(self) -> list[int]:  # pragma: no cover - only for ``stacks``.
+        """The server's processes, by its process group; the server's own first.
+
+        Without ``/proc`` (macOS), the server's own only: its workers are
+        killed with the group, their stacks unwritten.
+        """
+        group = self._process.pid
+        found = []
+        with contextlib.suppress(OSError):
+            for entry in Path("/proc").iterdir():
+                with contextlib.suppress(OSError, ValueError):
+                    pid = int(entry.name)
+                    if pid != group and os.getpgid(pid) == group:
+                        found.append(pid)
+        return [group, *found]
 
 
 @pytest.fixture(params=["granian", "uvicorn"])
@@ -806,33 +907,43 @@ def served(request: pytest.FixtureRequest) -> Iterator[tuple[str, Path, list[str
         f"{prefix}SETTINGS_MODULE": "serve_settings",
         f"{prefix}ENV_FILE": "",
         "PYTHONPATH": os.pathsep.join([str(directory), str(ROOT), *sys.path]),
+        "PYTHONFAULTHANDLER": "1",
     }
     environment.pop("WEB_CONCURRENCY", None)
-    lines: list[str] = []
     try:
         with subprocess.Popen(  # noqa: S603 - this interpreter, fixed arguments.
             [sys.executable, "-m", "domainkit", "serve", "--uds", str(path)],
             cwd=ROOT,
             env=environment,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            errors="backslashreplace",  # Processes' lines may interleave mid-character.
+            start_new_session=True,
         ) as process:
+            output = ServerLines(process, STARTED[server])
             try:
-                assert process.stdout is not None
-                for line in process.stdout:  # Waits on the server's log, not a clock.
-                    lines.append(line)
-                    if STARTED[server] in line:
-                        break
-                else:  # pragma: no cover - only when the server fails to start.
-                    pytest.fail(f"serve ended before {server} listened: {lines}")
-                yield server, path, lines
+                if not output.settled.wait(SERVE_WAIT):  # pragma: no cover - a hang.
+                    pytest.fail(
+                        f"{server} did not listen within {SERVE_WAIT:g} seconds; "
+                        f"its output and stacks:\n{output.stacks()}"
+                    )
+                if not output.listening.is_set():  # pragma: no cover - a failed start.
+                    pytest.fail(f"serve ended before {server} listened: {output.lines}")
+                yield server, path, output.lines
                 process.send_signal(signal.SIGTERM)
-                lines.extend(process.stdout)
-                assert process.wait(30) == STOPPED[server], lines
+                if not output.ended.wait(SERVE_WAIT):  # pragma: no cover - a hang.
+                    pytest.fail(
+                        f"{server} did not stop within {SERVE_WAIT:g} seconds of "
+                        f"SIGTERM; its output and stacks:\n{output.stacks()}"
+                    )
+                assert process.wait(30) == STOPPED[server], output.lines
             finally:
                 if process.poll() is None:  # pragma: no cover - a stuck shutdown.
-                    process.kill()
+                    with contextlib.suppress(OSError):
+                        os.killpg(process.pid, signal.SIGKILL)
+                    process.wait()
     finally:
         shutil.rmtree(directory, ignore_errors=True)
 
