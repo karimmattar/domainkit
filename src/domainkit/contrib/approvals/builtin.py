@@ -368,11 +368,11 @@ async def show_about_user(command: Any) -> list[tuple[str, object]]:  # noqa: AN
     to fit beside the id, which the request binds: a user erased or gone
     meanwhile shows as "(erased)". ``added`` and ``removed`` are lists
     ("Adds", "Takes away"), left out when empty; ``reason`` is "Stated
-    reason"; any other field shows by its name. A command with no
-    ``user_id`` shows its fields alone.
+    reason", ``Typed`` (since 2.8); any other field shows by its name. A
+    command with no ``user_id`` shows its fields alone.
     """
     from domainkit.contrib.auth import AuthUnitOfWork, UserId
-    from domainkit.contrib.auth.screens import named
+    from domainkit.contrib.auth.screens import Typed, named
 
     shown: list[tuple[str, object]] = []
     dumped = TypeAdapter(type(command)).dump_python(command, mode="json")
@@ -386,6 +386,8 @@ async def show_about_user(command: Any) -> list[tuple[str, object]]:  # noqa: AN
             if value:
                 shown.append((gettext(SHOWN_LABELS[name]), value))
         elif name in SHOWN_LABELS:
+            if name == "reason" and isinstance(value, str):  # The maker typed it.
+                value = Typed(value)
             shown.append((gettext(SHOWN_LABELS[name]), value))
         else:
             shown.append((name, value))

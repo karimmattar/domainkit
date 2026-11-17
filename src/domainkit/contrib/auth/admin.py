@@ -1676,10 +1676,19 @@ async def _admin_group_change(
 ) -> None:
     """Run the domains' ``on_admin_group_change`` checks, as ``_admin_change`` does.
 
+    A group's new name is checked as typed text first (``check_typed``,
+    since 2.8): approvers' screens show it later, with or without the act.
+
     Raises:
         ActionNotAuthorized: With ``ADMIN_ACTION``, the authorization is of
             another change (it is voided), or was spent meanwhile.
+        LinkNotShown: With ``AUTH.AUTHORIZATIONS.TYPED_LINKS`` refused, the
+            new name holds a link, an email address, or a number to call.
     """
+    if change.name is not None and change.kind in ("group_create", "group_rename"):
+        from .screens import check_typed  # Only for a group's name: not at startup.
+
+        check_typed(change.name)
 
     async def checks(once: "_Once | None") -> None:
         for hook in on_admin_group_change:

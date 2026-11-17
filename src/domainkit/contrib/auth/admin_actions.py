@@ -35,9 +35,10 @@ from .gates import (
     on_admin_screen,
 )
 from .models import AbstractBaseUser, Group, GroupId, UserId
-from .screens import Value, fitted, laid_out, named
-from .settings import auth_settings
+from .screens import Typed, Value, fitted, laid_out, named
+from .settings import auth_settings, identifier_fields
 from .uow import AuthUnitOfWork
+from .users import get_user_model
 
 PURPOSE: Final = "auth.admin_change"
 """The action each change of the admin API is, with ``ADMIN_ACTION`` on."""
@@ -62,6 +63,8 @@ GROUP_KINDS: Final = frozenset(
     {"group_create", "group_rename", "group_permissions", "group_delete"}
 )
 """The kinds of change made to a group, not to a user."""
+NAMING_KINDS: Final = frozenset({"group_create", "group_rename"})
+"""The kinds of change whose ``name`` staff type: a group's new name (since 2.8)."""
 
 ActKind = Literal[
     "create",
@@ -203,16 +206,20 @@ async def show(act: AdminAct) -> Shown:
     "Display name"). Laid out on a screen (``laid_out``): with
     ``AUTH.AUTHORIZATIONS.WHOLE`` on, what the change sets, adds, or takes
     away that does not fit whole is refused; off, it is cut and counted,
-    the first lines kept for what comes first. Then the ``on_admin_screen``
-    checks of a change to a user run, or the ``on_admin_group_screen``
-    checks of a change to a stored group (since 2.7): approvals refuses
-    there a change it would hold that its approver's screen could not show
-    whole.
+    the first lines kept for what comes first. What staff typed is
+    ``Typed`` (since 2.8): the reason, a group's new name, and each text a
+    change sets on a user but the fields that identify them. Then the
+    ``on_admin_screen`` checks of a change to a user run, or the
+    ``on_admin_group_screen`` checks of a change to a stored group (since
+    2.7): approvals refuses there a change it would hold that its
+    approver's screen could not show whole.
 
     Raises:
         UserNotFound: The user is gone.
         GroupNotFound: The group is gone.
         TooMuchToShow: With ``WHOLE`` on, the change does not fit whole.
+        LinkNotShown: With ``TYPED_LINKS`` refused, what staff typed holds
+            a link, an email address, or a number to call.
     """
     title = TITLES[act.kind]
     if act.kind == "password" and act.password is False:
@@ -228,7 +235,8 @@ async def show(act: AdminAct) -> Shown:
         label = {"group_create": GROUP, "group_rename": NEW_NAME}.get(
             act.kind, USERNAME
         )
-        details.append((gettext(label), act.name))
+        typed = Typed(act.name) if act.kind in NAMING_KINDS else act.name
+        details.append((gettext(label), typed))
     values = dict(act.values)
     details.extend(
         (gettext(label), _flag(values.pop(flag)))
@@ -236,7 +244,7 @@ async def show(act: AdminAct) -> Shown:
         if flag in values
     )
     if act.kind == "impersonate":
-        details.append((gettext(REASON), values.pop("reason", "")))
+        details.append((gettext(REASON), _typed(values.pop("reason", ""))))
     if act.added:
         details.append((gettext(ADDS), act.added))
     if act.removed:
@@ -245,10 +253,11 @@ async def show(act: AdminAct) -> Shown:
         state = pgettext("password", PASSWORD_STATES[act.password])
         details.append((gettext(PASSWORD), state))
     taken = {label for label, _ in details}
+    identifiers = _identifiers()
     for name, value in sorted(values.items()):
         label = field_label(name)
         label = name if label in taken else label  # A field "group" beside "Group".
-        details.append((label, value))
+        details.append((label, value if name in identifiers else _typed(value)))
         taken.add(label)
     whole = auth_settings().AUTHORIZATIONS.WHOLE
     shown = Shown(fitted(gettext(title)), laid_out(details, whole=whole))
@@ -278,6 +287,23 @@ def _change_of(act: AdminAct) -> AdminChange:
         removed=frozenset(act.removed),
         values=dict(act.values),
     )
+
+
+def _identifiers() -> frozenset[str]:
+    """The user's fields that name them, which a screen shows as set, never as typed.
+
+    The username, the email, and each identifier (``IDENTIFIER_FIELDS``,
+    ``AUTH.IDENTIFIERS``): an address or a number there is what is set.
+    """
+    model = get_user_model()
+    named = {model.USERNAME_FIELD, model.EMAIL_FIELD}
+    named |= {*getattr(model, "IDENTIFIER_FIELDS", ()), *identifier_fields(model)}
+    return frozenset(each for each in named if each)
+
+
+def _typed(value: JsonValue) -> JsonValue:
+    """``value`` marked ``Typed`` if it is text: staff wrote it."""
+    return Typed(value) if isinstance(value, str) else value
 
 
 def field_label(name: str) -> str:
