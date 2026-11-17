@@ -80,6 +80,7 @@ __all__ = [
     "ZIP",
     "FileType",
     "ReceivedUpload",
+    "Upload",
     "UploadRefused",
     "receive_upload",
     "sanitize_filename",
@@ -112,7 +113,12 @@ CHECKED_SALT: Final = "domainkit.http.uploads.checked"
 """What a remembered verdict is signed for: a cache may be written by others."""
 
 type Upload = UploadFile | bytes | AsyncIterable[bytes]
-"""What ``save_upload`` takes: a form's file, bytes, or a stream of bytes."""
+"""What ``save_upload`` takes: a form's file, bytes, or a stream of bytes.
+
+A file gateway of the infrastructure layer takes what its route hands it
+as an ``Upload``, so it never names Starlette's ``UploadFile``, which the
+layer rules keep out of that layer (New in 2.7, ADR 0177).
+"""
 
 
 @dataclass(frozen=True, slots=True)

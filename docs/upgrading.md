@@ -38,8 +38,145 @@ never published), with each section below.
 
 ## 2.6 to 2.7
 
-2.7 answers the project's notes still open against 2.6. Each item of
-this list says what a project that relied on 2.6's behaviour changes.
+2.7 follows up 2.6. Each item of this list says what a project that
+relied on 2.6's behaviour changes, and what to run.
+
+- **The framework's acts word their screens for people.** The admin
+  API's act names flags and fields as a person reads them ("Staff: no",
+  "Email", "Display name"), and approvals' screens show a list's items,
+  over as many lines as it takes ("added", "added (2)"), where 2.6 showed
+  `is_staff: false` and a list as JSON cut at 64 characters. A user or a
+  group shows by name and the end of its id ("ann (…123456789abc)"), the
+  name cut past 48 characters; an empty list shows as nothing, where 2.6 wrote `[]`; an
+  approval's empty "Takes away" is left out; a backslash shows doubled.
+  The digest of each act is unchanged; a client or a test that matched
+  the old labels or values reads the new ones
+  ([What a screen shows](auth/actions.md#what-a-screen-shows)).
+- **To show acts whole, or refuse them**, set
+  `AUTH = {"AUTHORIZATIONS": {"WHOLE": True}}`. The admin API's twins,
+  and approvals' submit and approve twins, then answer `422
+  too_much_to_show` for a change their screen cannot show whole: a value
+  longer than 64 characters (a long impersonation reason), more than six
+  lines (a change padded with fields), a list longer than the screen.
+  With `APPROVE_ACTION` on, so is a held change of the admin API that
+  the approver's screen could not show whole, at its twin, and
+  submitting such a request. A user's or a group's name, however long,
+  never is.
+  Clients make those changes in smaller steps. A guard of the project's
+  whose arguments do not fit gives `guard(show=...)`; accounting's
+  postings have no `show` yet, and their lines do not fit.
+- **`check` names throttles counted per tenant unsaid.** A `Throttle` on
+  a route served as a tenant (a `PathTenant`'s, or any route under
+  `TenantMiddleware` but a tenants' collection) that says neither
+  `per_tenant=True` nor `per_tenant=False` is warned of
+  (`tenancy.W001`), so `check --deploy` fails until each says how it
+  counts. Nothing counts differently: `per_tenant=True` keeps each
+  tenant's count, as before, and `SILENCED_CHECKS` may name the warning
+  ([tenancy.md](tenancy.md#caches-limits-and-logs)).
+- **An approval of `auth.set_groups` grants the groups it held**
+  ([ADR 0172](adr/0172-hold-admin-changes-by-what-they-grant-and-check-before-the-hold.md)).
+  The request's arguments hold `groups` beside the names: each group
+  added, by id, with the permissions it grants. A request approved under
+  2.6 and not yet made holds no `groups`: the staff member's call submits
+  a new request (`403 approval_pending`), which is approved again. Code
+  that reads a request's arguments finds the new key; a group renamed,
+  made again, or granted other permissions since the request was made
+  makes another request. A `409 group_in_use` of your own, which kept a
+  named group from changing, can go.
+- **A deactivated superuser comes back as one is made.** With
+  `APPROVALS.SUPERUSER_APPROVALS` above 0, `PATCH /admin/auth/users/{id}`
+  with `"is_active": true` for an inactive superuser answers `403
+  approval_required`. Take superuser away while they are inactive, make
+  them active, then submit `auth.grant_superuser`.
+- **An `auth.reactivate` request holds what the user comes back with**:
+  their flags, groups, permissions, and grants on objects. Grant them
+  anything while it waits, and the same call submits a new request.
+- **`auth.set_staff` holds a staff member's return.** Where
+  `ADMIN_APPROVALS` holds `auth.set_staff` and not `auth.reactivate`,
+  `PATCH /users/{id}` with `"is_active": true` for an inactive staff
+  member waits for approval, as making staff does. Hold
+  `auth.reactivate` too to hold the return of anyone who holds access;
+  a call that then makes a user staff and active again is refused (`403
+  approval_required`): send two.
+- **The admin API's twins run your `on_admin_change` checks**, with
+  `change.asking` true (a group's twins run the `on_admin_group_change`
+  checks). A check that only refuses needs nothing; one that writes (an
+  audit row of its own, a count) should write nothing while `asking`, or
+  it writes once at the twin and once at the change. A check that calls
+  a guard `by_maker` (approvals' hold does) would submit a request at
+  the twin: return while `asking`.
+- **Approvals' hold runs after your checks.** It registers at
+  `order=100`; a check you registered for `auth` to run before it can be
+  registered for its own domain again. A check that must see the hold's
+  outcome registers with an order above 100.
+- **A reused password costs a try, and can now answer `429`.**
+  `POST /admin/auth/users/{id}/password` compares the password with the
+  user's history when the change is about to be made (after your
+  checks; with `auth.set_password` held, once the approval is found). A
+  reuse is refused, spends the change's authorization with
+  `AUTH.ADMIN_ACTION` (confirm again to try another password; with the
+  history on, every call spends its authorization before the checks, one
+  that waits for approval too: confirm each), and
+  counts for that staff member and that user: past `AUTH.LOGIN_RATE`
+  of them (or `ACCOUNT_LOGIN_RATE` over the day), that staff member's
+  password changes of that user answer `429 rate_limited` for a while,
+  a new password too. Nothing else a staff member does newly answers
+  `429`, and the user's own wrong passwords never count here.
+- **`AdminChange` has `last_check`.** The admin API's comparison of a
+  password with the history; approvals' hold runs it. Await it from a
+  check of yours only once the change will surely be made, after every
+  check that may refuse it. A check ordered after approvals' hold (above
+  100) sees the approval spent: refuse password changes before it.
+- **A check added to an admin route with `select_routes` runs after the
+  admin API's rules.** It no longer sees requests the rules refuse
+  (anonymous, not staff, without the model permission or the
+  authorization); rules you put in front of it for that can go.
+- **A PDF that decodes past 32 MiB is not laid over** (security).
+  `overlay_pdf` and `page_sizes` decode `max_decoded` bytes at most, in
+  all: the object streams of each PDF, and the content of each page laid
+  over and of its overlay. 2.6 decoded them whole, held only by pypdf's
+  limit of 75 MB on each stream, so a PDF of 170 KB could take hundreds
+  of megabytes in the worker. Past the budget, the call raises
+  `DocumentError`. For drawings or maps of many megabytes a page, pass a
+  larger `max_decoded`, for that kind of document only
+  ([What a PDF may decode](documents.md#what-a-pdf-may-decode)). A page
+  laid over is now written back deflated: the PDF looks the same, and is
+  smaller.
+- **Some PDFs 2.6 read are refused unread** (security), by
+  `overlay_pdf` and `page_sizes`, where a stream they decode has an
+  image's filter, `/Crypt`, or one they do not know; an LZW, run-length,
+  ASCIIHex, or ASCII85 stage after another filter, or two of them; such
+  stages first on streams of more than `max_decoded / 32` bytes in all
+  (1 MiB), or with LZW `max_decoded / 512` (64 KiB); or a predictor. An
+  object stream that cannot be decoded is refused even when nothing uses
+  it; the cross-reference streams list 65,536 entries at most (one for
+  each 512 bytes of `max_decoded` where that is more); a file chains 32
+  cross-reference sections at most, one for the file and one for each
+  save added to it (two in a hybrid file); a damaged file, whose table
+  pypdf would rebuild, an object stream held in another, a
+  cross-reference stream decoded otherwise than with `FlateDecode`, and
+  a file that names more than 32 objects its table lacks are refused. Few generators write any of
+  these on a page's content (PDFs of the early 1990s used
+  `[/ASCII85Decode /LZWDecode]`, now refused), and ReportLab's
+  `[/ASCII85Decode /FlateDecode]` is read as before.
+- **A request that needs a renderer where none is set is answered 503.**
+  `renderer()` without `DOCUMENTS["RENDERER"]` raises
+  `RendererNotConfigured`, which is the `ImproperlyConfigured` it raised
+  in 2.6 and a `RendererUnavailable`: the HTTP layer answers it
+  `503 renderer_unavailable`, where 2.6 answered 500. It is still logged
+  as an error and sent to `ERROR_REPORTERS`, the first time a process
+  asks for a renderer (a forked process too), and no more. Code that catches
+  `ImproperlyConfigured` still catches it, but an exception handler of
+  the project's own for `ImproperlyConfigured` no longer sees it, since
+  `UpstreamError` comes first in its classes (the handler for the
+  nearest class answers). Code that catches `RendererUnavailable`, to
+  answer Gotenberg being down, now catches a missing setting too.
+- **`PlaceholderError.malformed` lists the braces in another order.**
+  `fill_docx` reads the body, then the headers, footers, footnotes, and
+  endnotes, each kind by part name, where 2.6 read the parts in the order
+  the document's content types listed them. A test that compares the
+  whole tuple may need its order changed; `missing` and `unused` were
+  sorted and stay so.
 
 - **A PDF's page content is bounded.** `CHECKED_PDF` refuses a PDF whose
   pages' contents decode to more than 64 MiB in all, 422 `unsafe_file`
@@ -73,9 +210,26 @@ this list says what a project that relied on 2.6's behaviour changes.
 - **`DeviceSigned` reads a body last.** A request naming no device of the
   caller's is refused before its body is read, and a signed request takes
   two short transactions, the device's lookup and the request's record
-  (which reads the device again), where it took one. Nothing to change; once every app in use sends
-  `Content-Digest`, set `DEVICES.CONTENT_DIGEST = "required"`
+  (which reads the device again), where it took one. Nothing to change;
+  once every app in use sends `Content-Digest`, set
+  `DEVICES.CONTENT_DIGEST = "required"`
   ([The body, read last](auth/devices.md#the-body-read-last)).
+
+### Make and apply auth's migration for bound and held authorizations
+
+The action authorizations table (`domainkit_authorizations`) gains three
+nullable columns: `bound`, the SHA-256 of what an act's `binds` read of
+its record, and `held_until` and `held_for`, how long and for which
+request an authorization of an act held for approval is kept (ADR 0174).
+Run `python manage.py makemigrations`, review the revision, then
+`migrate` it before the new code serves. Until then every use of the
+table fails: asking for an authorization, reading one (the rule of every
+act), and the hourly purge raise `OperationalError`, so acts answer
+`500`; `check` reports nothing of it. Authorizations asked before bind
+no record and are held by nothing; an act that adds `binds` refuses
+those once, `409 action_record_changed`, and the client asks again.
+Nothing else changes until a project declares `binds`, or sets
+`AUTH.AUTHORIZATIONS.HELD_TTL` or `ACTIONS`.
 
 ## 2.5 to 2.6
 

@@ -11,6 +11,183 @@ and a status.
 
 ### Added
 
+- `AUTH["AUTHORIZATIONS"]["WHOLE"]` (off): the framework's acts show what
+  they do whole on a phone's screen, or are refused when asked for (`422
+  too_much_to_show`): `auth.admin_change`, `approvals.submit`, and
+  `approvals.approve`, never for the name of the user or group they are
+  on. With `APPROVE_ACTION` on, a change of the admin API that approvals
+  would hold is refused at its twin when the approver's screen could not
+  show it whole (auth's new `on_admin_screen` hook), and a request whose
+  approval could not be shown whole is refused when it is submitted, so
+  none waits for an approval nobody could confirm. Rejecting and
+  cancelling are never refused for what they show ([What a screen shows](docs/auth/actions.md#what-a-screen-shows),
+  ADR 0173) (user reports A22, A23).
+
+- `domainkit.contrib.auth.screens`: `laid_out(details)` lays out an act's
+  labelled values on a screen's six lines, a list over as many lines as it
+  takes ("Adds", "Adds (2)"), so that two different texts never show
+  alike (a backslash doubled, a text item with a comma quoted), and
+  refuses what does not fit whole (`TooMuchToShow`, `422
+  too_much_to_show`), or with `whole=False` cuts it and counts it.
+  `named(name, id)` shows what an act is on by its name, cut to fit, and
+  the end of its id (user report A22).
+
+- `guard(show=...)` (and `Guard.show`): what a person deciding a request
+  is shown of its command, in place of its arguments by name, a plain or
+  `async` function that may read the database. The holds of users
+  (`auth.grant_superuser` and those `ADMIN_APPROVALS` names) show the user
+  by name and id, read when shown and never stored with the request, and
+  an impersonation's "Stated reason" (user report A23).
+- A hook takes an order: `on_x(function, order=...)` runs it before
+  (below 0) or after (above 0) the hooks registered without one,
+  whatever their domains; those of one order keep `INSTALLED_DOMAINS`
+  order ([extension-points.md](docs/reference/extension-points.md#lifecycle-readiness-and-checks),
+  ADR 0172) (user report A19).
+- `on_admin_group_change` (`domainkit.contrib.auth.gates`): the admin
+  API's group routes and their twins call it with the staff member, the
+  group, and a `GroupChange` (`group_create`, `group_rename`,
+  `group_permissions`, `group_delete`; the name given, the permissions
+  added and taken away), so a project can refuse a group's change as it
+  refuses a user's ([the admin API](docs/auth/routes.md#staff-hand-out-only-what-they-have))
+  (user report A19).
+- `APPROVALS.ADMIN_APPROVALS` holds two more changes: `auth.reactivate`,
+  making a user who holds access active again (staff, a superuser, a
+  member of a group, or granted a permission, directly or on an object),
+  whose request holds what they come back with, and
+  `auth.set_group_permissions`, granting a group a permission, which the
+  group's members do not decide. Hold the latter with `auth.set_groups`:
+  `check` warns where it is held alone (`approvals.W001`, in staging and
+  production). Grants made outside the admin API need guards of the
+  project's own, as the page now says
+  ([Changes of the admin API](docs/contrib/approvals.md#changes-of-the-admin-api))
+  (user reports A20, A21).
+- `AdminChange.last_check`: the admin API's own check that only the
+  change makes (a password the user had before), run once, when the
+  change will surely be made; approvals' hold runs it under the approved
+  request's lock, before spending it (user report A19).
+- What approving `auth.set_groups`, `auth.reactivate`, and
+  `auth.set_group_permissions` shows says what each grants in words:
+  each group added by name, the end of its id, and how many permissions
+  and grants on objects it holds, as many on a line as fit; a user's
+  return with its flags, groups, and counts; a group by its name now. A name too long is cut beside the
+  id, never refused under `WHOLE`. `on_admin_group_screen`
+  (`domainkit.contrib.auth.gates`) lets approvals refuse, at a group's
+  twin, a held grant its approver could not see whole (user reports A21,
+  A23).
+- `ObjectGrant.expires_at`: when a grant on an object ends, which
+  `domainkit.contrib.objectpermissions` gives; not compared.
+  `ObjectGrant.lasting` keeps a grant held twice once, with its latest
+  end, whatever the order, as `object_grants` now does (user report
+  A21).
+
+- `TENANCY.ALL_TENANTS_PERMISSION` names a permission key that reaches
+  every tenant: staff who hold it everywhere change, and act as, through
+  the admin API, members of companies they do not belong to who hold no
+  key there they lack everywhere; under `MEMBERSHIP` alone, every member.
+  Unset, as before, staff change only the members of tenants they belong
+  to, and a back office needed a superuser. ADR 0177 (user report D3).
+
+- `TENANCY.MEMBER_GRANTS`, a function of the user and a tenant id,
+  answers what a member's roles grant there whatever the tenant's state.
+  The admin API adds it to `MEMBER_PERMISSIONS`' answer, never in its
+  place, so staff who hold a suspended company's looking keys no longer
+  take over an owner who holds everything once it is reactivated.
+  ADR 0177 (user report D3).
+
+- `MemberActions(..., keys={"invite": "organizations.add_membership"})`
+  names the key of an action of the domain's own whole, where the
+  model's (`companies.invite_company`) names nothing; `ModelActions`
+  takes `keys` too. Under `keys`, a route of an action it does not name,
+  other than `view`, `add`, `change`, and `delete`, is refused when
+  declared. ADR 0177 (user report D3).
+
+- `check` names each `Throttle` on a route served as a tenant that says
+  neither `per_tenant=True` nor `per_tenant=False` (`tenancy.W001`, in
+  every environment): it counts per tenant, so moving routes under a
+  tenant multiplied a person's limit by their tenants, unseen.
+  `Throttle(per_tenant=None)`, the new default, counts as `True` did.
+  ADR 0177 (user report D3).
+
+- `EveryWord(finder)` (`domainkit.http`) asks a `search_through` finder
+  with every word of a search at once too, where a word alone reached
+  `max_reference_matches`: "ada lovelace" finds Ada Lovelace's rows
+  though each word names more users than the bound, which asked per word
+  missed. ADR 0177 (user report D2).
+
+- The admin API's `GET /users/names` answers the page `GET /users` does,
+  with each user's id, username, name, and identifiers only, not their
+  groups, permissions, or other fields, and nothing `/users` hides.
+  ADR 0177 (user report D2).
+
+- `domainkit.http.uploads.Upload`, the type `save_upload` and
+  `receive_upload` take, is public: a file gateway of the infrastructure
+  layer takes its route's file as it is without naming Starlette's
+  `UploadFile`, which the layer rules keep out. ADR 0177 (user report
+  D2).
+
+- `Action(binds=...)` binds an act to the record it decides on:
+  `binds(command, uow)` reads it (an aggregate's `version`, the fields
+  the act decides on) in the act's unit of work, where `show` reads when
+  the authorization is asked for, and again when the act's service
+  opens its unit of work: an act that binds reads and decides in one
+  committed transaction, and a second block or commit is refused
+  (`ImproperlyConfigured`). The digest the phone signs covers what it
+  read; the act refuses a record that reads otherwise, `409
+  action_record_changed` (`ActionRecordChanged`), and voids the
+  authorization, as it does a record gone (`NotFound`). An approval
+  confirmed for one file or one submission no longer decides on another
+  stored under the same id. The authorizations table gains a nullable
+  `bound` column: run `makemigrations` and `migrate`
+  ([upgrading.md](docs/upgrading.md#26-to-27),
+  [The record it decides on](docs/auth/actions.md#the-record-it-decides-on),
+  ADR 0174) (user report A24).
+
+- `AUTH.AUTHORIZATIONS.HELD_TTL` (off by default, 7 days at most) keeps a
+  confirmed authorization while its act waits for approval
+  (`approval_pending`, a guard `by_maker` such as `ADMIN_APPROVALS`'s),
+  for that request, while it waits or is approved and not yet run: the
+  maker's call once approved spends it, without a second confirmation,
+  and a request rejected, withdrawn, or expired ends it.
+  `hold_authorizations(until, held_for=...)` and the `on_held_act` hook
+  do the same for code that holds an act of its own. The authorizations
+  table gains nullable `held_until` and `held_for` columns
+  ([Held for approval](docs/auth/actions.md#held-for-approval), ADR 0174)
+  (user report A17).
+
+- `AUTH.AUTHORIZATIONS.ACTIONS` gives each act, by its purpose, its own
+  `METHODS` and `TTL`: the framework's (`auth.admin_change`,
+  `approvals.approve`, ...), which took the settings every act takes,
+  and the project's. `check` refuses a purpose no registered action has
+  (`auth.E112`)
+  ([Each act its own methods and lifetime](docs/auth/actions.md#each-act-its-own-methods-and-lifetime),
+  ADR 0174) (user report A17).
+
+- `GET /app-sign-in/requests?withdrawn=true` lists the asks a session
+  withdrew unanswered, until `REQUEST_TTL` after they were asked, each
+  `"withdrawn": true`: an app opened without the push reports them, as
+  the push let it. The list without it is as before
+  ([Withdrawing a request](docs/auth/ciba.md#withdrawing-a-request),
+  ADR 0174) (user report A17).
+
+- `placeholders(document)` (`domainkit.documents`) lists the
+  placeholders of a Word document, each once in the order written, and
+  the braces that make none, as `fill_docx` reads them: the same parts
+  and grammar, within `ArchiveLimits` (`Placeholders`)
+  ([Listing the placeholders](docs/documents.md#listing-the-placeholders),
+  ADR 0176) (user report U2).
+
+- `fill_docx` takes `allow_missing` and `allow_malformed`: a draft leaves
+  a placeholder without a value, or braces that make none, as written,
+  for a preview of what is left to fill or fix. The defaults stay strict
+  ([Drafts](docs/documents.md#drafts),
+  ADR 0176) (user report U5).
+
+- `clean_html` keeps less when asked: `styles=False`, or a set of the
+  properties it keeps; `images=False`; and `classes`, the class names
+  kept by tag, for an editor that aligns by class. A style property
+  beyond its own list is refused, never kept
+  ([A narrower allowlist](docs/documents.md#a-narrower-allowlist),
+  ADR 0176) (user report U2).
 - `upload_route` decides its `types`, `max_size`, `storage` and
   `directory` per request: each may be a callable of the request and the
   aggregate the route reached (`None` on the collection), sync or async,
@@ -39,15 +216,59 @@ and a status.
 
 - The `kafka` extra accepts aiokafka up to 0.15 (`>=0.12.0,<0.16.0`),
   tested with 0.15.0.
+
 - The projects `init` writes take ruff `>=0.17.3,<0.18`, the range
   domainkit's own code is checked with.
+
 - CI and the release build run Poetry 2.4.3 (`make install` asks for
   Poetry 2.4): 2.2.1 wrote a crafted wheel's files outside its target
   (CVE-2026-34591), and its dulwich had nine advisories. CI audits the
   build's hash-pinned tools too.
 
+- `auth.admin_change`'s screen names flags and fields as a person reads
+  them ("Superuser: yes", "Email", "Display name", not `is_superuser:
+  true`), shows the user or group with its id, and puts a list of groups
+  or permissions over as many lines as it takes ("Adds", "Adds (2)")
+  before it counts what does not fit. An item that holds a comma is
+  quoted, and a backslash is doubled ([upgrading.md](docs/upgrading.md#26-to-27))
+  (user report A22).
+- The admin API's twins run the `on_admin_change` checks (a group's
+  twins, the `on_admin_group_change` checks) with `AdminChange.asking`
+  true, so a change the project refuses is refused before the staff
+  member confirms it; approvals' hold submits and spends nothing there.
+  A check that writes should write nothing while `asking`
+  ([upgrading.md](docs/upgrading.md#26-to-27)) (user report A17).
+
 ### Fixed
 
+- Approvals' hold of an admin change runs after the project's
+  `on_admin_change` checks (`HOLD_ORDER`, 100), whatever the domains'
+  order, and compares a password with the user's history
+  (`AUTH.PASSWORD_HISTORY`) once it finds the approved request, before
+  spending it: a change refused there no longer spends the staff
+  member's approval (user report A19).
+- The admin API declares each route's staff rule among its route
+  dependencies, so a check a project adds with `select_routes` runs after
+  the admin API's rules, not for anyone before them; the page says where
+  a rule taken as an endpoint's parameter runs
+  ([Rules on the framework's routes](docs/auth/routes.md#rules-on-the-frameworks-routes))
+  (user report A17).
+
+- `renderer()` with no `DOCUMENTS["RENDERER"]` raises
+  `RendererNotConfigured`, an `ImproperlyConfigured` as before and a
+  `RendererUnavailable`: a request that needs a renderer where none is
+  set is answered 503 `renderer_unavailable`, not 500. It is still
+  logged as an error and sent to `ERROR_REPORTERS`, as the 500 was, once
+  a process (and once in a process forked from it), at the first call:
+  a missing setting is a deployment's mistake
+  ([The renderer](docs/documents.md#the-renderer), ADR 0176)
+  (user report U5).
+
+- `fill_docx` reads a document's parts in a stable order, whatever order
+  its content types list them in: the body, the headers, the footers,
+  the footnotes, then the endnotes, each kind by part name. So
+  `PlaceholderError.malformed` lists the braces in that order, as
+  `placeholders` does (ADR 0176) (user report U2).
 - `ReceivedUpload.store` drops its temporary file when `STORAGES` has no
   alias it is given; the file stayed open. An `upload_route` looks its
   storage up, and checks its directory, before it reads the body: both
@@ -57,6 +278,78 @@ and a status.
 
 ### Security
 
+- Approvals' screens no longer cut a list with no count. A grant of 30
+  permission keys showed one line of JSON cut after three keys, and a
+  user by id: a list now goes over the lines left, item by item, whatever
+  its items (an object or a list as compact JSON), and its last line says
+  how many more; the user a held change of the admin API is about shows
+  by name and id. A new line and a backslash followed by `n` no longer
+  show alike. With
+  `AUTH["AUTHORIZATIONS"]["WHOLE"]` on, such a request is refused rather
+  than counted (ADR 0173) (user report A23).
+- An approved `auth.set_groups` request grants the groups it held, not
+  their names. It held the names alone, and the call made once it was
+  approved joined whatever group had the name then: a powerful group
+  renamed to the approved name, or a group deleted and made again,
+  passed the second person's check. `SetGroups` holds each group added
+  by id with the permissions it grants and its grants on single objects
+  (`groups`, `HeldGroup`); a group renamed, made again, or granted other
+  permissions or objects since (or a grant renewed to another date)
+  makes another request, which shows what it grants. A request of 2.6 approved and not yet made is approved
+  again ([upgrading.md](docs/upgrading.md#26-to-27), ADR 0172) (user
+  report A21).
+- `auth.set_staff` holds making a deactivated staff member active again
+  where `auth.reactivate` is not held: `{"is_active": true}` gave staff
+  back with no approval. With both held, a call that makes a user staff
+  and active again is refused (`403 approval_required`) (user report A21).
+- A deactivated superuser made active again through the admin API is a
+  superuser made: with `APPROVALS.SUPERUSER_APPROVALS`, it is refused
+  (`403 approval_required`), and it passed with no approval (user report
+  A21).
+- The admin API compares a password with the user's history only when
+  the change is about to be made, and a reuse costs a try. One
+  confirmation tested guess after guess against the history at no rate.
+  Now nothing is compared while a check refuses the change or its
+  approval waits, and, where an approval is spent, only by the call that
+  claims it, under its lock, so calls made at once on one approval are
+  one guess; every other password gets the same answer. Once compared,
+  a reuse is refused, spends the change's authorization
+  (`AUTH.ADMIN_ACTION`), and counts against the staff member's guesses
+  at that user's passwords (`AUTH.LOGIN_RATE`, `ACCOUNT_LOGIN_RATE`;
+  `429 rate_limited` past them), apart from the user's own login counts.
+  With `AUTH.ADMIN_ACTION`, such a call spends its authorization before
+  anything is checked, so calls sent at once on one confirmation make one
+  comparison and spend no approval they cannot use (user report A17).
+
+- `overlay_pdf` and `page_sizes` (`domainkit.documents`) decode
+  `max_decoded` bytes at most, in all, 32 MiB by default: the object
+  streams of each PDF, and the content of each page laid over and of its
+  overlay. Each is decoded before it is used, under pypdf's limits on
+  deflate, LZW, run-length, and Brotli lowered to what is left, for the
+  call only (pypdf keeps them per context), so a PDF that inflates past
+  the budget is refused when it runs out, not decoded whole: a 170 KB PDF
+  became 168 MB in one preview. pypdf bounds no other filter, and decodes
+  LZW, run-length, ASCIIHex, and ASCII85 in Python, at up to 94 MiB of
+  memory and 0.6 seconds a MiB they read: a stream's filters are read
+  first, and it is refused unread unless its filters are those a page's
+  content uses, one of those four at most, first, with no predictor
+  (deflate then ASCII85 took a 31 KB PDF to 2.8 GB); and the streams
+  decoded in Python store `max_decoded / 32` bytes in all, with LZW
+  `max_decoded / 512` (64 small ones took 17 seconds a call, LZW clear
+  codes 11 seconds a MiB). The cross-reference sections are counted where
+  pypdf reads them, 32 at most (500 took pypdf 47 seconds); their streams
+  list 65,536 entries at most, or one for each 512 bytes of
+  `max_decoded`, each decoded to 8 bytes an entry, with `FlateDecode`
+  only. A damaged file whose table pypdf would rebuild, decoding every
+  object stream unchecked, is refused, as are an object stream held in
+  another (31 KB took 2.9 GB), an object held in a stream the budget did
+  not decode, a file that needs more than 32 searches for missing
+  objects (20,000 took 406 seconds), and a stream that cannot be
+  decoded. A page laid over is written back
+  deflated. A PDF that decodes past 32 MiB, which 2.6 laid over, is
+  refused: raise `max_decoded` for it
+  ([What a PDF may decode](docs/documents.md#what-a-pdf-may-decode),
+  ADR 0176) (user report U6).
 - `CHECKED_PDF` (`PdfCheck`) decodes each page's content in the check's
   process and refuses a PDF whose pages' contents decode to more than
   `max_content` (64 MiB, new) in all, a stream drawn twice counted

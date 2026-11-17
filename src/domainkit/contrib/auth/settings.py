@@ -4,7 +4,7 @@ import json
 import re
 from collections.abc import Mapping
 from datetime import timedelta
-from typing import Any, Final, Literal, Self
+from typing import Annotated, Any, Final, Literal, Self
 
 from pydantic import (
     AwareDatetime,
@@ -95,6 +95,10 @@ type AuthorizationMethod = Literal["pwd", "otp", "phone"]
 ``phone``, a confirmation on a bound device's own screen (ADR 0144)."""
 MAX_AUTHORIZATION_TTL: Final = timedelta(minutes=30)
 """The longest an action authorization may live (``AUTHORIZATIONS.TTL``)."""
+MAX_HELD_TTL: Final = timedelta(days=7)
+"""The longest an act held for approval keeps its authorization (``HELD_TTL``)."""
+ACTION_PURPOSE: Final = r"^[a-z][a-z0-9_.:-]*$"
+"""An act's purpose, as ``AUTHORIZATIONS.ACTIONS`` names it (``auth.access``)."""
 
 
 class PasswordValidatorConfig(BaseModel):
@@ -302,6 +306,32 @@ def with_a_second_factor(
     return value
 
 
+class ActionSettings(BaseModel):
+    """``AUTH["AUTHORIZATIONS"]["ACTIONS"][purpose]``: one act's lifetime and methods.
+
+    Each key left out keeps what the ``Action`` declares, or the setting's.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
+
+    TTL: timedelta | None = Field(
+        default=None, gt=timedelta(0), le=MAX_AUTHORIZATION_TTL
+    )
+    """How long this act's authorizations work, in place of the action's
+    ``ttl`` and of ``AUTHORIZATIONS.TTL``; 30 minutes at most."""
+    METHODS: tuple[AuthorizationMethod, ...] | None = None
+    """What confirming this act must prove, in place of the action's
+    ``methods`` and of ``AUTHORIZATIONS.METHODS``."""
+
+    @field_validator("METHODS")
+    @classmethod
+    def _check_methods(
+        cls, value: tuple[AuthorizationMethod, ...] | None
+    ) -> tuple[AuthorizationMethod, ...] | None:
+        """Refuse methods without a second factor, or with repeats."""
+        return None if value is None else with_a_second_factor(value)
+
+
 class AuthorizationsSettings(BaseModel):
     """``AUTH["AUTHORIZATIONS"]``: acts authorized one at a time (``auth.actions``)."""
 
@@ -316,8 +346,31 @@ class AuthorizationsSettings(BaseModel):
     """What confirming one must prove, unless its ``Action`` names others: a
     code of the authenticator app (``otp``, which a bound device's key and a
     passkey stand for), the password (``pwd``), or the phone (``phone``)."""
+    WHOLE: bool = False
+    """The framework's acts show what they do whole, or are refused when
+    asked for (``422 too_much_to_show``, ADR 0173): ``auth.admin_change``,
+    ``approvals.submit``, and ``approvals.approve``, and a request that
+    could not be approved so. Off: what does not fit is cut and counted."""
+    HELD_TTL: timedelta | None = Field(default=None, gt=timedelta(0), le=MAX_HELD_TTL)
+    """How long past its expiry a confirmed authorization is kept while its
+    act waits for approval (approvals' ``approval_pending``, a guard
+    ``by_maker``), and at most until the request expires: its maker's call
+    once approved spends it, unconfirmed again. A week at most; None: it
+    expires with its ``TTL``, as before 2.7."""
+    ACTIONS: dict[
+        Annotated[str, Field(pattern=ACTION_PURPOSE, max_length=100)], ActionSettings
+    ] = Field(default_factory=dict)
+    """Per act, by purpose (``auth.admin_change``, ``approvals.approve``,
+    a project's own): its ``TTL`` and ``METHODS``, in place of what its
+    ``Action`` declares and of the two settings above. ``check`` refuses a
+    purpose no registered action has (``auth.E112``)."""
 
     _check_methods = field_validator("METHODS")(with_a_second_factor)
+
+    def __hash__(self) -> int:
+        """Hash every key, ``ACTIONS`` as its items: the settings are cached."""
+        actions = tuple(sorted(self.ACTIONS.items()))
+        return hash((self.TTL, self.METHODS, self.HELD_TTL, actions))
 
 
 class ClientCertSettings(BaseModel):

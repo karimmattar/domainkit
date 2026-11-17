@@ -79,6 +79,7 @@ unique constraint may name its own code
 | `account_not_empty` | 422 | `AccountNotEmpty` (contrib.accounting.exceptions): Closing an account that still has a balance, or holds. |
 | `account_not_found` | 404 | `AccountNotFound` (contrib.accounting.exceptions): No account has that id or code. |
 | `action_not_authorized` | 403 | `ActionNotAuthorized` (contrib.auth.actions): This act is not authorized: ask for an authorization of it, confirm it, then try again. |
+| `action_record_changed` | 409 | `ActionRecordChanged` (contrib.auth.actions): What this act decides on changed since you were shown it: ask for a new authorization. |
 | `already_decided` | 409 | `AlreadyDecided` (contrib.approvals.exceptions): This person approved or rejected the request already (409). |
 | `amount_out_of_range` | 422 | `AmountOutOfRange` (money): An amount where it is kept cannot hold it: too many digits, or places. Also `MovementOutOfRange` (contrib.limits.exceptions): a movement, the sum of an entry's postings for a subject, larger than limits keep. |
 | `approval_not_needed` | 422 | `ApprovalNotNeeded` (contrib.approvals.exceptions): No policy asks for approval of this command: call it directly. |
@@ -238,7 +239,7 @@ unique constraint may name its own code
 | `reference_reused` | 409 | `ReferenceReused` (contrib.accounting.exceptions): A source and reference that name an entry or a hold made otherwise. |
 | `referenced` | 409 | http.errors: a foreign key refused the change. |
 | `refresh_not_supported` | 400 | contrib.auth.authentication: Tokens are not refreshed here; log in again. |
-| `renderer_unavailable` | 503 | `RendererUnavailable` (documents): The renderer could not render now: unreachable, failing, or refusing the login. |
+| `renderer_unavailable` | 503 | `RendererUnavailable` (documents): The renderer could not render now: unreachable, failing, or refusing the login; `RendererNotConfigured`: no renderer is set. |
 | `request_not_pending` | 409 | `RequestNotPending` (contrib.approvals.exceptions): The request was approved, rejected, cancelled, or has expired. |
 | `request_tampered` | 409 | `RequestTampered` (contrib.approvals.exceptions): The request was changed outside the application: its seal does not hold. |
 | `request_timeout` | 408 | http.middleware: The request body took too long to arrive. |
@@ -263,6 +264,7 @@ unique constraint may name its own code
 | `too_many_keys` | 409 | `TooManyKeys` (contrib.devices.exceptions): The user has `MAX_PASSKEYS` (or `MAX_DEVICES`) already. |
 | `too_many_phones` | 409 | `TooManyPhones` (contrib.phones.exceptions): The user holds `PHONES.MAX_PHONES` numbers already. |
 | `too_many_tokens` | 409 | contrib.auth.personal_tokens: the user holds the most personal tokens allowed. |
+| `too_much_to_show` | 422 | `TooMuchToShow` (contrib.auth.screens): The act cannot be shown whole on one screen: make it in smaller steps (422). |
 | `transaction_closed` | 409 | `TransactionClosed` (contrib.ciba.exceptions): The transaction was confirmed or used already, or expired. |
 | `transaction_confirmed` | 409 | contrib.auth.sca: This transaction was confirmed already. |
 | `transaction_expired` | 409 | contrib.auth.sca: This transaction can no longer be confirmed; start it again. |

@@ -25,6 +25,9 @@ search in one of the search fields. ``__in`` and ``ordering`` repeat:
 or domain: ``{"user_id": users_named}`` asks ``users_named(word, limit)``
 for the ids of at most ``max_reference_matches`` users each word names,
 and keeps the rows whose ``user_id`` is one of them (ADR 0170).
+``EveryWord(users_named)`` asks ``users_named(words, limit)`` with every
+word at once too, so two common words find the rows whose user holds
+both, though each word alone names more users than the bound (ADR 0177).
 
 A filter of a money field (``domainkit.money.Money``) compares amounts,
 and brings a ``<name>_currency`` parameter: amounts compare only within a
@@ -132,8 +135,47 @@ class InvalidFilter(APIError):
 
 type Finder = Callable[[str, int], Awaitable[Iterable[object]] | Iterable[object]]
 """What ``search_through`` asks: the ids of at most ``limit`` rows a word names."""
+type WordsFinder = Callable[
+    [tuple[str, ...], int], Awaitable[Iterable[object]] | Iterable[object]
+]
+"""What ``EveryWord`` asks: the ids of at most ``limit`` rows the words name."""
 type Found = Mapping[str, Mapping[str, tuple[object, ...]]]
-"""The ids each search word names through each field (``FilterSet.through``)."""
+"""The ids each search word names through each field (``FilterSet.through``),
+and those every word names together, under the words joined by spaces."""
+
+
+class EveryWord:
+    """A ``search_through`` finder asked with every word of a search at once.
+
+    ``search_through = {"user_id": EveryWord(users_named)}``:
+    ``users_named(words, limit)``, async or not, returns the ids of at most
+    ``limit`` rows that hold every one of ``words`` (all of them, or the
+    phrase they make, as the finder searches). It is asked with each word
+    alone, as a plain finder is, and, for two words or more, with all of
+    them where one alone named ``limit`` rows (some may have been left
+    out): a row whose field is among those ids matches the whole search.
+    So "ada lovelace" finds Ada Lovelace's rows though "ada" and
+    "lovelace" each name more users than the bound (ADR 0177).
+    """
+
+    def __init__(self, finder: WordsFinder) -> None:
+        """Ask ``finder`` with the words of a search.
+
+        Raises:
+            TypeError: ``finder`` cannot be called.
+        """
+        if not callable(finder):
+            raise TypeError(
+                "EveryWord takes a function of the words and a limit that "
+                "returns the ids the words name."
+            )
+        self.finder = finder
+
+    def __call__(
+        self, words: tuple[str, ...], limit: int
+    ) -> Awaitable[Iterable[object]] | Iterable[object]:
+        """The ids of at most ``limit`` rows that hold every one of ``words``."""
+        return self.finder(words, limit)
 
 
 class Filter:
@@ -198,13 +240,14 @@ class FilterSet:
     """The ordering without ``?ordering=`` (``"-placed_at"``); the id ends every one."""
     search_fields: ClassVar[tuple[str, ...]] = ()
     """Text fields ``?search=`` looks in (case-insensitively)."""
-    search_through: ClassVar[Mapping[str, Finder]] = {}
+    search_through: ClassVar[Mapping[str, Finder | EveryWord]] = {}
     """Fields that refer to other rows, and how to find the ones a word names.
 
     ``{"user_id": users_named}``: ``users_named(word, limit)``, async or
     not, returns the ids of at most ``limit`` users the word names (in
     their own fields, indexed there); a row matches the word when its
     ``user_id`` is one of them. Index the field: it is read with ``in``.
+    ``EveryWord(users_named)`` asks with every word at once too.
     """
     max_reference_matches: ClassVar[int] = 100
     """The most ids one search word names through one field; the rest are left out."""
@@ -310,10 +353,13 @@ class FilterSet:
 
         Each finder is asked once per distinct word, whatever its case, for
         at most ``max_reference_matches`` ids: what it answers past that is
-        left out, unread. A search the set would refuse (too long, too many
+        left out, unread. An ``EveryWord`` finder is asked once more, with
+        every distinct word, where two or more were given and one alone
+        named that many. A search the set would refuse (too long, too many
         words) asks nothing; over HTTP, neither does a query string it
         refuses (an unknown lookup, too many conditions). The answer is
-        keyed by each word in lowercase.
+        keyed by each word in lowercase, and the words together by those
+        keys joined by spaces.
         """
         if not cls.search_through or not search:
             return {}
@@ -325,11 +371,24 @@ class FilterSet:
         for word in words:
             distinct.setdefault(word.lower(), word)
         found: dict[str, dict[str, tuple[object, ...]]] = {}
+        cut: set[str] = set()
         for key, word in distinct.items():
             for name, finder in cls.search_through.items():
-                answer = finder(word, limit)
-                ids = await answer if inspect.isawaitable(answer) else answer
-                found.setdefault(key, {})[name] = tuple(islice(_unique(ids), limit))
+                ids = await _asked(finder, (word,), limit)
+                found.setdefault(key, {})[name] = ids
+                if len(ids) == limit:
+                    cut.add(name)
+        together = {
+            name: finder
+            for name, finder in cls.search_through.items()
+            if isinstance(finder, EveryWord) and name in cut
+        }
+        if len(distinct) > 1 and together:
+            asked = tuple(distinct.values())
+            found[_together(distinct)] = {
+                name: await _asked(finder, asked, limit)
+                for name, finder in together.items()
+            }
         return found
 
     @classmethod
@@ -385,7 +444,8 @@ class FilterSet:
             elif name not in compared:
                 parts.append(F(each.field or name).lookup(lookup, argument))
         parts.extend(self._money(each, given) for each, given in amounts.items())
-        parts.extend(self._searched(word) for word in self.search)
+        if self.search:
+            parts.extend(self._search())
         if not parts:
             return None
         criteria = And.of(*parts)
@@ -398,6 +458,18 @@ class FilterSet:
         except (ValueError, TypeError) as exc:  # A value object's; it may quote one.
             raise InvalidFilter("A filter value does not fit its field.") from exc
         return criteria
+
+    def _search(self) -> list[Criteria]:
+        """Rows that hold every search word, each as ``_searched`` finds it.
+
+        Or, with two words or more, rows whose field is among the ids an
+        ``EveryWord`` finder gave for the words together.
+        """
+        each = [self._searched(word) for word in self.search]
+        distinct = dict.fromkeys(word.lower() for word in self.search)
+        named = self.found.get(_together(distinct), {}) if len(distinct) > 1 else {}
+        together = [F(name).in_(ids) for name, ids in named.items() if ids]
+        return [Or.of(And.of(*each), *together)] if together else each
 
     def _searched(self, word: str) -> Criteria:
         """Rows that hold ``word`` in a search field, or refer to a row it names."""
@@ -454,6 +526,27 @@ class FilterSet:
                 raise InvalidFilter(
                     f"Unknown lookup on {base}; it offers {', '.join(offered[base])}."
                 )
+
+
+async def _asked(
+    finder: Finder | EveryWord, words: tuple[str, ...], limit: int
+) -> tuple[object, ...]:
+    """The ids ``finder`` names for ``words``, at most ``limit``, each once.
+
+    ``EveryWord`` takes the words; a plain finder, the one word.
+    """
+    answer = (
+        finder(words, limit)
+        if isinstance(finder, EveryWord)
+        else finder(words[0], limit)
+    )
+    ids = await answer if inspect.isawaitable(answer) else answer
+    return tuple(islice(_unique(ids), limit))
+
+
+def _together(words: Iterable[str]) -> str:
+    """The key of what the words (in lowercase) name together: joined by spaces."""
+    return " ".join(words)
 
 
 def _unique(ids: Iterable[object]) -> Iterator[object]:

@@ -12,6 +12,11 @@ copy ``requires_authorization`` makes, and asks; ``/relabel-directly``
 runs the use case itself, as a route without an act (the phone's) does.
 Its action takes the use case as its command, and shows the stored name,
 read in the route's unit of work.
+
+Publishing is a ``@use_case`` too, that decides on the product as stored:
+its action ``binds`` the product's name and version (ADR 0174, user report
+A24), read where ``show`` reads, and again when the act opens its unit of
+work.
 """
 
 from typing import Any
@@ -31,7 +36,14 @@ from domainkit.ddd import Command, use_case
 from domainkit.resources import ModelActions, ResourceRouter
 from domainkit_tests.sample_domains.shop.models import Product, ProductId
 
-__all__ = ["RELABEL_PRODUCT", "RENAME_PRODUCT", "Products", "ShopUnitOfWork", "router"]
+__all__ = [
+    "PUBLISH_PRODUCT",
+    "RELABEL_PRODUCT",
+    "RENAME_PRODUCT",
+    "Products",
+    "ShopUnitOfWork",
+    "router",
+]
 
 
 class Products(SqlAlchemyRepository[Product, ProductId]):
@@ -113,6 +125,47 @@ RELABEL_PRODUCT = Action(
 )
 
 
+@use_case
+async def publish_product(
+    uow: ShopUnitOfWork, product_id: UUID, channel: str
+) -> Product:
+    """Publish a product on ``channel`` under the name it has as stored."""
+    product = await uow.products.get(ProductId(product_id))
+    PUBLISHED.append((product.id, product.name))
+    return product
+
+
+PUBLISHED: list[tuple[UUID, str]] = []
+"""Each product published, with the name it was published under."""
+BOUND_IN: list[Any] = []
+"""The units of work ``bound_product`` was lent to read in."""
+
+
+async def bound_product(command: Any, uow: ShopUnitOfWork) -> dict[str, Any]:  # noqa: ANN401 - the use case's command.
+    """What publishing decides on: the product's name and version, as stored."""
+    BOUND_IN.append(uow)
+    product = await uow.products.get(ProductId(command.product_id))
+    return {"name": product.name, "version": product.version}
+
+
+async def show_publish(command: Any, uow: ShopUnitOfWork) -> Shown:  # noqa: ANN401 - the use case's command.
+    """The product's name, read in the unit of work it is given, and the channel."""
+    SHOWN_IN.append(uow)
+    product = await uow.products.get(ProductId(command.product_id))
+    return Shown(
+        "Publish a product", {"Product": product.name, "Channel": command.channel}
+    )
+
+
+PUBLISH_PRODUCT = Action(
+    "shop.publish_product",
+    command=publish_product,
+    subject=lambda command: f"shop.product:{command.product_id}",
+    show=show_publish,
+    binds=bound_product,
+)
+
+
 class NameIn(BaseModel):
     """The product's new name."""
 
@@ -141,6 +194,11 @@ products.use_case(
     rule=StepUp(for_=RELABEL_PRODUCT),
 )
 products.use_case(relabel_product, path="/relabel-directly", name="relabel_directly")
+products.use_case(
+    requires_authorization(PUBLISH_PRODUCT)(publish_product),
+    path="/publish",
+    rule=StepUp(for_=PUBLISH_PRODUCT),
+)
 
 router = APIRouter()
 router.include_router(auth_router, prefix="/auth")

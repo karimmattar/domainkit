@@ -1189,6 +1189,7 @@ jobs:
               domainkit.contrib.auth.metrics.* domainkit.contrib.auth.permissions.*
               domainkit.contrib.auth.signup.* domainkit.contrib.auth.tokens.*
               domainkit.contrib.auth.captcha.* domainkit.contrib.auth.admin_actions.*
+              domainkit.contrib.auth.screens.*
           - name: auth-2
             mutants: >-
               domainkit.contrib.auth.devices.*

@@ -1,6 +1,6 @@
 # 0168. Render documents through a port with Gotenberg, and fill them locally
 
-- Status: Accepted
+- Status: Accepted; amended by [0176](0176-bound-what-a-pdf-decodes-list-placeholders-fill-drafts-and-clean-less.md)
 - Date: 2026-11-16
 
 ## Context

@@ -37,6 +37,7 @@ import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import fields, replace
+from datetime import datetime
 from typing import Any, Final
 from uuid import UUID
 
@@ -61,7 +62,7 @@ from .exceptions import (
     RequestNotPending,
     RequestTampered,
 )
-from .guards import Guard, Policy, Running, guard_for, policy_of, running
+from .guards import Guard, Policy, Running, guard_for, policy_of, running, when_spent
 from .models import (
     MAX_PERSON,
     MAX_REASON,
@@ -171,9 +172,16 @@ async def _submit(
     Raises:
         ApprovalNotNeeded: As for ``_prepared``.
         InvalidArguments: As for ``_prepared``.
+        TooMuchToShow: With ``APPROVE_ACTION`` and auth's
+            ``AUTHORIZATIONS.WHOLE`` on, approving it could not be shown
+            whole (auth's, 422).
     """
     policy, arguments = _prepared(guard, command, maker)
     settings = config()
+    if settings.APPROVE_ACTION:  # Never a request no approver's screen shows whole.
+        from .authorizing import check_approvable
+
+        await check_approvable(guard, command)
     request = ApprovalRequest.submit(
         guard.action,
         arguments,
@@ -207,6 +215,9 @@ async def submit_request(
         InvalidArguments: The arguments do not make its command, or are too
             large; or the maker is malformed.
         ApprovalNotNeeded: No policy of the guard applies to the command.
+        TooMuchToShow: With ``APPROVE_ACTION`` and auth's
+            ``AUTHORIZATIONS.WHOLE`` on, approving it could not be shown
+            whole on one screen (auth's, 422).
         AuthorizationRequired: With ``SUBMIT_ACTION``, no authorization of
             this submission came with the request (auth's, 401).
         ActionNotAuthorized: With ``SUBMIT_ACTION``, it is of another
@@ -241,6 +252,7 @@ async def record_submission(
         UnknownAction: As for ``submit_request``.
         InvalidArguments: As for ``submit_request``.
         ApprovalNotNeeded: As for ``submit_request``.
+        TooMuchToShow: As for ``submit_request``.
     """
     guard, made, maker = _made(command)
     return await _submit(guard, made, maker, uow)
@@ -287,6 +299,7 @@ async def submit_command(
         UnknownAction: No guard is registered as ``action``.
         InvalidArguments: ``command`` is not the guard's command, or too large.
         ApprovalNotNeeded: No policy of the guard applies to it.
+        TooMuchToShow: As for ``submit_request``.
     """
     guard = guard_for(action)
     if not isinstance(command, guard.command):
@@ -328,6 +341,11 @@ async def run_by_maker(guard: Guard, command: object) -> Running:
     call refused after that needs a new approval. A request that fails a
     check fails, and the next is tried.
 
+    Waiting, the act's authorization the caller confirmed for this call,
+    if auth's action authorizations took one, is kept for the call made
+    again once approved, until the request expires, within
+    ``AUTH.AUTHORIZATIONS.HELD_TTL`` (ADR 0174).
+
     Raises:
         ApprovalRequired: No one is acting.
         MakerNotAllowed: The caller may no longer make the command.
@@ -358,8 +376,50 @@ async def run_by_maker(guard: Guard, command: object) -> Running:
     )
     if waiting is None:
         waiting = await _submit(guard, command, maker, ApprovalsUnitOfWork())
+    _keep_authorizations(waiting.id, waiting.expires_at)
     raise ApprovalPending(
         "This command needs approval: it was submitted for approval.", waiting.id
+    )
+
+
+HELD_FOR: Final = "approvals.request:"
+"""What auth is told a maker's held call waits on: the request, by id."""
+
+
+def _keep_authorizations(request_id: UUID, until: datetime) -> None:
+    """Keep the action authorization of the maker's held call for the request.
+
+    With ``domainkit.contrib.auth`` installed, its ``hold_authorizations``:
+    the call made again once the request ``request_id`` is approved spends
+    it, within ``AUTH.AUTHORIZATIONS.HELD_TTL``, while the request still
+    waits (``held_request_waits``), until ``until``, its expiry (ADR 0174).
+    Without auth, there is none.
+    """
+    if registry.is_installed(AUTH):
+        from domainkit.contrib.auth.actions import hold_authorizations
+
+        hold_authorizations(until, held_for=f"{HELD_FOR}{request_id}")
+
+
+async def held_request_waits(held_for: str) -> bool | None:
+    """Whether the request an authorization is held for waits still (auth's hook).
+
+    Pending or approved, unrun, and its time not up: True. Rejected,
+    cancelled, expired, failed, carried out, or gone: False, and the hold
+    is over. None for what is not a request of approvals'.
+    """
+    if not held_for.startswith(HELD_FOR):
+        return None
+    try:
+        request_id = RequestId(UUID(held_for.removeprefix(HELD_FOR)))
+    except ValueError:
+        return False
+    async with ApprovalsUnitOfWork() as uow:
+        request = await uow.requests.find(request_id)
+    return (
+        request is not None
+        and request.status in {RequestStatus.PENDING, RequestStatus.APPROVED}
+        and not request.expired(clock.now())
     )
 
 
@@ -372,7 +432,11 @@ async def _spend(
     run (it fails then, with the refusal's code). Its command must read as
     ``arguments``: the request was found by its fingerprint column, which
     its seal does not cover, and the arguments its seal covers are what
-    the approvers were shown.
+    the approvers were shown. The call's ``when_spent`` check runs last,
+    under the lock: one that raises leaves the request approved.
+
+    Raises:
+        Exception: Whatever the ``when_spent`` check raises.
     """
     async with ApprovalsUnitOfWork() as uow:
         request = await uow.locked(request_id)
@@ -389,6 +453,9 @@ async def _spend(
             request.failed(exc.code)
             await uow.commit()
             return None
+        last = when_spent()
+        if last is not None:
+            await last()  # Under the lock: the one call that spends it.
         request.executed()
         await uow.commit()
     return request

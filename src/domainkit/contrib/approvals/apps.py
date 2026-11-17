@@ -6,10 +6,13 @@ from typing import TYPE_CHECKING, Final
 from domainkit.apps import DomainConfig, Requirement, registry
 from domainkit.apps.hooks import (
     on_check_application,
+    on_deployment_warnings,
     on_erase_subject,
     on_export_subject,
 )
 from domainkit.checks import CheckMessage
+from domainkit.conf import settings
+from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import AllOf, AnyOf, BasePermission, Not
 
@@ -49,14 +52,19 @@ class ApprovalsConfig(DomainConfig):
         (ADR 0163). The guards of large
         postings, of making superusers, and of the admin changes
         ``ADMIN_APPROVALS`` names are registered when their apps are
-        installed and their settings ask.
+        installed and their settings ask; the checks of admin changes run
+        after the project's (``HOLD_ORDER``, ADR 0172).
 
         Raises:
             ImproperlyConfigured: One of the ``*_ACTION`` settings, or
                 ``ADMIN_APPROVALS``, is set without ``domainkit.contrib.auth``.
         """
         from .builtin import (
+            HOLD_ORDER,
             check_admin_change,
+            check_admin_screen,
+            check_group_change,
+            check_group_screen,
             guard_admin_changes,
             guard_entries,
             guard_superusers,
@@ -76,6 +84,7 @@ class ApprovalsConfig(DomainConfig):
         on_erase_subject(self.erase_person)
         on_export_subject(self.export_person)
         on_check_application(self.application_problems)
+        on_deployment_warnings(self.weak_settings)
         if asked := [name for name in ACTS if getattr(config, name)]:
             if not registry.is_installed(AUTH):
                 raise ImproperlyConfigured(
@@ -92,19 +101,32 @@ class ApprovalsConfig(DomainConfig):
                 f"APPROVALS.ADMIN_APPROVALS guards the admin API of {AUTH}: install it."
             )
         if registry.is_installed(AUTH):
+            from domainkit.contrib.auth.actions import on_held_act
             from domainkit.contrib.auth.gates import (
                 on_admin_change,
+                on_admin_group_change,
+                on_admin_group_screen,
+                on_admin_screen,
                 on_create_staff,
                 on_make_superuser,
             )
 
+            from .services import held_request_waits
+
             on_make_superuser(refuse_ungoverned_superusers, domain=self.label)
+            on_held_act(held_request_waits, domain=self.label)
             if config.SUPERUSER_APPROVALS:
                 guard_superusers(config)
             if config.ADMIN_APPROVALS:
                 guard_admin_changes(config)
-                on_admin_change(check_admin_change, domain=self.label)
+                on_admin_change(check_admin_change, domain=self.label, order=HOLD_ORDER)
+                on_admin_group_change(
+                    check_group_change, domain=self.label, order=HOLD_ORDER
+                )
                 on_create_staff(refuse_staff_creation, domain=self.label)
+                if config.APPROVE_ACTION:  # The approver's screen, at the twin.
+                    on_admin_screen(check_admin_screen, domain=self.label)
+                    on_admin_group_screen(check_group_screen, domain=self.label)
 
     def application_problems(self, app: "FastAPI") -> list[str]:
         """``approvals.E001``: ``APPROVE_ACTION`` beside a step-up window.
@@ -154,6 +176,31 @@ class ApprovalsConfig(DomainConfig):
                         )
                     )
         return problems
+
+    def weak_settings(self) -> list[str]:
+        """``approvals.W001``: a group's permissions held, a user's groups not.
+
+        ``auth.set_group_permissions`` alone holds granting a permission to
+        a group that has members, but a new group made with that permission
+        and joined by them grants it as well, unheld (in staging and
+        production).
+        """
+        held = registry.settings(ApprovalsSettings).ADMIN_APPROVALS
+        if (
+            settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS
+            or "auth.set_group_permissions" not in held
+            or "auth.set_groups" in held
+        ):
+            return []
+        return [
+            CheckMessage(
+                "approvals.W001",
+                "APPROVALS.ADMIN_APPROVALS holds auth.set_group_permissions "
+                "but not auth.set_groups: a group made with the permissions, "
+                "and joined, grants them with no approval.",
+                hint='Hold "auth.set_groups" too.',
+            )
+        ]
 
     async def erase_person(self, subject: str, reason: str) -> Mapping[str, int]:
         """Unlink ``subject`` from the requests they made and decided."""

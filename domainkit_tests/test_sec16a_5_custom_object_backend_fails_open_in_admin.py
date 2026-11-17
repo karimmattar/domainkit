@@ -29,6 +29,7 @@ from domainkit.contrib.auth.models import AnyUser
 from domainkit.contrib.auth.settings import auth_settings
 from domainkit.ddd import PermissionDenied
 from domainkit_tests.test_object_permissions import (
+    BARE,
     CHANGE,
     person,
     products,
@@ -87,6 +88,6 @@ def test_staff_cannot_take_over_a_holder_of_a_custom_backends_grant() -> None:
     with pytest.raises(PermissionDenied):
         run(
             admin.set_password(
-                owner.id, admin.AdminPasswordIn(password=NEW_PASSWORD), helpdesk
+                owner.id, admin.AdminPasswordIn(password=NEW_PASSWORD), BARE, helpdesk
             )
         )

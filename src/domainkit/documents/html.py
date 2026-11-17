@@ -21,6 +21,15 @@ Not stopped: text made tiny or the colour of the page, and large text
 (a big font, wide spacing) in a box the template made narrow, which
 runs over its neighbour. Show a preview of what is signed.
 
+An editor that needs less keeps less: ``styles=False`` keeps no
+``style``, or a set keeps those of ``STYLE_PROPERTIES`` only;
+``images=False`` keeps no image. Never more: a property beyond
+``STYLE_PROPERTIES`` is refused. ``classes`` keeps the class names it
+lists, by tag (``*``: every tag kept), and no other: a class loads and
+runs nothing, and means only what the template's style sheet says, so
+list the ones whose rules move no text over other text (an editor's
+alignment, ``ql-align-right``).
+
 It is one of two layers. The renderer is the other: Chromium, started
 by Gotenberg with JavaScript off and a deny list, refuses what gets
 past (docs/documents.md, "Hardening Gotenberg"). A sanitizer reads
@@ -32,6 +41,8 @@ a request can refuse it for sure.
 
 import re
 from collections.abc import Mapping
+from collections.abc import Set as AbstractSet
+from functools import partial
 from typing import Final
 
 from domainkit.documents.base import missing
@@ -106,27 +117,48 @@ IMAGE: Final = re.compile(
 )
 """An image kept: inline data of a raster type (SVG may link)."""
 LINK: Final = re.compile(r"(?:https://|mailto:)\S+", re.IGNORECASE)
+CLASS_NAME: Final = re.compile(r"-?[A-Za-z_][A-Za-z0-9_-]{0,99}")
+"""A class name kept: a plain CSS identifier."""
 
 
-def clean_html(html: str, *, links: bool = False) -> str:
-    """``html``, a fragment of rich text, kept to the module's allowlist.
+def clean_html(
+    html: str,
+    *,
+    links: bool = False,
+    styles: bool | AbstractSet[str] = True,
+    images: bool = True,
+    classes: Mapping[str, AbstractSet[str]] | None = None,
+) -> str:
+    """``html``, a fragment of rich text, kept to the module's allowlist, or less.
 
     The result goes into a template as HTML (unescaped); plain text goes in
     escaped (``html.escape``). ``links`` keeps ``<a href>`` to https and
-    mailto URLs.
+    mailto URLs. ``styles`` keeps the ``STYLE_PROPERTIES`` (True), none
+    (False), or those of a set. ``images`` keeps inline images. ``classes``
+    keeps, by tag (``*``: every tag kept), the class names it lists.
 
     Raises:
         ImportError: ``domainkit[documents]`` is not installed.
+        TypeError: ``styles``, or a tag's ``classes``, is one string, not a set.
+        ValueError: ``styles`` names a property beyond ``STYLE_PROPERTIES``,
+            or ``classes`` a tag not kept or a name that is no CSS identifier.
     """
     try:
         import nh3
     except ImportError as exc:
         raise missing("nh3") from exc
+    properties = _properties(styles)
     attributes = {tag: set(names) for tag, names in ATTRIBUTES.items()}
     tags = set(TAGS)
+    if not properties:
+        attributes["*"].discard("style")
+    if not images:
+        tags.discard("img")
+        del attributes["img"]
     if links:
         tags.add("a")
         attributes["a"] = {"href"}
+    kept = _classes(classes or {}, tags)
     cleaned = html
     # Twice: nh3 writes a style back as its CSS parser read it (``0-500px``
     # as ``0 -500px``), so the second pass checks what the first one wrote.
@@ -136,34 +168,100 @@ def clean_html(html: str, *, links: bool = False) -> str:
             tags=tags,
             clean_content_tags=set(DROPPED),
             attributes=attributes,
-            attribute_filter=_attribute,
-            url_schemes={"data", "https", "mailto"} if links else {"data"},
+            attribute_filter=partial(_attribute, properties, kept),
+            url_schemes=({"data"} if images else set())
+            | ({"https", "mailto"} if links else set()),
             url_relative="deny",
-            filter_style_properties=set(STYLE_PROPERTIES),
+            allowed_classes=kept or None,
+            filter_style_properties=set(properties) or None,
             strip_comments=True,
             link_rel="noopener noreferrer",
         )
     return cleaned
 
 
-def _attribute(tag: str, name: str, value: str) -> str | None:
-    """``value`` as kept, or None to drop the attribute (nh3's ``attribute_filter``)."""
+def _properties(styles: bool | AbstractSet[str]) -> frozenset[str]:
+    """The style properties kept.
+
+    Raises:
+        TypeError: ``styles`` is one string, whose letters would be read.
+        ValueError: ``styles`` names one beyond ``STYLE_PROPERTIES``.
+    """
+    if isinstance(styles, bool):
+        return STYLE_PROPERTIES if styles else frozenset()
+    if isinstance(styles, str):
+        raise TypeError(
+            f"styles is True, False, or a set of properties, not the string "
+            f"{styles!r}: write {{{styles!r}}}."
+        )
+    asked = frozenset(prop.strip().lower() for prop in styles)
+    if beyond := asked - STYLE_PROPERTIES:
+        raise ValueError(
+            "styles keeps some of the properties clean_html keeps, never more: "
+            f"not {', '.join(sorted(beyond))}."
+        )
+    return asked
+
+
+def _classes(
+    classes: Mapping[str, AbstractSet[str]], tags: AbstractSet[str]
+) -> dict[str, set[str]]:
+    """The class names kept by tag, ``*`` spread over every tag kept.
+
+    Raises:
+        TypeError: A tag's names are one string, whose letters would be read.
+        ValueError: A tag is not kept, or a name is no CSS identifier.
+    """
+    for tag, names in classes.items():
+        if isinstance(names, str):
+            raise TypeError(
+                f"classes maps a tag to a set of names, not the string {names!r}: "
+                f"write {{{tag!r}: {{{names!r}}}}}."
+            )
+    if unknown := set(classes) - set(tags) - {"*"}:
+        raise ValueError(
+            f"classes names tags that are not kept: {', '.join(sorted(unknown))}."
+        )
+    for names in classes.values():
+        if odd := sorted(name for name in names if not CLASS_NAME.fullmatch(name)):
+            raise ValueError(
+                f"A class is a CSS identifier: not {', '.join(map(repr, odd))}."
+            )
+    every = set(classes.get("*", ()))
+    kept = {tag: every | set(classes.get(tag, ())) for tag in tags}
+    return {tag: names for tag, names in kept.items() if names}
+
+
+def _attribute(
+    properties: AbstractSet[str],
+    classes: Mapping[str, AbstractSet[str]],
+    tag: str,
+    name: str,
+    value: str,
+) -> str | None:
+    """``value`` as kept, or None to drop the attribute (nh3's ``attribute_filter``).
+
+    ``properties`` and ``classes`` are those ``clean_html`` keeps.
+    """
     if name == "src":
         return value if IMAGE.fullmatch(value.strip()) else None
     if name == "href":
         return value if LINK.fullmatch(value.strip()) else None
     if name == "style":
-        return _style(value)
+        return _style(value, properties)
+    if name == "class":
+        kept = [each for each in value.split() if each in classes.get(tag, ())]
+        return " ".join(dict.fromkeys(kept)) or None
     return value
 
 
-def _style(style: str) -> str | None:
+def _style(style: str, properties: AbstractSet[str]) -> str | None:
     """The declarations of ``style`` whose property and value are kept, or None."""
     kept = []
     for declaration in style.split(";"):
         prop, colon, value = declaration.partition(":")
         prop, value = prop.strip().lower(), value.strip()
-        if colon and prop in STYLE_PROPERTIES and _plain(prop, value):
+        if colon and prop in properties and _plain(prop, value):
             kept.append(f"{prop}: {value}")
     return "; ".join(kept) or None
 

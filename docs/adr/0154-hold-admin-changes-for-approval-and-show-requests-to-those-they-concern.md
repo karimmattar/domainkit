@@ -1,6 +1,6 @@
 # 0154. Hold admin changes for approval, and show requests to those they concern
 
-- Status: Accepted; amended 2026-11-16 (at the end); amended by [0163](0163-authorize-admin-changes-and-requests-steps-as-acts.md)
+- Status: Accepted; amended 2026-11-16 (at the end); amended by [0163](0163-authorize-admin-changes-and-requests-steps-as-acts.md) and [0172](0172-hold-admin-changes-by-what-they-grant-and-check-before-the-hold.md)
 - Date: 2026-11-16
 - Amends: [0121](0121-hold-guarded-commands-as-sealed-requests-and-count-approvals-under-the-requests-lock.md)
 

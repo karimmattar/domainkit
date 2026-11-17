@@ -348,6 +348,52 @@ def test_the_user_reports_an_ask_its_session_withdrew(acting: App) -> None:
     assert code_of(late) == (404, "sign_in_not_found")
 
 
+def test_the_app_lists_a_withdrawn_ask_to_report_it_without_its_push(
+    acting: App,
+) -> None:
+    """``?withdrawn=true``: listed, marked, reportable; never approved nor denied.
+
+    Before 2.7 a withdrawn ask left the list at once, and an app opened
+    without its push could not report it. The plain list stays as it was,
+    for apps that do not know the mark. Past ``REQUEST_TTL`` after it was
+    asked, it is listed no more.
+    """
+    phone = Phone(acting(PHONE))
+    web = acting(NUMBER_MATCHING=False)
+    session = Session(web)
+    asked, started, _ = asked_of_the_phone(session, phone)
+    cancel(web, started["request"], "authorizations/cancel", session.headers)
+    second = session.ask_phone(session.asked("Bo")["id"]).json()
+    cancel(web, second["request"], "authorizations/cancel", session.headers)
+    live = session.ask_phone(session.asked("Cy")["id"])
+
+    plain = phone.waiting()
+    listed = phone.send("GET", "/auth/app-sign-in/requests?withdrawn=true").json()
+    first = listed[0]
+    approved = phone.approve(first["id"], digest=asked_digest(first))
+    denied = phone.deny(first["id"])
+    reported = phone.deny(first["id"], report=True)
+    with later(121):
+        gone = phone.send("GET", "/auth/app-sign-in/requests?withdrawn=true").json()
+
+    assert live.status_code == 200, live.json()
+    assert ["withdrawn" in each for each in plain] == [False]  # As in 2.6.
+    assert [each["withdrawn"] for each in listed] == [True, True, False]
+    assert plain[0]["id"] == listed[2]["id"]
+    assert first["authorization"]["id"] == asked["id"]  # The act, as auth keeps it.
+    assert code_of(approved) == (404, "sign_in_not_found")
+    assert code_of(denied) == (404, "sign_in_not_found")
+    assert reported.status_code == 204, reported.json()
+    assert len(audited("ciba.sign_in_reported")) == 1
+    assert gone == []  # The second, unreported: past REQUEST_TTL.
+
+
+def asked_digest(listed: dict[str, Any]) -> str:
+    """The digest of the act ``listed`` shows."""
+    digest: str = listed["authorization"]["digest"]
+    return digest
+
+
 def test_an_act_withdrawn_while_the_phone_approves_it_is_not_confirmed(
     acting: App, monkeypatch: pytest.MonkeyPatch
 ) -> None:

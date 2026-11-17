@@ -18,6 +18,8 @@ AdminAction = Literal[
     "auth.set_permissions",
     "auth.set_password",
     "auth.impersonate",
+    "auth.reactivate",
+    "auth.set_group_permissions",
 ]
 """A change of auth's admin API that ``ADMIN_APPROVALS`` may hold for approval."""
 Approvals = Annotated[int, Field(ge=1, le=MAX_APPROVALS)]
@@ -75,7 +77,8 @@ class ApprovalsSettings(BaseModel):
     ADMIN_APPROVALS: dict[AdminAction, Approvals] = Field(default_factory=dict)
     """The changes of auth's admin API held for approval, each with the
     approvals it needs: making staff, adding groups or permissions,
-    setting a password, impersonating. Empty: none is."""
+    setting a password, impersonating; since 2.7, making a user who holds
+    access active again, and granting a group permissions. Empty: none is."""
     ADMIN_APPROVERS: Permission | None = None
     """The permission whoever approves those changes holds; None:
     superusers approve, and only they. An empty text is None."""

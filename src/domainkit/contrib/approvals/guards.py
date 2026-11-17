@@ -59,6 +59,10 @@ type Service = Callable[[Any, Any], Awaitable[Any]]
 """An application service: ``service(command, uow)``."""
 type Parties = Callable[[Any], Iterable[str] | Awaitable[Iterable[str]]]
 """Who a command is about: ``parties(command)``, plain or ``async``."""
+type ShownValues = Mapping[str, object] | Iterable[tuple[str, object]]
+"""Labelled values: a text, or a list of texts, under each label."""
+type Show = Callable[[Any], ShownValues | Awaitable[ShownValues]]
+"""What a command's request shows: ``show(command)``, plain or ``async``."""
 
 ACTION_MARK: Final = "__approval_action__"
 """The attribute ``requires_approval`` sets on the service it guards."""
@@ -249,6 +253,13 @@ class Guard:
     runs the service, as the approved request, and spends it. What the
     command gives goes to its maker (an impersonation's token), and what
     it takes is never stored (a password).
+
+    ``show`` says what a person deciding the command is shown of it, in
+    place of its arguments by name (ADR 0173): labelled values, each a
+    text or a list of texts, in the request's language, from a function
+    of the command, or a coroutine function that may read the database
+    (the user a grant is for, by name rather than by id). It is read when
+    shown, never stored with the request.
     """
 
     action: str
@@ -263,6 +274,7 @@ class Guard:
     maker_fields: tuple[str, ...] = ()
     http: bool = True
     by_maker: bool = False
+    show: Show | None = None
     adapter: TypeAdapter[Any] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -340,6 +352,16 @@ class Guard:
             found = await found
         return frozenset(found)
 
+    async def shown(self, command: object) -> list[tuple[str, object]] | None:
+        """What ``show`` says of ``command``, awaited if need be; None without one."""
+        if self.show is None:
+            return None
+        found = self.show(command)
+        if inspect.isawaitable(found):
+            found = await found
+        pairs = found.items() if isinstance(found, Mapping) else found
+        return [(str(label), value) for label, value in pairs]
+
     def policy_named(self, name: str) -> Policy | None:
         """The guard's policy called ``name``, if it still has one."""
         return next((each for each in self.policies if each.name == name), None)
@@ -363,6 +385,7 @@ def guard(
     maker_fields: Iterable[str] = (),
     http: bool = True,
     by_maker: bool = False,
+    show: Show | None = None,
     domain: str | None = None,
 ) -> Guard:
     """Register the guard of a use case decorated ``requires_approval(action)``.
@@ -398,6 +421,7 @@ def guard(
         maker_fields=tuple(maker_fields),
         http=http,
         by_maker=by_maker,
+        show=show,
     )
     on_guard(registered, domain=domain)
     return registered
@@ -521,6 +545,32 @@ def running(
 def current_run() -> Running | None:
     """The approved command being run here, if any."""
     return _running.get()
+
+
+_when_spent: ContextVar[Callable[[], Awaitable[None]] | None] = ContextVar(
+    "domainkit_approvals_when_spent", default=None
+)
+
+
+@contextmanager
+def checked_when_spent(check: Callable[[], Awaitable[None]]) -> Iterator[None]:
+    """Have a ``by_maker`` call in the block await ``check`` as it spends a request.
+
+    Under the approved request's lock, once it is known to be spendable and
+    before it is marked executed: only the call that claims the approval
+    runs it, and one that raises leaves the request approved. Calls that
+    lose the claim, or find no approval, never run it (user report A19).
+    """
+    token = _when_spent.set(check)
+    try:
+        yield
+    finally:
+        _when_spent.reset(token)
+
+
+def when_spent() -> Callable[[], Awaitable[None]] | None:
+    """The check a ``by_maker`` call awaits as it spends a request, if any."""
+    return _when_spent.get()
 
 
 def approved(action: str, command: object) -> bool:

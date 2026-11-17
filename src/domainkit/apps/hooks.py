@@ -35,7 +35,13 @@ A mistake fails ``setup()``, naming the domain, rather than the first
 commit or probe that calls it.
 
 Hooks run in ``INSTALLED_DOMAINS`` order, each domain's in the order it
-registered them. Only what a domain registered is called: 0.13 removed
+registered them. A hook registered with an ``order`` runs by it, lowest
+first, before or after the others (0 by default), whatever its domain's
+place: approvals registers its hold of an admin change with
+``order=100``, so the project's checks of that change come first (since
+2.7). Domains start, stop, and answer ``/ready`` each as a whole, so
+there (``on_startup``, ``on_shutdown``, ``on_ready``) an order sorts a
+domain's own hooks only. Only what a domain registered is called: 0.13 removed
 the hook methods, and ``setup()`` refuses a ``DomainConfig`` that still
 defines one (``apps.E002``).
 
@@ -91,7 +97,11 @@ class HookPoint[F: Callable[..., object]]:
     Call the point with a function to register it, from
     ``DomainConfig.ready()``; iterate it to get the ``Hook`` of each. The
     registering domain is the one whose ``ready()`` is running, unless
-    ``domain`` names another label. Event loops on several threads read the
+    ``domain`` names another label. ``order`` places a hook before (below
+    0) or after (above 0) those registered without one, whatever their
+    domains (since 2.7); a caller that runs each domain's hooks apart, as
+    the lifespan does, gets them by order within each (``of``). Event
+    loops on several threads read the
     hooks; registering takes a lock, and reading takes none.
     """
 
@@ -127,19 +137,22 @@ class HookPoint[F: Callable[..., object]]:
         """Show the point's name."""
         return f"<HookPoint {self.name}>"
 
-    def __call__(self, function: F, *, domain: str | None = None) -> F:
+    def __call__(self, function: F, *, domain: str | None = None, order: int = 0) -> F:
         """Register ``function`` for the domain being made ready; return it.
 
         ``domain`` registers for an installed domain from outside its
         ``ready()``, once the domains are loaded (a test, a command).
+        ``order`` says when it runs among the point's hooks: lowest first;
+        those of one order in ``INSTALLED_DOMAINS`` order, then in the
+        order they were registered (0, the default, keeps that order).
 
         Raises:
             ImproperlyConfigured: Called outside a domain's ``ready()``
                 without ``domain``; ``domain`` names no domain loaded yet
                 (the registration would be forgotten when they load, or
-                never be called); or ``function`` cannot take the point's
-                arguments, or is not awaitable where the point awaits it
-                (or the reverse).
+                never be called); ``order`` is not a whole number; or
+                ``function`` cannot take the point's arguments, or is not
+                awaitable where the point awaits it (or the reverse).
         """
         registry = _populating[-1] if _populating else _registry()
         if domain is None:
@@ -158,9 +171,15 @@ class HookPoint[F: Callable[..., object]]:
                 "DomainConfig.ready(), where it is kept as long as the "
                 "domain is installed."
             )
+        if isinstance(order, bool) or not isinstance(order, int):
+            raise ImproperlyConfigured(
+                f"{self.name} hook {_name(function)} takes a whole number as "
+                f"its order, not {order!r}."
+            )
         self._check(function, domain)
         with self._lock:
-            self._current(registry).functions.setdefault(domain, []).append(function)
+            functions = self._current(registry).functions
+            functions.setdefault(domain, []).append(_Entry(order, function))
             self._hooks = None
         return function
 
@@ -226,10 +245,15 @@ class HookPoint[F: Callable[..., object]]:
     def _collect(
         self, registry: "DomainRegistry", registered: "_Registered[F]"
     ) -> Iterator[Hook[F]]:
-        """Each domain's registered hooks, in domain order."""
-        for config in registry:
-            for function in registered.functions.get(config.label, ()):
-                yield Hook(config.label, function)
+        """Each domain's registered hooks, by order, then in domain order."""
+        found = [
+            (entry.order, Hook(config.label, entry.call))
+            for config in registry
+            for entry in registered.functions.get(config.label, ())
+        ]
+        found.sort(key=lambda each: each[0])  # Stable: domain order holds within.
+        for _, hook in found:
+            yield hook
 
     def _kept(self, registry: "DomainRegistry") -> "_Kept[F] | None":
         """What ``registry``'s domains registered now, to put back later."""
@@ -270,20 +294,27 @@ class HookPoint[F: Callable[..., object]]:
         return registered
 
 
+class _Entry[F](NamedTuple):
+    """One registered function, and the order it runs in."""
+
+    order: int
+    call: F
+
+
 @dataclass(slots=True)
 class _Registered[F]:
     """The functions one registry's domains registered, by domain label."""
 
     generation: int
     """The registry's generation they were registered in."""
-    functions: dict[str, list[F]] = field(default_factory=dict)
+    functions: dict[str, list[_Entry[F]]] = field(default_factory=dict)
 
 
 class _Kept[F](NamedTuple):
     """One point's registrations, as ``hooks_kept`` found them."""
 
     generation: int
-    functions: dict[str, list[F]]
+    functions: dict[str, list[_Entry[F]]]
 
 
 class _Known[F: Callable[..., object]](NamedTuple):

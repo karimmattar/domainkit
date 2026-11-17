@@ -1006,8 +1006,10 @@ members = ResourceRouter("/members", ..., schema=MemberOut, present_many=members
   has the request to decide.
 
 A client that keeps the two apart asks the other domain once per page
-instead, by id: the admin API's `GET /users` takes `id`, repeated
-([the admin API](auth/routes.md#the-admin-api)).
+instead, by id: the admin API's `GET /users` takes `id`, repeated, and
+`GET /users/names` answers the same users by name alone, without their
+groups and permissions (since 2.7,
+[the admin API](auth/routes.md#the-admin-api)).
 
 ### Partial changes
 
@@ -1290,6 +1292,39 @@ call it:
 
 A resource given `outside=` and no `tenant=` is refused with `TypeError`:
 its items would serve no tenant either, and `outside` would rule them.
+
+An action of the domain's own whose key names no model's permission (an
+invitation posted to a company, which needs another domain's
+`organizations.add_membership`) is named whole by `keys`, by action
+(since 2.7):
+
+```python
+companies = ResourceRouter(
+    "/companies",
+    ...,
+    tenant=PathTenant("company_id"),
+    rule=MemberActions(
+        Company,
+        outside=IsAuthenticated(),
+        keys={"invite": "organizations.add_membership"},
+    ),
+    scope=companies_of_caller,
+)
+companies.command_route(Invite, service=invite, path="/invite", action="invite")
+```
+
+Without `keys`, the route would ask `companies.invite_company`, which no
+model declares. The other actions keep their model's keys.
+
+- Once `keys` is given, a route of an action other than `view`, `add`,
+  `change`, or `delete` that `keys` does not name is refused when it is
+  declared (`ImproperlyConfigured`, naming the closest it does name), so
+  a misspelt action never asks a key no one holds.
+- `ModelActions` takes `keys` alike. A key that is not
+  `<domain>.<codename>` is refused (`ValueError`).
+- `outside=ModelActions(...)` names its own keys, as it names its own
+  rules: it takes none of the member rule's. Give it `keys` too where the
+  collection serves such an action.
 
 ### Rules on objects, and scope
 

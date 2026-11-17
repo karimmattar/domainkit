@@ -684,6 +684,22 @@ class TenancyConfig(BaseModel):
     tenants the user belongs to. Staff then change through the admin API
     only users who hold nothing beyond them in any tenant; with
     ``MEMBER_PERMISSIONS`` and without it, only superusers change users."""
+    MEMBER_GRANTS: str | None = None
+    """Dotted path to a function of the user and a tenant id (async or not):
+    every key the user's roles there grant whatever the tenant's state (a
+    suspended company's owner, an owner's), or None for one who is not a
+    member. The admin API adds them to a membership ``MEMBER_PERMISSIONS``
+    answers for, never in its place (ADR 0177); no request is served with
+    them."""
+    ALL_TENANTS_PERMISSION: str | None = Field(
+        default=None, max_length=255, pattern=r"^\w+\.\w+$"
+    )
+    """A permission key, such as ``companies.administer_company``: staff who
+    hold it everywhere (not through a role) change and act as, through the
+    admin API, every member of a tenant they do not belong to who holds no
+    key there they lack everywhere; under ``MEMBERSHIP`` alone, every member
+    (ADR 0177). Unset, staff change only the members of tenants they
+    belong to."""
     REQUIRED: bool = True
     """Refuse a request that names no tenant (``400 tenant_not_named``)."""
     EXEMPT_PATHS: tuple[str, ...] = ("/health",)
@@ -712,6 +728,18 @@ class TenancyConfig(BaseModel):
             raise ValueError(
                 "MEMBER_TENANTS lists the tenants MEMBERSHIP or "
                 "MEMBER_PERMISSIONS admits to: set one of them"
+            )
+        if self.MEMBER_GRANTS is not None and (
+            self.MEMBER_PERMISSIONS is None or self.MEMBER_TENANTS is None
+        ):
+            raise ValueError(
+                "MEMBER_GRANTS adds to what MEMBER_PERMISSIONS answers, in the "
+                "tenants MEMBER_TENANTS lists: set both"
+            )
+        if self.ALL_TENANTS_PERMISSION is not None and self.MEMBER_TENANTS is None:
+            raise ValueError(
+                "ALL_TENANTS_PERMISSION lets staff change members of tenants "
+                "MEMBER_TENANTS lists: set it"
             )
         return self
 

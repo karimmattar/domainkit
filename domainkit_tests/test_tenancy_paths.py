@@ -9,6 +9,7 @@ wrote its own ``MembershipBackend`` (ADR 0150).
 import io
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import timedelta
 from pathlib import Path
 from typing import Annotated, Any, Final, NewType
 from uuid import UUID, uuid4
@@ -715,6 +716,105 @@ def test_staff_change_only_those_who_hold_no_more_in_their_tenants(api: Api) -> 
     )
 
 
+def test_staff_holding_every_key_change_members_of_tenants_they_are_not_in(
+    api: Api,
+) -> None:
+    """A back-office officer changes a company's members without joining it.
+
+    With ``ALL_TENANTS_PERMISSION``, staff who hold its key everywhere,
+    and every key a member holds in acme, log that member out though they
+    belong to no company; without the setting, only a superuser did (user
+    report D3). Staff who hold the key, but not an owner's keys, still
+    change acme's viewer only, and keys held without it reach no company.
+    """
+    ann, dee = create_user("ann"), create_user("dee")
+    admin = ("auth.change_user", "auth.view_user")
+    officer = staff(
+        "officer", *admin, REACH, "shop.view_product", "shop.change_product"
+    )
+    clerk = staff("clerk", *admin, REACH, "shop.view_product")
+    keyless = staff("keyless", *admin, "shop.view_product", "shop.change_product")
+
+    def logouts(**tenancy: Any) -> dict[str, int]:  # noqa: ANN401 - settings.
+        with admin_with_roles(
+            api, MEMBER_TENANTS=f"{ORGS}.role_tenants", **tenancy
+        ) as client:
+
+            def logout(target: UUID, by: dict[str, str]) -> int:
+                url = f"{ADMIN}/users/{target}/logout"
+                return client.post(url, headers=by).status_code
+
+            return {
+                "officer, acme's owner": logout(ann, officer),
+                "clerk, acme's owner": logout(ann, clerk),
+                "clerk, acme's viewer": logout(dee, clerk),
+                "keyless, acme's viewer": logout(dee, keyless),
+            }
+
+    seed((ann, "acme", "owner"), (dee, "acme", "viewer"))
+    assert logouts() == {
+        "officer, acme's owner": 403,
+        "clerk, acme's owner": 403,
+        "clerk, acme's viewer": 403,
+        "keyless, acme's viewer": 403,
+    }
+    assert logouts(ALL_TENANTS_PERMISSION=REACH) == {
+        "officer, acme's owner": 204,
+        "clerk, acme's owner": 403,
+        "clerk, acme's viewer": 204,
+        "keyless, acme's viewer": 403,
+    }
+
+
+async def org_member(user: Any, org: str) -> bool:  # noqa: ANN401
+    """``MEMBERSHIP`` over the project's table: belonging, with no keys."""
+    return await sample_tenant_orgs.role_permissions(user, org) is not None
+
+
+def test_the_key_to_every_tenant_reaches_every_member_who_holds_no_more(
+    api: Api,
+) -> None:
+    """``ALL_TENANTS_PERMISSION`` is a decision to act as every such member.
+
+    With ``MEMBERSHIP`` alone, a member holds no key in a tenant, so staff
+    who hold the setting's key change, and act as (impersonation), every
+    member of a tenant they do not belong to, its owner included; the
+    token holds on the next request, which checks ``may_change`` again.
+    Staff without the key reach none of them (review of user report D3).
+    """
+    ann = create_user("ann")
+    admin = ("auth.change_user", "auth.view_user")
+    officer = staff("officer", *admin, REACH)
+    helpdesk = staff("helpdesk", *admin)
+    with override_settings(
+        ROOT_ROUTER=f"{ORGS}.everything",
+        TENANCY={
+            "MEMBERSHIP": f"{HERE}.org_member",
+            "MEMBER_TENANTS": f"{ORGS}.role_tenants",
+            "ALL_TENANTS_PERMISSION": REACH,
+        },
+        AUTH={**API.settings["AUTH"], "IMPERSONATION_TTL": timedelta(minutes=30)},
+    ):
+        client = api()
+        seed((ann, "acme", "owner"))
+
+        def impersonate(by: dict[str, str]) -> Any:  # noqa: ANN401 - a response.
+            body = {"reason": "Ticket 42"}
+            url = f"{ADMIN}/users/{ann}/impersonate"
+            return client.post(url, json=body, headers=by)
+
+        refused = impersonate(helpdesk)
+        started = impersonate(officer)
+        assert started.status_code == 201, started.text
+        as_ann = bearer(started.json()["access_token"])
+        me = client.get("/auth/me", headers=as_ann)
+
+    assert refused.status_code == 403
+    assert refused.json()["detail"].endswith("in 1 of their tenants.")
+    assert me.status_code == 200
+    assert me.json()["username"] == "ann"
+
+
 def stored_id(username: str) -> UUID:
     """The id of the stored user ``username``."""
 
@@ -776,10 +876,137 @@ async def test_tenants_beyond_counts_memberships_and_keys() -> None:
         await tenants_beyond(bob, ann, ())
 
 
+REACH: Final = "shop.publish_product"
+"""The key a project's back office holds everywhere to reach every tenant."""
+GRANTS: Final[dict[tuple[str, str], frozenset[str] | None]] = {
+    ("ann", "globex"): frozenset({"notes.delete_note"}),
+    ("ann", "initech"): frozenset({"notes.change_note"}),
+    ("bob", "globex"): None,
+}
+"""What a role grants whatever the tenant's state, where it is not what it holds
+now: ann's role in globex, lifted; ann's suspended membership of initech."""
+
+
+def role_grants(user: Any, tenant_id: str) -> frozenset[str] | None:  # noqa: ANN401
+    """``MEMBER_GRANTS``: ``GRANTS``, else what ``keys`` holds now."""
+    found = (getattr(user, "username", None), tenant_id)
+    if found in GRANTS:
+        return GRANTS[found]
+    return ROLES.get(tenant_id, frozenset()) if belongs(user, tenant_id) else None
+
+
+def one_grant(user: Any, tenant_id: str) -> str:  # noqa: ANN401
+    """``MEMBER_GRANTS`` that answers one key as text."""
+    return "notes.view_note"
+
+
+def suspended_too(user: Any) -> set[str]:  # noqa: ANN401
+    """``MEMBER_TENANTS``: ``tenants_listed``, and ann's suspended initech."""
+    found = tenants_listed(user)
+    return found | {"initech"} if getattr(user, "username", None) == "ann" else found
+
+
+async def test_tenants_beyond_counts_keys_held_everywhere_across_tenants() -> None:
+    """``ALL_TENANTS_PERMISSION`` held everywhere reaches tenants staff are not in.
+
+    Bob belongs to globex alone; ann to acme too, holding its role. Bob
+    holding every key of hers everywhere still finds acme beyond him,
+    unless he holds the setting's key too (user report D3): then a tenant
+    he does not share is beyond him only for keys he lacks, or where no
+    hook says what ann holds there (initech, suspended).
+    """
+    ann, bob = PEOPLE["ann"], PEOPLE["bob"]
+    everything = frozenset({REACH, *ROLES["acme"]})
+    tenancy = {
+        "MEMBER_PERMISSIONS": f"{HERE}.keys",
+        "MEMBER_TENANTS": f"{HERE}.tenants_listed",
+    }
+    with override_settings(TENANCY=tenancy):
+        assert await tenants_beyond(bob, ann, everything) == frozenset({"acme"})
+    with override_settings(TENANCY={**tenancy, "ALL_TENANTS_PERMISSION": REACH}):
+        assert await tenants_beyond(bob, ann, everything) == frozenset()
+        assert await tenants_beyond(bob, ann, ROLES["acme"]) == frozenset({"acme"})
+        assert await tenants_beyond(bob, ann, {REACH}) == frozenset({"acme"})
+        assert await tenants_beyond(ann, bob, ()) == frozenset()
+    suspended = {
+        **tenancy,
+        "MEMBER_TENANTS": f"{HERE}.suspended_too",
+        "ALL_TENANTS_PERMISSION": REACH,
+    }
+    with override_settings(TENANCY=suspended):
+        assert await tenants_beyond(bob, ann, everything) == frozenset({"initech"})
+
+
+def no_grants(user: Any, tenant_id: str) -> frozenset[str] | None:  # noqa: ANN401
+    """``MEMBER_GRANTS`` that grants nothing, to every listed member."""
+    return frozenset() if tenant_id in suspended_too(user) else None
+
+
+async def test_tenants_beyond_counts_what_a_role_grants_whatever_the_state() -> None:
+    """``MEMBER_GRANTS``: what a member's role gives back counts as held.
+
+    Ann holds nothing in globex now, so bob, who shares it, would pass on
+    what she holds now; her role there grants ``notes.delete_note`` once
+    globex is active again, so it is beyond him until he holds that key
+    everywhere. One the hook does not count a member counts what they hold
+    now (user report D3).
+
+    The grants only add to a membership ``MEMBER_PERMISSIONS`` answers
+    for: her suspended initech, where it answers None, stays beyond bob
+    whatever the hook says, nothing or keys he holds (fail closed). In a
+    tenant both are listed in, where neither belongs now, the grants count
+    too; without them, as in 2.6, nothing does.
+    """
+    ann, bob = PEOPLE["ann"], PEOPLE["bob"]
+    everything = frozenset({REACH, *ROLES["acme"]})
+    lifted = everything | {"notes.delete_note", "notes.change_note"}
+    tenancy = {
+        "MEMBER_PERMISSIONS": f"{HERE}.keys",
+        "MEMBER_TENANTS": f"{HERE}.suspended_too",
+        "MEMBER_GRANTS": f"{HERE}.role_grants",
+        "ALL_TENANTS_PERMISSION": REACH,
+    }
+    with override_settings(TENANCY=tenancy):
+        assert await tenants_beyond(bob, ann, everything) == frozenset(
+            {"globex", "initech"}
+        )
+        assert await tenants_beyond(bob, ann, lifted) == frozenset({"initech"})
+        assert await tenants_beyond(ann, bob, ()) == frozenset()
+    with override_settings(TENANCY={**tenancy, "MEMBER_GRANTS": f"{HERE}.no_grants"}):
+        assert await tenants_beyond(bob, ann, lifted) == frozenset({"initech"})
+    shared = {**tenancy, "MEMBER_TENANTS": f"{HERE}.every_tenant"}
+    with override_settings(TENANCY=shared):
+        assert await tenants_beyond(bob, ann, lifted) == frozenset({"acme", "initech"})
+    without = {key: value for key, value in shared.items() if key != "MEMBER_GRANTS"}
+    with override_settings(TENANCY=without):
+        assert await tenants_beyond(bob, ann, lifted) == frozenset({"acme"})
+    with (
+        override_settings(TENANCY={**tenancy, "MEMBER_GRANTS": f"{HERE}.one_grant"}),
+        pytest.raises(ImproperlyConfigured, match="MEMBER_GRANTS returns"),
+    ):
+        await tenants_beyond(bob, ann, everything)
+
+
 def test_member_tenants_need_someone_to_say_who_belongs() -> None:
-    """``MEMBER_TENANTS`` lists what ``MEMBERSHIP`` or ``MEMBER_PERMISSIONS`` admits."""
+    """``MEMBER_TENANTS`` lists what ``MEMBERSHIP`` or ``MEMBER_PERMISSIONS`` admits.
+
+    ``MEMBER_GRANTS`` and ``ALL_TENANTS_PERMISSION`` count in the tenants
+    it lists, and the permission is a key.
+    """
     with pytest.raises(ValidationError, match="set one of them"):
         TenancyConfig(MEMBER_TENANTS="a.b")
+    for refused in (
+        {"MEMBER_GRANTS": "a.c", "MEMBER_TENANTS": "a.b", "MEMBERSHIP": "a.d"},
+        {"MEMBER_GRANTS": "a.c", "MEMBER_PERMISSIONS": "a.d"},
+    ):
+        with pytest.raises(ValidationError, match="MEMBER_GRANTS adds to"):
+            TenancyConfig(**refused)
+    with pytest.raises(ValidationError, match="ALL_TENANTS_PERMISSION lets"):
+        TenancyConfig(MEMBER_PERMISSIONS="a.d", ALL_TENANTS_PERMISSION="a.b")
+    with pytest.raises(ValidationError, match="should match pattern"):
+        TenancyConfig(
+            MEMBERSHIP="a.d", MEMBER_TENANTS="a.b", ALL_TENANTS_PERMISSION="every"
+        )
 
 
 def test_check_warns_that_only_superusers_change_users(use_auth: UseAuth) -> None:

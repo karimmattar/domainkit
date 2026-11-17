@@ -206,7 +206,7 @@ device_signature_refused`.
 
 | Route | Body | Answer |
 | --- | --- | --- |
-| `GET /auth/app-sign-in/requests` | | The requests waiting for an answer, oldest first. |
+| `GET /auth/app-sign-in/requests` | | The requests waiting for an answer, oldest first. `?withdrawn=true` lists the asks their session withdrew too, to report ([below](#withdrawing-a-request)). |
 | `POST /auth/app-sign-in/requests/claim` | `{"code"}`: what the QR code holds | The request, now the user's. |
 | `POST /auth/app-sign-in/requests/{id}/approve` | `{"match_code"?}`, and an act's `"digest"` | `204`. |
 | `POST /auth/app-sign-in/requests/{id}/deny` | `{"report"?}` | `204`. |
@@ -226,7 +226,10 @@ A request shows:
   its `digest`, read from auth's record; `null` for the other kinds;
 - `address` and `browser`: where the sign-in was started;
 - `same_network`: whether the phone is on that address now;
-- `match_required`: whether approving needs the page's number.
+- `match_required`: whether approving needs the page's number;
+- `withdrawn`: with `?withdrawn=true` only, whether its session withdrew
+  it unanswered: the phone may report it, and nothing else (*new in
+  2.7*).
 
 Show all of it, and make "Deny" as easy to reach as "Approve".
 
@@ -299,6 +302,14 @@ for what a signed-in session asked, from that session alone.
   true}`, until `REQUEST_TTL` after it was asked, which starts
   `REPORT_COOLDOWN` as for any report. Its plain "Deny" is `404`: there
   is nothing left to deny.
+- **An app opened without the push lists it** (since 2.7): `GET
+  /auth/app-sign-in/requests?withdrawn=true` lists, among those waiting,
+  the asks their session withdrew unanswered, until `REQUEST_TTL` after
+  they were asked, each `"withdrawn": true`, with what it asked (an
+  act's `authorization`, a transaction's `transaction`). Offer "Not me"
+  alone: approving it and a plain "Deny" are `404`. Its `expires_at` is
+  when it was withdrawn. Without the parameter the list is as in 2.6, so
+  an app that does not know the mark never offers to approve one.
 - **Only the initiator.** The handle names the request, and a session's
   request also names the credentials that asked: another login of the
   user, or another kind's route, gets `400 sign_in_unknown`, as for an
