@@ -441,6 +441,15 @@ Bounded otherwise:
 - **A damaged file**, whose table pypdf would rebuild by reading the
   whole file, decoding every object stream with whatever filters it has:
   1000 of them took 65 seconds. It is refused instead.
+- **Object streams pypdf would decode on its own.** No object stream is
+  decoded but within the budget: an object stream held in another, which
+  PDF does not allow (pypdf decoded the other unchecked: 31 KB took 2.9
+  GB), and an object held in one the budget did not decode, are refused.
+  A cross-reference stream, which pypdf decodes as it opens the file,
+  is decoded with `FlateDecode` only.
+- **Searches for missing objects.** pypdf searches the whole file for
+  each object its table lacks or misplaces, 20 ms for 5 MB: 20,000 took
+  it 406 seconds. A file that needs more than 32 searches is refused.
 - **Parsing the overlay.** pypdf reads the overlay's drawing into
   operators to move it onto the page, at far more than its bytes: 2 MiB
   of drawing operators took 8 seconds and 200 MiB, without a profiler.

@@ -163,7 +163,18 @@ worked in 2.6 is refused but a PDF past the new bounds.
   refuses to rebuild a damaged file's table (`_rebuild_xref_table`),
   which reads the whole file and decodes every object stream with
   whatever filters it has, outside any budget: 1000 of them took 65
-  seconds, and the file was accepted. Their streams list
+  seconds, and the file was accepted. A fourth review found two more
+  ways around the budget, and the subclass closes both where pypdf
+  takes them: it reads no object from an object stream the budget has
+  not decoded (`_get_object_from_stream`), so an object stream held in
+  another, which PDF does not allow and which took a 31 KB file to 2.9
+  GB, is refused, and checked before anything is decoded; and it
+  decodes a cross-reference stream with `FlateDecode` only, read as
+  pypdf caches the stream, before it decodes it (`cache_indirect_object`):
+  1 MiB of LZW clear codes in one took 12 seconds. It also counts the
+  searches pypdf makes of the whole file for an object its table lacks
+  or misplaces, as copies of the file it reads from (`getbuffer`), and
+  refuses the 33rd: 20,000 took 406 seconds. Their streams list
   65,536 entries in all, or one for each 512 bytes of `max_decoded`
   where that is more (`xref_stream_maximum_entries`), and each decodes
   to 8 bytes an entry at most while the file is opened, an entry of a
@@ -222,8 +233,10 @@ worked in 2.6 is refused but a PDF past the new bounds.
   Python after another filter, such stages on more than 1 MiB in all, or
   a predictor are refused, as are object streams that cannot be decoded,
   files of more than 65,536 cross-reference entries, files saved more
-  than 31 times over (15 for a hybrid file), and damaged files whose
-  table pypdf would rebuild. PDFs of the
+  than 31 times over (15 for a hybrid file), damaged files whose table
+  pypdf would rebuild, object streams held in others, cross-reference
+  streams decoded otherwise than with `FlateDecode`, and files that name
+  more than 32 objects their table lacks. PDFs of the
   early 1990s used `[/ASCII85Decode /LZWDecode]`: they are refused too.
 - `page_sizes` decodes every object stream of the file up front, where
   it decoded those of the page tree only; the work is bounded by the

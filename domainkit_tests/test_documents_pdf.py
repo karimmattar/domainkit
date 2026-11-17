@@ -134,19 +134,26 @@ def streamed(
     stray: bool = False,
     entries: int = 0,
     padding: int = 0,
+    nested: bool = False,
+    used: bool = False,
+    xref_filter: bytes = b"/FlateDecode",
 ) -> bytes:
     """A PDF of one page whose object streams decode to ``sizes`` bytes each.
 
     ``extras`` adds object streams of these filters and stored bytes;
     ``stray`` an entry whose object stream is the catalog, no stream.
-    Nothing refers to the objects the streams hold. Its cross-reference
-    stream lists ``entries`` at least, and decodes to ``padding`` more
-    bytes than they take.
+    Nothing refers to the objects the streams hold, unless ``used``: the
+    page then refers to the last. Its cross-reference stream lists
+    ``entries`` at least, decodes to ``padding`` more bytes than they
+    take, and says it is decoded with ``xref_filter``. ``nested`` says the
+    first object stream is held in the last.
     """
+    last = 99 + len(sizes) + len(extras) + stray
+    resources = f" /Used {last} 0 R" if used else ""
     objects = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] >>",
+        f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400]{resources} >>".encode(),
     ]
     held: list[int] = []  # The stream of each object held, in order.
     for size in sizes:
@@ -183,11 +190,13 @@ def streamed(
     rows += [struct.pack(">BIH", 0, 0, 0)] * (100 - len(rows))
     rows += [struct.pack(">BIH", 2, stream, 0) for stream in held]
     rows += [struct.pack(">BIH", 0, 0, 0)] * (entries - len(rows))
+    if nested:
+        rows[held[0]] = struct.pack(">BIH", 2, held[-1], 0)
     data = zlib.compress(b"".join(rows) + bytes(padding))
     start = len(out)
     out += (
         f"{table} 0 obj\n<< /Type /XRef /Size {len(rows)} /W [1 4 2] /Root 1 0 R "
-        f"/Filter /FlateDecode /Length {len(data)} >>\nstream\n"
+        f"/Filter {xref_filter.decode()} /Length {len(data)} >>\nstream\n"
     ).encode()
     out += data + b"\nendstream\nendobj\n"
     return bytes(out + f"startxref\n{start}\n%%EOF\n".encode())
@@ -793,8 +802,8 @@ def test_the_sections_are_counted_where_pypdf_reads_them() -> None:
         (chained(2, hybrid=True), 3),
     ):
         tally = Tally()
-        bounded_reader(pypdf)(io.BytesIO(document), sections=32, tally=tally)
-        assert (tally.sections, tally.rebuilt) == (sections, False)
+        bounded_reader(pypdf)(document, tally=tally)
+        assert (tally.read, tally.rebuilt) == (sections, False)
 
 
 @pytest.mark.parametrize(
@@ -813,7 +822,7 @@ def test_a_file_whose_table_would_be_rebuilt_is_refused(filters: bytes) -> None:
 
     with pytest.raises(DocumentError) as refused:
         page_sizes(damaged)
-    bounded_reader(pypdf)(io.BytesIO(damaged), sections=32, tally=tally)
+    bounded_reader(pypdf)(damaged, tally=tally)
 
     assert str(refused.value) == (
         "The document is damaged: its cross-reference table would be rebuilt, "
@@ -843,3 +852,97 @@ def test_lzw_has_a_share_of_its_own() -> None:
         "(max_decoded / 512)."
     )
     assert len(overlay_pdf(small, overlay_for(small))) > 0
+
+
+def test_an_object_stream_held_in_another_is_refused_before_either_is_decoded() -> None:
+    """PDF allows none: pypdf decoded the other unchecked, 31 KB to 2.9 GB.
+
+    No object stream is decoded but by the budget: an object held in one
+    it did not decode (here the catalog, no stream at all) is refused.
+    """
+    bomb = (b"[/FlateDecode /ASCII85Decode]", zlib.compress(b"z" * MiB + b"~>"))
+    nested = streamed(10, extras=(bomb,), nested=True)
+    stray = streamed(stray=True, used=True)
+
+    tracemalloc.start()
+    try:
+        with pytest.raises(DocumentError) as refused:
+            page_sizes(nested)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    with pytest.raises(DocumentError) as unchecked:
+        overlay_pdf(stray, pdf(Page(width=300, height=400)))
+
+    assert str(refused.value) == (
+        "An object stream is held in another object stream, which PDF does not "
+        "allow: pypdf would decode the other unchecked."
+    )
+    assert peak < 4 * MiB
+    assert str(unchecked.value) == (
+        "The document holds an object in an object stream that was not decoded "
+        "within the bounds."
+    )
+    used = streamed(10, used=True)
+    assert len(overlay_pdf(used, pdf(Page(width=300, height=400)))) > 0
+
+
+def test_a_cross_reference_stream_is_decoded_with_deflate_only() -> None:
+    """LZW's output is bounded by pypdf, not the time of its clear codes: 11 s a MiB.
+
+    The filters are read as pypdf reads the stream, before it decodes it.
+    """
+    with pytest.raises(DocumentError) as refused:
+        page_sizes(streamed(xref_filter=b"/LZWDecode"))
+
+    assert str(refused.value) == (
+        "The document has a cross-reference stream decoded otherwise than with "
+        "FlateDecode, which pypdf could not bound."
+    )
+    assert page_sizes(streamed(xref_filter=b"[/FlateDecode]")) == [(300.0, 400.0)]
+
+
+def referring(missing: int) -> bytes:
+    """A one-page PDF whose page refers to ``missing`` objects its table lacks."""
+    names = " ".join(f"/P{each} {1000 + each} 0 R" for each in range(missing))
+    objects = (
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] "
+        f"/Resources << /Properties << {names} >> >> >>".encode(),
+    )
+    out = bytearray(b"%PDF-1.7\n")
+    offsets = []
+    for number, body in enumerate(objects, 1):
+        offsets.append(len(out))
+        out += f"{number} 0 obj\n".encode() + body + b"\nendobj\n"
+    start = len(out)
+    rows = "".join(f"{offset:010d} 00000 n \n" for offset in offsets)
+    out += f"xref\n0 4\n0000000000 65535 f \n{rows}".encode()
+    out += f"trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n{start}\n%%EOF\n".encode()
+    return bytes(out)
+
+
+def test_searches_for_objects_the_table_lacks_are_bounded() -> None:
+    """The whole file is searched by pypdf for each: 20,000 in 5 MB took 406 s.
+
+    32 at most, counted as pypdf copies the file to search it.
+    """
+    overlay = pdf(Page(width=300, height=400))
+    tally = Tally()
+
+    with pytest.raises(DocumentError) as refused:
+        overlay_pdf(referring(40), overlay)
+    reader = bounded_reader(pypdf)(referring(40), tally=tally)
+    for each in range(40):
+        try:
+            reader.get_object(1000 + each)
+        except pypdf.errors.LimitReachedError:
+            break
+
+    assert str(refused.value) == (
+        "The document names more than 32 objects its cross-reference table "
+        "lacks or misplaces: pypdf searches the whole file for each."
+    )
+    assert tally.searched == 33
+    assert len(overlay_pdf(referring(30), overlay)) > 0

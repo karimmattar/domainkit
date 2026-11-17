@@ -62,8 +62,10 @@ a project that relied on 2.6's behaviour changes.
   it; the cross-reference streams list 65,536 entries at most (one for
   each 512 bytes of `max_decoded` where that is more); a file chains 32
   cross-reference sections at most, one for the file and one for each
-  save added to it (two in a hybrid file); and a damaged file, whose
-  table pypdf would rebuild, is refused. Few generators write any of
+  save added to it (two in a hybrid file); a damaged file, whose table
+  pypdf would rebuild, an object stream held in another, a
+  cross-reference stream decoded otherwise than with `FlateDecode`, and
+  a file that names more than 32 objects its table lacks are refused. Few generators write any of
   these on a page's content (PDFs of the early 1990s used
   `[/ASCII85Decode /LZWDecode]`, now refused), and ReportLab's
   `[/ASCII85Decode /FlateDecode]` is read as before.

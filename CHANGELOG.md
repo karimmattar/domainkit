@@ -74,9 +74,13 @@ and a status.
   codes 11 seconds a MiB). The cross-reference sections are counted where
   pypdf reads them, 32 at most (500 took pypdf 47 seconds); their streams
   list 65,536 entries at most, or one for each 512 bytes of
-  `max_decoded`, each decoded to 8 bytes an entry. A damaged file whose
-  table pypdf would rebuild, decoding every object stream unchecked, is
-  refused, and so is a stream that cannot be decoded. A page laid over is written back
+  `max_decoded`, each decoded to 8 bytes an entry, with `FlateDecode`
+  only. A damaged file whose table pypdf would rebuild, decoding every
+  object stream unchecked, is refused, as are an object stream held in
+  another (31 KB took 2.9 GB), an object held in a stream the budget did
+  not decode, a file that needs more than 32 searches for missing
+  objects (20,000 took 406 seconds), and a stream that cannot be
+  decoded. A page laid over is written back
   deflated. A PDF that decodes past 32 MiB, which 2.6 laid over, is
   refused: raise `max_decoded` for it
   ([What a PDF may decode](docs/documents.md#what-a-pdf-may-decode),
