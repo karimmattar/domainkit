@@ -12,19 +12,22 @@ none, its body unread.
 import base64
 import hashlib
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
 from typing import Any, Final
 from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import update
 from starlette.requests import Request
 from starlette.types import Message
 
 from domainkit.contrib.devices import binding
 from domainkit.contrib.devices.binding import device_proof, signing_device
 from domainkit.contrib.devices.stores import BoundDevice, DevicesUnitOfWork
+from domainkit.contrib.devices.tables import devices
+from domainkit.db import connections
 from domainkit.management.base import run_async
 from domainkit_tests.test_devices import App, Device, app, bind, signed_in
 
@@ -41,10 +44,16 @@ def digest_of(body: bytes) -> str:
 class Sent:
     """A request to ``/transfers`` as the rule reads it, counting reads of its body."""
 
-    def __init__(self, headers: dict[str, str], body: bytes = BODY) -> None:
-        """``headers`` and ``body``; nothing read yet."""
+    def __init__(
+        self,
+        headers: dict[str, str],
+        body: bytes = BODY,
+        meanwhile: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
+        """``headers`` and ``body``; ``meanwhile`` runs as the body arrives."""
         self.reads = 0
         self.body = body
+        self.meanwhile = meanwhile
         scope = {
             "type": "http",
             "method": "POST",
@@ -61,6 +70,8 @@ class Sent:
     async def receive(self) -> Message:
         """The body, whole, counted."""
         self.reads += 1
+        if self.meanwhile is not None:
+            await self.meanwhile()
         return {"type": "http.request", "body": self.body, "more_body": False}
 
 
@@ -172,6 +183,48 @@ def test_a_required_digest_refuses_unread_what_does_not_hold(
         mine = UUID(device.id)
         assert found == {"none": mine, "malformed": mine, "thief": None, "other": mine}
         assert reads == dict.fromkeys(sent, 1)
+
+
+@pytest.mark.parametrize("store", ["database", "cache"])
+@pytest.mark.parametrize("declared", [False, True])
+@pytest.mark.parametrize("change", ["unbound", "rekeyed"])
+def test_a_device_unbound_while_the_body_arrives_is_refused(
+    app: App, store: str, declared: bool, change: str
+) -> None:
+    """Read before the body and again after it: one gone, or changed, refuses.
+
+    The device is looked up with no unit of work open while the body
+    arrives; the one that records the request reads it again.
+    """
+    client = app(SIGNATURE_STORE=store)
+    device = Device()
+    assert bind(client, signed_in(client), device).status_code == 201
+    user = owner_of(device)
+    headers = device.headers("POST", "/transfers", BODY)
+    if declared:
+        headers["Content-Digest"] = digest_of(BODY)
+
+    async def unbind() -> None:
+        async with DevicesUnitOfWork() as uow:
+            assert await uow.devices.remove(user.id, UUID(device.id))
+            await uow.commit()
+
+    async def rekey() -> None:
+        async with connections.engine().begin() as connection:
+            await connection.execute(
+                update(devices)
+                .where(devices.c.id == UUID(device.id))
+                .values(public_key=b"another key")
+            )
+
+    sent = Sent(headers, meanwhile=unbind if change == "unbound" else rekey)
+
+    assert signed(sent, user) is None
+    assert sent.reads == 1
+    kept = Sent(
+        device.headers("POST", "/transfers", BODY, when=int(time.time() * 1000) + 1)
+    )
+    assert signed(kept, user) is None
 
 
 @pytest.mark.parametrize(

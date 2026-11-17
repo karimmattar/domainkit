@@ -326,7 +326,9 @@ async def _check(connection: HTTPConnection, user: Any) -> DeviceProof | None:  
     digest that the signature holds for, the body is read only then, and
     must be the one declared; without one (or one the signature does not
     hold for, unless ``CONTENT_DIGEST`` requires it), the signature is
-    checked once the body is read.
+    checked once the body is read. No unit of work is open while the
+    body arrives: the device is read again in the one that records the
+    request, and refused if it was unbound, or its key changed, meanwhile.
     """
     if not isinstance(connection, Request) or not getattr(
         user, "is_authenticated", False
@@ -350,26 +352,36 @@ async def _check(connection: HTTPConnection, user: Any) -> DeviceProof | None:  
         return None
     digest = hashlib.sha256(message).hexdigest()
     cached = config.SIGNATURE_STORE == "cache"
-    if cached and not await _first_in_cache(device.id, digest, config.SIGNATURE_WINDOW):
-        return None
     now = utc_now()
-    stale = device.last_used_at is None or now - device.last_used_at > TOUCH_EVERY
-    if stale or not cached:
-        async with DevicesUnitOfWork() as uow:
-            if not cached and not await uow.devices.use(device.id, digest, time):
+    async with DevicesUnitOfWork() as uow:
+        current = await uow.devices.get(device.id)  # Unbound while the body came?
+        if current is None or _key_of(current) != _key_of(device):
+            return None
+        if cached:
+            if not await _first_in_cache(device.id, digest, config.SIGNATURE_WINDOW):
                 return None
-            if stale:
-                window = int(config.SIGNATURE_WINDOW.total_seconds() * 1000)
-                await uow.devices.touch(
-                    device.id, time, int(now.timestamp() * 1000) - window
-                )
+        elif not await uow.devices.use(device.id, digest, time):
+            return None
+        last = current.last_used_at
+        stale = last is None or now - last > TOUCH_EVERY
+        if stale:
+            window = int(config.SIGNATURE_WINDOW.total_seconds() * 1000)
+            await uow.devices.touch(
+                device.id, time, int(now.timestamp() * 1000) - window
+            )
+        if stale or not cached:
             await uow.commit()
     return DeviceProof(
-        device=device,
+        device=current,
         signed=message,
         signature=signature,
         signed_at=datetime.fromtimestamp(time / 1000, UTC),
     )
+
+
+def _key_of(device: BoundDevice) -> tuple[UUID, int, bytes]:
+    """Whose ``device`` is, and the key it signs with: what checks its signature."""
+    return device.user_id, device.algorithm, device.public_key
 
 
 async def _signed(
