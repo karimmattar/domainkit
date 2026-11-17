@@ -79,7 +79,13 @@
       "enabled": false
     },
     {
-      "description": "CI's Pythons move by hand: the jobs on 3.13 (oldest among them) test the oldest Python domainkit supports, and each newer one has a job of its own. Patch releases still come.",
+      "description": "A patch of CI's Pythons is an update of its own, apart from the next minor, so the rule below lets it through.",
+      "matchManagers": ["github-actions"],
+      "matchDepNames": ["python"],
+      "separateMinorPatch": true
+    },
+    {
+      "description": "CI's Pythons move by hand: the jobs on 3.13 (oldest among them) test the oldest Python domainkit supports, and each newer one has a job of its own. Patch releases still come (the rule above).",
       "matchManagers": ["github-actions"],
       "matchDepNames": ["python"],
       "matchUpdateTypes": ["major", "minor"],

@@ -663,6 +663,11 @@ jobs:
       # immudb's SDK only verifies signatures with ecdsa, which the advisory
       # says is unaffected, and no fix is planned. See SECURITY.md.
       - run: poetry run pip-audit --progress-spinner off --ignore-vuln PYSEC-2026-1325
+      # The build job's tools (build-tools.txt), pinned with their hashes:
+      # Renovate cannot update that file, so an advisory shows here.
+      - run: >-
+          poetry run pip-audit --progress-spinner off --disable-pip
+          --require-hashes -r .github/requirements/build-tools.txt
       - name: Scan the whole history for secrets
         run: >-
           docker run --rm -v "$PWD:/repo"

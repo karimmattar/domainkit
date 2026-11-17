@@ -9,6 +9,17 @@ and a status.
 
 ## [Unreleased]
 
+### Changed
+
+- The `kafka` extra accepts aiokafka up to 0.15 (`>=0.12.0,<0.16.0`),
+  tested with 0.15.0.
+- The projects `init` writes take ruff `>=0.17.3,<0.18`, the range
+  domainkit's own code is checked with.
+- CI and the release build run Poetry 2.4.3 (`make install` asks for
+  Poetry 2.4): 2.2.1 wrote a crafted wheel's files outside its target
+  (CVE-2026-34591), and its dulwich had nine advisories. CI audits the
+  build's hash-pinned tools too.
+
 ## [2.6.0] - 2026-11-17
 
 2.6 follows up 2.5. The project's own code can take an approval
