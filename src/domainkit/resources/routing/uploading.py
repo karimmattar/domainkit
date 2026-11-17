@@ -59,6 +59,7 @@ from starlette.datastructures import UploadFile
 
 from domainkit.ddd.exceptions import PreconditionFailed
 from domainkit.ddd.messages import Command
+from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.errors import error_responses
 from domainkit.http.middleware import MAX_ROUTE_BODY_SIZE, hold_body
 from domainkit.http.uploads import FileType, ReceivedUpload, receive_upload
@@ -220,8 +221,29 @@ class UploadRoute(CommandRoute):
             dependencies=dependencies,
             before_rules=before_rules,
         )
+        if self.body_limit is not None:
+            self._check_rules_read_no_body()
         if self.receives:
             self.service = _handing(cast("Receiving", service))
+
+    def _check_rules_read_no_body(self) -> None:
+        """Refuse a rule that reads the body, on a route that decides its limit.
+
+        The rule reads the body before the limit is decided, held to the
+        limit of a command route without one: never to the decided one.
+
+        Raises:
+            ImproperlyConfigured: One of the route's rules reads the body.
+        """
+        for each in self.rules:
+            rule = each() if isinstance(each, type) else each
+            if rule.reads_the_body():
+                raise ImproperlyConfigured(
+                    f"{self.router.prefix}{self.spec.path} decides its body limit "
+                    f"per request, but {type(rule).__name__} reads the body before "
+                    "it is decided: give body_limit= a number, the most a request "
+                    "may send."
+                )
 
     def declare(self) -> None:
         """Add the route and its twin, and say in OpenAPI what body they take."""

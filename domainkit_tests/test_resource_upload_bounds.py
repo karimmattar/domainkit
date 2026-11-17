@@ -29,11 +29,12 @@ from domainkit import signing
 from domainkit.cache import Cache, CacheUnavailable, caches
 from domainkit.conf import override_settings
 from domainkit.contrib.auth import AnyUser
+from domainkit.contrib.devices import DeviceSigned
 from domainkit.ddd.exceptions import ConcurrentUpdate, PermissionDenied
 from domainkit.ddd.uow import Retry
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import uploads
-from domainkit.http.access import BasePermission
+from domainkit.http.access import AllowAny, BasePermission
 from domainkit.http.errors import APIError, install_exception_handlers
 from domainkit.http.middleware import (
     MAX_ROUTE_BODY_SIZE,
@@ -766,6 +767,75 @@ def test_a_body_read_before_the_limit_is_decided_is_held_as_a_commands(
     assert sent("b", 2_000) == (413, "file_too_large")
     assert sent("a", 2_000)[0] == 200
     assert seen == ["rule 2000", "rule 2000"]
+
+
+class SaysItReads(ReadsBody):
+    """``ReadsBody``, saying so, as ``DeviceSigned`` does."""
+
+    reads_body = True
+
+    def __init__(self, seen: list[str] | None = None) -> None:
+        """Record in ``seen``, or nowhere."""
+        super().__init__([] if seen is None else seen)
+
+
+@pytest.mark.parametrize(
+    "rule",
+    [SaysItReads, SaysItReads() & Asks(), ~SaysItReads(), AllowAny() | SaysItReads()],
+    ids=["class", "all of", "not", "any of"],
+)
+def test_a_rule_that_reads_the_body_is_refused_with_a_limit_decided(
+    store: InMemoryGadgets,
+    rule: Any,  # noqa: ANN401 - a rule, or its class.
+) -> None:
+    """It reads the body before the limit is decided: the limit never holds it.
+
+    A number still goes with it; ``DeviceSigned`` says it reads the body.
+    """
+    with pytest.raises(
+        ImproperlyConfigured, match="reads the body before it is decided"
+    ):
+        limited(store, Limits(), rule=rule)
+    limited(store, Limits(), rule=rule, body_limit=10_000)
+
+    assert DeviceSigned.reads_body
+    assert DeviceSigned().reads_the_body()
+    assert not Asks().reads_the_body()
+
+
+def test_a_probe_for_a_disconnect_fixes_no_limit(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """``is_disconnected`` before the decision reads nothing, and refuses nothing.
+
+    2.8.0's first cut fixed the limit at the first ``receive()``: a
+    dependency that probed for a disconnect held a 50 KB body to the
+    resource's 10 KB, under a decided limit of 500 KB.
+    """
+    use_auth()
+    probed: list[bool] = []
+
+    async def probe(request: Request) -> None:
+        probed.append(await request.is_disconnected())
+
+    app = limited(
+        store,
+        Limits(a=500_000, b=40_000),
+        body_limits={"command": 10_000},
+        before_rules=[Depends(probe)],
+    )
+    found = ids(store)
+
+    taken = app.client.post(
+        f"{LOCATION}{found['a']}/manual", content=padded(50_000), headers=as_("changer")
+    )
+    refused = app.client.post(
+        f"{LOCATION}{found['b']}/manual", content=padded(50_000), headers=as_("changer")
+    )
+
+    assert taken.status_code == 200
+    assert (refused.status_code, refused.json()["code"]) == (413, "content_too_large")
+    assert probed == [False, False]
 
 
 @pytest.mark.parametrize("decided", [0, True, 2.5, MAX_ROUTE_BODY_SIZE + 1, "10"])

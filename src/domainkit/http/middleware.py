@@ -28,6 +28,7 @@ import time
 from collections.abc import Callable, Iterable, Sequence
 from typing import Any, Final
 
+import anyio.lowlevel
 from fastapi import status
 from starlette.middleware import cors
 from starlette.routing import Match
@@ -990,7 +991,9 @@ class RequestBodyLimitMiddleware:
     Before routing, a declared length is checked against the largest
     limit, the global one or a route's. A route that decides its limit per
     request (``decides_body_limit``) is held, from the first read of the
-    body on, to the limit it decided before (``hold_body``).
+    body on, to the limit it decided before (``hold_body``). A route's
+    limit is fixed by the first message of its body, not by a probe for a
+    disconnect (``Request.is_disconnected``), which reads none.
 
     A WebSocket message over the limit closes the connection with 1009
     (message too big); the application sees the client disconnect. The
@@ -1061,15 +1064,20 @@ class RequestBodyLimitMiddleware:
 
         async def limited_receive() -> Message:
             nonlocal received, body_read, limit
-            if limit is None:  # The route's own, known once it is matched.
-                limit = self._route_limit(scope)
-                if size is not None and size > limit:
-                    self._reject(scope, size, limit)
+            current = limit
+            if current is None:  # The route's own, fixed at the first body read.
+                current = self._route_limit(scope)
+                if size is not None and size > current:
+                    # A probe for a disconnect (is_disconnected) asks in a
+                    # cancelled scope, and reads nothing: it is not refused.
+                    await anyio.lowlevel.checkpoint_if_cancelled()
+                    self._reject(scope, size, current)
                     raise RequestBodyTooLarge
             message = await timed_receive()
             if message["type"] != "http.request":
                 body_read = True
                 return message
+            limit = current
             body_read = not message.get("more_body", False)
             received += len(message.get("body", b""))
             if received > limit:

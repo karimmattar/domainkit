@@ -270,9 +270,21 @@ class BasePermission:
     ``scopes_of`` sets it.
     """
 
+    reads_body: ClassVar[bool] = False
+    """Whether the rule reads the request's body, as ``DeviceSigned`` does.
+
+    An upload route whose body limit is decided per request refuses one
+    when it is declared: the rule reads the body before the limit is
+    decided (ADR 0181). New in 2.8.
+    """
+
     def checks_scopes(self) -> bool:
         """Whether allowing a request means its scopes were checked."""
         return self.bounds_scopes
+
+    def reads_the_body(self) -> bool:
+        """Whether checking the rule may read the request's body."""
+        return self.reads_body
 
     async def has_permission(
         self,
@@ -382,6 +394,10 @@ class AllOf(BasePermission):
         """Some rule checks them: all must allow."""
         return any(rule.checks_scopes() for rule in self.rules)
 
+    def reads_the_body(self) -> bool:
+        """Some rule reads it."""
+        return any(rule.reads_the_body() for rule in self.rules)
+
     async def refusal(
         self, request: HTTPConnection, user: Principal
     ) -> Exception | None:
@@ -423,6 +439,10 @@ class AnyOf(BasePermission):
         """Every rule checks them: any one may allow."""
         return all(rule.checks_scopes() for rule in self.rules)
 
+    def reads_the_body(self) -> bool:
+        """Some rule reads it, if it is asked."""
+        return any(rule.reads_the_body() for rule in self.rules)
+
 
 class Not(BasePermission):
     """Allows what ``rule`` refuses."""
@@ -440,6 +460,10 @@ class Not(BasePermission):
     ) -> bool:
         """The rule refuses ``obj``."""
         return not await self.rule.has_object_permission(request, user, obj)
+
+    def reads_the_body(self) -> bool:
+        """The rule reads it."""
+        return self.rule.reads_the_body()
 
 
 class AllowAny(BasePermission):

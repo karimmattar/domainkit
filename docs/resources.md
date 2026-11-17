@@ -471,7 +471,7 @@ products.command_route(DeleteProduct, service=delete_product, method="DELETE")
 | `body_limit` | the resource's | The most bytes a body may have ([uploads](uploads.md#body-limits-per-route)). |
 | `retry` | `None` | `Retry()`: run the service again, whole, when its transaction loses a race. |
 | `dependencies` | `()` | FastAPI dependencies of the route's own, such as a limit, `Depends(Throttle("50/day"))`. They run after the route's rules, so a request the rules refuse is not counted; but before the route reaches the aggregate (`404`, and `403` from a rule on it) and reads the body (`422`) and `If-Match` (`412`), so one refused there is. Its [twin](#authorizations-for-one-act) runs none of them. *New in 2.5.* |
-| `before_rules` | `()` | FastAPI dependencies that run before the route's rules ([Dependencies before the rules](#dependencies-before-the-rules)). Its twin runs them too. *New in 2.8.* |
+| `before_rules` | `()` | FastAPI dependencies that run before the route's rules, after its body is read and parsed ([Dependencies before the rules](#dependencies-before-the-rules)). Its twin runs them too. *New in 2.8.* |
 
 **Body limits.** `body_limit=` holds the route's bodies to that many
 bytes, above or below `MAX_REQUEST_BODY_SIZE`, as they arrive.
@@ -515,6 +515,13 @@ rule there may read the body as the act's does. A limit of acts alone
 skips a twin's request with `asking_authorization(request)`. Nothing
 that decides who may act goes there: a refusal there comes before the
 rules, `429` before `401` ([ADR 0181](adr/0181-decide-a-body-limit-per-request-count-before-the-rules-hand-over-the-file-received-and-bound-the-xml-parsed.md)).
+
+An upload route reads its body itself, once its rules and its reach
+hold, so `before_rules` there come before any read of it. A command
+route that takes a body is not so: FastAPI reads and parses its body
+before any dependency runs, so `before_rules` there count a request
+before its rules, but after its body arrived, within the route's
+`body_limit`.
 
 ### Authorizations for one act
 
@@ -770,11 +777,20 @@ templates.upload_route(
   it passes it. The file is never more than it, whatever `max_size`
   says. It is a whole number of bytes from 1 to 1 GiB, a route's most
   (`ValueError` otherwise, a 500). What reads the body before the route
-  decides, a rule such as `DeviceSigned`, a dependency of
-  `before_rules`, or `IdempotencyMiddleware`, reads it within the limit
-  of a command route without `body_limit`: the resource's
-  `body_limits["command"]`, or `MAX_REQUEST_BODY_SIZE`. Give a route that
-  reads its body there a number instead, the most a request may send.
+  decides, a dependency of `before_rules` or `IdempotencyMiddleware`,
+  reads it within the limit of a command route without `body_limit`:
+  the resource's `body_limits["command"]`, or `MAX_REQUEST_BODY_SIZE`.
+  A rule that says it reads the body (`reads_body`, as `DeviceSigned`
+  does) is refused with such a limit when the route is declared
+  (`ImproperlyConfigured`). Give a route that reads its body early a
+  number instead, the most a request may send. A probe for a disconnect
+  (`request.is_disconnected()`) reads nothing, and fixes no limit.
+- Once one route of the application decides its limit, a declared
+  length is checked before routing against 1 GiB, the most a route may
+  decide, and each route's own limit at the first read of its body: a
+  request to a route that never reads its body is answered as the route
+  answers, where a declared length over every route's limit was 413
+  before routing.
 - What a callable decides is checked as a value given when declaring:
   no type, a size that is not a whole number of bytes, or a directory a
   storage refuses (`..`, `/root`), is a `ValueError`; a storage that is

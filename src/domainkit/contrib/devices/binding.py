@@ -39,7 +39,7 @@ import hashlib
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Final
+from typing import Any, ClassVar, Final
 from uuid import UUID
 
 from cryptography.exceptions import UnsupportedAlgorithm
@@ -155,6 +155,8 @@ class DeviceSigned(BasePermission):
     """
 
     message = "Sign this request with this device's key."
+    reads_body: ClassVar[bool] = True
+    """It reads the body once the request names a device of the user's."""
 
     async def has_permission(
         self,
