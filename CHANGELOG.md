@@ -13,17 +13,21 @@ and a status.
 
 - `command_route` and `upload_route` take `before_rules=`: FastAPI
   dependencies that run before the route's rules, on the act and on its
-  twin, so a limit counts a request before a rule reads its body
-  (`DeviceSigned` does), the requests the rules refuse included.
+  twin, the requests the rules refuse included. On an upload route they
+  count a request before a rule reads its body (`DeviceSigned` does); a
+  command route's body is read by FastAPI before any dependency.
   `dependencies=` keep their place, after the rules, on the act alone
   ([Dependencies before the rules](docs/resources.md#dependencies-before-the-rules),
   ADR 0181) (user report U7).
 - `upload_route(body_limit=...)` may be decided per request, a callable
   of the request and the aggregate as `max_size` is, decided before the
   body is read, on the act and on its twin: a bound that is a setting is
-  read once, when the request comes. The body is held to it as it
-  arrives, and the file to it too; what reads the body before the route
-  decides is held as on a command route without `body_limit`
+  read once, when the request comes. The body is held to it from its
+  first read, and the file to it too; what reads the body before the
+  route decides is held as on a command route without `body_limit`, and
+  a probe for a disconnect fixes no limit. A rule that reads the body
+  says so with `reads_body = True` (`DeviceSigned` does), and such a
+  route refuses it when it is declared (`ImproperlyConfigured`)
   ([Bounds decided per request](docs/resources.md#bounds-decided-per-request))
   (user report U7).
 - An `upload_route`'s service that names a `received` parameter is given
@@ -34,19 +38,38 @@ and a status.
   ([The file received](docs/resources.md#the-file-received)) (user report
   U7).
 
+### Changed
+
+- Once one route decides its body limit per request,
+  `RequestBodyLimitMiddleware` checks a declared length before routing
+  against 1 GiB, the most a route may decide, and each route's own limit
+  at the first read of its body: a request to a route that never reads
+  its body is answered as the route answers (`200`), where a declared
+  length past every route's limit was `413` before routing. Every body
+  read is still held to its route's limit
+  ([Bounds decided per request](docs/resources.md#bounds-decided-per-request))
+  (user report U7).
+
 ### Security
 
-- `placeholders` and `fill_docx` bound the XML they parse, in the
-  process that calls them: `ArchiveLimits(max_xml_bytes=8 MiB,
-  max_nodes=500_000)`, the content types and the parts filled in all,
-  counted before anything is parsed, a paragraph's placeholders before
-  they are read. A Word document of 340 KB that `OfficeCheck` takes,
-  holding 16 MiB of empty paragraphs, took 546 MiB of memory in
-  `placeholders`; it is refused at once, and the XML takes about 150 MiB
-  at most. A document past either bound, which 2.7 filled, is refused:
-  give larger `ArchiveLimits`. The files not filled are inflated a piece
-  at a time, and only as `fill_docx` writes them back, where 2.7 held
-  them all, 256 MiB at most, for the whole call
+- `placeholders` and `fill_docx` bound the XML they parse, and what
+  `fill_docx` writes in it, in the process that calls them:
+  `ArchiveLimits(max_xml_bytes=12 MiB, max_nodes=1_000_000)`, the
+  content types and the parts filled in all, counted before anything is
+  parsed, a paragraph's placeholders before they are read, and each
+  value's bytes, and two nodes for each of its line breaks and tabs,
+  before it is written. A Word document of 340 KB that `OfficeCheck`
+  takes, holding 16 MiB of empty paragraphs, took 546 MiB of memory in
+  `placeholders`; it is refused at once, and a call takes 340 MiB at
+  most, measured on XML written to cost the most (66 MiB for a formatted
+  document of LibreOffice's at the bound). Formatted text reaches the
+  bounds at some 270 to 330 pages, plain text at some 2,100: a document
+  past them, which 2.7 filled, is refused; give larger `ArchiveLimits`.
+  Each call parses in a thread of its own, about 0.4 ms, so the names
+  lxml keeps for a thread go with it, where a pool's thread grew by 700
+  MiB over 80 documents of distinct names. The files not filled are
+  inflated a piece at a time, and only as `fill_docx` writes them back,
+  where 2.7 held them all, 256 MiB at most, for the whole call
   ([The XML parsed](docs/documents.md#the-xml-parsed), ADR 0181) (user
   report U7).
 
