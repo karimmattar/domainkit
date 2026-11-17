@@ -433,10 +433,16 @@ TENANCY = {
 Staff granted that key everywhere (directly or through a group, never
 through a role) change a member of a tenant they do not belong to when
 they hold everywhere every key the member holds there. A tenant whose
-hooks do not say what the member holds there stays beyond them. Staff
-without the key change only the members of tenants they belong to, as
-before. Grant the key as you would `auth.change_user`: with it, a holder
-of a role's keys takes over that role's members in every tenant.
+hooks do not say what the member holds there now, such as a suspended
+membership, stays beyond them. Staff without the key change only the
+members of tenants they belong to, as before.
+
+Granting the key is granting a takeover. Its holder sets the password of,
+logs out, and acts as (impersonation) every member, in every tenant, who
+holds no key the holder lacks: a member of a role with no keys, and under
+`MEMBERSHIP` alone, where members hold no keys, every member of every
+tenant. Grant it to a back office only, as you would `auth.change_user`
+and a superuser's trust.
 
 **What a role gives back.** The admin API counts what a member holds in
 a tenant now. A project whose roles depend on the tenant's state (a
@@ -447,6 +453,14 @@ admin API counts its keys with `MEMBER_PERMISSIONS`' answer, so staff
 who hold a suspended company's looking keys do not take over an owner
 who holds everything once it is reactivated. No request is served with
 them: `MEMBER_PERMISSIONS` alone answers the rules.
+
+- Answer every key the role grants, not only what the state takes away.
+- The keys only add to a membership `MEMBER_PERMISSIONS` answers for.
+  Where it answers None (a suspended membership, say), a tenant the
+  staff member does not belong to stays beyond them, whatever
+  `MEMBER_GRANTS` answers.
+- A change, and each request of an impersonation token, which checks the
+  change again, asks it once per tenant of the user's that is counted.
 
 ## Outside a request
 
@@ -682,8 +696,8 @@ None
 | `MEMBERSHIP` | `None` | Dotted path to a function of the user and a tenant id (async or not): whether the user may act in it. |
 | `MEMBER_PERMISSIONS` | `None` | Dotted path to a function of the user and a tenant id (async or not): the keys the user holds as a member, or None for one who is not. Not with `MEMBERSHIP`. |
 | `MEMBER_TENANTS` | `None` | Dotted path to a function of the user (async or not): the ids of the tenants the user belongs to. With `MEMBERSHIP` or `MEMBER_PERMISSIONS`. |
-| `MEMBER_GRANTS` | `None` | Dotted path to a function of the user and a tenant id (async or not): the keys the user's roles there grant whatever the tenant's state, or None. The admin API counts them. With `MEMBER_PERMISSIONS` and `MEMBER_TENANTS`. |
-| `ALL_TENANTS_PERMISSION` | `None` | A permission key: staff who hold it everywhere change members of tenants they do not belong to, holding everywhere what the member holds there. With `MEMBER_TENANTS`. |
+| `MEMBER_GRANTS` | `None` | Dotted path to a function of the user and a tenant id (async or not): every key the user's roles there grant whatever the tenant's state, or None. The admin API adds them to a membership `MEMBER_PERMISSIONS` answers for, never in its place. With `MEMBER_PERMISSIONS` and `MEMBER_TENANTS`. |
+| `ALL_TENANTS_PERMISSION` | `None` | A permission key: staff who hold it everywhere change, and act as, members of tenants they do not belong to who hold no key they lack there (under `MEMBERSHIP` alone, every member). With `MEMBER_TENANTS`. |
 | `REQUIRED` | `True` | Refuse a request that names no tenant. |
 | `EXEMPT_PATHS` | `("/health",)` | Paths that may name no tenant. |
 | `SCHEMA` | `"tenant_{tenant}"` | A tenant's schema on `SCHEMA_DATABASES`: lowercase letters and `_` around `{tenant}`. |

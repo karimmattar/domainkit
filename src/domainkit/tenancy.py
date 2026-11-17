@@ -194,24 +194,20 @@ class _Members:
         return frozenset()
 
     async def granted(self, user: object, tenant_id: str) -> frozenset[str] | None:
-        """All ``user`` may hold in ``tenant_id``: now, and whatever its state.
+        """What ``MEMBER_GRANTS`` says ``user``'s roles grant in ``tenant_id``.
 
-        ``admit``'s answer, asked afresh, with the keys ``MEMBER_GRANTS``
-        names where it is set: a role gives them back when the project's
-        state lifts (a suspended company reactivated). None if neither
-        counts ``user`` a member.
+        Every key the roles grant whatever the tenant's state; None without
+        the setting, or for one it does not count a member. It only adds to
+        what ``admit`` answers: it never stands for a membership ``admit``
+        does not see.
 
         Raises:
-            ImproperlyConfigured: A hook answered something other than
+            ImproperlyConfigured: It answered something other than
                 permission keys or None.
         """
-        keys = await self.admit(user, tenant_id, fresh=True)
         if self.grants is None:
-            return keys
-        grants = _keys(await _ask(self.grants, user, tenant_id), "MEMBER_GRANTS")
-        if keys is None or grants is None:
-            return grants if keys is None else keys
-        return keys | grants
+            return None
+        return _keys(await _ask(self.grants, user, tenant_id), "MEMBER_GRANTS")
 
 
 @functools.cache
@@ -324,9 +320,11 @@ async def tenants_beyond(
     tenant who hold no more there than they hold everywhere, as an
     administrator assigned to every unit does. What the user holds in a
     tenant is what ``MEMBER_PERMISSIONS`` answers now, with the keys
-    ``MEMBER_GRANTS`` names whatever the tenant's state; a tenant neither
-    answers for, among those ``actor`` does not belong to, is beyond them
-    (ADR 0177).
+    ``MEMBER_GRANTS`` names whatever the tenant's state. Among the tenants
+    ``actor`` does not belong to, one where ``MEMBER_PERMISSIONS`` (or
+    ``MEMBERSHIP``) does not answer for the user, a suspended membership
+    say, is beyond them, whatever ``MEMBER_GRANTS`` answers: its keys only
+    add to a known membership, never stand for a missing one (ADR 0177).
     """
     from domainkit.conf import settings
 
@@ -346,16 +344,21 @@ async def tenants_beyond(
     across = reach is not None and reach in everywhere
     beyond: set[str] = set()
     for tenant_id in sorted(theirs):
-        if tenant_id not in mine and not across:
-            beyond.add(tenant_id)
+        shared = tenant_id in mine
+        now = (
+            await admitting.admit(user, tenant_id, fresh=True)
+            if shared or across
+            else None
+        )
+        if now is None and not shared:
+            beyond.add(tenant_id)  # Not in it, and no ceiling to compare: refused.
             continue
-        keys = await admitting.granted(user, tenant_id)
-        if tenant_id not in mine:
-            if keys is None or not keys <= everywhere:
-                beyond.add(tenant_id)
-            continue
-        own = await admitting.admit(actor, tenant_id, fresh=True)
-        if keys is not None and (own is None or not keys <= everywhere | own):
+        grants = await admitting.granted(user, tenant_id)
+        if now is None and grants is None:
+            continue  # Listed in a tenant they share, but no member of it: as in 2.6.
+        keys = (now or frozenset()) | (grants or frozenset())
+        own = await admitting.admit(actor, tenant_id, fresh=True) if shared else None
+        if not keys <= everywhere | (own or frozenset()) or (shared and own is None):
             beyond.add(tenant_id)
     return frozenset(beyond)
 

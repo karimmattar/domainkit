@@ -9,6 +9,7 @@ wrote its own ``MembershipBackend`` (ADR 0150).
 import io
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import timedelta
 from pathlib import Path
 from typing import Annotated, Any, Final, NewType
 from uuid import UUID, uuid4
@@ -765,6 +766,55 @@ def test_staff_holding_every_key_change_members_of_tenants_they_are_not_in(
     }
 
 
+async def org_member(user: Any, org: str) -> bool:  # noqa: ANN401
+    """``MEMBERSHIP`` over the project's table: belonging, with no keys."""
+    return await sample_tenant_orgs.role_permissions(user, org) is not None
+
+
+def test_the_key_to_every_tenant_reaches_every_member_who_holds_no_more(
+    api: Api,
+) -> None:
+    """``ALL_TENANTS_PERMISSION`` is a decision to act as every such member.
+
+    With ``MEMBERSHIP`` alone, a member holds no key in a tenant, so staff
+    who hold the setting's key change, and act as (impersonation), every
+    member of a tenant they do not belong to, its owner included; the
+    token holds on the next request, which checks ``may_change`` again.
+    Staff without the key reach none of them (review of user report D3).
+    """
+    ann = create_user("ann")
+    admin = ("auth.change_user", "auth.view_user")
+    officer = staff("officer", *admin, REACH)
+    helpdesk = staff("helpdesk", *admin)
+    with override_settings(
+        ROOT_ROUTER=f"{ORGS}.everything",
+        TENANCY={
+            "MEMBERSHIP": f"{HERE}.org_member",
+            "MEMBER_TENANTS": f"{ORGS}.role_tenants",
+            "ALL_TENANTS_PERMISSION": REACH,
+        },
+        AUTH={**API.settings["AUTH"], "IMPERSONATION_TTL": timedelta(minutes=30)},
+    ):
+        client = api()
+        seed((ann, "acme", "owner"))
+
+        def impersonate(by: dict[str, str]) -> Any:  # noqa: ANN401 - a response.
+            body = {"reason": "Ticket 42"}
+            url = f"{ADMIN}/users/{ann}/impersonate"
+            return client.post(url, json=body, headers=by)
+
+        refused = impersonate(helpdesk)
+        started = impersonate(officer)
+        assert started.status_code == 201, started.text
+        as_ann = bearer(started.json()["access_token"])
+        me = client.get("/auth/me", headers=as_ann)
+
+    assert refused.status_code == 403
+    assert refused.json()["detail"].endswith("in 1 of their tenants.")
+    assert me.status_code == 200
+    assert me.json()["username"] == "ann"
+
+
 def stored_id(username: str) -> UUID:
     """The id of the stored user ``username``."""
 
@@ -887,18 +937,29 @@ async def test_tenants_beyond_counts_keys_held_everywhere_across_tenants() -> No
         assert await tenants_beyond(bob, ann, everything) == frozenset({"initech"})
 
 
+def no_grants(user: Any, tenant_id: str) -> frozenset[str] | None:  # noqa: ANN401
+    """``MEMBER_GRANTS`` that grants nothing, to every listed member."""
+    return frozenset() if tenant_id in suspended_too(user) else None
+
+
 async def test_tenants_beyond_counts_what_a_role_grants_whatever_the_state() -> None:
     """``MEMBER_GRANTS``: what a member's role gives back counts as held.
 
     Ann holds nothing in globex now, so bob, who shares it, would pass on
     what she holds now; her role there grants ``notes.delete_note`` once
     globex is active again, so it is beyond him until he holds that key
-    everywhere. Her suspended initech counts what its role grants. One
-    the hook does not count a member counts what they hold now (user
-    report D3).
+    everywhere. One the hook does not count a member counts what they hold
+    now (user report D3).
+
+    The grants only add to a membership ``MEMBER_PERMISSIONS`` answers
+    for: her suspended initech, where it answers None, stays beyond bob
+    whatever the hook says, nothing or keys he holds (fail closed). In a
+    tenant both are listed in, where neither belongs now, the grants count
+    too; without them, as in 2.6, nothing does.
     """
     ann, bob = PEOPLE["ann"], PEOPLE["bob"]
     everything = frozenset({REACH, *ROLES["acme"]})
+    lifted = everything | {"notes.delete_note", "notes.change_note"}
     tenancy = {
         "MEMBER_PERMISSIONS": f"{HERE}.keys",
         "MEMBER_TENANTS": f"{HERE}.suspended_too",
@@ -909,13 +970,16 @@ async def test_tenants_beyond_counts_what_a_role_grants_whatever_the_state() -> 
         assert await tenants_beyond(bob, ann, everything) == frozenset(
             {"globex", "initech"}
         )
-        assert (
-            await tenants_beyond(
-                bob, ann, everything | {"notes.delete_note", "notes.change_note"}
-            )
-            == frozenset()
-        )
+        assert await tenants_beyond(bob, ann, lifted) == frozenset({"initech"})
         assert await tenants_beyond(ann, bob, ()) == frozenset()
+    with override_settings(TENANCY={**tenancy, "MEMBER_GRANTS": f"{HERE}.no_grants"}):
+        assert await tenants_beyond(bob, ann, lifted) == frozenset({"initech"})
+    shared = {**tenancy, "MEMBER_TENANTS": f"{HERE}.every_tenant"}
+    with override_settings(TENANCY=shared):
+        assert await tenants_beyond(bob, ann, lifted) == frozenset({"acme", "initech"})
+    without = {key: value for key, value in shared.items() if key != "MEMBER_GRANTS"}
+    with override_settings(TENANCY=without):
+        assert await tenants_beyond(bob, ann, lifted) == frozenset({"acme"})
     with (
         override_settings(TENANCY={**tenancy, "MEMBER_GRANTS": f"{HERE}.one_grant"}),
         pytest.raises(ImproperlyConfigured, match="MEMBER_GRANTS returns"),

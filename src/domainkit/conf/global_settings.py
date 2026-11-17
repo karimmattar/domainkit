@@ -686,18 +686,20 @@ class TenancyConfig(BaseModel):
     ``MEMBER_PERMISSIONS`` and without it, only superusers change users."""
     MEMBER_GRANTS: str | None = None
     """Dotted path to a function of the user and a tenant id (async or not):
-    the keys the user's roles there grant whatever the tenant's state (a
+    every key the user's roles there grant whatever the tenant's state (a
     suspended company's owner, an owner's), or None for one who is not a
-    member. The admin API counts them with ``MEMBER_PERMISSIONS``' answer
-    in what a user holds there (ADR 0177); no request is served with them."""
+    member. The admin API adds them to a membership ``MEMBER_PERMISSIONS``
+    answers for, never in its place (ADR 0177); no request is served with
+    them."""
     ALL_TENANTS_PERMISSION: str | None = Field(
         default=None, max_length=255, pattern=r"^\w+\.\w+$"
     )
     """A permission key, such as ``companies.administer_company``: staff who
-    hold it everywhere (not through a role) change, through the admin API,
-    members of tenants they do not belong to, when they hold everywhere
-    every key the member holds there (ADR 0177). Unset, staff change only
-    the members of tenants they belong to."""
+    hold it everywhere (not through a role) change and act as, through the
+    admin API, every member of a tenant they do not belong to who holds no
+    key there they lack everywhere; under ``MEMBERSHIP`` alone, every member
+    (ADR 0177). Unset, staff change only the members of tenants they
+    belong to."""
     REQUIRED: bool = True
     """Refuse a request that names no tenant (``400 tenant_not_named``)."""
     EXEMPT_PATHS: tuple[str, ...] = ("/health",)
