@@ -149,9 +149,11 @@ DIALING: Final = re.compile(
     "|\u0627\u062a\u0635|\u0647\u0627\u062a\u0641"
     "|\u062c\u0648\u0627\u0644|\u0648\u0627\u062a\u0633"
     "|\u062a\u0644\u064a\u0641\u0648\u0646|\u0645\u0648\u0628\u0627\u064a\u0644"
+    "|[\u260e\u260f\U0001f4de\U0001f4f1\U0001f4f2]"
 )
 """A word that asks for a call: ``call``, ``tel``, ``ext``, ``WhatsApp``, and
-Arabic's call, telephone, mobile and WhatsApp, with what they are joined to."""
+Arabic's call, telephone, mobile and WhatsApp, with what they are joined to;
+or a telephone's sign (a receiver, a mobile phone)."""
 SHORTEST_CUT: Final = 20
 """The fewest characters of a name a screen shows when it cuts it (``check_typed``)."""
 DIGITS: Final = re.compile(
@@ -429,7 +431,7 @@ def _calls(text: str) -> bool:
     the number holds a plus sign or a bracket, or the text a word that
     asks for a call (``DIALING``): see ``_amount`` and ``_code``.
     """
-    dialing = DIALING.search(text.casefold()) is not None
+    dialing = _dialing(text)
     text = DATE.sub(_date_or_digits, text)
     for found in DIGITS.finditer(text):
         number = found[0]
@@ -443,6 +445,29 @@ def _calls(text: str) -> bool:
         ):
             return True
     return False
+
+
+def _dialing(text: str) -> bool:
+    """Whether ``text`` asks for a call (``DIALING``), read as a person reads it.
+
+    Folded as a top-level domain is (``_latin``): combining marks dropped,
+    and each letter of another script read as the Latin one it looks like,
+    each way it may: ``call`` and ``tel`` with a Cyrillic es or te.
+    """
+    folded = "".join(
+        each
+        for each in unicodedata.normalize("NFD", text.casefold())
+        if not unicodedata.category(each).startswith("M")
+    )
+    letters = _confusable_letters()
+    readings = {
+        folded,
+        *(
+            "".join(letters.get(each, (each,))[way] for each in folded)
+            for way in (0, -1)
+        ),
+    }
+    return any(DIALING.search(reading) is not None for reading in readings)
 
 
 def _amount(number: str, text: str, start: int, end: int) -> bool:
