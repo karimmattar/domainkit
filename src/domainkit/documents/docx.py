@@ -32,26 +32,29 @@ more than they allow: its files are stored or deflated, plain relative
 names, each inflated no further than the size the archive states. Each
 is checked a piece at a time, then inflated whole only when it is
 parsed or written back, one at a time. The XML parsed is bounded in all
-before it is parsed, by its bytes and by the nodes they can make (New
-in 2.8): lxml keeps up to 250 bytes of memory a node, some 90 times the
-bytes of the densest XML. The XML is read as UTF-8 with lxml, without
-entities, DTDs, or anything outside the part: a part that declares a
-DTD or an entity is refused before it is parsed (Word writes none), and
-the parser resolves any outside reference to nothing. It is written back
-with the namespace prefixes it had: Word reads ``mc:Ignorable`` by
-prefix. Values are text, escaped as they are written, so a value cannot
-add markup. Every other part of the archive is written back unchanged,
-in its order.
+before it is parsed, by its bytes and by the nodes they can make, and
+so is what ``fill_docx`` writes in it (New in 2.8): lxml keeps up to
+340 bytes of memory a node, some 90 times the bytes of the densest XML.
+Each call parses in a thread of its own, which ends with it, and takes
+with it the names lxml keeps for the thread. The XML is read as UTF-8
+with lxml, without entities, DTDs, or anything outside the part: a part
+that declares a DTD or an entity is refused before it is parsed (Word
+writes none), and the parser resolves any outside reference to nothing.
+It is written back with the namespace prefixes it had: Word reads
+``mc:Ignorable`` by prefix. Values are text, escaped as they are
+written, so a value cannot add markup. Every other part of the archive
+is written back unchanged, in its order.
 """
 
 import io
 import re
 import struct
+import threading
 import unicodedata
 import zipfile
 import zlib
 from bisect import bisect_right
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from itertools import accumulate
@@ -135,9 +138,8 @@ class ArchiveLimits:
     images may need more ``max_bytes``. The ratio is Apache POI's
     ``ZipSecureFile`` default (an entry inflated past 100 times its size,
     once past 100 KiB). The XML parsed, the content types and the parts
-    filled, is bounded in all before any is parsed, by ``max_xml_bytes``
-    and ``max_nodes``: at their defaults the XML takes about 150 MiB of
-    memory at most, whatever it holds.
+    filled, and what ``fill_docx`` writes in it, are bounded in all before
+    any is parsed or written, by ``max_xml_bytes`` and ``max_nodes``.
     """
 
     max_bytes: int = 32 * MiB
@@ -150,14 +152,17 @@ class ArchiveLimits:
     """Every file, inflated."""
     max_ratio: int = 100
     """Inflated size over stored size, for a file past 100 KiB."""
-    max_xml_bytes: int = 8 * MiB
-    """The XML parsed, inflated, in all (New in 2.8)."""
-    max_nodes: int = 500_000
-    """The nodes the XML parsed may make, and the placeholders its text may
-    hold, in all (New in 2.8). The nodes are counted on its bytes before it
-    is parsed: each ``<`` twice (a tag, and the text before it), each ``=``
-    once (an attribute). A paragraph's ``{{`` counts once more each, before
-    its placeholders are read."""
+    max_xml_bytes: int = 12 * MiB
+    """The XML parsed, inflated, and the values ``fill_docx`` writes in it,
+    in UTF-8, in all (New in 2.8)."""
+    max_nodes: int = 1_000_000
+    """The nodes the XML parsed may make, the placeholders its text may
+    hold, and the elements its values add, in all (New in 2.8). The nodes
+    are counted on its bytes before it is parsed: each ``<`` twice (a tag,
+    and the text before it), each ``=`` once (an attribute). A paragraph's
+    ``{{`` counts once more each, before its placeholders are read; each
+    line break or tab of a value written counts twice (a break, and the
+    text after it), before it is written."""
 
 
 def fill_docx(
@@ -190,20 +195,24 @@ def fill_docx(
     """
     etree = _etree()
     given = _checked(values)
-    limits = limits or ArchiveLimits()
-    with _opened(document, limits) as archive:
-        found: dict[str, None] = {}  # Ordered, as written.
-        malformed: list[str] = []
-        changed = _filled(etree, archive, _Budget(limits), given, found, malformed)
-        valueless = set() if allow_missing else found.keys() - given.keys()
-        unused = set() if allow_unused else given.keys() - found.keys()
-        if allow_malformed:
-            malformed = []
-        if valueless or unused or malformed:
-            raise PlaceholderError(
-                missing=valueless, unused=unused, malformed=malformed
-            )
-        return _written(archive, changed)
+    bounds = limits or ArchiveLimits()
+
+    def fill() -> bytes:
+        with _opened(document, bounds) as archive:
+            found: dict[str, None] = {}  # Ordered, as written.
+            malformed: list[str] = []
+            changed = _filled(etree, archive, _Budget(bounds), given, found, malformed)
+            valueless = set() if allow_missing else found.keys() - given.keys()
+            unused = set() if allow_unused else given.keys() - found.keys()
+            if allow_malformed:
+                malformed = []
+            if valueless or unused or malformed:
+                raise PlaceholderError(
+                    missing=valueless, unused=unused, malformed=malformed
+                )
+            return _written(archive, changed)
+
+    return _alone(fill)
 
 
 def placeholders(
@@ -221,12 +230,42 @@ def placeholders(
             or holds a DTD.
     """
     etree = _etree()
-    limits = limits or ArchiveLimits()
-    found: dict[str, None] = {}
-    malformed: list[str] = []
-    with _opened(document, limits) as archive:
-        _filled(etree, archive, _Budget(limits), {}, found, malformed)
-    return Placeholders(names=tuple(found), malformed=tuple(malformed))
+    bounds = limits or ArchiveLimits()
+
+    def read() -> Placeholders:
+        found: dict[str, None] = {}
+        malformed: list[str] = []
+        with _opened(document, bounds) as archive:
+            _filled(etree, archive, _Budget(bounds), {}, found, malformed)
+        return Placeholders(names=tuple(found), malformed=tuple(malformed))
+
+    return _alone(read)
+
+
+def _alone[T](work: Callable[[], T]) -> T:
+    """``work()``, in a thread of its own that ends with it.
+
+    lxml keeps every element and attribute name a thread parses in a
+    dictionary of that thread's, for as long as the thread lives: a pool's
+    thread that read documents of 250,000 names each grew by 700 MiB over
+    80 of them. A thread's dictionary goes with it. The thread costs about
+    0.4 ms a call.
+    """
+    done: list[T] = []
+    failed: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            done.append(work())
+        except BaseException as error:  # noqa: BLE001 - raised again in the caller.
+            failed.append(error)
+
+    thread = threading.Thread(target=run, name="domainkit.documents.docx")
+    thread.start()
+    thread.join()
+    if failed:
+        raise failed.pop()
+    return done.pop()
 
 
 def _filled(
@@ -247,9 +286,13 @@ def _filled(
             reads.
     """
     changed: dict[str, bytes] = {}
+    costs = {
+        name: (len(value.encode()), 2 * (value.count("\n") + value.count("\t")))
+        for name, value in values.items()
+    }
     for info in _filled_parts(etree, archive, budget):
         root = _xml(etree, archive, info, budget)
-        if _fill(etree, root, values, found, malformed, budget):
+        if _fill(etree, root, values, found, malformed, budget, costs):
             changed[info.filename] = etree.tostring(
                 root.getroottree(),
                 xml_declaration=True,
@@ -392,21 +435,22 @@ class _Budget:
         self.bytes = limits.max_xml_bytes
         self.nodes = limits.max_nodes
 
-    def take_bytes(self, size: int) -> None:
-        """Count ``size`` bytes of XML, as stated or inflated.
+    def take_bytes(self, size: int, *, written: bool = False) -> None:
+        """Count ``size`` bytes of XML, as stated or inflated, or ``written``.
 
         Raises:
             DocumentError: They are more than is left.
         """
         if size > self.bytes:
+            filled = ", with its values," if written else ""
             raise DocumentError(
-                f"The document's XML is larger than {self.limits.max_xml_bytes:,} "
-                "bytes in all."
+                f"The document's XML{filled} is larger than "
+                f"{self.limits.max_xml_bytes:,} bytes in all."
             )
         self.bytes -= size
 
     def take_nodes(self, count: int) -> None:
-        """Count ``count`` nodes, or placeholders.
+        """Count ``count`` nodes, placeholders, or elements written.
 
         Raises:
             DocumentError: They are more than is left.
@@ -414,7 +458,7 @@ class _Budget:
         if count > self.nodes:
             raise DocumentError(
                 f"The document holds more than {self.limits.max_nodes:,} elements, "
-                "texts, attributes, and placeholders in all."
+                "texts, attributes, and placeholders in all, with its values."
             )
         self.nodes -= count
 
@@ -608,6 +652,7 @@ def _fill(
     found: dict[str, None],
     malformed: list[str],
     budget: _Budget,
+    costs: Mapping[str, tuple[int, int]],
 ) -> bool:
     """Fill each paragraph under ``root``; whether any text changed.
 
@@ -615,10 +660,13 @@ def _fill(
     text of braces that make no placeholder to ``malformed``. Each ``{{``
     of a paragraph is counted in ``budget`` before its placeholders are
     read: a character reference (``&#123;``) makes one where the bytes
-    showed none.
+    showed none. What each value written adds, its bytes and the elements
+    of its line breaks and tabs (``costs``, by name), is counted before a
+    paragraph is written: the template says how many times a value is.
 
     Raises:
-        DocumentError: The placeholders are past ``budget``.
+        DocumentError: The placeholders, or what the values add, are past
+            ``budget``.
     """
     changed = False
     for texts in _paragraphs(etree, root):
@@ -632,6 +680,8 @@ def _fill(
         found.update(dict.fromkeys(match[1] for match in matches))
         known = [match for match in matches if match[1] in values]
         if known:
+            budget.take_bytes(sum(costs[match[1]][0] for match in known), written=True)
+            budget.take_nodes(sum(costs[match[1]][1] for match in known))
             _replace(texts, known, values)
             changed = True
     return changed

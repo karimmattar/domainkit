@@ -1003,9 +1003,9 @@ def test_a_crafted_documents_xml_is_refused_before_it_is_parsed(
     monkeypatch.setattr(docx_module, "_parse", parse)
 
     for call in (lambda: placeholders(bomb), lambda: fill_docx(bomb, {})):
-        with pytest.raises(DocumentError, match=r"XML is larger than 8,388,608 bytes"):
+        with pytest.raises(DocumentError, match=r"XML is larger than 12,582,912 bytes"):
             call()
-    with pytest.raises(DocumentError, match=r"more than 500,000 elements, texts"):
+    with pytest.raises(DocumentError, match=r"more than 1,000,000 elements, texts"):
         placeholders(bomb, limits=ArchiveLimits(max_xml_bytes=64 * 1024 * 1024))
     assert parsed == ["[Content_Types].xml"] * 3
 
@@ -1147,3 +1147,107 @@ def test_a_part_inflated_a_piece_at_a_time_is_checked_whole(
     assert placeholders(template).names == ("a",)
     with pytest.raises(DocumentError, match="archive is damaged"):
         placeholders(bomb)
+
+
+def many(count: int, paragraphs: int) -> bytes:
+    """A small template of ``count`` placeholders of one name, in ``paragraphs``.
+
+    A comment of random letters every 1,000 placeholders keeps it under
+    the ratio ``ArchiveLimits`` allows.
+    """
+    noise = random.Random(0)  # noqa: S311 - noise to compress less, not a secret.
+    each = count // paragraphs
+    every = max(1, 1000 // each)
+    body = "".join(
+        runs("{{a}}" * each)
+        + (
+            f"<!--{''.join(noise.choices(string.ascii_letters, k=120))}-->"
+            if index % every == 0
+            else ""
+        )
+        for index in range(paragraphs)
+    )
+    return docx(body)
+
+
+ADDRESS: Final = "12 Rue X\nApt 4\n75011 Paris\nFrance"
+
+
+@pytest.mark.timeout(60, method="signal")
+@pytest.mark.parametrize("paragraphs", [480, 14_000])
+def test_what_the_values_add_is_bounded_before_it_is_written(paragraphs: int) -> None:
+    """A template sets how many times a value is written: it counts.
+
+    480,000 placeholders of one name, 50 KB that ``OfficeCheck`` and
+    ``placeholders`` take, filled with a four-line address: 2.8.0's first
+    cut wrote 16 MB of text and 1.4 million elements, and took 1,075 MiB
+    (637 MiB over 14,000 paragraphs).
+    """
+    template = many(480_000, paragraphs)
+    assert len(template) < 600_000
+
+    assert placeholders(template).names == ("a",)
+    with pytest.raises(DocumentError, match="with its values"):
+        fill_docx(template, {"a": ADDRESS})
+    with pytest.raises(DocumentError, match=r"XML, with its values, is larger than"):
+        fill_docx(template, {"a": "x" * 40})
+    with pytest.raises(DocumentError, match="placeholders in all, with its values"):
+        fill_docx(template, {"a": "a\nb\tc"})
+
+
+def test_each_value_written_counts_its_bytes_and_breaks() -> None:
+    """Its bytes in UTF-8; each line break or tab, a break and a text."""
+    template = docx(runs("{{a}} {{a}}") + runs("{{b}}"))
+    values = {"a": "عقد\nx", "b": "y\tz"}
+    taken = ArchiveLimits(max_xml_bytes=10**9, max_nodes=10**9)
+    nodes = docx_module._nodes(read(template, "[Content_Types].xml")) + (
+        docx_module._nodes(read(template))
+    )
+    sizes = sum(
+        len(read(template, name))
+        for name in ("[Content_Types].xml", "word/document.xml")
+    )
+    written = 2 * len("عقد\nx".encode()) + len(b"y\tz")
+    breaks = 2 * 2 + 2
+
+    def limits(extra_bytes: int, extra_nodes: int) -> ArchiveLimits:
+        return ArchiveLimits(
+            max_xml_bytes=sizes + extra_bytes, max_nodes=nodes + 3 + extra_nodes
+        )
+
+    assert fill_docx(template, values, limits=taken) == fill_docx(
+        template, values, limits=limits(written, breaks)
+    )
+    with pytest.raises(DocumentError, match="with its values"):
+        fill_docx(template, values, limits=limits(written - 1, breaks))
+    with pytest.raises(DocumentError, match="with its values"):
+        fill_docx(template, values, limits=limits(written, breaks - 1))
+    placeholders(template, limits=limits(0, 0))
+
+
+def test_each_call_parses_in_a_thread_of_its_own() -> None:
+    """The names lxml keeps for the caller's thread are left as they were.
+
+    lxml keeps every name a thread parses, in a dictionary of the thread's.
+
+    2.8.0's first cut parsed in the caller's thread: a pool's thread that
+    read documents of 250,000 names each grew from 78 to 787 MiB over 80
+    of them.
+    """
+    names = "".join(f"<w:e{index:x}/>" for index in range(20_000))
+    before = etree.memory_debugger.dict_size()
+
+    placeholders(docx(runs("{{a}}") + names))
+    fill_docx(docx(runs("{{a}}") + names), {"a": "1"})
+
+    assert etree.memory_debugger.dict_size() == before
+
+
+def test_a_failure_in_the_calls_thread_is_raised_in_the_caller() -> None:
+    """As it would be in the caller's own: its type, message, and cause."""
+    with pytest.raises(PlaceholderError) as refused:
+        fill_docx(docx(runs("{{a}}")), {})
+    with pytest.raises(DocumentError, match="not a Word document"):
+        placeholders(b"not a zip")
+
+    assert refused.value.missing == ("a",)

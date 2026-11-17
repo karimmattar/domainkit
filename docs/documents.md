@@ -28,8 +28,7 @@ pip install "domainkit[documents,httpclient]"
 ```
 
 The decisions are in
-[ADR 0168](adr/0168-render-documents-through-a-port-with-gotenberg-and-fill-them-locally.md)
-,
+[ADR 0168](adr/0168-render-documents-through-a-port-with-gotenberg-and-fill-them-locally.md),
 [ADR 0176](adr/0176-bound-what-a-pdf-decodes-list-placeholders-fill-drafts-and-clean-less.md),
 and [ADR 0181](adr/0181-decide-a-body-limit-per-request-count-before-the-rules-hand-over-the-file-received-and-bound-the-xml-parsed.md).
 
@@ -247,9 +246,9 @@ and neither does XML made to cost memory once parsed:
 | `max_parts` | 1000 | Files in the archive. |
 | `max_part_bytes` | 64 MiB | One file, inflated. |
 | `max_total_bytes` | 256 MiB | Every file, inflated. |
-| `max_ratio` | 100 | A file past 100 KiB may inflate at most this many times its stored size, as Apache POI allows. |
-| `max_xml_bytes` | 8 MiB | The XML parsed, inflated, in all: the content types and the parts filled. *New in 2.8.* |
-| `max_nodes` | 500,000 | The elements, texts, and attributes the XML parsed may make, and the placeholders its paragraphs hold, in all. *New in 2.8.* |
+| `max_ratio` | 100 | A file past 100 KiB may inflate at most this many times its stored size, as Apache POI allows. pandoc writes a list's numbering part that inflates about 106 times: a document with lists from pandoc needs more. |
+| `max_xml_bytes` | 12 MiB | The XML parsed, inflated, and the values `fill_docx` writes in it, in UTF-8, in all: the content types and the parts filled. *New in 2.8.* |
+| `max_nodes` | 1,000,000 | The elements, texts, and attributes the XML parsed may make, the placeholders its paragraphs hold, and the elements its values add, in all. *New in 2.8.* |
 
 Sizes are checked as the archive states them, before anything is
 inflated. Then each file is inflated no further than its stated size, so
@@ -264,13 +263,13 @@ names are the same once case and Unicode forms are set aside.
 ### The XML parsed
 
 *New in 2.8.* lxml keeps each element, text, and attribute of a part as
-a node of its own, of 120 to 250 bytes with what `fill_docx` keeps of it:
-some 12 times the bytes of the XML Word or LibreOffice writes, and up to
-90 times for XML written to cost (`<w:p/>` over and over, or attributes
-with nothing in them). A Word document of 340 KB that `OfficeCheck`
-takes, holding 16 MiB of empty paragraphs, took 546 MiB of memory in
-2.7's `placeholders`, in the process that called it. So the XML is
-bounded in all, before it is parsed:
+a node of its own: with what `fill_docx` keeps of it, 70 to 100 bytes a
+node of the XML LibreOffice or pandoc writes, and up to 340 bytes for
+XML written to cost (attributes with nothing in them, each of another
+name). A Word document of 340 KB that `OfficeCheck` takes, holding 16
+MiB of empty paragraphs, took 546 MiB of memory in 2.7's
+`placeholders`, in the process that called it. So the XML is bounded in
+all, before it is parsed, and so is what `fill_docx` writes in it:
 
 - A part's size, as the archive states it, counts against
   `max_xml_bytes` before it is inflated; the content types count too.
@@ -280,18 +279,31 @@ bounded in all, before it is parsed:
   makes more than counted. Each `{{` of a paragraph's text counts once
   more before its placeholders are read, however its bytes wrote it
   (`&#123;` too).
-- Past either, the document is refused (`DocumentError`) at once, having
-  parsed nothing past it ([ADR 0181](adr/0181-decide-a-body-limit-per-request-count-before-the-rules-hand-over-the-file-received-and-bound-the-xml-parsed.md)).
+- Each value `fill_docx` writes counts its bytes in UTF-8, and each of
+  its line breaks and tabs two nodes (a break, and the text after it),
+  before its paragraph is written: the template says how many times a
+  value is written. A template of 50 KB that holds 480,000
+  `{{ address }}`, filled with an address of four lines, is refused; it
+  wrote 16 MB and took 1,075 MiB in the first cut of 2.8.
+- Past either, the document is refused (`DocumentError`) at once
+  ([ADR 0181](adr/0181-decide-a-body-limit-per-request-count-before-the-rules-hand-over-the-file-received-and-bound-the-xml-parsed.md)).
 
-At the defaults, the XML takes about 150 MiB of memory at most, whatever
-it holds (measured on the shapes that cost the most), and Word's own XML
-much less: they take a document of a few hundred pages of text, fewer
-where its formatting splits it into many runs. Every other file is
-checked a piece at a time, then inflated only as it is written back,
-one at a time; `placeholders` inflates none of them. A larger template
-needs larger bounds, and the memory for them:
-`ArchiveLimits(max_xml_bytes=16 * 1024 * 1024, max_nodes=1_000_000)`
-takes about twice as much.
+Measured at the defaults, a call took 340 MiB at most, on XML written to
+cost the most, and a refused call as much; a document LibreOffice wrote,
+at the bound, 66 MiB. Text with little formatting (LibreOffice's and
+pandoc's, 140 to 330 nodes and 4 to 6 KB a page) reaches the bounds,
+on bytes, at some 2,100 to 2,900 pages. Formatted text (bold, italics,
+links, tables, lists: 3,000 to 3,700 nodes a page) reaches 1,000,000
+nodes at some 270 to 330 pages. A larger template needs larger bounds,
+and the memory for them, up to 340 bytes a node:
+`ArchiveLimits(max_xml_bytes=24 * 1024 * 1024, max_nodes=2_000_000)`.
+
+Every other file is checked a piece at a time, then inflated only as
+it is written back, one at a time; `placeholders` inflates none of
+them. Each call parses in a thread of its own, which ends with it: lxml
+keeps every name a thread parses, for as long as the thread lives, so a
+thread of a pool that read documents of 250,000 names each grew by 700
+MiB over 80 of them. The thread costs about 0.4 ms a call.
 
 To refuse at upload a template that `fill_docx` would refuse, read its
 placeholders in the upload's check, in a process of its own
