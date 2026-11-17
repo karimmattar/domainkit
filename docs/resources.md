@@ -1255,9 +1255,17 @@ companies.command_route(Invite, service=invite, path="/invite", action="invite")
 ```
 
 Without `keys`, the route would ask `companies.invite_company`, which no
-model declares. The other actions keep their model's keys. `ModelActions`
-takes `keys` alike, and a key that is not `<domain>.<codename>` is
-refused (`ValueError`).
+model declares. The other actions keep their model's keys.
+
+- Once `keys` is given, a route of an action other than `view`, `add`,
+  `change`, or `delete` that `keys` does not name is refused when it is
+  declared (`ImproperlyConfigured`, naming the closest it does name), so
+  a misspelt action never asks a key no one holds.
+- `ModelActions` takes `keys` alike. A key that is not
+  `<domain>.<codename>` is refused (`ValueError`).
+- `outside=ModelActions(...)` names its own keys, as it names its own
+  rules: it takes none of the member rule's. Give it `keys` too where the
+  collection serves such an action.
 
 ### Rules on objects, and scope
 

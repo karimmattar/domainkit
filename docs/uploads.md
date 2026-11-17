@@ -504,6 +504,7 @@ from there too.
 ```python
 # billing/infrastructure/files.py
 from domainkit.http.uploads import CHECKED_PDF, Upload, save_upload
+from domainkit.storage import StoredUpload
 
 
 class ContractFiles:

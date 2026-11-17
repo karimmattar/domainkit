@@ -1164,6 +1164,88 @@ def test_member_actions_name_a_domains_own_keys(
         HasModelPermission("view", GADGETS, key="view gadget")
 
 
+def test_keys_refuse_a_route_of_an_action_they_do_not_name(
+    store: InMemoryGadgets, members: None
+) -> None:
+    """Under ``keys``, a misspelt action is refused when its route is declared.
+
+    The four actions every model has still take their model's keys. A
+    rule given as ``outside`` names its own keys: it takes none of the
+    member's (review of user report D3).
+    """
+    rule = MemberActions(GADGETS, outside=IsAuthenticated(), keys={"invite": INVITE})
+    resource = companies(store, rule=rule)
+
+    with pytest.raises(ImproperlyConfigured, match=r"'invte' is not in keys \(did"):
+        resource.command_route(
+            RenameGadget, service=rename, body=RenameIn, path="/x", action="invte"
+        )
+    with pytest.raises(ImproperlyConfigured, match="'approve' is not in keys"):
+        ModelActions(GADGETS, keys={"invite": INVITE}).rules_for("approve")
+    assert [
+        rule.permission()
+        for action in ("view", "add", "change", "delete")
+        for rule in MemberActions(GADGETS, keys={"invite": INVITE}).rules_for(action)
+        if isinstance(rule, HasModelPermission)
+    ] == [
+        "shop.view_gadget",
+        "shop.add_gadget",
+        "shop.change_gadget",
+        "shop.delete_gadget",
+    ]
+    joined = MemberActions(
+        GADGETS, outside=ModelActions(GADGETS), keys={"invite": INVITE}
+    ).rules_for("invite")
+    assert [each.permission() for each in _model_rules(joined)] == [
+        INVITE,
+        "shop.invite_gadget",
+    ]
+
+
+def _model_rules(rules: Any) -> list[HasModelPermission]:  # noqa: ANN401 - rules.
+    """Every ``HasModelPermission`` within ``rules``, joined ones too."""
+    found: list[HasModelPermission] = []
+    for each in rules:
+        if isinstance(each, HasModelPermission):
+            found.append(each)
+        found.extend(_model_rules(getattr(each, "rules", ())))
+    return found
+
+
+def test_subclasses_that_set_their_own_fields_keep_working() -> None:
+    """A rule or a throttle whose ``__init__`` skips ``super()``'s still answers.
+
+    ``key`` and ``per_tenant_said`` have class defaults, so a subclass of
+    2.6's kind asks its model's key, and is named as unsaid (review of user
+    report D3).
+    """
+
+    class Viewing(HasModelPermission):
+        def __init__(self) -> None:
+            self.action = "view"
+            self.model = GADGETS
+
+    class Fixed(Throttle):
+        def __init__(self) -> None:
+            self.limit, self.period, self.key = 5, 60, "user"
+            self.scope, self.backend, self.per_tenant = None, None, True
+
+    org = APIRouter(
+        prefix="/orgs/{org_id}", dependencies=[Depends(PathTenant("org_id"))]
+    )
+
+    @org.post("/notes", dependencies=[Public, Depends(Fixed())])
+    async def note() -> None: ...
+
+    app = FastAPI()
+    app.include_router(org)
+
+    assert Viewing().permission() == "shop.view_gadget"
+    assert [found.split(", and")[0] for found in unsaid_throttles(app)] == [
+        "POST /orgs/{org_id}/notes is served as a tenant"
+    ]
+
+
 def throttled_app(*, middleware: bool = False) -> FastAPI:
     """Routes of an organisation and of no tenant, each throttled every way.
 

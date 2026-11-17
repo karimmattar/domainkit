@@ -699,14 +699,16 @@ function with the words too, where the users live, as Django's admin
 matches every word of a search on the same row (since 2.7):
 
 ```python
+from functools import reduce
+from operator import and_
+
 from domainkit.http import EveryWord
 
 
 async def users_named(words: tuple[str, ...], limit: int) -> list[UUID]:
+    every = reduce(and_, (F("username").icontains(word) for word in words))
     async with AuthUnitOfWork() as uow:
-        found = await uow.users.filter(
-            Selection(And.of(*(F("username").icontains(w) for w in words)), limit=limit)
-        )
+        found = await uow.users.filter(Selection(every, limit=limit))
     return [user.id for user in found]
 
 
@@ -727,6 +729,12 @@ class MemberFilters(FilterSet):
   the order given, each once.
 - `FilterSet.through(search)` keeps that answer under the words joined by
   spaces, in lowercase (`"ada lovelace"`).
+- Its limits: the second call gets every word, so a word meant
+  for the row's own field defeats it. "owner ada", where "ada" alone
+  names more users than the bound, finds Ada Lovelace's row only if the
+  first answer for "ada" kept her: no user is named "owner ada". And the
+  second answer is bound too: more than `max_reference_matches` users
+  named every word leave the rest out.
 
 | `FilterSet` class variable | Default | What it does |
 | --- | --- | --- |

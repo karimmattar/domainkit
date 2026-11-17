@@ -654,6 +654,11 @@ class Throttle:
     or ``Public``.
     """
 
+    rate: str = ""
+    """What it allows, as given: ``"10/minute"``."""
+    per_tenant_said: bool = False
+    """Whether ``per_tenant`` was given: how the count meets tenants is a choice."""
+
     def __init__(
         self,
         rate: str,
@@ -683,7 +688,6 @@ class Throttle:
         self.backend = backend
         self.per_tenant = per_tenant is not False
         self.per_tenant_said = per_tenant is not None
-        """Whether ``per_tenant`` was given: how the count meets tenants is a choice."""
 
     async def __call__(self, connection: HTTPConnection) -> None:
         """Count the request; refuse it over the rate.

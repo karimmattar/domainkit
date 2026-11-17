@@ -37,6 +37,7 @@ from typing import ClassVar, Final, Protocol, runtime_checkable
 from starlette.requests import HTTPConnection
 
 from domainkit.db.models import model_key
+from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import (
     AllOf,
     BasePermission,
@@ -51,6 +52,8 @@ VIEW: Final = "view"
 ADD: Final = "add"
 CHANGE: Final = "change"
 DELETE: Final = "delete"
+ACTIONS: Final = frozenset({VIEW, ADD, CHANGE, DELETE})
+"""The actions every model has a permission of, unless its ``Meta`` says."""
 PERMISSION_KEY: Final = re.compile(r"\w+\.\w+")
 """A permission's key: ``<domain>.<codename>``."""
 
@@ -79,6 +82,8 @@ class HasModelPermission(BasePermission):
     """
 
     bounds_scopes: ClassVar[bool] = True
+    key: str | None = None
+    """The key asked whole, instead of the model's (``keys`` of ``ModelActions``)."""
 
     def __init__(
         self, action: str, model: ModelLike, *, key: str | None = None
@@ -113,7 +118,13 @@ class ModelActions:
     names the key of an action whole, where the model's would not do:
     ``keys={"invite": "organizations.add_membership"}`` asks a route of
     the action ``invite`` for that key, not ``companies.invite_company``.
+    Once ``keys`` is given, a route of an action other than ``view``,
+    ``add``, ``change`` or ``delete`` that it does not name is refused
+    when declared, so a misspelt action never asks a key no one holds.
     """
+
+    keys: Mapping[str, str] = MappingProxyType({})
+    """The key of each action named whole, by action."""
 
     def __init__(
         self, model: ModelLike, *rules: Rule, keys: Mapping[str, str] | None = None
@@ -128,11 +139,14 @@ class ModelActions:
         self.keys = _checked_keys(keys)
 
     def rules_for(self, action: str) -> Sequence[Rule]:
-        """``rules``, then the model permission of ``action``, or its key."""
-        return (
-            *self.rules,
-            HasModelPermission(action, self.model, key=self.keys.get(action)),
-        )
+        """``rules``, then the model permission of ``action``, or its key.
+
+        Raises:
+            ImproperlyConfigured: ``keys`` is given and names neither
+                ``action`` nor is it one every model has.
+        """
+        key = _key_of(self, action)
+        return (*self.rules, HasModelPermission(action, self.model, key=key))
 
 
 class HasMemberModelPermission(HasModelPermission):
@@ -208,8 +222,12 @@ class MemberActions:
     ``keys`` names the key of an action of the domain's own whole, as
     ``ModelActions`` takes it: an invitation posted to a company, under
     ``keys={"invite": "organizations.add_membership"}``, asks the member
-    for that key (New in 2.7).
+    for that key (New in 2.7). ``outside``, as ``Actions``, names its own:
+    it does not take these.
     """
+
+    keys: Mapping[str, str] = MappingProxyType({})
+    """The key of each action named whole, by action."""
 
     def __init__(
         self,
@@ -229,9 +247,14 @@ class MemberActions:
         self.keys = _checked_keys(keys)
 
     def rules_for(self, action: str) -> Sequence[Rule]:
-        """``rules``, then the member's permission of ``action``, or ``outside``'s."""
+        """``rules``, then the member's permission of ``action``, or ``outside``'s.
+
+        Raises:
+            ImproperlyConfigured: ``keys`` is given and names neither
+                ``action`` nor is it one every model has.
+        """
         given = self.outside
-        key = self.keys.get(action)
+        key = _key_of(self, action)
         if given is None:
             return (*self.rules, HasMemberModelPermission(action, self.model, key=key))
         member = _ByPath(action, self.model, key=key)
@@ -252,6 +275,26 @@ def rules_for(rule: Rule | Actions | None, action: str) -> tuple[Rule, ...]:
     if isinstance(rule, Actions):
         return tuple(rule.rules_for(action))
     return (rule,)
+
+
+def _key_of(actions: ModelActions | MemberActions, action: str) -> str | None:
+    """The key ``actions`` names for ``action``; None for the model's own.
+
+    Raises:
+        ImproperlyConfigured: ``keys`` is given, and names neither ``action``
+            nor is it ``view``, ``add``, ``change`` or ``delete``: a route of
+            a misspelt action, or of one ``keys`` misspells.
+    """
+    keys = actions.keys
+    if not keys or action in keys or action in ACTIONS:
+        return keys.get(action)
+    from domainkit.utils.text import did_you_mean  # For the message only.
+
+    raise ImproperlyConfigured(
+        f"{type(actions).__name__}: the action {action!r} is not in keys"
+        f"{did_you_mean(action, keys)}; name its key there, or declare the "
+        "route with view, add, change, or delete."
+    )
 
 
 def _checked_keys(keys: Mapping[str, str] | None) -> Mapping[str, str]:

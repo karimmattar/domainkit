@@ -633,6 +633,9 @@ async def test_every_word_finds_whom_common_words_name_together() -> None:
     assert WORDS_ASKED[-1] == (("ada", "bob"), 2)
     assert await named(Together, "viewer byron") == ["Ada Byron"]
     assert WORDS_ASKED == [(("viewer",), 2), (("byron",), 2)]
+    # Its limit: the words together name no user "owner ada", and the
+    # first answer for "ada" left Ada Lovelace out (docs/queries.md).
+    assert await named(Together, "owner ada") == []
     assert await named(Together, "ada") == ["Ada Byron", "Ada Smith"]
     assert WORDS_ASKED == [(("ada",), 2)]
     with pytest.raises(TypeError, match="function of the words and a limit"):
