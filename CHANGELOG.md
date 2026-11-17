@@ -9,6 +9,23 @@ and a status.
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-11-17
+
+2.7 answers thirteen of a project's fourteen notes on 2.6 (the last,
+uvicorn as an extra, waits for 3.0). A confirmed or approved act now
+does no more than the person saw: approval screens show everything an
+act does, whole or counted, and name people (ADR 0173); an approved
+group grant is bound to the group's id and grants, reactivation and a
+group's permissions are held, and checks run before the hold (ADR 0172);
+an act can bind the record it decides on, a held act keeps its
+authorization, and each act may name its own methods (ADR 0174). PDFs
+are decoded within a budget, through one policy shared by `overlay_pdf`
+and `PdfCheck`, and `OfficeCheck` reads every part a reader follows
+(ADRs 0175, 0176). Tenancy lets a key reach every tenant and names a
+domain's own keys (ADR 0177). Auth's authorizations table gains three
+nullable columns: read [upgrading.md](docs/upgrading.md#26-to-27) before
+you deploy.
+
 ### Added
 
 - `AUTH["AUTHORIZATIONS"]["WHOLE"]` (off): the framework's acts show what
@@ -8477,7 +8494,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.6.0...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.7.0...HEAD
+[2.7.0]: https://github.com/karimmattar/domainkit/compare/v2.6.0...v2.7.0
 [2.6.0]: https://github.com/karimmattar/domainkit/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/karimmattar/domainkit/compare/v2.4.0...v2.5.0
 [2.4.0]: https://github.com/karimmattar/domainkit/compare/v2.3.0...v2.4.0
