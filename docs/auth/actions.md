@@ -247,8 +247,9 @@ AUTH = {"ADMIN_ACTION": True, "AUTHORIZATIONS": {"TYPED_LINKS": "refused"}}
 - **What it never marks**: what the act is on (`named`), which never
   locks its user or group. A group's name is checked where it is typed,
   as a screen may show it cut; a user's username, address, or number is
-  an identifier, set as one, and never checked. A field sent as it is
-  stored (a form saved whole) is not typed anew. Rejecting and cancelling
+  an identifier, set as one, and never checked. A text field sent as it
+  is stored (a form saved whole) changes nothing: it is left off the
+  screen, so a stored link is never shown through it. Rejecting and cancelling
   check their own reason, never the request's, so a request stored before
   the setting can always be stopped.
 - **A guard's `show`** marks what its maker typed:
@@ -267,19 +268,25 @@ AUTH = {"ADMIN_ACTION": True, "AUTHORIZATIONS": {"TYPED_LINKS": "refused"}}
   letter or a digit, an IP address, a name ending in a top-level domain
   IANA lists or one kept for special use (`evil.example`, also with
   Cyrillic letters that read as Latin), `www.` anything, or seven digits
-  or more written as one number (`+1 (555) 010-0100`). Not a date, an
-  amount (with its cents, in groups of three, or beside a currency's code
-  or sign: `1.234.567,89`, `12 500 000 EUR`), or a code whose letters
-  touch its digits or join them with a hyphen: `v1.2`, `Q3 report`,
-  `readers`, `INC0012345`, `JIRA-1234567`, `2026-11-17`, and
-  `invoice.pdf` hold none.
+  or more written as one number (`+1 (555) 010-0100`). When unsure, it
+  holds one. Not a date; nor an amount (with two digits of cents,
+  `1.234.567,89`; in groups of three by commas, `1,250,000`, or beside a
+  currency, `12 500 000 EUR`), nor a code (its letters touching its
+  digits, `INC0012345`, or joined by a hyphen to two runs of fewer than
+  seven digits, `CVE-2024-12345`), unless the number holds a plus sign or
+  a bracket, or the text a word that asks for a call (`call`, `tel`,
+  `ext`, `WhatsApp`, and their Arabic words): `call 555 010 0123 EUR` and
+  `support-555-010-0123` hold one. `v1.2`, `Q3 report`, `readers`,
+  `2026-11-17`, and `invoice.pdf` hold none.
 - **Known false positives** read as links to a reader too, and are
   written otherwise: a file or a group named with a top-level domain after
   a dot (`notes.md`, `team.legal`, `Q3.report`), an account number or a
   postal code in groups (`GB29 NWBK 6016 1331 9268 19`, `100-0001`,
-  `01310-100`), and seven digits or more alone (`build 1234567`). Digits
-  grouped in threes by spaces alone (`612 345 678`) are read as a number to
-  call unless cents or a currency follow.
+  `01310-100`), seven digits or more alone or beside a currency
+  (`build 1234567`, `EUR 1250000`), digits in threes by dots or spaces
+  with no cents (`1.234.567`, `612 345 678`: numbers to call in Spain), a
+  code with a run of seven digits (`JIRA-1234567`), and an amount in a
+  text that asks for a call.
 - **`on_typed_text`** runs a project's own check on each typed text, as
   typed, whatever the setting: raise to refuse the act. One text may be
   checked more than once (at a twin's two screens, then at the act), so a

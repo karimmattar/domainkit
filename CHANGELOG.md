@@ -15,9 +15,11 @@ and a status.
   the framework's acts refuse, when asked for, text a person typed that
   holds a link, an email address, or a number to call (`422
   link_not_shown`): an impersonation's reason, a group's new name, the
-  text fields a change sets anew on a user but those that identify them,
-  a rejection's or a cancellation's reason, and what a guard's `show`
-  marks `Typed`, as typed and as the phone shows it, cut or escaped. A held impersonation whose reason holds one is refused when it
+  text fields a change sets anew on a user but those that identify them
+  (one sent as stored is left off the screen), a rejection's or a
+  cancellation's reason, and what a guard's `show` marks `Typed`, as typed
+  and as the phone shows it, cut or escaped; when unsure, a number is one
+  to call. A held impersonation whose reason holds one is refused when it
   is submitted, and approving a request whose typed text holds one is
   refused; the admin API refuses a group named so, with or without its
   act; rejecting and cancelling check their own reason only ([Text a

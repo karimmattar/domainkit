@@ -111,8 +111,9 @@ service on the framework reported two gaps (user report A17):
   API's screen and as the "Stated reason" of a held impersonation; a
   group's new name (`group_create`, `group_rename`); each text a change
   sets on a user but its identifiers (the username, the email,
-  `IDENTIFIER_FIELDS`, `AUTH.IDENTIFIERS`: an address set is what is set)
-  and those sent as stored (a form saved whole); a rejection's and a
+  `IDENTIFIER_FIELDS`, `AUTH.IDENTIFIERS`: an address set is what is set);
+  such a text sent as stored (a form saved whole) changes nothing and is
+  left off the screen, though the act binds it; a rejection's and a
   cancellation's reason. What an act is on (`named`) is never marked: a
   group's name is checked where it is typed, a user's username or address
   is an identifier, never checked. The admin API checks a group's new
@@ -132,15 +133,20 @@ service on the framework reported two gaps (user report A17):
   by dots, a name whose last label is in IANA's list or is special-use
   (read through UTS #39's look-alike letters, and `0` and `1` as `o`, `l`,
   `i` beside letters; an IDN label as its A-label), `www.` anything, or
-  seven digits or more written as one number. Not a date, an amount (with
-  its cents, in groups of three by dots or with cents by the other mark,
-  or beside a currency's code in capitals or its sign), or a code whose
-  letters touch its digits or join them with a hyphen or an underscore
-  (`INC0012345`, `JIRA-1234567`). The package keeps IANA's list as
-  published and the look-alike letters derived from `confusables.txt`,
-  with Unicode's notice; `.github/scripts/screen_data.py` rebuilds both,
-  and each release runs it (`docs/versioning.md`). The package's license
-  reads `MIT AND Unicode-3.0`.
+  seven digits or more written as one number; when unsure, it holds one,
+  as a false positive costs less than a number reaching the phone. Not a
+  date; nor an amount (two digits of cents, apart by another mark than its
+  groups'; groups of three by commas; or groups of three beside a
+  currency's code in capitals or its sign), nor a code (letters touching
+  its digits, or joined by a hyphen or an underscore to two runs of fewer
+  than seven digits: `INC0012345`, `CVE-2024-12345`), unless the number
+  holds a plus sign or a bracket, or the text a word that asks for a call
+  (`call`, `tel`, `ext`, `WhatsApp`, and Arabic's words for them). The
+  package keeps IANA's list as published and the look-alike letters
+  derived from `confusables.txt`, with Unicode's notice;
+  `.github/scripts/screen_data.py` rebuilds both, and each release runs
+  it (`docs/versioning.md`). The package's license reads `MIT AND
+  Unicode-3.0`.
 - **Under `WHOLE`**, a rejection's or a cancellation's reason longer than
   a line, as shown, is refused at its twin (`422 too_much_to_show`). The
   rest of a decision's screen is still cut and counted.
@@ -160,9 +166,12 @@ service on the framework reported two gaps (user report A17):
   joined to the next by a dot (`Q3.report`), a group name like
   `team.legal`, an account number or a postal code in groups (`GB29 NWBK
   6016 1331 9268 19`, `100-0001`, `01310-100`), seven digits or more
-  alone (`build 1234567`). Digits grouped in threes by spaces alone
-  (`612 345 678`, a Spanish number to call) are read as a number, unless
-  cents or a currency follow. The person writes it otherwise.
+  alone or beside a currency (`build 1234567`, `EUR 1250000`), a code
+  with a run of seven digits (`JIRA-1234567`, `user_1234567`), an amount
+  in a text that asks for a call. Digits grouped in threes by dots or
+  spaces with no cents (`1.234.567`, `612.345.678`, `612 345 678`) stay
+  refused: Spain writes its numbers to call so, and nothing tells the two
+  apart. The person writes the amount with its cents or its currency.
 - **A group's long name** is refused where a cut of it, as a screen may
   show it, reads as a link, though the whole does not: checking each cut
   past the twentieth character costs a long dotted name.
