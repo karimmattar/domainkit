@@ -1,6 +1,6 @@
 # 0175. Bound a PDF's page content, check an act's upload once, and read a signed body last
 
-- Status: Accepted
+- Status: Accepted; amended 2026-11-17 (at the end)
 - Date: 2026-11-17
 
 ## Context
@@ -259,3 +259,148 @@ How `upload_route` decides per request:
     <https://doi.org/10.1109/MSP.2010.187>
 13. Django, `FileField.upload_to` and `storage`: <https://docs.djangoproject.com/en/5.2/ref/models/fields/#filefield>
 14. FastAPI, Dependencies in path operation decorators: <https://fastapi.tiangolo.com/tutorial/dependencies/dependencies-in-path-operation-decorators/>
+
+## Amendment (2026-11-17): read a field's name as readers do, SVG pictures, and mail merges
+
+The project reported three ways past `OfficeCheck` on 2.7 (user report
+U8), each found by a check of its own after it:
+
+1. **A field's name only when written bare.** The name was the letters an
+   instruction starts with, past white space. `\INCLUDEPICTURE "..."`,
+   `"INCLUDETEXT" "..."` and `"HYPERLINK" "file:///..."`, in a field's
+   runs or in `w:fldSimple`, gave no name and passed.
+2. **No SVG picture.** An SVG part (`word/media/*.svg`, and `xl/` and
+   `ppt/` alike) was parsed as XML for its type, but nothing in it was
+   read for what it loads.
+3. **No mail merge.** `w:mailMerge` in `settings.xml`, whose
+   `w:connectString` or `w:query` names a data source with no
+   relationship, passed; a relationship to the source is refused.
+
+### What was found
+
+- LibreOffice reads a field's type past a leading backslash, since Word
+  opens such fields (tdf#54584) [15], and takes a quoted token as one
+  token [16]. LibreOffice 24.2 headless, converting to ODT, imported
+  `\INCLUDETEXT`, `"INCLUDETEXT"`, `"\INCLUDETEXT"`, `\includeText`, a
+  backslash split into its own run, and both in `w:fldSimple`, as field
+  68, `INCLUDETEXT`. It fetched nothing for these fields, nor for a bare
+  `INCLUDEPICTURE`: its importer drops `INCLUDEPICTURE` and keeps
+  `INCLUDETEXT` as a field it does not update. Word, or a later
+  LibreOffice, may update them.
+- LibreOffice's SVG reader takes an `image`'s `href` or `xlink:href`
+  (by the attribute's name, whatever its prefix's namespace), resolves it
+  against the document, and opens it as a file; a `data:` URL it decodes
+  from base64 and imports by its bytes, whatever its media type [17].
+  Converting a Word document to PDF, LibreOffice 24.2 drew a local PNG
+  named by `file:///...` into the PDF: from an `image`, a `pattern`, a
+  `feImage`; from an SVG named `image1.png` and typed a PNG; from one
+  compressed with gzip; from one with no namespace; from one whose root
+  was an `image`, with `<svg` in a comment after it; from an SVG in a
+  `data:` URL of an SVG, typed `image/svg+xml` or `image/png`; and from
+  one whose `<svg` came after a comment of 3,000 characters. `http:` it
+  did not fetch, nor a relative path. 2.7 took every one of these files.
+  A URL LibreOffice expands (`vnd.sun.star.expand:`) sent a server's
+  environment to whoever named it (CVE-2024-12426) [18].
+- An SVG loads from `href` and `xlink:href` on many elements (`image`,
+  `use`, `feImage`, `pattern`, `a`) [19], and from CSS: `url()`,
+  `@import`, and `image-set()`, which takes a URL as a string [20]. CSS
+  escapes spell a name otherwise (`\75 rl(` is `url(`) [21].
+- Word's mail merge reconnects to its source by `w:connectString`, an
+  OLE DB connection string [22]; `w:query` names the file or table it
+  reads, and `w:dataSource` and `w:odso` name it by relationship. Word
+  opening a file on a share sends the user's NTLM hash to its host, as
+  2.7's refusal of an outside relationship (a remote template) already
+  says [23]. LibreOffice binds a merge only to a data source registered
+  with it, and fetched nothing.
+- A comment or an instruction before an XML part's root made 2.7's
+  reader raise once the root was read: the part was refused as
+  `unreadable_file`. A drawing program's SVG starts so (`<!-- Generator:
+  ... -->`); LibreOffice 24.2's own export of a document holding one, a
+  Word file, a workbook and a presentation, was refused.
+- Excel's outside data is reached through `xl/connections.xml`, query
+  tables, and links to other workbooks, all refused by type and by
+  relationship since 2.5, Power Query and pivot caches through them; a
+  presentation has no data source of its own. Nothing was added there.
+
+### Options
+
+How a field's name is read:
+
+| Option | What it costs |
+| --- | --- |
+| Past a backslash at the start and quotes, as LibreOffice 24.2 does | Word's reading is not documented; a reader more lenient (a space before the backslash, curly quotes) passes. |
+| **Past any white space, Unicode's default ignorable code points (zero-width space and joiners, byte order mark, soft hyphen, directional marks) [24], backslashes and quotes, straight, curly, low and guillemets; the letters that follow, those marks between them left out, in any case. A quote that closes a quoted name is no argument of `HYPERLINK`** | An instruction that starts with a quoted word in the list (`"LINK"`) is refused; no field Word writes does. |
+
+Which SVG parts are read:
+
+| Option | What it costs |
+| --- | --- |
+| Parts typed `image/svg+xml` | An SVG called `image1.png` passes, and LibreOffice draws it. |
+| **Parts SVG by name or type, and every part read as XML (2.7's rule: by name or type, or named by a relationship and starting as XML) that holds `<svg` anywhere or an element `svg` of a prefix; a part a relationship names, or an SVG's, that is gzip, read inflated within the check's bytes (its header as RFC 1952 writes it [25], its checksum not read, as LibreOffice reads it [26]); broken deflated data refused** | A part that names `<svg` in a comment is read as an SVG. A font whose scrambled first bytes are a gzip header (about 1 in 130 million) is refused. |
+
+What an SVG may load:
+
+| Option | What it costs |
+| --- | --- |
+| `image`'s `href` alone | LibreOffice draws `pattern`s and `feImage`s; a browser opening the part loads the rest. |
+| **Any attribute `href` or `src`, whatever its namespace, and any value `set` or `animate` gives one, names a fragment (`#id`) or a `data:` URL. CSS anywhere (an attribute, a `style` element, any text, its comments left out and escapes undone) has no `@import`, `image()` or `image-set()`, and `url()` and `src()` name a fragment or a `data:` URL. No `<?xml-stylesheet?>`. A `data:` URL, base64 or not, whose bytes start as XML and hold `<svg` is checked as an SVG, four deep; any other is a picture** | An SVG's link (`a href`) is refused, and text that reads `url(` in a label. A drawing program's SVG, its gradients and clips named by fragment and its pictures held in `data:` URLs, passes. |
+
+How a mail merge is held:
+
+| Option | What it costs |
+| --- | --- |
+| Refuse any `w:mailMerge`, as the project did | A letter begun as a merge, no recipients chosen, is refused. |
+| **Refuse a `w:mailMerge` holding a `w:connectString`, `w:query`, `w:dataSource`, `w:headerSource`, or `w:odso`'s `w:udl` or `w:src`, with a value that is not blank** | A merge document with its source is refused, as one naming it by relationship was. |
+
+### Decision
+
+- `_check_field` reads the name as the second option says, for each
+  instruction, with and without its tracked deletions, in complex fields
+  and in `w:fldSimple`, against `OFFICE_FIELDS` and the `HYPERLINK` rule
+  of 2.7.
+- `OfficeCheck` reads SVG parts and what they load as the options in bold
+  say, with the same parser as every part (no entities, no DTD, no
+  network); an SVG's DTD or entity is refused in its bytes, a `data:`
+  URL's too. A refusal is `EXTERNAL` (`unsafe_file`); an SVG in a
+  `data:` URL that cannot be read, or nested deeper than four, is "too
+  large or too complex".
+- A `w:mailMerge` naming its source is refused as `EXTERNAL`.
+- An XML part's comments and instructions before its root are read past.
+
+### Consequences
+
+- These are security fixes in a minor release: documents 2.7 took are
+  refused (`docs/upgrading.md`, 2.7 to 2.8). The real documents tried, a
+  table of contents with `PAGEREF`, `REF`, `SEQ`, `DATE`, `PAGE` fields
+  and hyperlinks, LibreOffice's export of a Word file, a workbook and a
+  presentation each holding an SVG, pass; Word's own SVG pictures name
+  their PNG and SVG by relationship and load nothing.
+- A large SVG costs more to check: 100,000 elements, each with a style
+  naming a gradient, took 1.2 s where 2.7 took 0.4 s. A Word document of
+  200,000 paragraphs took as long as on 2.7 (4.4 s).
+- The check reads what LibreOffice and Word are known to follow. A
+  browser that opens an SVG part on its own follows more than this reads
+  (a script, HTML in a `foreignObject` but its `src`); serve files with
+  `serve`, which sends them to download.
+
+### Sources
+
+15. LibreOffice, commit for tdf#54584, "field type may be prepended with
+    backslash": <https://lists.freedesktop.org/archives/libreoffice-commits/2015-December/107093.html>
+16. LibreOffice, `writerfilter/source/dmapper/DomainMapper_Impl.cxx`
+    (`lcl_ExtractToken`, `splitFieldCommand`): <https://docs.libreoffice.org/writerfilter/html/DomainMapper__Impl_8cxx_source.html>
+17. LibreOffice, `svgio/source/svgreader/svgimagenode.cxx`: <https://docs.libreoffice.org/svgio/html/svgimagenode_8cxx_source.html>
+18. Codean Labs, "Exploiting LibreOffice (CVE-2024-12425 and
+    CVE-2024-12426)": <https://codeanlabs.com/2025/02/exploiting-libreoffice-cve-2024-12425-and-cve-2024-12426/>
+19. W3C, SVG 2, Linking (`href` on `a`, `image`, `use`, `feImage`,
+    `pattern`): <https://www.w3.org/TR/SVG2/linking.html>
+20. W3C, CSS Images Module Level 4, `image()` and `image-set()`:
+    <https://www.w3.org/TR/css-images-4/>
+21. W3C, CSS Syntax Module Level 3, escapes (4.3.7): <https://www.w3.org/TR/css-syntax-3/#consume-escaped-code-point>
+22. ECMA-376, `connectString` (Data Source Connection String): <https://webapp.docx4java.org/OnlineDemo/ecma376/WordML/connectString.html>
+23. Securify, "Living off the land: stealing NetNTLM hashes": <https://securify.nl/blog/living-off-the-land-stealing-netntlm-hashes/>
+24. Unicode, `DerivedCoreProperties.txt`, Default_Ignorable_Code_Point:
+    <https://www.unicode.org/Public/UCD/latest/ucd/DerivedCoreProperties.txt>
+25. RFC 1952, GZIP file format specification (2.3): <https://www.rfc-editor.org/rfc/rfc1952.html>
+26. LibreOffice, `tools/source/zcodec/zcodec.cxx` (`ZCodec::InitDecompress`):
+    <https://docs.libreoffice.org/tools/html/zcodec_8cxx_source.html>
