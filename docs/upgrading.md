@@ -41,6 +41,17 @@ never published), with each section below.
 2.8 follows up 2.7. Each item of this list says what a project that
 relied on 2.7's behaviour changes, and what to run.
 
+- **`APIError` and `FieldError` name `domainkit.http.problems`.** They
+  moved there from `domainkit.http.errors`, which re-exports them, so
+  their imports work and the classes are the same. What prints a class
+  by its module now prints the new one: tracebacks, the body of the mail
+  reporter's report (`domainkit.http.problems.APIError was raised at
+  ...`), and tracing's `error.type`. Change a log filter, an alert, or an
+  error tracker's rule that matches `APIError` under the old module,
+  `domainkit.http.errors`, to match `domainkit.http.problems.APIError`.
+- **`GET /users/names` strips the names it joins.** A first or last name
+  of white space alone gives no name, where 2.7 answered the spaces, and
+  a padded one loses its padding.
 - **Office documents that load from elsewhere in more ways are refused.**
   `DOCX`, `XLSX` and `PPTX` answer 422 `unsafe_file` for a Word field
   that pulls content in or runs a program when its name follows a

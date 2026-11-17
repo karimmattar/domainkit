@@ -9,6 +9,54 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `domainkit.http.problems`: `APIError` and `FieldError`, the problems a
+  route raises, in a module of their own that builds no response.
+  `domainkit.http.errors` and `domainkit.http` re-export them, the same
+  classes, and `domainkit.http.errors` still holds `DomainkitError`:
+  every domainkit name 2.7 imported from either still imports (only the
+  standard library's `Sequence` and `TYPE_CHECKING` left
+  `domainkit.http.errors`). The infrastructure layer may import the
+  module: a file gateway refuses a file with the status, code, and field
+  error a route would, with no layer of its own
+  ([Bytes and streams](docs/uploads.md#bytes-and-streams), ADR 0182)
+  (user report D2).
+
+- `AUTH.NAME_FIELDS` (unset): the fields the admin API's `GET
+  /users/names` names a user by, as entries tried in order, each a field
+  or fields joined by a space; the first that gives text is the name,
+  as in `("display_name", ("first_name", "last_name"))`. Each field must
+  be a text field `GET /users` shows, among a user's `fields` or as the
+  username, or `check` refuses to start (`auth.E012`, a message for each
+  case: no such field, never shown, not shown by the model, not text). A
+  field that stops being shown, or a value that is not text, gives no
+  name, and search still never matches a name. Unset, a user is named by
+  `first_name` and `last_name`, as in 2.7
+  ([The admin API](docs/auth/routes.md#the-admin-api), ADR 0182) (user
+  report D2).
+
+### Changed
+
+- The layer rules let the infrastructure layer import
+  `domainkit.http.problems` (`domainkit.architecture.ALLOWED_MODULES`),
+  but only the names its `__all__` lists: `from domainkit.http.problems
+  import HTTPException` is refused. The rest of `domainkit.http.errors`
+  stays forbidden there, the application and domain layers import
+  neither, and `domainkit.http.client` and `domainkit.http.uploads` are
+  held as in 2.7 (ADR 0003's amendment of 2026-11-17) (user report D2).
+
+- `APIError` and `FieldError` are defined in `domainkit.http.problems`,
+  so tracebacks, the body of the mail reporter's report
+  (`domainkit.http.problems.APIError was raised at ...`), and tracing's
+  `error.type` name that module, not `domainkit.http.errors`: a filter
+  or an alert on the old name needs the new one
+  ([upgrading.md](docs/upgrading.md#27-to-28)) (user report D2).
+
+- `GET /users/names` strips the names it joins: a first or last name of
+  white space alone no longer makes a name of spaces, and a padded one
+  is answered without its padding (user report D2).
+
 ### Fixed
 
 - `OfficeCheck` reads an XML part with a comment or an instruction before
@@ -28,6 +76,7 @@ and a status.
   as the field; a `HYPERLINK` so written is held to `http`, `https` and
   `mailto` too ([Checking documents](docs/uploads.md#checking-documents),
   ADR 0175) (user report U8).
+
 - `OfficeCheck` reads an SVG picture whatever its name or type, by its
   bytes too, inflated if it is gzip, and refuses one that
   loads anything but a fragment of itself or a `data:` URL: an `href` or
@@ -37,6 +86,7 @@ and a status.
   into the PDF it made of a document 2.7 took
   ([Checking documents](docs/uploads.md#checking-documents), ADR 0175)
   (user report U8).
+
 - `OfficeCheck` refuses a Word mail merge that names its data source or a
   connection to one (`w:connectString`, `w:query`, `w:dataSource`,
   `w:headerSource`, `w:odso`'s `w:udl` and `w:src`), as it refuses a

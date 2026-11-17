@@ -516,22 +516,36 @@ sooner when another sent the same file, which tells of that file.
 A gateway of the infrastructure layer may call `save_upload` with the
 bytes its route hands it: the [layer rules](reference/settings.md#layer-rules)
 allow `domainkit.http.uploads` there since 2.5. They keep Starlette's
-`UploadFile` and `domainkit.http.errors` out, so a gateway raises domain
-errors, which the HTTP layer maps. A gateway that takes the route's file
-as it is, without reading it into memory first, types it as `Upload`,
-from the same module: a form's file, bytes, or a stream, as `save_upload`
-and `receive_upload` take them (since 2.7). It may catch `UploadRefused`
+`UploadFile` out. A gateway that takes the route's file as it is,
+without reading it into memory first, types it as `Upload`, from the
+same module: a form's file, bytes, or a stream, as `save_upload` and
+`receive_upload` take them (since 2.7). It may catch `UploadRefused`
 from there too.
+
+A gateway refuses a file as a route would: with an `APIError`, its
+status, code, and `FieldError`s, from `domainkit.http.problems`, which
+the layer rules allow there (since 2.8), by the names its `__all__`
+lists. The rest of `domainkit.http.errors`, which builds the responses,
+stays out. A rule of the business is still a domain error, which the
+HTTP layer maps.
 
 ```python
 # billing/infrastructure/files.py
-from domainkit.http.uploads import CHECKED_PDF, Upload, save_upload
+from domainkit.http.problems import APIError, FieldError
+from domainkit.http.uploads import CHECKED_PDF, Upload, UploadRefused, save_upload
 from domainkit.storage import StoredUpload
 
 
 class ContractFiles:
     async def keep(self, upload: Upload) -> StoredUpload:
-        return await save_upload(upload, types=[CHECKED_PDF], max_size=10_000_000)
+        try:
+            return await save_upload(upload, types=[CHECKED_PDF], max_size=10_000_000)
+        except UploadRefused as refused:  # Name the form's field.
+            message = str(refused.detail)
+            field = FieldError(loc=["body", "contract"], msg=message, type=refused.code)
+            raise APIError(
+                refused.status_code, refused.detail, code=refused.code, errors=[field]
+            ) from refused
 ```
 
 ### Body limits per route
