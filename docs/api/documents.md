@@ -1,10 +1,10 @@
 # Public API: documents
 
 Documents (`domainkit.documents`): HTML and Office documents turned into
-PDFs by a renderer, placeholders filled in Word documents, rendered pages
-laid over a PDF's, and rich text kept to an allowlist. Part of the
-[public API](../api.md), under its compatibility policy. The guide is
-[documents.md](../documents.md).
+PDFs by a renderer, placeholders listed and filled in Word documents,
+rendered pages laid over a PDF's, and rich text kept to an allowlist.
+Part of the [public API](../api.md), under its compatibility policy. The
+guide is [documents.md](../documents.md).
 
 ## `domainkit.documents`
 
@@ -14,14 +14,16 @@ Documents: HTML and Office documents to PDF, Word placeholders, PDF overlays.
 - `DocumentError`: A document, or what was given to fill it, cannot be used.
 - `PageOptions`: How a browser prints HTML; None leaves the renderer's default.
 - `PlaceholderError`: A Word document's placeholders and the values given do not agree.
+- `Placeholders`: What a Word document holds to fill, as `fill_docx` reads it.
 - `Renderer`: Turns HTML, or an Office document, into a PDF (`GotenbergRenderer`).
 - `RendererNotConfigured`: No renderer is set: `DOCUMENTS["RENDERER"]` is None.
 - `RendererUnavailable`: The renderer could not render now: unreachable, failing, or refusing the login.
 - `RenderingRefused`: The renderer refused what it was sent: the document cannot be rendered.
-- `clean_html`: `html`, a fragment of rich text, kept to the module's allowlist.
+- `clean_html`: `html`, a fragment of rich text, kept to the module's allowlist, or less.
 - `fill_docx`: `document` (a .docx) with each `{{ name }}` replaced by `values[name]`.
 - `overlay_pdf`: `document` with overlays drawn over its pages.
 - `page_sizes`: Each page's width and height as it is shown, in points (1/72 inch).
+- `placeholders`: The placeholders of `document` (a .docx), and the braces that make none.
 - `renderer`: The `DOCUMENTS["RENDERER"]` Gotenberg server, made once per configuration.
 
 ## `domainkit.documents.gotenberg`

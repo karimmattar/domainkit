@@ -9,6 +9,26 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `placeholders(document)` (`domainkit.documents`) lists the
+  placeholders of a Word document, each once in the order written, and
+  the braces that make none, as `fill_docx` reads them: the same parts
+  and grammar, within `ArchiveLimits` (`Placeholders`)
+  ([Listing the placeholders](docs/documents.md#listing-the-placeholders),
+  ADR 0176) (user report U2).
+- `fill_docx` takes `allow_missing` and `allow_malformed`: a draft leaves
+  a placeholder without a value, or braces that make none, as written,
+  for a preview of what is left to fill or fix. The defaults stay strict
+  ([Drafts](docs/documents.md#drafts),
+  ADR 0176) (user report U5).
+- `clean_html` keeps less when asked: `styles=False`, or a set of the
+  properties it keeps; `images=False`; and `classes`, the class names
+  kept by tag, for an editor that aligns by class. A style property
+  beyond its own list is refused, never kept
+  ([A narrower allowlist](docs/documents.md#a-narrower-allowlist),
+  ADR 0176) (user report U2).
+
 ### Changed
 
 - The `kafka` extra accepts aiokafka up to 0.15 (`>=0.12.0,<0.16.0`),
@@ -25,6 +45,10 @@ and a status.
   set is answered 503 `renderer_unavailable`, not 500, and a warning is
   logged ([The renderer](docs/documents.md#the-renderer), ADR 0176)
   (user report U5).
+- `fill_docx` reads a document's body before its headers, footers, and
+  notes, whatever order its content types list them in, so
+  `PlaceholderError.malformed` lists the body's braces first, as
+  `placeholders` does (ADR 0176) (user report U2).
 
 ### Security
 

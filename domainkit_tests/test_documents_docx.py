@@ -25,9 +25,11 @@ from domainkit.documents import (
     ArchiveLimits,
     DocumentError,
     PlaceholderError,
+    Placeholders,
     clean_html,
     fill_docx,
     overlay_pdf,
+    placeholders,
 )
 from domainkit.documents import docx as docx_module
 
@@ -324,6 +326,36 @@ def test_unused_values_may_be_allowed() -> None:
     with pytest.raises(PlaceholderError) as refused:
         fill_docx(docx(runs("{{a}} {{c}}")), {"a": "1"}, allow_unused=True)
     assert (refused.value.missing, refused.value.unused) == (("c",), ())
+
+
+def test_a_draft_leaves_what_has_no_value_or_makes_no_placeholder_as_written() -> None:
+    """For a preview: what is left to fill or to fix shows where it is.
+
+    Each ``allow_`` lets one kind through; the others are still refused.
+    """
+    template = docx(
+        runs("Dear {{cli", "ent}}, of {{ city }}")
+        + runs("{{ client name }} and {{", "date}}")
+        + runs("total }}", bold_first=False),
+    )
+    values = {"client": "Salma"}
+
+    draft = fill_docx(template, values, allow_missing=True, allow_malformed=True)
+
+    assert paragraphs(draft) == [
+        "Dear Salma, of {{ city }}",
+        "{{ client name }} and {{date}}",
+        "total }}",
+    ]
+    with pytest.raises(PlaceholderError) as missing:
+        fill_docx(template, values, allow_malformed=True)
+    with pytest.raises(PlaceholderError) as malformed:
+        fill_docx(template, values, allow_missing=True)
+    assert (missing.value.missing, missing.value.malformed) == (("city", "date"), ())
+    assert (malformed.value.missing, malformed.value.malformed) == (
+        (),
+        ("{{ client name }} and {{date}}", "total }}"),
+    )
 
 
 def test_a_malformed_placeholder_is_quoted_briefly() -> None:
@@ -820,3 +852,59 @@ def replaced(document: bytes, name: str, data: bytes) -> bytes:
     with zipfile.ZipFile(io.BytesIO(document)) as archive:
         files = {info.filename: archive.read(info) for info in archive.infolist()}
     return zip_of({**files, name: data})
+
+
+# Listing the placeholders -------------------------------------------------------------
+
+
+def test_placeholders_are_listed_as_fill_docx_reads_them() -> None:
+    """Each name once, in the order written, across runs; the body first.
+
+    The braces that make none are listed as ``PlaceholderError`` quotes
+    them. The content types name the header before the body, as Word may.
+    """
+    template = docx(
+        runs("{{ b }} {{cli", "ent.name}} {{ b }}")
+        + runs("{{ client name }}")
+        + "<w:tbl><w:tr><w:tc>"
+        + runs("{{cell}}")
+        + "</w:tc></w:tr></w:tbl>",
+        header=runs("{{ref}} {{b}}"),
+        footnotes="<w:footnote>" + runs("{{note}} }}") + "</w:footnote>",
+    )
+    types = read(template, "[Content_Types].xml").decode()
+    body = f'<Override PartName="/word/document.xml" ContentType="{MAIN}"/>'
+    header = types[types.index('<Override PartName="/word/header1.xml"') :]
+    header = header[: header.index("/>") + 2]
+    reordered = types.replace(body, "").replace(header, header + body)
+    template = replaced(template, "[Content_Types].xml", reordered.encode())
+
+    listed = placeholders(template)
+
+    assert listed == Placeholders(
+        names=("b", "client.name", "cell", "ref", "note"),
+        malformed=("{{ client name }}", "{{note}} }}"),
+    )
+    with pytest.raises(PlaceholderError) as refused:
+        fill_docx(template, {})
+    assert refused.value.malformed == listed.malformed
+    assert set(refused.value.missing) == set(listed.names)
+    assert placeholders(docx(runs("No placeholder."))) == Placeholders(
+        names=(), malformed=()
+    )
+
+
+def test_placeholders_are_read_within_the_archives_limits() -> None:
+    """What ``fill_docx`` refuses to read, ``placeholders`` refuses too."""
+    template = docx(runs("{{a}}"), extra={"word/media/image1.png": PNG})
+
+    with pytest.raises(DocumentError, match="more than 3 files"):
+        placeholders(template, limits=ArchiveLimits(max_parts=3))
+    with pytest.raises(DocumentError, match="not a Word document"):
+        placeholders(b"not a zip")
+    with pytest.raises(DocumentError, match="declares a DTD"):
+        placeholders(
+            replaced(
+                template, "word/document.xml", b'<!DOCTYPE w [<!ENTITY a "b">]><w/>'
+            )
+        )

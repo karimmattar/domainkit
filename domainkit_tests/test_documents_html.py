@@ -1,6 +1,6 @@
 """``clean_html``: rich text kept to what loads and runs nothing when printed."""
 
-from typing import Final
+from typing import Any, Final
 
 import pytest
 
@@ -132,3 +132,67 @@ def test_links_are_kept_only_when_asked_and_only_https_or_mailto() -> None:
         '<a rel="noopener noreferrer">p</a><a rel="noopener noreferrer">f</a>'
     )
     assert clean_html(html) == "tmhjpf"
+
+
+# A narrower allowlist -----------------------------------------------------------------
+
+
+def test_an_editor_that_needs_less_keeps_less() -> None:
+    """No style, no image: text, structure, direction, and alignment by class.
+
+    Text cannot be made tiny or the page's colour; a class not listed, or
+    on a tag it is not listed for, goes.
+    """
+    html = (
+        '<p class="ql-align-right ql-size-huge" dir="rtl" style="font-size: 1px">'
+        f'عقد <img src="{PIXEL}" alt="seal"><span class="ql-align-right">x</span></p>'
+        '<h2 class="ql-align-center ql-align-center">T</h2><li class="other">i</li>'
+    )
+
+    cleaned = clean_html(
+        html,
+        styles=False,
+        images=False,
+        classes={"p": {"ql-align-right"}, "*": {"ql-align-center"}},
+    )
+
+    assert cleaned == (
+        '<p class="ql-align-right" dir="rtl">عقد <span>x</span></p>'
+        '<h2 class="ql-align-center">T</h2><li>i</li>'
+    )
+    assert clean_html('<img src="https://x/a.png">', images=False) == ""
+
+
+def test_some_style_properties_may_be_kept() -> None:
+    """A set of ``STYLE_PROPERTIES`` keeps those, with the same checks of value."""
+    html = '<p style="text-align: right; color: white; direction: url(x)">a</p>'
+
+    assert clean_html(html, styles={"Text-Align", "direction"}) == (
+        '<p style="text-align:right">a</p>'
+    )
+    assert clean_html(html, styles=set()) == "<p>a</p>"
+
+
+@pytest.mark.parametrize(
+    ("narrower", "message"),
+    [
+        ({"styles": {"color", "position", "width"}}, "never more: not position, width"),
+        ({"classes": {"script": {"a"}}}, "tags that are not kept: script"),
+        ({"classes": {"img": {"a"}}, "images": False}, "not kept: img"),
+        ({"classes": {"a": {"a"}}}, "not kept: a"),
+        ({"classes": {"p": {"a b", "1x", "ok"}}}, "not '1x', 'a b'"),
+    ],
+)
+def test_never_more_than_the_allowlist(narrower: dict[str, Any], message: str) -> None:
+    """A property beyond the list, a tag not kept, or a class that is not a name."""
+    with pytest.raises(ValueError, match=message):
+        clean_html("<p>a</p>", **narrower)
+
+
+def test_a_class_is_kept_on_a_link_only_when_links_are() -> None:
+    """``a`` is a tag kept once ``links`` is on."""
+    html = '<a class="mention" href="https://example.com">t</a>'
+
+    assert clean_html(html, links=True, classes={"a": {"mention"}}) == (
+        '<a class="mention" href="https://example.com" rel="noopener noreferrer">t</a>'
+    )

@@ -12,14 +12,16 @@ On this page you learn how to:
 
 - configure the renderer, a Gotenberg server, and harden it;
 - turn HTML and Word documents into PDFs;
-- fill the placeholders of a Word document;
+- list and fill the placeholders of a Word document, or fill a draft;
 - lay rendered text over the pages of a PDF;
-- clean rich text that a person wrote before it is rendered;
+- clean rich text that a person wrote before it is rendered, or keep
+  less of it;
 - write documents in Arabic.
 
-`fill_docx`, `overlay_pdf`, `page_sizes`, and `clean_html` need the
-`documents` extra (pypdf, lxml, and nh3); the renderer needs the
-`httpclient` extra. Each says which extra it needs when it is missing:
+`fill_docx`, `placeholders`, `overlay_pdf`, `page_sizes`, and
+`clean_html` need the `documents` extra (pypdf, lxml, and nh3); the
+renderer needs the `httpclient` extra. Each says which extra it needs
+when it is missing:
 
 ```bash
 pip install "domainkit[documents,httpclient]"
@@ -87,10 +89,10 @@ methods:
   too: what keeps them from running is Gotenberg's
   `--libreoffice-enable-macros`, off by default. Leave it off.
 
-Where documents are rendered only sometimes, a preview or a developer's
-machine, `DOCUMENTS["RENDERER"]` may be left unset. `renderer()` then
-raises `RendererNotConfigured`, and logs a warning: a request that lets
-it go is answered `503 renderer_unavailable`, as when Gotenberg is
+`DOCUMENTS["RENDERER"]` may be left unset where documents are rendered
+only sometimes: for previews, or on a developer's machine. `renderer()`
+then raises `RendererNotConfigured` and logs a warning; a request that
+lets it go is answered `503 renderer_unavailable`, as when Gotenberg is
 down. It is an `ImproperlyConfigured` too. *New in 2.7*: 2.6 raised a
 plain `ImproperlyConfigured`, a 500.
 
@@ -253,6 +255,45 @@ names are the same once case and Unicode forms are set aside.
 `fill_docx` works on the CPU: in a request, run it in a thread with
 `asyncio.to_thread`, as the first example does.
 
+### Drafts
+
+*New in 2.7.* A preview of a draft shows what is left to fill or to
+fix where it is. `allow_missing=True` leaves a placeholder without a
+value as it is written, `{{ tenant }}`; `allow_malformed=True` leaves
+braces that make no placeholder as they are written, `{{ tenant name }}`.
+Each allows its own kind only: what the other refuses is still refused.
+
+```python
+draft = await asyncio.to_thread(
+    fill_docx, template, known, allow_missing=True, allow_malformed=True
+)
+preview = await renderer().office_to_pdf(draft, filename="draft.docx")
+```
+
+Nothing marks the result as a draft. Keep it from being sent or signed:
+fill the document that goes out with the defaults, which refuse both.
+
+### Listing the placeholders
+
+*New in 2.7.* `placeholders(document)` says what a template asks for,
+before anything is filled, so a form can show its fields:
+
+```python
+from domainkit.documents import placeholders
+
+found = await asyncio.to_thread(placeholders, template)
+found.names  # ("tenant", "monthly_rent", "tenant.address")
+found.malformed  # ("{{ tenant name }}",)
+```
+
+`names` holds each placeholder once, in the order written: the body
+first, then the headers, footers, footnotes, and endnotes. `malformed`
+holds the text of braces that make no placeholder, as
+`PlaceholderError.malformed` quotes it. It reads the document as
+`fill_docx` does, the same parts, paragraphs, and grammar, within the
+same `ArchiveLimits` (`limits=`), so `fill_docx` asks a value for each
+of `names`, and refuses each of `malformed`, and nothing else.
+
 ## Laying text over a PDF
 
 A person uploads a contract as a PDF, and the service writes names and
@@ -383,6 +424,34 @@ That keeps out what most often lays text over text, not all of it. Text
 made tiny or the colour of the page, and large text (a big font, wide
 spacing) in a box your template made narrow, which runs over its
 neighbour, are not stopped: show a preview of what is signed.
+
+### A narrower allowlist
+
+*New in 2.7.* An editor that needs less keeps less. An editor that
+aligns text by class, as Quill does (`ql-align-right`), needs no
+`style`, and without one, text cannot be made tiny or the page's colour:
+
+```python
+terms = clean_html(
+    contract.terms,
+    styles=False,
+    images=False,
+    classes={"*": {"ql-align-right", "ql-align-center", "ql-direction-rtl"}},
+)
+```
+
+- `styles=False` keeps no `style`. A set keeps those properties only,
+  `styles={"text-align", "direction"}`, each with the same checks of its
+  value. A property `clean_html` does not keep is refused with a
+  `ValueError`: the set narrows the list, never widens it.
+- `images=False` keeps no image.
+- `classes` maps a tag, or `*` for every tag kept, to the class names
+  kept on it; any other class is dropped. A tag that is not kept, or a
+  name that is not a plain CSS identifier, is a `ValueError`.
+
+A class loads and runs nothing: it means what your template's style
+sheet says. List only the classes whose rules move no text over other
+text, such as alignment and direction.
 
 ### Why cleaning is not enough
 
