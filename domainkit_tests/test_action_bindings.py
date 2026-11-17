@@ -21,7 +21,7 @@ from typing import Any, Final
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from domainkit import setup
 from domainkit.apps import registry
@@ -51,6 +51,7 @@ from domainkit_tests.conftest import (
     Api,
 )
 from domainkit_tests.sample_domains.shop.models import ProductId
+from domainkit_tests.sample_domains.shop.tables import products
 from domainkit_tests.support.auth import audited, bearer, create_user, grant, login
 from domainkit_tests.test_action_authorisations import rows
 from domainkit_tests.test_action_authorisations_resources import (
@@ -260,6 +261,7 @@ def approver(identity: Api, frozen: FrozenClock) -> Iterator[Approver]:
     races.APPROVED.clear()
     races.EVENTS.clear()
     races.LOCKING[0] = False
+    races.RENAMING[0] = True
     with override_settings(ROOT_ROUTER=RACES):
         register_action(races.APPROVE, domain="shop")
         create_user("alice")
@@ -334,84 +336,144 @@ def test_binds_that_locks_the_row_holds_off_a_rename_until_the_act_commits(
     assert list(races.APPROVED) == [(lamp, "Lamp")]
 
 
-@pytest.mark.parametrize("way", ["nested", "caught", "gathered"])
-def test_a_block_inside_another_or_beside_it_decides_on_the_record_shown(
-    approver: Approver, way: str
-) -> None:
-    """A block opened inside an open one, or by a second task, joins its transaction.
+def names() -> list[str]:
+    """The names of the stored products, sorted."""
 
-    Each such block opened a session of its own, unchecked: a helper's
-    block, an outer block going on after an inner one failed, a second
-    task under ``asyncio.gather`` decided on the product renamed (found in
-    review). Joined, it decides on the product ``binds`` loaded, whose
-    version the save holds it to: the rename is a lost race.
+    async def read() -> list[str]:
+        async with connections.engine().connect() as connection:
+            found = await connection.execute(select(products.c.name))
+            return sorted(found.scalars())
+
+    return run_async(read())
+
+
+@pytest.mark.parametrize("way", ["nested", "gathered"])
+@pytest.mark.parametrize(
+    "locking",
+    [
+        False,
+        pytest.param(
+            True,
+            marks=pytest.mark.skipif(
+                not ON_POSTGRES, reason=f"set {POSTGRES_VARIABLE}"
+            ),
+        ),
+    ],
+)
+def test_a_block_opened_while_another_is_open_is_refused(
+    approver: Approver, caplog: pytest.LogCaptureFixture, way: str, locking: bool
+) -> None:
+    """Inside another, or another task's: ``ImproperlyConfigured``, nothing commits.
+
+    Each block is a session of its own, unchecked: a helper's, or a second
+    task's under ``asyncio.gather``, decided on the product renamed; joined
+    to the first, they broke its transaction (found in review). Refused
+    before it opens anything, the act commits nothing: the other task's
+    commit is refused too. Locked in ``binds``, nothing waits, and nothing
+    is left locked.
     """
+    races.LOCKING[0] = locking
     lamp = stock("Lamp")
     authorization = approver.approving(lamp)
 
-    raced = approver.approve(way, lamp, authorization)
+    refused = approver.approve(way, lamp, authorization)
+    run_async(races.rename(lamp, "Floor lamp"))
 
-    assert races.EVENTS == ["renamed to Lava lamp"]
-    assert code_of(raced) == (409, "concurrent_update")
+    assert refused.status_code == 500
+    assert "decides in one transaction" in caplog.text
+    assert "IllegalStateChange" not in caplog.text
     assert list(races.APPROVED) == []
+    assert not [event for event in races.EVENTS if "committed" in event]
+    assert names() == ["Floor lamp"]  # Nothing the act made; nothing locked.
     assert not ended(authorization)
 
 
-@pytest.mark.skipif(not ON_POSTGRES, reason=f"set {POSTGRES_VARIABLE}")
-@pytest.mark.parametrize("way", ["nested", "caught", "gathered"])
-def test_a_block_that_joins_the_locked_one_waits_on_nothing(
-    approver: Approver, way: str
+@pytest.mark.parametrize(("renaming", "status"), [(True, 409), (False, 204)])
+def test_a_block_rolled_back_lands_nothing_and_the_next_is_read_again(
+    approver: Approver, renaming: bool, status: int
 ) -> None:
-    """PostgreSQL, ``binds`` locking: one connection, and the rename waits.
+    """A database failure the service caught: the next block is read, and decides.
 
-    A second session would wait on the first's lock until the database
-    gave up (``503 database_busy``), and the first was left open, holding
-    it (found in review). The act decides on the product as shown, and
-    leaves nothing locked: a rename after it goes through.
+    The block's transaction rolled back, and nothing of the act committed:
+    renamed meanwhile, the next block is refused, the authorization voided.
     """
-    races.LOCKING[0] = True
+    races.RENAMING[0] = renaming
     lamp = stock("Lamp")
     authorization = approver.approving(lamp)
 
-    approved = approver.approve(way, lamp, authorization)
-    run_async(races.rename(lamp, "Floor lamp"))
+    made = approver.approve("caught", lamp, authorization)
+    races.RENAMING[0] = True
 
-    assert approved.status_code == 204, approved.text
-    assert list(races.APPROVED) == [(lamp, "Lamp")]
-    assert races.EVENTS == ["the rename waited for the lock", "renamed to Floor lamp"]
+    assert made.status_code == status, made.text
+    assert races.EVENTS[0] == "the first block failed"
+    assert list(races.APPROVED) == ([] if renaming else [(lamp, "Lamp")])
     assert ended(authorization)
 
 
-def test_a_block_after_the_act_landed_reads_its_result_unchecked(
-    approver: Approver,
+@pytest.mark.parametrize(
+    ("way", "decided"),
+    [("then-read", [("Lamp", "Lamp (approved)")]), ("read-commit", []), ("twice", [])],
+)
+def test_after_its_commit_an_act_that_binds_opens_and_commits_nothing(
+    approver: Approver, caplog: pytest.LogCaptureFixture, way: str, decided: list[Any]
 ) -> None:
-    """Decided and committed, the act has landed: a block that follows passes.
+    """A block after the commit, or a second commit: ``ImproperlyConfigured``.
 
-    The act's own write changed what ``binds`` reads: checked again, the
-    follow-up answered ``409 action_record_changed`` for an act already
-    made, and the client would ask to make it again (found in review).
+    The first commit made the act and spent the authorization, whatever
+    it wrote. A block that reads the result afterwards answered 409 for an
+    act made; one that decided after a commit that wrote nothing, or a
+    second commit, decided on the product renamed (found in review). The
+    client gets a 500: the act's service is to read and decide in one
+    block.
     """
     lamp = stock("Lamp")
     authorization = approver.approving(lamp)
 
-    made = approver.approve("then-read", lamp, authorization)
+    refused = approver.approve(way, lamp, authorization)
+
+    assert refused.status_code == 500
+    assert "decides in one transaction" in caplog.text
+    assert [
+        (name, stored)
+        for (_, name), stored in zip(races.APPROVED, names(), strict=False)
+    ] == decided
+    assert ended(authorization)
+
+
+def test_an_act_that_binds_decides_in_sql_text_and_core_statements(
+    approver: Approver,
+) -> None:
+    """Whatever writes the decision, in the one transaction, the act is made."""
+    lamp = stock("Lamp")
+    authorization = approver.approving(lamp)
+
+    made = approver.approve("in-sql", lamp, authorization)
+
+    assert made.status_code == 204, made.text
+    assert names() == ["Lamp (approved)"]
+    assert ended(authorization)
+
+
+def test_an_act_that_binds_nothing_opens_its_unit_of_work_as_before(
+    approver: Approver,
+) -> None:
+    """A commit that reads, a decision after it, a block after that: as in 2.6."""
+    register_action(races.APPROVE_FREELY, domain="shop")
+    lamp = stock("Lamp")
+    asked = approver.client.post(
+        f"/approve-freely-authorization/{lamp}", headers=approver.headers
+    )
+    confirmed = approver.confirm(asked.json()["id"]).json()["authorization"]
+
+    made = approver.client.post(
+        f"/approve-freely/{lamp}",
+        headers={**approver.headers, "Action-Authorization": confirmed},
+    )
 
     assert made.status_code == 204, made.text
     assert list(races.APPROVED) == [(lamp, "Lamp")]
     assert races.EVENTS == ["read Lamp (approved)"]
-    assert ended(authorization)
-
-
-def test_a_commit_that_wrote_nothing_has_not_landed_the_act(approver: Approver) -> None:
-    """Read and committed, then decided in a second block: still read, refused."""
-    lamp = stock("Lamp")
-    authorization = approver.approving(lamp)
-
-    refused = approver.approve("read-commit", lamp, authorization)
-
-    assert code_of(refused) == (409, "action_record_changed")
-    assert list(races.APPROVED) == []
-    assert ended(authorization)
+    assert ended(confirmed)
 
 
 # Kept elsewhere: spent before the act, read when the act opens its unit of work.

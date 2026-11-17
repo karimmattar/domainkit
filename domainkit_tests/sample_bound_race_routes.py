@@ -14,9 +14,10 @@ it saved, and passes.
 
 import asyncio
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Request, Response, status
+from sqlalchemy import bindparam, text, update
 
 from domainkit.contrib.auth import AuthenticatedUser, StepUp
 from domainkit.contrib.auth.actions import (
@@ -26,12 +27,21 @@ from domainkit.contrib.auth.actions import (
     request_action_authorization,
     requires_authorization,
 )
-from domainkit.ddd import Command, ConcurrentUpdate, Retry
+from domainkit.ddd import Command, ConcurrentUpdate, DuplicateValue, Retry
 from domainkit.http.access import Require
 from domainkit_tests import sample_action_resources as shop
-from domainkit_tests.sample_domains.shop.models import ProductId
+from domainkit_tests.sample_domains.shop.models import Product, ProductId
+from domainkit_tests.sample_domains.shop.tables import products
 
-__all__ = ["APPROVE", "APPROVED", "EVENTS", "LOCKING", "router"]
+__all__ = [
+    "APPROVE",
+    "APPROVED",
+    "APPROVE_FREELY",
+    "EVENTS",
+    "LOCKING",
+    "RENAMING",
+    "router",
+]
 
 APPROVED: list[tuple[UUID, str]] = []
 """Each product approved, with the name the act decided on."""
@@ -39,6 +49,8 @@ EVENTS: list[str] = []
 """What happened, in order: reads, renames, a rename the lock held back."""
 LOCKING: list[bool] = [False]
 """Whether ``binds`` reads the product for update, as the docs say to."""
+RENAMING: list[bool] = [True]
+"""Whether someone renames the product between a failed block and the next."""
 
 
 class Approve(Command):
@@ -70,6 +82,13 @@ APPROVE = Action(
     show=show,
     binds=bound,
 )
+APPROVE_FREELY = Action(
+    "shop.approve_freely",
+    command=Approve,
+    subject=lambda command: f"shop.product:{command.product_id}",
+    show=show,
+)
+"""The same act, binding nothing: its service opens its unit of work as it likes."""
 
 
 async def rename(product_id: UUID, name: str) -> None:
@@ -90,10 +109,6 @@ async def _rename(product_id: UUID, name: str) -> None:
         stored.name = name
         await other.commit()
     EVENTS.append(f"renamed to {name}")
-
-
-class Refused(Exception):
-    """What an inner block raises, and the service catches."""
 
 
 async def decide(command: Approve, uow: Any) -> None:  # noqa: ANN401 - a uow.
@@ -174,38 +189,43 @@ async def approve_nested(command: Approve, uow: Any) -> None:  # noqa: ANN401 - 
 
 @requires_authorization(APPROVE)
 async def approve_after_a_caught_failure(command: Approve, uow: Any) -> None:  # noqa: ANN401
-    """An inner block fails, and is caught; the outer one decides."""
-    async with uow:
-        try:
-            async with uow:
-                raise Refused
-        except Refused:
-            pass
+    """A block fails on the database (a duplicate key), and is caught; another decides.
+
+    ``RENAMING`` says whether someone renames the product between the two.
+    """
+    twin = text(
+        "INSERT INTO shop_products (id, name, version) VALUES (:id, 'Twin', 1)"
+    ).bindparams(bindparam("id", type_=products.c.id.type))
+    try:
+        async with uow:
+            await uow.session.execute(twin, {"id": command.product_id})
+    except DuplicateValue:
+        EVENTS.append("the first block failed")
+    if RENAMING[0]:
         await rename(command.product_id, "Lava lamp")
+    async with uow:
         await decide(command, uow)
 
 
 @requires_authorization(APPROVE)
 async def approve_gathered(command: Approve, uow: Any) -> None:  # noqa: ANN401 - a uow.
-    """Two tasks open the unit of work at once; the second decides."""
-    first_in = asyncio.Event()
-    decided = asyncio.Event()
+    """Two tasks read and write in the unit of work at once."""
 
-    async def holder() -> None:
+    async def one(tag: str) -> None:
         async with uow:
-            first_in.set()
-            await decided.wait()
+            await asyncio.sleep(0)
+            product = await uow.products.get(ProductId(command.product_id))
+            await asyncio.sleep(0)
+            await uow.products.add(
+                Product(id=ProductId(uuid4()), name=f"{tag} {product.name}")
+            )
+            await uow.commit()
+            EVENTS.append(f"task {tag} committed")
 
-    async def decider() -> None:
-        await first_in.wait()
-        await rename(command.product_id, "Lava lamp")
-        try:
-            async with uow:
-                await decide(command, uow)
-        finally:
-            decided.set()
-
-    await asyncio.gather(holder(), decider())
+    results = await asyncio.gather(one("a"), one("b"), return_exceptions=True)
+    for result in results:
+        if isinstance(result, BaseException):
+            raise result
 
 
 @requires_authorization(APPROVE)
@@ -229,6 +249,51 @@ async def approve_after_a_read_commit(command: Approve, uow: Any) -> None:  # no
         await decide(command, uow)
 
 
+@requires_authorization(APPROVE)
+async def approve_committing_twice(command: Approve, uow: Any) -> None:  # noqa: ANN401
+    """Commit nothing, then decide and commit again in the same block."""
+    async with uow:
+        await uow.commit()
+        await rename(command.product_id, "Lava lamp")
+        await decide(command, uow)
+
+
+@requires_authorization(APPROVE)
+async def approve_in_sql(command: Approve, uow: Any) -> None:  # noqa: ANN401 - a uow.
+    """Decide in SQL text, and in a Core statement on the session's connection."""
+    async with uow:
+        product = await uow.products.get(ProductId(command.product_id))
+        bump = text("UPDATE shop_products SET version = version + 1 WHERE id = :id")
+        await uow.session.execute(
+            bump.bindparams(bindparam("id", type_=products.c.id.type)),
+            {"id": product.id},
+        )
+        connection = await uow.session.connection()
+        await connection.execute(
+            update(products)
+            .where(products.c.id == product.id)
+            .values(name=f"{product.name} (approved)")
+        )
+        await uow.commit()
+    APPROVED.append((command.product_id, product.name))
+
+
+@requires_authorization(APPROVE_FREELY)
+async def approve_freely(command: Approve, uow: Any) -> None:  # noqa: ANN401 - a uow.
+    """What an act that binds may not do: as before 2.7, an act without ``binds`` may.
+
+    A commit that reads, a decision after it, a block that follows.
+    """
+    async with uow:
+        await uow.products.get(ProductId(command.product_id))
+        await uow.commit()
+    async with uow:
+        await decide(command, uow)
+    async with uow:
+        product = await uow.products.get(ProductId(command.product_id))
+    EVENTS.append(f"read {product.name}")
+
+
 SERVICES: dict[str, Any] = {
     "retrying": approve_retrying,
     "in-two": approve_in_two,
@@ -239,8 +304,12 @@ SERVICES: dict[str, Any] = {
     "gathered": approve_gathered,
     "then-read": approve_then_read,
     "read-commit": approve_after_a_read_commit,
+    "twice": approve_committing_twice,
+    "in-sql": approve_in_sql,
+    "freely": approve_freely,
 }
 ASKING = [Depends(Require(StepUp(for_=APPROVE)))]
+ASKING_FREELY = [Depends(Require(StepUp(for_=APPROVE_FREELY)))]
 
 router = APIRouter()
 router.include_router(shop.router)
@@ -251,6 +320,29 @@ async def approve(way: str, product_id: UUID, user: AuthenticatedUser) -> Respon
     """Approve the product the way ``way`` names."""
     await SERVICES[way](Approve(product_id=product_id), shop.ShopUnitOfWork())
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/approve-freely/{product_id}", dependencies=ASKING_FREELY)
+async def approve_without_binding(
+    product_id: UUID, user: AuthenticatedUser
+) -> Response:
+    """Approve the product with the act that binds nothing."""
+    await approve_freely(Approve(product_id=product_id), shop.ShopUnitOfWork())
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/approve-freely-authorization/{product_id}", status_code=201)
+async def ask_freely(
+    product_id: UUID, request: Request, user: AuthenticatedUser
+) -> ActionAuthorizationOut:
+    """Ask for an authorization of the act that binds nothing."""
+    asked = await request_action_authorization(
+        request,
+        APPROVE_FREELY,
+        Approve(product_id=product_id),
+        unit_of_work=shop.ShopUnitOfWork,
+    )
+    return ActionAuthorizationOut.of(asked)
 
 
 @router.post("/approve-authorization/{product_id}", status_code=201)

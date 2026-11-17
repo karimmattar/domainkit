@@ -226,28 +226,37 @@ APPROVE_DOCUMENT = Action(
 - **Read where `show` reads, then again where the act runs.** Asking
   reads it in the act's unit of work, the one `show(command, uow)` is
   lent, first: what is bound is what the screen was built from. The act
-  reads it again in each transaction its service opens (`async with
-  uow`, the outermost block), before the service reads anything: a run
-  that `uow.run(...)` retries after a lost race, or a second transaction
-  after a first that read, reads it again. A service that commits with
+  reads it again when its service opens its unit of work (`async with
+  uow`), before the service reads anything. A service that commits with
   no block open reads it as it commits. `spend_authorization(uow, ...)`
   reads it in `uow`, open: call it before the act changes what it binds.
-- **One transaction per block, until the act lands.** A block opened
-  while one is open, inside it (a helper's) or by another task (under
-  `asyncio.gather`), joins the open block's transaction instead of
-  opening a session of its own: it was read there, and holds what
-  `binds` locked. Its error leaves it as the unit of work would raise it
-  (a lost race as `409 concurrent_update`), and its end commits nothing:
-  the outermost block's does. Once a commit wrote something (a flush of
-  changes, an `INSERT`, `UPDATE` or `DELETE`), the act has landed: a
-  block after it reads what it saved, and is not read against the
-  screen, which the act's own write may have changed. A commit that
-  wrote nothing lands nothing: the next transaction is read again. A
-  unit of work without a SQLAlchemy session (in memory) cannot tell, and
-  its first commit lands the act.
+- **One committed transaction.** A service whose act binds reads and
+  decides in one block of its unit of work, and commits it once:
+  - Each block opens its own transaction, as everywhere, and is read
+    first, until one has committed. A block that rolled back (a run that
+    `uow.run(...)` retries after a lost race, a failure the service
+    caught) committed nothing: the next block is read again, and refused
+    if the record changed.
+  - The first commit makes the act, whatever it wrote, and spends the
+    authorization. A block opened after it, or a second commit, raises
+    `ImproperlyConfigured`, before it does anything: the act was made,
+    and the client gets `500 internal_error` all the same. Read what was
+    saved in the same block, before its commit, or answer from what the
+    act decided.
+  - A block opened while another of the act's is open, inside it (a
+    helper's) or by another task (under `asyncio.gather`), raises
+    `ImproperlyConfigured` before it opens anything, and the act then
+    commits nothing: the open block's commit raises too, and it rolls
+    back.
+  - Work that must persist apart from the act (an audit row, a notice)
+    belongs to a unit of work of its own class, or after the act: the
+    authorization's own trail and spend work that way already. An act
+    that binds nothing opens its unit of work as before 2.7.
 - **Only the act's unit of work.** A decision the service makes in
   another unit of work, one it opens itself, is not read against the
   screen: decide in the one the act is given.
+- **On another database** than auth's, the authorization is spent just
+  before the act, as for any act there; one block still decides.
 - **The digest covers it.** The row keeps the SHA-256 of the value, as
   canonical JSON, and the act's digest is of the command and that: the
   phone signs the record as it was shown, and the trail's digest names

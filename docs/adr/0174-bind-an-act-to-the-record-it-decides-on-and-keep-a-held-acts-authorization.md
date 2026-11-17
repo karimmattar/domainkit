@@ -90,7 +90,14 @@ a caught inner failure, or a second task's block decided unchecked in a
 session of its own (and, with `binds` locking, waited on the first
 session's lock until `503 database_busy`, leaving it open); and a block
 after the act committed was read against a record the act's own write
-had changed, `409` for an act already made. What keeps a writer off
+had changed, `409` for an act already made. Joining such blocks to the
+open one, and telling a commit that made the act by what it wrote, broke
+again (a third review): two tasks used one session at once (`500`), a
+caught database failure aborted the shared transaction, a failed inner
+block's writes were committed by the outer one, and writes in SQL text
+were not seen while an `UPDATE` of no row was. What holds is a rule the
+service keeps, which the wrapper enforces: an act that binds decides in
+one committed transaction. What keeps a writer off
 between the check and the commit is the database's: a row lock taken in
 `binds` on PostgreSQL; on SQLite, which has no row locks, only the
 version of an aggregate the act writes.
@@ -155,16 +162,18 @@ an administrator's.
   `spend_authorization(uow, ...)` reads it in `uow`, open, first.
 - A race the version check catches is `409 concurrent_update`, and
   spends and voids nothing; the next attempt meets the check.
-- A block opened while one is open (nested, or another task's) joins
-  its transaction, rather than opening a session of its own: it was
-  read there, and holds what `binds` locked. Its error leaves it as the
-  unit of work would raise it; its end commits nothing.
-- The act lands at the first commit that wrote: a flush of changes, or
-  an `INSERT`, `UPDATE` or `DELETE`, as the act's session's events say
-  (the spend and the commit's own staging do not count). After it, a
-  block is not read against the screen; before it, every transaction
-  is, a commit that wrote nothing included. A unit of work without a
-  SQLAlchemy session lands at its first commit.
+- One committed transaction: each block of the act's unit of work opens
+  its own transaction, as everywhere, and reads `binds` first, until a
+  block has committed; a block that rolled back (a retry of `uow.run`, a
+  caught failure) counts for nothing, and the next is read again. The
+  first commit makes the act, whatever it wrote. A block opened after it,
+  a second commit, or a block opened while another of the act's is open
+  (nested, or another task's) raises `ImproperlyConfigured` before it
+  does anything; after the last, the open block's commit raises too.
+  Work that must persist apart belongs to a unit of work of its own, as
+  the authorization's spend (in the act's commit) and its trail (a unit
+  of work of their own) already do. An act that binds nothing is as in
+  2.6.
 - `ImproperlyConfigured`: `binds` not callable, a value JSON cannot
   hold, a `binds` that commits, asking without the act's unit of work,
   a service that takes none or never opens it.
@@ -231,6 +240,10 @@ an administrator's.
   client asks again on `409 action_record_changed`. An authorization
   asked before a deploy that adds `binds` has no bound value, and is
   refused once.
+- **A service whose act binds reads and decides in one block**, and
+  commits once. One that read in one transaction and decided in
+  another, or read its result in a block after the commit, now raises
+  `ImproperlyConfigured`: the docs say so, and what the client sees.
 - **A record the act does not write** is read for update in `binds`, so
   that no writer changes it between the check and the commit, on
   PostgreSQL; SQLite has no row locks, and holds only an aggregate the

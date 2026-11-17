@@ -94,16 +94,12 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import KW_ONLY, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
-from types import TracebackType
 from typing import TYPE_CHECKING, Any, Final, NoReturn, Self, cast, get_type_hints
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from pydantic_core import PydanticSerializationError, to_jsonable_python
-from sqlalchemy import event
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import ORMExecuteState, Session
 from starlette.requests import HTTPConnection
 from starlette.types import Message, Receive, Scope, Send
 
@@ -1316,7 +1312,7 @@ def _spending(action: Action, service: Service) -> Service:
             await _refuse_changed(accepted, changed)
         if check is None:
             return await service(command, uow, *args, **kwargs)
-        bound = _Acting(uow, held, accepted, check)
+        bound = _Acting(uow, accepted, check)
         try:
             return bound.opened(await service(command, bound, *args, **kwargs))
         except _Changed as changed:
@@ -1587,160 +1583,92 @@ def _used(authorization: ActionAuthorization) -> ActionAuthorizationUsed:
     )
 
 
-_quiet: ContextVar[bool] = ContextVar("domainkit_auth_quiet", default=False)
-"""Set while the act's wrapper itself writes (the spend, a commit's staging):
-what it writes is not the act's."""
-
-
-@contextmanager
-def _quietly() -> Iterator[None]:
-    """Write in the block without it counting as the act's own write."""
-    token = _quiet.set(True)
-    try:
-        yield
-    finally:
-        _quiet.reset(token)
-
-
-def _pending(session: Session) -> bool:
-    """Whether ``session`` holds changes not yet flushed."""
-    return bool(session.new or session.deleted) or any(
-        session.is_modified(each) for each in session.dirty
-    )
-
-
 class _Acting:
-    """A service's unit of work, which reads the record its act binds per transaction.
+    """A service's unit of work, in which an act that binds decides in one transaction.
 
-    Each transaction the service opens (``async with uow``, the outermost
-    block) reads what the action ``binds`` before the service reads, and
-    refuses the act if it reads otherwise (ADR 0174): a run ``uow.run``
-    retries, and a second transaction after a first, read it again. A
-    block opened while one is open, inside it or by another task, joins
-    its transaction rather than opening a session of its own: it was
-    read there, and holds what ``binds`` locked. A commit made with no
-    block open reads it first. Once a commit wrote something, the act has
-    landed: a block after it reads what it saved, unchecked. A unit of
-    work without a SQLAlchemy session cannot tell a commit that wrote,
-    and its first commit lands the act. Everything else is the unit of
+    For an action that ``binds`` (ADR 0174): each block the service opens
+    (``async with uow``) opens its own transaction, as everywhere, and
+    reads what the action binds first, refusing the act if it reads
+    otherwise, until a block has committed. A block that ended in a
+    rollback (a run ``uow.run`` retries, a failure the service caught) did
+    not commit: the next one is read again. The first commit lands the
+    act, whatever it wrote; a block opened after it, or a second commit,
+    is a mistake. So is a block opened while another of the act's is
+    open, inside it or by another task: the act then commits nothing. A
+    commit made with no block open reads it first. An action that binds
+    nothing is wrapped as before: each block and commit is the unit of
     work's own.
     """
 
-    def __init__(
-        self,
-        uow: object,
-        held: UnitOfWork | None,
-        accepted: _Accepted,
-        check: Check | None,
-    ) -> None:
-        """Wrap ``uow`` (the unit of work ``held``, or a wrapper lending it)."""
+    def __init__(self, uow: object, accepted: _Accepted, check: Check | None) -> None:
+        """Wrap ``uow`` (a unit of work, or a wrapper lending it)."""
         self._uow = uow
-        self._held = held
         self._accepted = accepted
         self._check = check
         self.checked = check is None
         """Whether the record was read once at least, if the act binds one."""
-        self._open = 0
-        """How many blocks are open: the outermost holds the transaction."""
+        self._open = False
+        """Whether a block of the act's is open (an act that binds)."""
         self._landed = False
-        """Whether a commit that wrote made the act."""
-        self._wrote = False
-        """Whether the open transaction wrote, as its session's events say."""
-        self._watched: Session | None = None
-        self._on_flush = self._flushing
-        self._on_execute = self._executing
+        """Whether a commit made the act (an act that binds)."""
+        self._misused: str | None = None
+        """Why the act may commit nothing more: a block opened beside another."""
 
     def __getattr__(self, name: str) -> Any:  # noqa: ANN401 - the unit of work's.
         """The wrapped unit of work's attribute (its repositories, ``run``, ...)."""
         return getattr(self._uow, name)
 
-    async def __aenter__(self) -> Self:
-        """Open a transaction and read what the act binds; or join the open one.
+    def _refuse(self, why: str) -> NoReturn:
+        """Refuse a block or a commit an act that binds does not make.
 
         Raises:
+            ImproperlyConfigured: Always.
+        """
+        raise ImproperlyConfigured(
+            f"Action {self._accepted.authorization.purpose!r} binds the record it "
+            f"decides on, and decides in one transaction: {why} Read and decide "
+            "in one block; keep work that must persist apart (an audit, a "
+            "notice) to a unit of work of its own, or for after the act."
+        )
+
+    async def __aenter__(self) -> Self:
+        """Open a transaction and read what the act binds.
+
+        Raises:
+            ImproperlyConfigured: The act binds, and a block of its is open
+                (nested, or another task's), or it committed already: nothing
+                is entered.
             _Changed: It reads otherwise: the unit of work is left.
         """
-        if self._check is not None and self._open:
-            self._open += 1
-            return self
-        await self._uow.__aenter__()  # type: ignore[attr-defined]
+        if self._check is not None:
+            if self._open:
+                self._misused = (
+                    "a block was opened while another was open, inside it or "
+                    "in another task."
+                )
+                self._refuse(self._misused)
+            if self._landed:
+                self._refuse("a block was opened after the act committed.")
+            self._open = True
         try:
-            self._watch()
-            if not self._landed:
-                await self._bound()
+            await self._uow.__aenter__()  # type: ignore[attr-defined]
+        except BaseException:
+            self._open = False
+            raise
+        try:
+            await self._bound()
         except BaseException as exc:
-            self._unwatch()
+            self._open = False
             await self._uow.__aexit__(type(exc), exc, exc.__traceback__)  # type: ignore[attr-defined]
             raise
-        self._open += 1
         return self
 
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        """Leave the unit of work as it leaves, once its outermost block ends.
-
-        A block that joined another's raises what failed in it as the unit
-        of work would leaving it (a lost race as ``ConcurrentUpdate``): it
-        may be another task's than the outermost's.
-
-        Raises:
-            Exception: What the unit of work makes of the block's error.
-        """
-        self._open -= 1
-        if self._check is not None and self._open:
-            if isinstance(exc, Exception):
-                translated = cast(UnitOfWork, self._held)._translate(exc)
-                if translated is not None:
-                    raise translated from exc
-            return
-        self._unwatch()
-        await self._uow.__aexit__(exc_type, exc, traceback)  # type: ignore[attr-defined]
-
-    def _watch(self) -> None:
-        """Hear of the writes of the transaction just opened, if the act binds."""
-        session = getattr(self._held, "session", None)
-        if self._check is None or not isinstance(session, AsyncSession):
-            return
-        self._wrote = False
-        self._watched = session.sync_session
-        event.listen(self._watched, "before_flush", self._on_flush)
-        event.listen(self._watched, "do_orm_execute", self._on_execute)
-
-    def _unwatch(self) -> None:
-        """Hear no more of the session watched."""
-        if self._watched is not None:
-            event.remove(self._watched, "before_flush", self._on_flush)
-            event.remove(self._watched, "do_orm_execute", self._on_execute)
-            self._watched = None
-
-    def _flushing(self, session: Session, *_: object) -> None:
-        """A flush of changes is the act's write, unless the wrapper makes it."""
-        if not _quiet.get() and _pending(session):
-            self._wrote = True
-
-    def _executing(self, state: ORMExecuteState) -> None:
-        """An ``INSERT``, ``UPDATE`` or ``DELETE`` is the act's write, likewise."""
-        if not _quiet.get() and (state.is_insert or state.is_update or state.is_delete):
-            self._wrote = True
-
-    def _writes(self) -> bool:
-        """Whether the transaction about to commit wrote: it lands the act.
-
-        Without a SQLAlchemy session to hear, a commit is taken to write.
-        """
-        session = getattr(self._held, "session", None)
-        if not isinstance(session, AsyncSession):
-            return True
-        return self._wrote or _pending(session.sync_session)
-
-    def _committed(self, wrote: bool) -> None:
-        """A commit succeeded: the act landed if it wrote; a transaction begins."""
-        self._landed = self._landed or wrote
-        self._wrote = False
+    async def __aexit__(self, *exc: object) -> None:
+        """Leave the unit of work as it leaves; the next block opens a new one."""
+        try:
+            await self._uow.__aexit__(*exc)  # type: ignore[attr-defined]
+        finally:
+            self._open = False
 
     async def _bound(self) -> None:
         """Read what the act binds, in the unit of work's transaction now.
@@ -1754,25 +1682,36 @@ class _Acting:
         await self._check(self._uow)
 
     async def _before_commit(self) -> None:
-        """Read what the act binds, unless a block read it, or the act landed.
+        """Refuse a commit the act does not make; read the record if no block did.
 
         Raises:
+            ImproperlyConfigured: The act binds, and committed already, or a
+                block was opened beside another.
             _Changed: It reads otherwise.
         """
-        if not self._open and not self._landed:
+        if self._check is None:
+            return
+        if self._misused is not None:
+            self._refuse(self._misused)
+        if self._landed:
+            self._refuse("it committed a second time.")
+        if not self._open:
             await self._bound()
+
+    def _committed(self) -> None:
+        """A commit succeeded: an act that binds has landed."""
+        self._landed = self._check is not None
 
     async def commit(self) -> None:
         """Commit, having read what the act binds.
 
         Raises:
+            ImproperlyConfigured: See ``_before_commit``.
             _Changed: It reads otherwise: nothing commits.
         """
         await self._before_commit()
-        wrote = self._writes()
-        with _quietly():
-            await self._uow.commit()  # type: ignore[attr-defined]
-        self._committed(wrote)
+        await self._uow.commit()  # type: ignore[attr-defined]
+        self._committed()
 
     def opened(self, result: object) -> Any:  # noqa: ANN401 - what the service returns.
         """``result``, if the record the act binds was read.
@@ -1801,7 +1740,8 @@ class _Spending(_Acting):
         self, uow: object, held: UnitOfWork, accepted: _Accepted, check: Check | None
     ) -> None:
         """Wrap ``uow`` (the unit of work ``held``, or a wrapper lending it)."""
-        super().__init__(uow, held, accepted, check)
+        super().__init__(uow, accepted, check)
+        self._held = held
         self.spent = False
         """Whether a commit spent the authorization."""
 
@@ -1809,26 +1749,24 @@ class _Spending(_Acting):
         """Commit, spending the authorization with the first commit.
 
         Raises:
+            ImproperlyConfigured: See ``_before_commit``.
             _Spent: It was spent, voided, or expired meanwhile: nothing
                 commits.
             _Changed: What the act binds reads otherwise: nothing commits.
         """
         await self._before_commit()
-        wrote = self._writes()
-        held = cast(UnitOfWork, self._held)
-        with _quietly():
-            if self.spent:
-                await self._uow.commit()  # type: ignore[attr-defined]
-            else:
-                users = UserRepository(getattr(held, "session"))  # noqa: B009
-                await _consume(held, users, self._accepted)
-                setattr(held, USERS, users)
-                try:
-                    await self._uow.commit()  # type: ignore[attr-defined]
-                finally:
-                    delattr(held, USERS)
-                self.spent = True
-        self._committed(wrote)
+        if self.spent:
+            await self._uow.commit()  # type: ignore[attr-defined]
+            return
+        users = UserRepository(getattr(self._held, "session"))  # noqa: B009
+        await _consume(self._held, users, self._accepted)
+        setattr(self._held, USERS, users)
+        try:
+            await self._uow.commit()  # type: ignore[attr-defined]
+        finally:
+            delattr(self._held, USERS)
+        self.spent = True
+        self._committed()
 
 
 # The end of a request ------------------------------------------------------------
