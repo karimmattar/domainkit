@@ -179,16 +179,30 @@ class SignInRequestStore:
         ).first()
         return None if row is None else _row(row)
 
-    async def waiting_for(self, user_id: UUID, now: datetime) -> list[SignInRequest]:
-        """The user's requests their phone may still answer, oldest first."""
+    async def waiting_for(
+        self, user_id: UUID, now: datetime, *, withdrawn_since: datetime | None = None
+    ) -> list[SignInRequest]:
+        """The user's requests their phone may still answer, oldest first.
+
+        With ``withdrawn_since``, the pushes asked after it that ended
+        unanswered too: those their session withdrew, which the phone may
+        still report.
+        """
+        columns = sign_in_requests.c
+        live = columns.expires_at > now
+        if withdrawn_since is not None:
+            live = or_(
+                live,
+                and_(columns.channel == PUSH, columns.created_at > withdrawn_since),
+            )
         rows = await self.session.execute(
             select(sign_in_requests)
             .where(
-                sign_in_requests.c.user_id == user_id,
-                sign_in_requests.c.expires_at > now,
+                columns.user_id == user_id,
+                live,
                 _answerable(),  # type: ignore[arg-type]
             )
-            .order_by(sign_in_requests.c.created_at, sign_in_requests.c.id)
+            .order_by(columns.created_at, columns.id)
         )
         return [_row(row) for row in rows]
 

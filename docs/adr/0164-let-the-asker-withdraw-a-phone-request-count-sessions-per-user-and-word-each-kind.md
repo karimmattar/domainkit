@@ -1,6 +1,6 @@
 # 0164. Let the asker withdraw a phone request, count sessions per user, and word each kind
 
-- Status: Accepted
+- Status: Accepted; amended by [0174](0174-bind-an-act-to-the-record-it-decides-on-and-keep-a-held-acts-authorization.md)
 - Date: 2026-11-16
 - Amends: [0128](0128-approve-sign-ins-from-the-users-mobile-app.md), [0144](0144-authorize-one-act-not-a-window-of-time.md), [0146](0146-show-gates-how-a-login-was-made-and-let-a-login-keep-shorter-limits.md)
 

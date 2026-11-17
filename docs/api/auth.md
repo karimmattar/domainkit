@@ -89,6 +89,7 @@ Authorize one act, with its arguments, once (ADR 0144).
 - `ActionAuthorized`: A user confirmed one act, with its arguments (`auth.actions`).
 - `ActionConfirmation`: A way to confirm action authorizations: what it proves, and who has it.
 - `ActionNotAuthorized`: No authorization holds for this act: ask for one, then try again (403).
+- `ActionRecordChanged`: What the act decides on changed since its authorization was asked for (409).
 - `AuthorizationChanged`: What the device was shown is not what the authorization holds (409).
 - `AuthorizationNeedsOtherFactors`: The act asks confirming it to prove what this way does not (409).
 - `AuthorizationNotFound`: No authorization of the user's, or of the login's, has that id (404).
@@ -98,10 +99,12 @@ Authorize one act, with its arguments, once (ADR 0144).
 - `action_for`: The registered action of `purpose`, if there is one.
 - `confirm_action_with`: Confirm the authorization, which `methods` proved; return `<id>.<code>`.
 - `confirmed_action_authorization`: `<id>.<code>` of the user's confirmed authorization, for the confirming app.
+- `hold_authorizations`: Keep the authorization of the request's act, which now waits for approval.
 - `link_action_authorization`: Link what will confirm the authorization: the phone's request, or a passkey's.
 - `linked_action_authorization`: The user's authorization the phone's request `sign_in_request_id` confirms.
 - `login_digest`: The login's digest: the SHA-256 of its scheme and token, as the phone keeps it.
 - `on_action_confirmation`: Register a way to confirm action authorizations (an `ActionConfirmation`).
+- `on_held_act`: Say whether what a held authorization's act waits on still waits.
 - `register_action`: Register an `Action` (`register_action(END_MEMBERSHIP)` in `ready()`).
 - `registered_actions`: Every registered action, by purpose.
 - `request_action_authorization`: Store an authorization of `command` for the request's user and login.

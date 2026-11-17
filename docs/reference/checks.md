@@ -135,6 +135,7 @@ application logs them as a warning and starts.
 | `auth.E109` | a route that asks `StepUp(for_=...)` for a purpose no registered action has ([Authorizing one act](../auth/actions.md#the-route-asks-stepupfor_)) |
 | `auth.E110` | a route that asks for an action that nothing spends: no service decorated `requires_authorization`, and no code that said so with `spent_in_code(action)` ([Authorizing one act](../auth/actions.md#the-act-spends-it)) |
 | `auth.E111` | `StepUp(for_=...)` on a WebSocket or an event stream, which is asked again and again and has no act to spend it on |
+| `auth.E112` | `AUTH.AUTHORIZATIONS.ACTIONS` naming a purpose no registered action has: a name mistyped, or an act whose setting is off, whose `TTL` and `METHODS` would hold for nothing ([Authorizing one act](../auth/actions.md#each-act-its-own-methods-and-lifetime)) |
 | `ciba.E002` | the OpenID Provider's CIBA routes served, but `AUTH.JWT` has no `ISSUER` or signs with a shared secret, so clients could not verify ID tokens ([Sign-in approvals](../auth/ciba.md#oidc-clients)) |
 | `ciba.E003` | `CIBA.APPROVE_LOGINS` on, but the routes of `domainkit.contrib.ciba.api` or `domainkit.contrib.devices.api` not served, so users with a bound phone could not sign in on the web ([Sign-in approvals](../auth/ciba.md#the-mobile-app-as-identity)) |
 | `ciba.E004` | `/app-sign-in/session` served, but `AUTH.AUTHENTICATION_CLASSES` lacks `CookieAuthentication`, so the browser would get a cookie nothing reads |
