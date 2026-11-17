@@ -713,15 +713,28 @@ A Word document with macros, sent as `contract.docx`:
   `LINK`, `DATABASE`, `DDE`, `DDEAUTO`) or whose instruction starts with
   another field (*since 2.7*, one never ended too, and one whose
   instruction, or part of it, is a tracked deletion, `w:delInstrText`:
-  read with and without the deletion), OLE objects and controls written
-  in the XML itself (`w:object`, `o:OLEObject`, `w:control`), a picture
-  or an object that names a hyperlink's relationship (by `r:id`, or, since
-  2.7, VML's `o:relid`), a VML picture, fill or stroke that names a source
-  of its own (`src`, `o:href` or `o:althref`; *new in 2.7*), a `HYPERLINK`
-  field to anything but `http`, `https` or `mailto` (a file, a share; *new
-  in 2.7*, as a hyperlink's relationship already was), Excel's links to
-  other workbooks,
-  data connections, query tables, formulas anywhere in a sheet (cells,
+  read with and without the deletion; *since 2.8*, its name read as Word
+  and LibreOffice read it, in any case, past white space, invisible marks
+  such as a zero-width space or a directional mark, backslashes and
+  quotes, straight or curly: `\INCLUDEPICTURE`, `"INCLUDETEXT"`), a mail
+  merge that names its data source or a connection to one
+  (`w:connectString`, `w:query`, `w:dataSource`, `w:headerSource`,
+  `w:odso`'s `w:udl` and `w:src`; *new in 2.8*), OLE objects and
+  controls written in the XML itself (`w:object`, `o:OLEObject`,
+  `w:control`), a picture or an object that names a hyperlink's
+  relationship (by `r:id`, or, since 2.7, VML's `o:relid`), a VML picture,
+  fill or stroke that names a source of its own (`src`, `o:href` or
+  `o:althref`; *new in 2.7*), a `HYPERLINK` field to anything but `http`,
+  `https` or `mailto` (a file, a share; *new in 2.7*, as a hyperlink's
+  relationship already was), an SVG picture
+  (*new in 2.8*) that loads anything but a fragment of itself (`#id`) or
+  a `data:` URL: an `href` or `xlink:href` on any element, whatever its
+  namespace, or an animation of one, an HTML `src`, CSS's `url()`,
+  `src()`, `image()`, `image-set()` and `@import` in a style, an
+  attribute or any text (its escapes and character references undone),
+  an `<?xml-stylesheet?>`, or a `data:` URL that holds an SVG that does
+  (four deep at most), Excel's links to other workbooks, data
+  connections, query tables, formulas anywhere in a sheet (cells,
   names, conditional formats, validations, tables, charts) that call
   `WEBSERVICE`, `RTD`, `IMAGE` or DDE (`cmd|'...'!A0`), and an XML part
   with a DTD or an entity, or in another encoding than UTF-8 and UTF-16.
@@ -732,7 +745,12 @@ A Word document with macros, sent as `contract.docx`:
   type, is XML too when its bytes start as XML does, whatever its name,
   its content type, or its relationship's type: a reader follows a
   header's relationship to `word/header2.png`, typed an image, and parses
-  it as the header it is. One lxml cannot read is passed over only if it
+  it as the header it is. A part is an SVG by its name (`.svg`, `.svgz`),
+  its type (`image/svg+xml`), or its bytes, as LibreOffice finds one:
+  `<svg` anywhere, or an element `svg` of a prefix; a gzip part a
+  relationship names, or an SVG's, is read as it inflates, within the
+  check's bytes (LibreOffice draws an SVG so compressed, whatever its
+  name). One lxml cannot read is passed over only if it
   is binary data (a font's, that starts with `<`): lxml, asked again
   with no limit of its own, stops within its first 64 characters, no
   element or namespace begun. Any other is a document, refused however

@@ -52,6 +52,18 @@ relied on 2.7's behaviour changes, and what to run.
 - **`GET /users/names` strips the names it joins.** A first or last name
   of white space alone gives no name, where 2.7 answered the spaces, and
   a padded one loses its padding.
+- **Office documents that load from elsewhere in more ways are refused.**
+  `DOCX`, `XLSX` and `PPTX` answer 422 `unsafe_file` for a Word field
+  that pulls content in or runs a program when its name follows a
+  backslash, a quote or an invisible mark (`\INCLUDEPICTURE`,
+  `"INCLUDETEXT"`), and for a `HYPERLINK` so written to a file or a
+  share; for an SVG picture that loads anything but a fragment of itself
+  or a `data:` URL (an `href`, CSS's `url()` or `@import`), however it is
+  named or typed; and for a mail merge that names its data source or a
+  connection to one. Nothing to change: a document refused is saved again
+  without the field, the picture's outside source, or the mail merge's
+  data source (in Word, Mailings, Start Mail Merge, Normal Word Document)
+  ([Checking documents](uploads.md#checking-documents)).
 - **A twin reads `If-Match`** ([ADR 0178](adr/0178-bind-an-act-to-the-version-its-page-read.md)).
   On a `ResourceRouter`'s act on one aggregate, a twin asked with
   `If-Match` answers `412 precondition_failed` when the aggregate is at
