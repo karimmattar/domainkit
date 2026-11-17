@@ -29,7 +29,7 @@ catalogs.
 import re
 from collections.abc import Mapping, Sequence
 from http import HTTPStatus
-from typing import Final
+from typing import TYPE_CHECKING, Final
 from urllib.parse import quote
 
 from fastapi import FastAPI, Request, status
@@ -63,6 +63,9 @@ from domainkit.exceptions import DomainkitError, ServiceBusy, UpstreamError
 from domainkit.http.responses import BuiltJSONResponse, JSONResponse
 from domainkit.i18n import gettext, validation_message
 from domainkit.money import MoneyError
+
+if TYPE_CHECKING:
+    from domainkit.i18n.lazy import LazyString
 
 STATUS_CODES: Final[tuple[tuple[type[DomainError], int], ...]] = (
     (PreconditionFailed, status.HTTP_412_PRECONDITION_FAILED),
@@ -142,12 +145,18 @@ _BODY_MEMBERS: Final = frozenset(ErrorResponse.model_fields) | frozenset(
 
 
 class APIError(HTTPException, DomainkitError):
-    """An HTTP error outside the domain (a bad cursor, an oversized body)."""
+    """An HTTP error outside the domain (a bad cursor, an oversized body).
+
+    ``detail`` is text, translated when it is answered, or a lazy string
+    (``gettext_lazy``), answered as its text in the caller's language. It
+    is kept as given: a lazy one compares and formats as its text, and
+    ``str()`` makes it text.
+    """
 
     def __init__(
         self,
         status_code: int,
-        detail: str,
+        detail: "str | LazyString",
         *,
         code: str,
         headers: Mapping[str, str] | None = None,
@@ -156,7 +165,7 @@ class APIError(HTTPException, DomainkitError):
         """Carry a machine-readable ``code``, and any field ``errors``."""
         super().__init__(
             status_code=status_code,
-            detail=detail,
+            detail=detail,  # type: ignore[arg-type]  # Kept lazy: see the class.
             headers=dict(headers) if headers else None,
         )
         self.code = code
@@ -363,7 +372,7 @@ async def http_error_handler(request: Request, exc: HTTPException) -> Response:
     """Answer ``HTTPException`` (unknown routes, 405, ``APIError``) uniformly."""
     if exc.status_code in _BODILESS:
         return Response(status_code=exc.status_code, headers=exc.headers)
-    detail = exc.detail if isinstance(exc.detail, str) else None
+    detail = exc.detail if isinstance(exc.detail, str) else _lazy_text(exc.detail)
     code = exc.code if isinstance(exc, APIError) else default_code(exc.status_code)
     response = error_response(
         exc.status_code,
@@ -377,6 +386,18 @@ async def http_error_handler(request: Request, exc: HTTPException) -> Response:
         # Starlette lists only the first matching route's methods.
         response.headers["Allow"] = ", ".join(allowed_methods(request))
     return response
+
+
+def _lazy_text(detail: object) -> str | None:
+    """A detail that is not text: a lazy string's text, in the active language.
+
+    Anything else (a mapping given to FastAPI's ``HTTPException``) is None.
+    The lazy module is imported here, not with this one: serving loads it
+    only when something uses it.
+    """
+    from domainkit.i18n.lazy import LazyString
+
+    return str(detail) if isinstance(detail, LazyString) else None
 
 
 def allowed_methods(request: Request) -> list[str]:

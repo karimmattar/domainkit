@@ -17,8 +17,9 @@ ask for one of submitting, rejecting, and cancelling, with their own
 settings on (ADR 0163).
 """
 
+from collections.abc import Callable
 from datetime import datetime
-from typing import ClassVar, Final
+from typing import Any, ClassVar, Final
 from uuid import UUID
 
 from fastapi import Request, status
@@ -247,7 +248,10 @@ class DecisionAction(BasePermission):
     action_not_authorized`` with one that does not hold. It asks about the
     request itself, after the other rules: one that refuses plainly (not an
     approver) answers first. Off, it allows everyone, and its route's twin
-    (``POST <the route's path>/authorization``) answers ``404``.
+    (``POST <the route's path>/authorization``) answers ``404``. A
+    ``ResourceRouter`` route whose service would not spend the act (a
+    ``record_*`` function, another step's service) is refused when it is
+    declared (``service_problem``).
     """
 
     setting: ClassVar[str]
@@ -286,6 +290,34 @@ class DecisionAction(BasePermission):
     def authorization_model(self) -> type[BaseModel]:
         """``{"id", "purpose", "shown", "expires_at", "methods"}``: the twin's body."""
         return ApprovalAuthorizationOut
+
+    def service_problem(self, service: object) -> str | None:
+        """Why ``service``, the route's, would not spend this act's authorization.
+
+        A ``ResourceRouter`` asks when the route is declared, whatever the
+        setting is then, and refuses the route on an answer (ADR 0161). The
+        rule takes any authorization of its act; the step's service spends
+        it on the command, which binds it to the request and its arguments.
+        A ``record_*`` function spends none, and another step's service
+        spends another act's: either would take the step with an
+        authorization of another request, or none. Any other service is
+        the project's, and passes: the rule cannot tell what it calls.
+        """
+        steps = _steps()
+        own, _ = steps[self.setting]
+        named = getattr(service, "__qualname__", service)
+        for setting, (spends, records) in steps.items():
+            if service is records:
+                return (
+                    f"runs {named}, which asks for no authorization: run "
+                    f"{own.__name__}, which spends the one {self.setting} asks for"
+                )
+            if service is spends and setting != self.setting:
+                return (
+                    f"runs {named}, which spends the authorization {setting} "
+                    f"asks for: run {own.__name__}"
+                )
+        return None
 
     async def ask_authorization(self, request: Request, command: object) -> BaseModel:
         """Store an authorization of the act ``command`` makes; the twin's body.
@@ -351,6 +383,18 @@ class SubmitAction(DecisionAction):
     async def has_permission(self, request: HTTPConnection, user: Principal) -> bool:
         """The setting is off, or the request holds an authorization of a submission."""
         return await self.has_object_permission(request, user, None)
+
+
+def _steps() -> dict[str, tuple[Callable[..., Any], Callable[..., Any]]]:
+    """Each act's setting, its step's service, and the step's record function."""
+    from . import services  # Imported here: the services import this module.
+
+    return {
+        "SUBMIT_ACTION": (services.submit_request, services.record_submission),
+        "APPROVE_ACTION": (services.approve_request, services.record_approval),
+        "REJECT_ACTION": (services.reject_request, services.record_rejection),
+        "CANCEL_ACTION": (services.cancel_request, services.record_cancellation),
+    }
 
 
 def _rule_of(request: ApprovalRequest) -> BasePermission | None:
