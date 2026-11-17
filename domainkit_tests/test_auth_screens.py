@@ -295,6 +295,28 @@ NUMBERS: Final = (
     "Call 5550-10-01",
     "Call 612 345 678",
     "Call 5550100123 all day",
+    "call 555 010 0123 EUR",
+    "Call (555) 010-0123 USD",
+    "EUR 555 01 0123",
+    "612.345.678",
+    "+34 612.345.678",
+    "Call-555-010-0123",
+    "call_555_010_0123",
+    "Locked out? call-5550100123",
+    "phone-5550100123",
+    "support-555-010-0123",
+    "$ 555 010 0123",
+    "555 010 0123 \u20ac",
+    "\u20ac555-010-0123",
+    "call 5550100123 EGP",
+    "Call 1.555.010.012",
+    "555.010.012.3",
+    "1,555,010,0123",
+    "JIRA-5550100123",
+    "tel5550100123",
+    "555 010 0123,00",
+    "Call 612,345,678",
+    "\u0627\u062a\u0635\u0644 612,345,678",
     "Call+15550100123",
     "1-800-555-0100",
     "555\u200b0100\u200b123",
@@ -320,14 +342,13 @@ PLAIN: Final = (
     "1.234.567,89",
     "amount 1.250.000,00",
     "1 234 567,89",
-    "1.234.567",
     "12 500 000 EUR",
-    "EUR 1250000",
-    "1250000 EGP",
-    "$1250000",
-    "JIRA-1234567",
+    "EUR 12 500 000",
+    "$1 250 000",
+    "Amount 1,250,000 is over the limit",
+    "Invoices 1001, 1002 and 1003",
     "CVE-2024-12345",
-    "user_1234567",
+    "REQ-2026-0042",
     "invoice.pdf",
     "Mr.Smith",
     "e.g. this, i.e. that",
@@ -358,9 +379,17 @@ READ_AS_LINKS: Final = (
     "100-0001",
     "01310-100",
     "build 1234567",
+    "1.234.567",
+    "612 345 678",
+    "EUR 1250000",
+    "$1250000",
+    "JIRA-1234567",
+    "user_1234567",
+    "Amount 1.250.000,00; I will call you",
 )
 """Text that holds no link, read as one: a top-level domain after a dot, seven
-digits or more apart by spaces or hyphens (ADR 0180's false positives)."""
+digits or more apart by spaces, dots or hyphens, or not grouped, an amount or a
+code beside a word that asks for a call (ADR 0180's false positives)."""
 
 
 @pytest.mark.parametrize("text", LINKS + NUMBERS)
@@ -441,7 +470,7 @@ def test_a_typed_line_is_checked_as_it_is_shown(use_auth: UseAuth) -> None:
     use_auth()
     domain = "Approved; details at our partner evil.co"
     domain = domain.rjust(63, "x") + "rporate"
-    number = "Closed. For any question please call 555 0100 123".rjust(63, "x") + "abc"
+    number = "Closed. For any question please ring 555 0100 123".rjust(63, "x") + "abc"
     first = ("z" * 44 + " evil.co").ljust(52, "z") + "rporate here"
     cuts: list[Details] = [
         {"Reason": Typed(domain)},

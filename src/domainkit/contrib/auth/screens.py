@@ -132,28 +132,34 @@ DATE: Final = re.compile(
     r"(?!\d)"
 )
 """A date, year first or last: ``2026-11-17``, ``17.11.2026``."""
-AMOUNT: Final = re.compile(r"(?<![\d.,])\d+[.,]\d{2}(?![\d.,])")
-"""An amount with its cents: ``1250000.00``."""
-GROUPED: Final = re.compile(
-    r"(?<![\d.,])\d{1,3}(?P<sep>[., ])\d{3}(?:(?P=sep)\d{3})*"
-    r"(?:(?P<point>[.,])\d{2})?(?![\d.,]?\d)"
+PRICE: Final = re.compile(
+    r"(?:\d{1,3}(?P<sep>[., ])\d{3}(?:(?P=sep)\d{3})*|\d+)(?:(?P<point>[.,])\d{2})?"
 )
-"""Digits in groups of three, apart by a dot, a comma, or a space, and the cents
-if any: an amount where they are ``1.234.567``, ``1 234 567,89``, or priced."""
-NUMBER: Final = re.compile(r"(?<![\d.,])\d+(?:[.,]\d{1,2})?(?![\d.,]?\d)")
-"""Digits written as one amount, with its cents if any: priced, an amount."""
+"""An amount, whole: digits in groups of three after the first, by one mark,
+or ungrouped, and two digits of cents if any (``1.234.567,89``, ``1250000.00``)."""
 CODES: Final = 3, 8
 """How many letters a currency's code holds: ISO 4217's three, up to eight."""
 CODE_JOINERS: Final = "-_"
-"""What joins a code's letters to its digits: ``JIRA-1234567``, ``user_1234567``."""
+"""What joins a code's letters to its digits: ``CVE-2024-12345``."""
+CODE_RUNS: Final = 2
+"""The most runs of digits a code joined by a hyphen holds: ``CVE-2024-12345``."""
+DIALING: Final = re.compile(
+    r"(?<![^\W\d_])(?:call|phone|mobile|dial|fax|whatsapp|telephone"
+    r"|(?:tel|ext|cell|sms)(?![^\W\d_]))"
+    "|\u0627\u062a\u0635|\u0647\u0627\u062a\u0641"
+    "|\u062c\u0648\u0627\u0644|\u0648\u0627\u062a\u0633"
+    "|\u062a\u0644\u064a\u0641\u0648\u0646|\u0645\u0648\u0628\u0627\u064a\u0644"
+)
+"""A word that asks for a call: ``call``, ``tel``, ``ext``, ``WhatsApp``, and
+Arabic's call, telephone, mobile and WhatsApp, with what they are joined to."""
 SHORTEST_CUT: Final = 20
 """The fewest characters of a name a screen shows when it cuts it (``check_typed``)."""
 DIGITS: Final = re.compile(
-    "(?:\\+\\s?)?\\(?\\d(?:[\\s.\\-_\u2010-\u2015\u2022\u2212\u2800()/]{0,3}\\d)*"
+    "(?:\\+\\s?)?\\(?\\d(?:(?:,|[\\s.\\-_\u2010-\u2015\u2022\u2212\u2800()/]{0,3})\\d)*"
 )
-"""Digits written as one number: in groups apart by spaces (a blank braille
-cell too), dots, dashes, bullets, underscores, brackets, or slashes, after a
-plus sign if any (``+1 (555) 010-0100``)."""
+"""Digits written as one number: in groups apart by a comma, or by spaces (a
+blank braille cell too), dots, dashes, bullets, underscores, brackets, or
+slashes, after a plus sign if any (``+1 (555) 010-0100``)."""
 
 type Value = object
 """What a label shows: a text, or a JSON value (a number, ``True``, ``None``,
@@ -248,11 +254,11 @@ def holds_link(text: str) -> bool:
     lists (``evil.example.com``, ``www.anything``, the same with Cyrillic
     letters that read as Latin ones), or seven digits or more written as
     one number (``+1 555 010 0100``), but a date, an amount (with its
-    cents, in groups of three, or beside a currency's code or sign:
-    ``1.234.567,89``, ``12 500 000 EUR``), or a code whose letters touch
-    its digits or join them with a hyphen or an underscore
-    (``INC0012345``, ``JIRA-1234567``). ``v1.2``, ``Q3 report``, and
-    ``readers`` hold none.
+    cents, or in groups of three beside a currency: ``1.234.567,89``,
+    ``12 500 000 EUR``), or a code (``INC0012345``, ``CVE-2024-12345``):
+    when unsure, it holds one, and never an amount or a code with a plus
+    sign, a bracket, or beside a word that asks for a call. ``v1.2``,
+    ``Q3 report``, and ``readers`` hold none.
     """
     seen = _as_read(text)
     plain = seen.casefold()
@@ -419,58 +425,71 @@ def _latin(label: str) -> Iterator[str]:
 def _calls(text: str) -> bool:
     """Whether ``text`` holds seven digits or more written as one number.
 
-    Not a date, an amount (``_amount_or_digits``), or a code: digits a
-    letter touches, or that a hyphen or an underscore joins to one, unless
-    after a plus sign (``INC0012345``, ``JIRA-1234567``, but ``call+1555…``).
+    When unsure, it does. Not a date; nor an amount or a code, but where
+    the number holds a plus sign or a bracket, or the text a word that
+    asks for a call (``DIALING``): see ``_amount`` and ``_code``.
     """
+    dialing = DIALING.search(text.casefold()) is not None
     text = DATE.sub(_date_or_digits, text)
-    text = AMOUNT.sub(
-        " ", NUMBER.sub(_amount_or_digits, GROUPED.sub(_amount_or_digits, text))
-    )
     for found in DIGITS.finditer(text):
         number = found[0]
         if sum(each.isdigit() for each in number) < CALLABLE_DIGITS:
             continue
-        if number.startswith("+") or not (
-            _code_letter(text, found.start() - 1, -1)
-            or _code_letter(text, found.end(), 1)
+        if dialing or any(each in number for each in "+()"):
+            return True
+        if not (
+            _amount(number, text, found.start(), found.end())
+            or _code(number, text, found.start(), found.end())
         ):
             return True
     return False
 
 
-def _code_letter(text: str, at: int, step: int) -> bool:
-    """Whether a letter is at ``at``, or past a hyphen or an underscore there."""
-    if 0 <= at < len(text) and text[at] in CODE_JOINERS:
-        at += step
-    return 0 <= at < len(text) and text[at].isalpha()
+def _amount(number: str, text: str, start: int, end: int) -> bool:
+    """Whether ``number`` is an amount, not a number to call.
 
-
-def _amount_or_digits(found: re.Match[str]) -> str:
-    """A space for an amount; the digits, as found, otherwise.
-
-    An amount is priced (beside a currency's code or sign), or, in groups
-    of three, has its cents apart by the other mark (``1 234 567,89``), or
-    is grouped by dots (``1.234.567``). Grouped by spaces alone, it may be
-    a number to call (``612 345 678``).
+    With two digits of cents, apart by another mark than its groups':
+    ``1250000.00``, ``1.234.567,89``. In groups of three alone, by commas
+    (``1,250,000``, as no number to call is written), or beside a
+    currency's code or sign (``12 500 000 EUR``); bare, ``612.345.678``
+    and ``612 345 678`` are numbers to call in Spain.
     """
-    groups = found.groupdict()
-    grouped = groups.get("sep")
-    point = groups.get("point")
-    if (
-        (grouped and point and point != grouped)
-        or (grouped == "." and not point)
-        or _priced(found.string, found.start(), found.end())
-    ):
-        return " "
-    return found[0]
+    price = PRICE.fullmatch(number)
+    if price is None or (price["sep"] is not None and price["sep"] == price["point"]):
+        return False
+    if price["point"] is not None or price["sep"] == ",":
+        return True
+    return price["sep"] is not None and _priced(text, start, end)
+
+
+def _code(number: str, text: str, start: int, end: int) -> bool:
+    """Whether ``number`` is part of a code, not a number to call.
+
+    Its digits touch a letter (``INC0012345``, ``GB29NWBK6016…``); or a
+    hyphen or an underscore joins them to one, in two runs at most, each
+    shorter than a number to call (``CVE-2024-12345``, but not
+    ``JIRA-5550100123`` nor ``support-555-010-0123``).
+    """
+    before = text[start - 1] if start else ""
+    after = text[end] if end < len(text) else ""
+    if before.isalpha() or after.isalpha():
+        return True
+    if not (before in CODE_JOINERS and start > 1 and text[start - 2].isalpha()):
+        return False
+    runs = re.findall(r"\d+", number)
+    marks = set(re.sub(r"\d", "", number))
+    return (
+        len(runs) <= CODE_RUNS
+        and all(len(run) < CALLABLE_DIGITS for run in runs)
+        and marks <= {before}
+    )
 
 
 def _priced(text: str, start: int, end: int) -> bool:
     """Whether a currency's code or sign is next to ``text[start:end]``, a space apart.
 
     A code is in capitals, and known (``domainkit.money.currencies``):
-    ``EUR 1250000``, ``12 500 000 EUR``, ``$1250000``.
+    ``EUR 12 500 000``, ``12 500 000 EUR``, ``$1 250 000``.
     """
     before = start - 1 if start and text[start - 1] == " " else start
     after = end + 1 if end < len(text) and text[end] == " " else end
