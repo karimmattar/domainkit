@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from domainkit import setup
 from domainkit.apps import registry
-from domainkit.apps.hooks import Hook, HookPoint
+from domainkit.apps.hooks import Hook, HookPoint, hooks_kept
 from domainkit.conf import override_settings
 from domainkit.db import SqlAlchemyUnitOfWork, connections
 from domainkit.db import uow as uow_module
@@ -237,6 +237,58 @@ def test_hooks_register_in_ready_or_for_a_named_domain(
 
         assert list(point) == [Hook("typed", probe)]
         assert repr(point) == "<HookPoint probe>"
+
+
+@pytest.mark.usefixtures("calls")
+def test_an_order_runs_a_hook_before_or_after_the_others() -> None:
+    """Lowest order first, whatever its domain; within one, domain order.
+
+    Approvals runs its hold of an admin change after the project's checks
+    this way (user report A19). ``hooks_kept`` puts the orders back too.
+    """
+    point: HookPoint[Any] = HookPoint("ordered")
+
+    async def first() -> None:
+        """Run before every other."""
+
+    async def plain() -> None:
+        """Run in domain order."""
+
+    async def typed() -> None:
+        """Run in domain order, after alpha's."""
+
+    async def last() -> None:
+        """Run after every other."""
+
+    async def later() -> None:
+        """Run after the last, registered after it."""
+
+    def names(hooks: Any) -> list[str]:  # noqa: ANN401 - hooks.
+        return [hook.call.__name__ for hook in hooks]
+
+    with override_settings(INSTALLED_DOMAINS=[ALPHA, "quiet", "typed"]):
+        setup()
+        point(last, domain="alpha", order=100)
+        point(typed, domain="typed")
+        point(first, domain="typed", order=-1)
+        point(plain, domain="alpha")
+        before = names(point)
+        with hooks_kept():
+            point(later, domain="typed", order=100)
+            kept = names(point)
+        after = names(point)
+        refused = []
+        for wrong in ("last", True, 1.5):
+            with pytest.raises(ImproperlyConfigured, match="whole number") as raised:
+                point(later, domain="alpha", order=wrong)  # type: ignore[arg-type]
+            refused.append(str(raised.value))
+
+        assert before == ["first", "plain", "typed", "last"]
+        assert names(point.of("typed")) == ["first", "typed"]
+        assert kept == ["first", "plain", "typed", "last", "later"]
+        assert after == before
+        assert refused[0].startswith("ordered hook ")
+        assert refused[0].endswith("takes a whole number as its order, not 'last'.")
 
 
 def test_a_points_own_checks_and_an_empty_point() -> None:
