@@ -4,6 +4,7 @@ Nothing here imports the ``documents`` extra: each function imports its
 package when it is called, and ``missing`` says how to install it.
 """
 
+import logging
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -14,6 +15,8 @@ from domainkit.exceptions import DomainkitError, ImproperlyConfigured, UpstreamE
 
 if TYPE_CHECKING:
     from domainkit.conf.global_settings import RendererConfig
+
+logger = logging.getLogger(__name__)
 
 LENGTH: Final = re.compile(
     r"(?:[0-9]{1,4}(?:\.[0-9]{1,4})?|\.[0-9]{1,4})(?:mm|cm|in|pt|px|pc)?"
@@ -93,6 +96,21 @@ class RendererUnavailable(UpstreamError):
     """The renderer could not render now: unreachable, failing, or refusing the login.
 
     A request that lets it go is answered 503 ``renderer_unavailable``.
+    """
+
+    status_code: ClassVar[int] = 503
+    code: ClassVar[str] = "renderer_unavailable"
+    detail: ClassVar[str] = "Documents cannot be rendered now; try again later."
+
+
+class RendererNotConfigured(RendererUnavailable, ImproperlyConfigured):
+    """No renderer is set: ``DOCUMENTS["RENDERER"]`` is None.
+
+    A renderer may be left unset where documents are not rendered (a
+    developer's machine, a service that only fills them): a request that
+    needs one is answered 503 ``renderer_unavailable``, as when Gotenberg
+    is down, and the reason is logged. It is an ``ImproperlyConfigured``
+    too, as 2.6 raised.
     """
 
     status_code: ClassVar[int] = 503
@@ -185,7 +203,8 @@ def renderer() -> Renderer:
     """The ``DOCUMENTS["RENDERER"]`` Gotenberg server, made once per configuration.
 
     Raises:
-        ImproperlyConfigured: ``DOCUMENTS["RENDERER"]`` is not set.
+        RendererNotConfigured: ``DOCUMENTS["RENDERER"]`` is not set (503
+            ``renderer_unavailable`` in a request; an ``ImproperlyConfigured``).
         ImportError: ``domainkit[httpclient]``, which calls Gotenberg, is
             not installed.
     """
@@ -193,7 +212,8 @@ def renderer() -> Renderer:
 
     config = settings.DOCUMENTS.RENDERER
     if config is None:
-        raise ImproperlyConfigured(
+        logger.warning("A document was to be rendered, and no renderer is set.")
+        raise RendererNotConfigured(
             'No renderer is set: DOCUMENTS = {"RENDERER": {"URL": ...}} names '
             "the Gotenberg server (docs/documents.md)."
         )

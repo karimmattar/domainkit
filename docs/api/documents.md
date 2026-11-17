@@ -15,6 +15,7 @@ Documents: HTML and Office documents to PDF, Word placeholders, PDF overlays.
 - `PageOptions`: How a browser prints HTML; None leaves the renderer's default.
 - `PlaceholderError`: A Word document's placeholders and the values given do not agree.
 - `Renderer`: Turns HTML, or an Office document, into a PDF (`GotenbergRenderer`).
+- `RendererNotConfigured`: No renderer is set: `DOCUMENTS["RENDERER"]` is None.
 - `RendererUnavailable`: The renderer could not render now: unreachable, failing, or refusing the login.
 - `RenderingRefused`: The renderer refused what it was sent: the document cannot be rendered.
 - `clean_html`: `html`, a fragment of rich text, kept to the module's allowlist.

@@ -19,6 +19,12 @@ and a status.
   Poetry 2.4): 2.2.1 wrote a crafted wheel's files outside its target
   (CVE-2026-34591), and its dulwich had nine advisories. CI audits the
   build's hash-pinned tools too.
+- `renderer()` with no `DOCUMENTS["RENDERER"]` raises
+  `RendererNotConfigured`, an `ImproperlyConfigured` as before and a
+  `RendererUnavailable`: a request that needs a renderer where none is
+  set is answered 503 `renderer_unavailable`, not 500, and a warning is
+  logged ([The renderer](docs/documents.md#the-renderer), ADR 0176)
+  (user report U5).
 
 ### Security
 

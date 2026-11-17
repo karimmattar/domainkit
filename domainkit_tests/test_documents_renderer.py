@@ -21,6 +21,7 @@ from domainkit.context import RequestContext, bind_request
 from domainkit.documents import (
     PageOptions,
     Renderer,
+    RendererNotConfigured,
     RendererUnavailable,
     RenderingRefused,
     renderer,
@@ -259,10 +260,52 @@ def test_check_deploy_fails_on_a_renderer_without_a_login() -> None:
 # The configured renderer --------------------------------------------------------------
 
 
-def test_no_renderer_is_made_without_settings() -> None:
-    """``renderer()`` names the setting to set."""
-    with pytest.raises(ImproperlyConfigured, match=r'DOCUMENTS = \{"RENDERER"'):
+def test_no_renderer_is_made_without_settings(caplog: pytest.LogCaptureFixture) -> None:
+    """``renderer()`` names the setting to set, and logs that none is.
+
+    The error is an ``ImproperlyConfigured``, as in 2.6, and an unavailable
+    renderer, which a request answers 503.
+    """
+    with pytest.raises(
+        ImproperlyConfigured, match=r'DOCUMENTS = \{"RENDERER"'
+    ) as unset:
         renderer()
+
+    assert isinstance(unset.value, RendererNotConfigured)
+    assert isinstance(unset.value, RendererUnavailable)
+    assert [
+        (record.name, record.levelname, record.getMessage())
+        for record in caplog.records
+    ] == [
+        (
+            "domainkit.documents.base",
+            "WARNING",
+            "A document was to be rendered, and no renderer is set.",
+        )
+    ]
+
+
+def test_a_request_that_needs_a_renderer_none_is_set_for_is_answered_503() -> None:
+    """Where the renderer is optional (previews, a developer's machine): not a 500."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from domainkit.http.errors import install_exception_handlers
+
+    app = FastAPI()
+    install_exception_handlers(app)
+
+    @app.get("/preview")
+    async def preview() -> None:
+        await renderer().html_to_pdf("<p>a</p>")
+
+    answer = TestClient(app, raise_server_exceptions=False).get("/preview")
+
+    assert answer.status_code == 503
+    assert answer.json()["code"] == "renderer_unavailable"
+    assert answer.json()["detail"] == (
+        "Documents cannot be rendered now; try again later."
+    )
 
 
 def test_the_renderer_names_the_extra_it_needs(monkeypatch: pytest.MonkeyPatch) -> None:

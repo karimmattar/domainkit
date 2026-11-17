@@ -52,6 +52,12 @@ a project that relied on 2.6's behaviour changes.
   ([What a PDF may decode](documents.md#what-a-pdf-may-decode)). A page
   laid over is now written back deflated: the PDF looks the same, and is
   smaller.
+- **A request that needs a renderer where none is set is answered 503.**
+  `renderer()` without `DOCUMENTS["RENDERER"]` raises
+  `RendererNotConfigured`, which is the `ImproperlyConfigured` it raised
+  in 2.6 and a `RendererUnavailable`: the HTTP layer answers it
+  `503 renderer_unavailable`, where 2.6 answered 500, and logs a warning.
+  Code that catches `ImproperlyConfigured` still catches it.
 
 ## 2.5 to 2.6
 

@@ -87,6 +87,13 @@ methods:
   too: what keeps them from running is Gotenberg's
   `--libreoffice-enable-macros`, off by default. Leave it off.
 
+Where documents are rendered only sometimes, a preview or a developer's
+machine, `DOCUMENTS["RENDERER"]` may be left unset. `renderer()` then
+raises `RendererNotConfigured`, and logs a warning: a request that lets
+it go is answered `503 renderer_unavailable`, as when Gotenberg is
+down. It is an `ImproperlyConfigured` too. *New in 2.7*: 2.6 raised a
+plain `ImproperlyConfigured`, a 500.
+
 ```python
 from domainkit.documents import PageOptions, renderer
 
@@ -417,7 +424,7 @@ document, rendered by Gotenberg:
 | `RenderingRefused` | Gotenberg refused the input: 400 (a form or a document it cannot read), 409 (a resource did not load), 413 (past its body limit). `status` and `trace` say which. | Fix the document; sending it again changes nothing. |
 | 503 `renderer_unavailable` (`RendererUnavailable`) | Gotenberg could not be reached, failed once the retries were spent, refused the login, or answered something other than a PDF. | Try again later; check Gotenberg and its login. |
 | 503 `upstream_unavailable`, 504 `upstream_timeout`, 502 `upstream_response_too_large` | The client's own: the circuit is open, `TIMEOUT` passed, or the PDF is past `MAX_RESPONSE_BYTES`. | See [outgoing calls](reference/http.md). |
-| `ImproperlyConfigured` | `renderer()` with no `DOCUMENTS["RENDERER"]`. | Set it. |
+| 503 `renderer_unavailable` (`RendererNotConfigured`) | `renderer()` with no `DOCUMENTS["RENDERER"]`; also an `ImproperlyConfigured`. A warning is logged. | Set it, or leave it unset where nothing is rendered. |
 | `ImportError` | The `documents` extra is not installed. | `pip install "domainkit[documents]"`. |
 
 ## Testing
