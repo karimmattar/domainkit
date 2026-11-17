@@ -1017,7 +1017,8 @@ A client that keeps the two apart asks the other domain once per page
 instead, by id: the admin API's `GET /users` takes `id`, repeated, and
 `GET /users/names` answers the same users by name alone, without their
 groups and permissions (since 2.7,
-[the admin API](auth/routes.md#the-admin-api)).
+[the admin API](auth/routes.md#the-admin-api)), by the fields
+`AUTH.NAME_FIELDS` names (since 2.8).
 
 ### Partial changes
 

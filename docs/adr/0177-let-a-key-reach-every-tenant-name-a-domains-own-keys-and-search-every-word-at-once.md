@@ -1,6 +1,6 @@
 # 0177. Let a key reach every tenant, name a domain's own keys, and search every word at once
 
-- Status: Accepted
+- Status: Accepted; amended by [0182](0182-let-a-gateway-raise-a-routes-problems-and-name-users-by-the-fields-a-project-chooses.md)
 - Date: 2026-11-17
 - Amends: [0150](0150-take-the-tenant-from-the-path-and-let-members-hold-permissions.md), [0170](0170-let-a-resources-items-be-tenants-count-members-keys-alone-and-let-lists-name-what-they-refer-to.md)
 
