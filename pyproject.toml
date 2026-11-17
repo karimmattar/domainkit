@@ -3,7 +3,7 @@ name = "domainkit"
 version = "2.7.0"
 description = "A Django-style framework for domain-driven FastAPI services."
 readme = "README.md"
-license = "MIT"
+license = "MIT AND Unicode-3.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.13,<4"
 authors = [
