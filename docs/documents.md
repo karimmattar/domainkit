@@ -96,8 +96,10 @@ answered `503 renderer_unavailable`, as when Gotenberg is down. Where a
 renderer should be set, that is a deployment's mistake, so it is logged
 as an error and sent to `ERROR_REPORTERS` all the same, though a 503 is
 otherwise never reported: once a process, the first time one is asked
-for, however many callers catch it or try again. It is an `ImproperlyConfigured` too. *New in
-2.7*: 2.6 raised a plain `ImproperlyConfigured`, a 500.
+for, however many callers catch it or try again, and once again in a
+process forked from it. Nothing is reported before that first call. It
+is an `ImproperlyConfigured` too. *New in 2.7*: 2.6 raised a plain
+`ImproperlyConfigured`, a 500.
 
 ```python
 from domainkit.documents import PageOptions, renderer

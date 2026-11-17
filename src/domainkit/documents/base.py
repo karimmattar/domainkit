@@ -5,6 +5,7 @@ package when it is called, and ``missing`` says how to install it.
 """
 
 import logging
+import os
 import re
 import threading
 from collections.abc import Iterable, Mapping
@@ -112,8 +113,10 @@ class RendererNotConfigured(RendererUnavailable, ImproperlyConfigured):
     needs one is answered 503 ``renderer_unavailable``, as when Gotenberg
     is down. Where one should be set, it is a deployment's mistake:
     ``renderer()`` logs it as an error and sends it to ``ERROR_REPORTERS``,
-    the first time a process asks for one, and raises it every time. It
-    is an ``ImproperlyConfigured`` too, as 2.6 raised.
+    the first time a process asks for one (a process forked from it, the
+    first time it does), and raises it every time. Nothing is reported
+    before that first call. It is an ``ImproperlyConfigured`` too, as 2.6
+    raised.
     """
 
     code: ClassVar[str] = "renderer_unavailable"
@@ -199,9 +202,32 @@ class Renderer(Protocol):
 
 
 _made: dict[str, tuple["RendererConfig", Renderer]] = {}
-_told: set[str] = set()
-"""What this process reported once: ``"unset"``, a missing renderer."""
-_telling = threading.Lock()
+
+
+class _Told:
+    """What this process reported once; a process forked from it starts over."""
+
+    def __init__(self) -> None:
+        """Nothing reported yet."""
+        self._reset()
+
+    def _reset(self) -> None:
+        """Forget what was reported, and the lock, which a fork may have held."""
+        self.lock = threading.Lock()
+        self.told: set[str] = set()
+
+    def first(self, what: str) -> bool:
+        """Whether ``what`` is told for the first time in this process."""
+        with self.lock:
+            first = what not in self.told
+            self.told.add(what)
+        return first
+
+
+_told: Final = _Told()
+
+if hasattr(os, "register_at_fork"):  # pragma: no branch - POSIX has it.
+    os.register_at_fork(after_in_child=_told._reset)
 
 
 def renderer() -> Renderer:
@@ -225,10 +251,7 @@ def renderer() -> Renderer:
             'No renderer is set: DOCUMENTS = {"RENDERER": {"URL": ...}} names '
             "the Gotenberg server (docs/documents.md)."
         )
-        with _telling:
-            first = "unset" not in _told
-            _told.add("unset")
-        if first:
+        if _told.first("unset"):
             # A 503 is never reported, and a missing setting must be seen:
             # once a process, however many callers catch it or try again.
             logger.error("A document was to be rendered, and no renderer is set.")

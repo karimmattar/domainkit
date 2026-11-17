@@ -73,7 +73,7 @@ a project that relied on 2.6's behaviour changes.
   in 2.6 and a `RendererUnavailable`: the HTTP layer answers it
   `503 renderer_unavailable`, where 2.6 answered 500. It is still logged
   as an error and sent to `ERROR_REPORTERS`, the first time a process
-  asks for a renderer, and no more. Code that catches
+  asks for a renderer (a forked process too), and no more. Code that catches
   `ImproperlyConfigured` still catches it, but an exception handler of
   the project's own for `ImproperlyConfigured` no longer sees it, since
   `UpstreamError` comes first in its classes (the handler for the

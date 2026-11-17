@@ -5,6 +5,7 @@ network. The fake reads the multipart form as Gotenberg would.
 """
 
 import io
+import subprocess
 import sys
 import threading
 from collections.abc import Iterator, Mapping
@@ -274,10 +275,10 @@ def reporter(exc: BaseException, context: Mapping[str, object]) -> None:
 @pytest.fixture
 def untold() -> Iterator[None]:
     """A process that has not reported a missing renderer yet, and no reports."""
-    documents_base._told.clear()
+    documents_base._told._reset()
     reported.clear()
     yield
-    documents_base._told.clear()
+    documents_base._told._reset()
 
 
 @pytest.mark.usefixtures("untold")
@@ -408,6 +409,63 @@ def test_a_missing_renderer_is_reported_once_a_process(
         for record in caplog.records
         if record.name == "domainkit.documents.base"
     ] == ["A document was to be rendered, and no renderer is set."]
+
+
+FORKED: Final = """
+import os
+import warnings
+
+from domainkit.conf import override_settings, use_settings
+from domainkit.documents import RendererUnavailable, renderer
+from domainkit.reporting import flush_reports
+
+reported = []
+
+
+def reporter(exc, context):
+    reported.append(type(exc).__name__)
+
+
+def ask():
+    try:
+        renderer()
+    except RendererUnavailable:
+        pass
+    flush_reports()
+
+
+with use_settings("domainkit_tests.settings"), override_settings(
+    ERROR_REPORTERS=["__main__.reporter"]
+):
+    ask()
+    ask()
+    told, tell = os.pipe()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        pid = os.fork()
+    if pid == 0:
+        reported.clear()
+        ask()
+        os.write(tell, str(len(reported)).encode())
+        os._exit(0)
+    os.waitpid(pid, 0)
+    print(f"parent={len(reported)} child={os.read(told, 8).decode()}")
+"""
+"""A parent asks twice for a renderer none is set for, then a child it forks."""
+
+
+def test_a_forked_process_reports_a_missing_renderer_once_of_its_own() -> None:
+    """Its parent's report went to the parent's reporters, never to the child's."""
+    result = subprocess.run(  # noqa: S603 - this interpreter, fixed code.
+        [sys.executable, "-c", FORKED],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "parent=1 child=1\n"
 
 
 def test_the_renderer_names_the_extra_it_needs(monkeypatch: pytest.MonkeyPatch) -> None:

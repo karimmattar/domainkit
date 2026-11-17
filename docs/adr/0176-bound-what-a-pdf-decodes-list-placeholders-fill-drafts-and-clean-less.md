@@ -180,7 +180,9 @@ worked in 2.6 is refused but a PDF past the new bounds.
   first time a process asks for a renderer, and raises it every time.
   Once a process, not once a call: a caller that catches it (a preview
   that answers without one), a worker's retries, and three calls in one
-  request would each report it again. Reporting it there rather than in
+  request would each report it again. A process forked from it reports
+  once more: its reporters are its own. Nothing is reported before the
+  first call. Reporting it there rather than in
   the HTTP layer reports it from a worker too. No check is added: a project that
   renders nowhere leaves the setting unset on purpose.
 - **`fill_docx(..., allow_missing=False, allow_malformed=False)`**: each
