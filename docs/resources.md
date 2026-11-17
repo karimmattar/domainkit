@@ -805,7 +805,8 @@ from domainkit.http.uploads import ReceivedUpload
 async def attach_template(
     command: AttachTemplate, uow: TemplatesUnitOfWork, *, received: ReceivedUpload
 ) -> Template:
-    found = await asyncio.to_thread(placeholders, received.file.read())
+    data = await asyncio.to_thread(received.file.read)
+    found = await asyncio.to_thread(placeholders, data)
     async with uow:
         template = await uow.templates.get(command.template_id)
         template.attach(command.file, found.names)
