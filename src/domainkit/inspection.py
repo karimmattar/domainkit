@@ -25,7 +25,8 @@ So every reader that does not repair the file sees what the check saw.
 Every object the table declares is read, every reference from the
 trailer followed, and every ``N G obj`` written in the file (an earlier
 revision, an object no table lists) parsed too. A PDF is refused when it
-is encrypted, has more than ``max_pages`` pages, or holds JavaScript (in
+is encrypted, has more than ``max_pages`` pages, pages whose contents
+decode to more than ``max_content`` bytes in all, or holds JavaScript (in
 an action, a name tree, a 3D annotation's ``/OnInstantiate``), an action
 run on opening or on an event (``/OpenAction`` with an action, ``/AA``),
 an action that launches, opens another file or sends data (``/Launch``,
@@ -47,13 +48,16 @@ relationship points outside the package but for a hyperlink to ``http``,
 CVE-2022-30190 opened one), whatever its ``TargetMode`` says; when a Word
 field pulls content in or runs a program (``INCLUDEPICTURE``,
 ``INCLUDETEXT``, ``INCLUDE``, ``IMPORT``, ``LINK``, ``DATABASE``,
-``DDE``, ``DDEAUTO``), or its instruction starts with another field,
-which hides its name; when an Excel workbook links to another workbook,
-holds a data connection or a query table, or a formula anywhere in a
-sheet calls a web service (``WEBSERVICE``, ``RTD``), a picture from a URL
-(``IMAGE``) or DDE (``cmd|'...'!A0``); when its XML writes an OLE object
-or a control (``w:object``, ``o:OLEObject``, ``w:control``), or a picture
-names a hyperlink's relationship; or when an XML part declares a DTD or
+``DDE``, ``DDEAUTO``), with or without its tracked deletions
+(``w:delInstrText``), ended or not, or its instruction starts with
+another field, which hides its name; when an Excel workbook links to
+another workbook, holds a data connection or a query table, or a formula
+anywhere in a sheet calls a web service (``WEBSERVICE``, ``RTD``), a
+picture from a URL (``IMAGE``) or DDE (``cmd|'...'!A0``); when its XML
+writes an OLE object or a control (``w:object``, ``o:OLEObject``,
+``w:control``), a picture names a hyperlink's relationship (``r:id``,
+VML's ``o:relid``), or a VML picture or fill names a source of its own
+(``src``, a picture's ``o:href``); or when an XML part declares a DTD or
 an entity, which the Open Packaging Conventions forbid, or is in an
 encoding but UTF-8 and UTF-16. A part is XML by its name or its content
 type, never by its first bytes, and is read whole; a DTD is refused in
@@ -72,7 +76,10 @@ before any check starts, and one of its calls can run a minute (ADR
 0167). The checks keep bounds of their own as a second layer: a
 deadline (``max_seconds``) looked at per object or part; a PDF's object
 streams decode to ``max_decoded`` bytes in all, each stream to
-``PDF_STREAM_LIMIT`` (``PDF_LIMITS``); the check reads at most
+``PDF_STREAM_LIMIT`` (``PDF_LIMITS``), and its pages' contents to
+``max_content`` in all, counted as they inflate and never held (a
+program that lays something over a page decodes them whole: ADR
+0175); the check reads at most
 ``PDF_NODES`` values, and refuses a PDF pypdf read only in part; a ZIP's
 sizes are read from its directory before a byte is inflated. The checks
 do not make a file harmless; they refuse what is known to be used
@@ -100,6 +107,7 @@ import time
 import traceback
 import unicodedata
 import zipfile
+import zlib
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from posixpath import dirname, join, normpath
@@ -171,6 +179,19 @@ PDF_SKIPPED: Final = (
 say, even in strict mode: the start of its messages."""
 PDF_NODES: Final = 1_000_000
 """Objects, entries and items a PDF check reads at most."""
+PDF_INFLATE: Final = frozenset({"/FlateDecode", "/Fl"})
+"""The filter a page's content is inflated by as it is counted, a chunk at a time."""
+PDF_FILTERS: Final = 16
+"""The filters a stream may have, as pypdf's ``stream_filters_maximum_length``."""
+PDF_CONTENT_LIMITS: Final = (
+    "zlib_maximum_output_length",
+    "lzw_maximum_output_length",
+    "run_length_maximum_output_length",
+    "brotli_maximum_output_length",
+    "jbig2_maximum_output_length",
+)
+"""pypdf's limits on what one filter decodes to: a content stream's other filters
+are held to what is left of ``max_content``."""
 DEADLINE_EVERY: Final = 1024
 """Values read between two looks at the clock."""
 PDF_SPACE: Final = rb"[ \t\r\n\f\x00]"
@@ -307,6 +328,16 @@ RELATIONSHIP_NAMESPACES: Final = (
     "{http://purl.oclc.org/ooxml/officeDocument/relationships}",
 )
 """Where an attribute that names a relationship (``r:id``) lives."""
+OFFICE_NAMESPACE: Final = "{urn:schemas-microsoft-com:office:office}"
+VML_NAMESPACE: Final = "{urn:schemas-microsoft-com:vml}"
+RELID: Final = f"{OFFICE_NAMESPACE}relid"
+"""``o:relid``: VML's own way to name a relationship (a picture's, a fill's)."""
+VML_PICTURE: Final = f"{VML_NAMESPACE}imagedata"
+VML_SOURCES: Final = (f"{OFFICE_NAMESPACE}href", f"{OFFICE_NAMESPACE}althref")
+"""Where a VML picture names its image's URL, besides the ``src`` any VML element
+(a picture, a fill, a stroke) may name one in."""
+INSTRUCTIONS: Final = frozenset({"instrText", "delInstrText"})
+"""What holds a field's instruction: as written, and as a tracked deletion left it."""
 HYPERLINK_ELEMENTS: Final = frozenset(
     {"hyperlink", "hlinkClick", "hlinkHover", "hlinkMouseOver"}
 )
@@ -435,14 +466,16 @@ class PdfCheck:
 
     See the module for what is refused. ``max_pages`` bounds the pages,
     ``max_objects`` the objects its tables declare, ``max_decoded`` the
-    bytes its object streams decode to in all, and ``max_seconds`` the
-    time the check takes.
+    bytes its object streams decode to in all, ``max_content`` the bytes
+    its pages' contents decode to in all (New in 2.7), and ``max_seconds``
+    the time the check takes.
     """
 
     max_pages: int = 1000
     max_objects: int = 200_000
     max_decoded: int = 64 * 1024 * 1024
     max_seconds: float = 10.0
+    max_content: int = 64 * 1024 * 1024
 
     def __post_init__(self) -> None:
         """Refuse a bound that is not a positive number.
@@ -450,7 +483,14 @@ class PdfCheck:
         Raises:
             ValueError: One is not.
         """
-        _positive(self, "max_pages", "max_objects", "max_decoded", "max_seconds")
+        _positive(
+            self,
+            "max_pages",
+            "max_objects",
+            "max_decoded",
+            "max_seconds",
+            "max_content",
+        )
 
     def __call__(self, file: IO[bytes]) -> None:
         """Check the PDF ``file`` holds, read from its start.
@@ -688,6 +728,8 @@ class _Pdf:
         self.data = data
         self.clock = clock
         self.decoded = 0
+        self.content = 0
+        """What the pages' contents decoded to so far, in all."""
         self.declared: dict[tuple[int, int], int | None] = {}
         """Each object the tables declare in use: its offset, or None in a stream."""
         for generation, numbers in reader.xref.items():  # In use: free ones are not.
@@ -761,6 +803,82 @@ class _Pdf:
                 seen.add(key)
                 value = self.resolve(value)
             stack.extend(_inside(value))
+        self._count_content()
+
+    def _count_content(self) -> None:
+        """Decode each page's content, counting its bytes, within ``max_content``.
+
+        What a reader decodes to draw the pages, and a program that lays
+        something over them decodes and writes again: a stream a page names
+        twice, or two pages name, counts each time. A stream inflated by
+        ``/FlateDecode`` alone is counted a chunk at a time, and nothing
+        of it is kept; one with other filters is decoded by pypdf, each
+        filter held to what is left of the bound.
+
+        Raises:
+            FileRefused: The pages' contents decode to more than
+                ``max_content``, or the time ran out.
+        """
+        from pypdf.generic import ArrayObject, StreamObject
+
+        for page in self.reader.pages:
+            contents = _resolved(dict.get(page, "/Contents"))
+            streams = (
+                [_resolved(each) for each in list.__iter__(contents)]
+                if isinstance(contents, ArrayObject)
+                else [contents]
+            )
+            for stream in streams:
+                if isinstance(stream, StreamObject):
+                    self.clock.check()
+                    self._decode(stream)
+
+    def _decode(self, stream: Any) -> None:  # noqa: ANN401 - a pypdf stream.
+        """Count what ``stream`` decodes to, within what is left of ``max_content``.
+
+        Raises:
+            FileRefused: It decodes to more, or the time ran out.
+        """
+        import pypdf
+        from pypdf.errors import LimitReachedError
+        from pypdf.filters import decode_stream_data
+
+        left = self.check_of.max_content - self.content
+        filters = _resolved(dict.get(stream, "/Filter"))
+        named = list(filters) if isinstance(filters, list) else [filters]
+        size: int | None = None
+        if filters is None:
+            size = len(stream._data)
+        elif len(named) <= PDF_FILTERS and all(each in PDF_INFLATE for each in named):
+            with contextlib.suppress(zlib.error):  # Damaged: pypdf recovers it.
+                size = self._inflated(stream._data, len(named), left)
+        if size is None:  # Other filters, or damaged: as pypdf decodes it.
+            limits = dict.fromkeys(PDF_CONTENT_LIMITS, left + 1)
+            try:
+                with pypdf.apply_configuration(None, **limits):
+                    size = len(decode_stream_data(stream))
+            except LimitReachedError:
+                raise FileRefused(COMPLEX) from None
+        self.content += size
+        if self.content > self.check_of.max_content:
+            raise FileRefused(COMPLEX)
+
+    def _inflated(self, data: bytes, times: int, left: int) -> int:
+        """The bytes ``data`` inflated ``times`` makes, counted, never held whole.
+
+        Raises:
+            FileRefused: More than ``left``, or the time ran out.
+            zlib.error: The data is not deflated.
+        """
+        chunks: Iterator[bytes] = iter((data,))
+        for _ in range(times):
+            chunks = _inflate(chunks, self.clock)
+        size = 0
+        for chunk in chunks:
+            size += len(chunk)
+            if size > left:
+                raise FileRefused(COMPLEX)
+        return size
 
     def _written(self) -> Iterator[object]:
         """Every object written in the file that the tables do not point at.
@@ -786,6 +904,31 @@ class _Pdf:
                 raise
             except Exception:  # noqa: BLE001, S112 - not an object, to pypdf or to us.
                 continue
+
+
+def _inflate(chunks: Iterator[bytes], clock: _Clock) -> Iterator[bytes]:
+    """``chunks`` inflated, ``CHUNK`` bytes at a time, to the end of the deflated data.
+
+    What follows that end is not read, as pypdf leaves it; data cut short
+    gives what it holds. The clock is looked at for each chunk taken.
+
+    Raises:
+        zlib.error: The data is not deflated.
+        FileRefused: The time ran out.
+    """
+    inflater = zlib.decompressobj()
+    for chunk in chunks:
+        clock.check()
+        pending = chunk
+        while not inflater.eof:
+            out = inflater.decompress(pending, CHUNK)
+            pending = inflater.unconsumed_tail
+            if out:
+                yield out
+            elif not pending:
+                break
+        if inflater.eof:
+            return
 
 
 def _inside(value: object) -> list[object]:
@@ -1009,6 +1152,7 @@ class _Package:
             fields.read(element)
             _check_formula(element)
             _check_element(element, hyperlinks)
+        fields.close()
 
     def _xml(self, archive: zipfile.ZipFile, name: str) -> bytes | None:
         """The part ``name``, if its name or content type says XML; refused if bad.
@@ -1221,7 +1365,9 @@ def _check_element(element: Any, hyperlinks: set[str]) -> None:  # noqa: ANN401 
 
     ``hyperlinks`` are the ids of the part's relationships to outside the
     package, which only a hyperlink may name: a picture or an object that
-    names one is fetched from there.
+    names one (by ``r:id``, or VML's ``o:relid``) is fetched from there. A
+    VML element is fetched from its ``src`` too, and a VML picture from
+    its ``o:href`` or ``o:althref``.
 
     Raises:
         FileRefused: It is one of them.
@@ -1231,21 +1377,35 @@ def _check_element(element: Any, hyperlinks: set[str]) -> None:  # noqa: ANN401 
         raise FileRefused(EMBEDDED)
     if any(element.get(link) is not None for link in LINKS):
         raise FileRefused(EXTERNAL)  # A picture or an object linked, not held.
+    if tag.startswith(VML_NAMESPACE) and any(
+        str(element.get(name) or "").strip()
+        for name in ("src", *(VML_SOURCES if tag == VML_PICTURE else ()))
+    ):
+        raise FileRefused(EXTERNAL)  # A picture or a fill from a URL or a file.
     if hyperlinks and tag.rpartition("}")[2] not in HYPERLINK_ELEMENTS:
         for name, value in element.attrib.items():
-            if str(name).startswith(RELATIONSHIP_NAMESPACES) and value in hyperlinks:
+            named = str(name).startswith(RELATIONSHIP_NAMESPACES) or name == RELID
+            if named and value in hyperlinks:
                 raise FileRefused(EXTERNAL)
+
+
+type _Instruction = list[tuple[str, bool]]
+"""A field's instruction as read: each piece of text, and whether it is deleted."""
 
 
 @dataclass(slots=True)
 class _Fields:
     """The Word fields of a part, read one element at a time."""
 
-    open: list[list[str]] = field(default_factory=list)
+    open: list[_Instruction] = field(default_factory=list)
     """The instructions of the fields begun and not yet separated or ended."""
 
     def read(self, element: Any) -> None:  # noqa: ANN401 - an lxml element.
         """Note what ``element`` adds to a field; refuse a field that is.
+
+        A tracked deletion of an instruction (``w:delInstrText``) is read
+        too: the instruction is checked with it, as rejecting the change
+        leaves it, and without it, as accepting the change leaves it.
 
         Raises:
             FileRefused: A field runs a program or pulls content in, or its
@@ -1256,8 +1416,8 @@ class _Fields:
             for name, value in element.attrib.items():
                 if str(name).endswith("}instr"):
                     _check_field(str(value))
-        elif local == "instrText" and self.open:
-            self.open[-1].append(element.text or "")
+        elif local in INSTRUCTIONS and self.open:
+            self.open[-1].append((element.text or "", local == "delInstrText"))
         elif local == "fldChar":
             mark = next(
                 (
@@ -1268,13 +1428,39 @@ class _Fields:
                 "",
             )
             if mark == "begin":
-                if self.open and not "".join(self.open[-1]).strip():
+                if self.open and not _kept(self.open[-1]).strip():
                     raise FileRefused(ACTIONS)  # { {QUOTE 68 68 69 ...} ... }
                 self.open.append([])
             elif mark in {"separate", "end"} and self.open:
-                _check_field("".join(self.open.pop()))
-                if mark == "separate":
-                    self.open.append([RESULT])  # The result's own fields, until end.
+                _check_instruction(self.open.pop())
+                if mark == "separate":  # The result's own fields, until end.
+                    self.open.append([(RESULT, False)])
+
+    def close(self) -> None:
+        """Check the fields the part began and never separated nor ended.
+
+        A reader may still run one: its instruction runs to the part's end.
+
+        Raises:
+            FileRefused: One runs a program or pulls content in.
+        """
+        while self.open:
+            _check_instruction(self.open.pop())
+
+
+def _kept(instruction: _Instruction) -> str:
+    """``instruction`` as accepting its tracked deletions leaves it."""
+    return "".join(text for text, deleted in instruction if not deleted)
+
+
+def _check_instruction(instruction: _Instruction) -> None:
+    """Refuse a field whose instruction, with or without its deletions, is refused.
+
+    Raises:
+        FileRefused: It runs a program or pulls content in.
+    """
+    _check_field("".join(text for text, _ in instruction))
+    _check_field(_kept(instruction))
 
 
 def _check_field(instruction: str) -> None:
