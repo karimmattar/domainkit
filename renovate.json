@@ -77,6 +77,13 @@
       "matchManagers": ["github-actions"],
       "matchDepTypes": ["github-runner"],
       "enabled": false
+    },
+    {
+      "description": "CI's Pythons move by hand: the jobs on 3.13 (oldest among them) test the oldest Python domainkit supports, and each newer one has a job of its own. Patch releases still come.",
+      "matchManagers": ["github-actions"],
+      "matchDepNames": ["python"],
+      "matchUpdateTypes": ["major", "minor"],
+      "enabled": false
     }
   ]
 }
