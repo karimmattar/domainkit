@@ -67,7 +67,7 @@ from domainkit.resources.access import ModelLike
 from domainkit.tenancy import tenants_beyond
 from domainkit.utils.decimals import jsonable
 
-from ._http import daily_window, no_store
+from ._http import daily_window, no_store, password_limits
 from .access import IsAdminUser, IsSuperuser, StepUp, impersonated
 from .actions import (
     ActionAuthorizationOut,
@@ -105,7 +105,7 @@ from .gates import (
 from .models import AbstractBaseUser, AnyUser, Group, GroupId, Permission, UserId
 from .repositories import GroupRepository, user_search
 from .settings import auth_settings, identifier_fields
-from .throttling import Attempt, attempt
+from .throttling import Attempt, Limit, attempt
 from .tokens import LoginMethod, LoginOrigin, logging_in
 from .uow import AuthUnitOfWork
 from .users import FieldValue, get_user_model, get_user_table, typed_fields
@@ -959,7 +959,10 @@ class _Reuse:
     A reuse is a guess at the user's old passwords. It counts against the
     staff member's guesses at this user's (``AUTH.LOGIN_RATE`` and
     ``ACCOUNT_LOGIN_RATE``, apart from the user's own counts of wrong
-    passwords: neither holds the other back). The count is taken before
+    passwords: neither holds the other back), and with
+    ``AUTH.STAFF_REUSES_COUNT_AS_PASSWORD_CHECKS`` against the user's own
+    counts too (``password_limits``, since 2.8): staff acting together
+    share them, and either holds the other back. The count is taken before
     anything is checked, so a full one refuses every password alike, and
     given back unless the password was found. With ``AUTH.ADMIN_ACTION``
     on, the route spends the change's authorization before the checks
@@ -989,21 +992,26 @@ class _Reuse:
     async def count(self) -> None:
         """Take a try from the staff member's count of the user's guesses.
 
-        Nothing without ``AUTH.PASSWORD_HISTORY``, or for no password.
+        Nothing without ``AUTH.PASSWORD_HISTORY``, or for no password. With
+        ``STAFF_REUSES_COUNT_AS_PASSWORD_CHECKS``, from the user's own
+        counts of wrong passwords too.
 
         Raises:
-            APIError: 429 ``rate_limited``: the count is full.
+            APIError: 429 ``rate_limited``: a count is full.
         """
         config = auth_settings()
         if self.password is None or not config.PASSWORD_HISTORY:
             return
         key = f"admin-password:staff:{self.actor.id}:user:{self.user.id}"
+        limits: list[Limit] = [
+            (key, config.LOGIN_RATE),
+            (f"{key}:daily", daily_window(config.ACCOUNT_LOGIN_RATE)),
+        ]
+        if config.STAFF_REUSES_COUNT_AS_PASSWORD_CHECKS:
+            limits += password_limits(self.user)
         self.counted = await attempt(
             self.request,
-            [
-                (key, config.LOGIN_RATE),
-                (f"{key}:daily", daily_window(config.ACCOUNT_LOGIN_RATE)),
-            ],
+            limits,
             action="auth.admin_change",
             detail=REUSES_THROTTLED,
         )

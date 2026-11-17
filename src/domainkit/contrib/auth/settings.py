@@ -611,6 +611,14 @@ class AuthSettings(BaseModel):
     logins too, so ``LOGIN_RATE`` bounds every guess at the account's
     password. False, the default, counts them apart, so others' wrong
     logins never keep a signed-in user from changing the password."""
+    STAFF_REUSES_COUNT_AS_PASSWORD_CHECKS: bool = False
+    """Count a staff member's reuses of a user's old passwords (the admin
+    API's password change, with ``PASSWORD_HISTORY``) against that user's
+    own counts of wrong passwords too, at ``LOGIN_RATE`` and
+    ``ACCOUNT_LOGIN_RATE`` (since 2.8): staff acting together share the
+    user's count. False, the default, counts them for that staff member
+    and that user alone, so the user's wrong passwords never hold back a
+    staff reset, and staff reuses never refuse the user's checks."""
     DEVICE_TTL: timedelta | None = Field(
         default=timedelta(days=30),
         ge=timedelta(hours=1),

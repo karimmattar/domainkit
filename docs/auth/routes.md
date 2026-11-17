@@ -677,7 +677,13 @@ PUT  /admin/auth/users/6f1c.../groups {"groups": ["auditors"]}
   that user answer `429 rate_limited` for a while. A password that will
   do gives its count back. The user's own counts of wrong passwords
   (their logins, their password checks) are apart: neither holds the
-  other back. The count holds with `AUTH.ADMIN_ACTION` off too.
+  other back. The count holds with `AUTH.ADMIN_ACTION` off too. With
+  `AUTH.STAFF_REUSES_COUNT_AS_PASSWORD_CHECKS` on (since 2.8), a reuse
+  counts against the user's own counts of wrong passwords too: staff
+  acting together share one count of that user's history, past it the
+  user's own password checks wait, and the user's own wrong checks
+  hold back a staff reset. With `PASSWORD_CHECKS_COUNT_AS_LOGINS`, that
+  is the account's count of wrong logins too.
 - **Checked before the project's checks, spent with the change.** The
   authorization must bind the change before the `on_admin_change` checks
   run, so a change it does not bind is never held for approval. It is

@@ -9,6 +9,16 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `AUTH["STAFF_REUSES_COUNT_AS_PASSWORD_CHECKS"]` (off): a staff
+  member's reuses of a user's old passwords count against the user's
+  own counts of wrong passwords too, so staff acting together share one
+  count of that user's history. Off, as in 2.7, the user's wrong
+  passwords never hold back a staff reset, and staff reuses never refuse
+  the user's checks ([Each change, authorized as one act](docs/auth/routes.md#each-change-authorized-as-one-act))
+  (user report A17).
+
 ## [2.7.0] - 2026-11-17
 
 2.7 answers thirteen of a project's fourteen notes on 2.6 (the last,

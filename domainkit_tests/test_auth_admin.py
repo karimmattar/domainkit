@@ -2027,6 +2027,58 @@ def test_the_users_counts_and_a_staff_members_reuses_hold_neither_back(
     assert logged_in.status_code == 200, logged_in.json()
 
 
+def test_staff_reuses_can_count_against_the_users_own_checks(api: Api) -> None:
+    """``STAFF_REUSES_COUNT_AS_PASSWORD_CHECKS``: one count per user, both ways.
+
+    Opted in, a staff member's reuses of Dave's old passwords count against
+    Dave's own count of wrong passwords too: two staff members acting
+    together share it, past it Dave's own checks wait, and Dave's own wrong
+    checks hold back a staff reset of his password. His login, counted
+    apart (no ``PASSWORD_CHECKS_COUNT_AS_LOGINS``), is not refused (user
+    report A17).
+    """
+    client = api(
+        PASSWORD_HISTORY=2,
+        LOGIN_RATE="3/minute",
+        STAFF_REUSES_COUNT_AS_PASSWORD_CHECKS=True,
+    )
+    ann = staff("ann", *ADMIN_PERMISSIONS)
+    bea = staff("bea", *ADMIN_PERMISSIONS)
+    dave = create_user("dave", password=NEW_PASSWORD)
+    bob = create_user("bob", password=NEW_PASSWORD)
+    hijacked = token_for("bob")
+    own = {"old_password": NEW_PASSWORD, "new_password": "Another-pass-77"}
+    wrong = {"old_password": "nope-nope-1", "new_password": "Another-pass-77"}
+
+    def reuse(headers: Headers, user: UUID) -> int:
+        return client.post(
+            f"{ADMIN}/users/{user}/password",
+            json={"password": NEW_PASSWORD},
+            headers=headers,
+        ).status_code
+
+    together = [reuse(ann, dave), reuse(bea, dave), reuse(ann, dave), reuse(bea, dave)]
+    held_back = client.post("/auth/password", json=own, headers=token_for("dave"))
+    logged_in = client.post(
+        "/auth/login", json={"username": "dave", "password": NEW_PASSWORD}
+    )
+    checks = [
+        client.post("/auth/password", json=wrong, headers=hijacked).status_code
+        for _ in range(3)
+    ]
+    reset = client.post(
+        f"{ADMIN}/users/{bob}/password",
+        json={"password": "Brand-new-pass-99"},
+        headers=ann,
+    )
+
+    assert together == [422, 422, 422, 429]
+    assert error(held_back, 429)[0] == "rate_limited"
+    assert logged_in.status_code == 200, logged_in.json()
+    assert checks == [400, 400, 400]
+    assert error(reset, 429)[0] == "rate_limited"
+
+
 def test_nothing_is_compared_while_a_check_refuses_the_change(api: Api) -> None:
     """A change the project refuses answers the same whatever the password.
 
