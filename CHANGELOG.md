@@ -9,6 +9,43 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `TENANCY.ALL_TENANTS_PERMISSION` names a permission key that reaches
+  every tenant: staff who hold it everywhere change, through the admin
+  API, members of companies they do not belong to, when they hold
+  everywhere every key the member holds there. Unset, as before, staff
+  change only the members of tenants they belong to, and a back office
+  needed a superuser. ADR 0177 (user report D3).
+- `TENANCY.MEMBER_GRANTS`, a function of the user and a tenant id,
+  answers what a member's roles grant there whatever the tenant's state.
+  The admin API counts it with `MEMBER_PERMISSIONS`' answer, so staff who
+  hold a suspended company's looking keys no longer take over an owner
+  who holds everything once it is reactivated. ADR 0177 (user report D3).
+- `MemberActions(..., keys={"invite": "organizations.add_membership"})`
+  names the key of an action of the domain's own whole, where the
+  model's (`companies.invite_company`) names nothing; `ModelActions`
+  takes `keys` too. ADR 0177 (user report D3).
+- `check` names each `Throttle` on a route served as a tenant that says
+  neither `per_tenant=True` nor `per_tenant=False` (`tenancy.W001`, in
+  every environment): it counts per tenant, so moving routes under a
+  tenant multiplied a person's limit by their tenants, unseen.
+  `Throttle(per_tenant=None)`, the new default, counts as `True` did.
+  ADR 0177 (user report D3).
+- `EveryWord(finder)` (`domainkit.http`) asks a `search_through` finder
+  with every word of a search at once too, where a word alone reached
+  `max_reference_matches`: "ada lovelace" finds Ada Lovelace's rows
+  though each word names more users than the bound, which asked per word
+  missed. ADR 0177 (user report D2).
+- The admin API's `GET /users/names` answers the page `GET /users` does,
+  with each user's id, username, full name, and identifiers only, not
+  their groups, permissions, or other fields. ADR 0177 (user report D2).
+- `domainkit.http.uploads.Upload`, the type `save_upload` and
+  `receive_upload` take, is public: a file gateway of the infrastructure
+  layer takes its route's file as it is without naming Starlette's
+  `UploadFile`, which the layer rules keep out. ADR 0177 (user report
+  D2).
+
 ### Changed
 
 - The `kafka` extra accepts aiokafka up to 0.15 (`>=0.12.0,<0.16.0`),

@@ -1,6 +1,6 @@
 # 0150. Take the tenant from the path, and let members hold permissions
 
-- Status: Accepted; amended by [0170](0170-let-a-resources-items-be-tenants-count-members-keys-alone-and-let-lists-name-what-they-refer-to.md)
+- Status: Accepted; amended by [0170](0170-let-a-resources-items-be-tenants-count-members-keys-alone-and-let-lists-name-what-they-refer-to.md) and [0177](0177-let-a-key-reach-every-tenant-name-a-domains-own-keys-and-search-every-word-at-once.md)
 - Date: 2026-11-16
 
 ## Context
