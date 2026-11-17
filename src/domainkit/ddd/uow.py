@@ -289,6 +289,11 @@ class UnitOfWork(ABC):
         self._begun = self._run_marks()
         return self
 
+    @property
+    def expectations(self) -> tuple[Expectation, ...]:
+        """What the open ``expect`` blocks hold the unit of work to, outermost first."""
+        return tuple(self._expected)
+
     @contextmanager
     def expect(
         self, model: type, id_: Hashable, versions: Collection[int] | None

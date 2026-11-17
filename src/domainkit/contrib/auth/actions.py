@@ -1053,12 +1053,13 @@ async def request_action_authorization(
     new one, opened for it. An action that ``binds`` reads the record in
     it too, first, and the digest covers what it read (ADR 0174).
 
-    ``if_match`` is the request's ``If-Match``, which the caller checked
-    against the record (ADR 0178): the digest covers the versions it
-    names, and the act must name the same. ``*``, which names none, is
-    no ``If-Match``. Check it where ``binds`` reads: hold the unit of
-    work to it (``uow.expect``) and lend it (``unit_of_work=lambda:
-    uow``), as a ``ResourceRouter``'s twin does.
+    ``if_match`` is the request's ``If-Match``, one tag, the version the
+    page read (ADR 0178): the digest covers it, and the act must name the
+    same. ``*``, or an empty value, names none: no ``If-Match``. It must
+    have been checked where ``show`` and ``binds`` read: the unit of work
+    ``unit_of_work`` lends holds an expectation of those versions
+    (``uow.expect``) that a load checked, as a ``ResourceRouter``'s twin
+    holds it; otherwise asking is refused, before anything is stored.
 
     Raises:
         NotAuthenticated: The request names no user.
@@ -1067,10 +1068,14 @@ async def request_action_authorization(
             to scopes, or cannot be told apart from the user's others.
         PreconditionRequired: The action requires ``If-Match``, and
             ``if_match`` names no version (428).
+        RequestValidationError: ``if_match`` lists several tags (422).
+        PreconditionFailed: ``show`` or ``binds`` loaded the record at
+            another version (412).
         NoSecondFactor: The user has no way to confirm what the act asks.
         TypeError: ``command`` is not the action's command.
         ImproperlyConfigured: ``show`` or ``binds`` reads a unit of work,
-            and ``unit_of_work`` is None.
+            and ``unit_of_work`` is None; or ``if_match`` names versions
+            nothing checked in the unit of work it lends.
     """
     from .stepup import NoSecondFactor
 
@@ -1089,12 +1094,14 @@ async def request_action_authorization(
         )
     subject = action.subject_of(command)
     digest = action.digest_of(command)
-    versions = _versions(if_match)
+    versions = _asked(if_match)
     if versions is None and action.require_if_match:
         raise _precondition_required()
     if not await _can_confirm(user.id, action.required()):
         raise NoSecondFactor
     shown, bound = await action.read(command, unit_of_work)
+    if versions is not None:
+        _checked_where_read(action, versions, unit_of_work)
     if bound is not None or versions is not None:
         digest = action.digest_of(command, bound, versions)
     now = utc_now()
@@ -1115,6 +1122,36 @@ async def request_action_authorization(
         await uow.authorizations.end_unconfirmed(login, keep=MAX_UNCONFIRMED, now=now)
         await uow.commit()
     return authorization
+
+
+def _asked(header: str | None) -> frozenset[int] | None:
+    """The version a twin's ``If-Match`` names, one tag (``asked_versions``)."""
+    if header is None:
+        return None
+    from domainkit.resources.conditional import asked_versions
+
+    return asked_versions(header)
+
+
+def _checked_where_read(
+    action: Action, versions: frozenset[int], unit_of_work: UnitOfWorkFactory | None
+) -> None:
+    """Refuse versions no load checked in the unit of work ``show`` and ``binds`` read.
+
+    Raises:
+        ImproperlyConfigured: The unit of work lent holds no expectation of
+            ``versions`` that a load checked, or none was lent.
+    """
+    lent = None if unit_of_work is None else _unit_of_work_of(unit_of_work())
+    if lent is None or not any(
+        each.checked and each.versions == versions for each in lent.expectations
+    ):
+        raise ImproperlyConfigured(
+            f"Action {action.purpose!r}: If-Match names versions nothing checked "
+            "where show and binds read: hold the unit of work to them "
+            "(uow.expect), load the record through it, and lend it "
+            "(unit_of_work=lambda: uow)."
+        )
 
 
 # The rule's side: checked once, kept for the act ---------------------------------
@@ -1531,10 +1568,11 @@ async def _take(action: Action, command: object) -> _Accepted:
 def _versions(header: str | None) -> frozenset[int] | None:
     """The versions ``If-Match`` names, compared as a resource's write compares them.
 
-    None without one, or for ``*``, which names none; an empty set for a
-    value that names no version this API made, which nothing matches.
+    None without one, an empty one, or ``*``, which names none; an empty
+    set for a value that names no version this API made, which nothing
+    matches.
     """
-    if header is None:
+    if header is None or not header.strip():
         return None
     from domainkit.resources.conditional import expected_versions
 
@@ -1557,10 +1595,25 @@ def _binding(
 ) -> Check | None:
     """What checks the record ``action`` binds, in the act's unit of work; None: none.
 
+    An authorization that holds versions (``If-Match``, ADR 0178) is spent
+    only by an act whose unit of work is held to them (``uow.expect``), as
+    a ``ResourceRouter``'s route holds it: an act that would decide on
+    any version is refused, never let through.
+
     Raises:
         ImproperlyConfigured: The action binds the record, and the act has
-            no unit of work to read it in.
+            no unit of work to read it in; or the authorization holds
+            versions the act's unit of work is not held to.
     """
+    versions = accepted.versions
+    if versions is not None and (
+        held is None or not any(each.versions == versions for each in held.expectations)
+    ):
+        raise ImproperlyConfigured(
+            f"Action {action.purpose!r}: its authorization holds the version "
+            "If-Match named, and the act's unit of work is not held to it: hold "
+            "it (uow.expect) where the act runs, as a resource's route does."
+        )
     if action.binds is None:
         return None
     if held is None:

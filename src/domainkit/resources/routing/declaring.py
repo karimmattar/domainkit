@@ -63,9 +63,14 @@ OPTIONAL: Final = (
 )
 """Parameters some routes take, which the context names alike."""
 IF_MATCH_ASKED: Final = (
-    "The ETag of the version you read: the act is bound to it; 412 if it changed since."
+    "The ETag of the version you read, one tag; 412 if it changed since."
 )
-"""What a twin's ``If-Match`` does (ADR 0178)."""
+"""What a twin's ``If-Match`` does, whose rule is not given it (ADR 0178)."""
+IF_MATCH_BOUND: Final = (
+    "The ETag of the version you read, one tag: the act is bound to it, and must "
+    "send the same; 412 if it changed since."
+)
+"""What a twin's ``If-Match`` does, whose rule binds the act to it (ADR 0178)."""
 MAX_HEADER: Final = 4096
 """The longest ``If-Match`` or ``If-None-Match`` a route reads."""
 
@@ -228,7 +233,8 @@ def _headers(
             )
         )
     elif spec.detail and spec.conditional:
-        found.append(("if_match", "If-Match", IF_MATCH_ASKED))
+        said = IF_MATCH_BOUND if spec.binds_if_match else IF_MATCH_ASKED
+        found.append(("if_match", "If-Match", said))
     return tuple(found)
 
 

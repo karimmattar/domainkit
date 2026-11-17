@@ -19,10 +19,13 @@ So is a service the rule says would not spend what it asks for (its
 ``service_problem``): ``StepUp(for_=...)`` on a use case left unguarded.
 
 On an act on one aggregate the twin holds ``If-Match`` as the act does
-(ADR 0178): the aggregate at another version than one it names is ``412``,
-before the rule is asked, and again where the rule reads in the route's
-unit of work; a rule whose method takes ``if_match`` is given the header,
-which an action's digest then covers. Without ``If-Match``, as before.
+(ADR 0178): the aggregate at another version than the one it names is
+``412``, before the rule is asked, and again where the rule reads in the
+route's unit of work; a rule whose method takes ``if_match`` is given the
+header, which an action's digest then covers. A page reads one version,
+so a twin takes one tag (``422`` for several). Without ``If-Match``, as
+before. An action that requires ``If-Match`` on an act on the collection,
+which reads none, is refused when the route is declared.
 
 Where routes of one path ask by several methods (a ``PATCH`` and a
 ``DELETE`` of one item), each twin's path names its route's method:
@@ -57,7 +60,7 @@ from domainkit.http.access import (
 )
 from domainkit.http.responses import BuiltJSONResponse
 
-from ..conditional import expected_versions
+from ..conditional import asked_versions
 from . import reach
 from .context import RouteContext, RouteSpec
 from .declaring import add_route
@@ -133,6 +136,7 @@ class AuthorizationRoute:
             body_limit=spec.body_limit,
             rules=rules,
             conditional=True,
+            binds_if_match=self.passes,
         )
 
     @classmethod
@@ -145,8 +149,9 @@ class AuthorizationRoute:
         Raises:
             ImproperlyConfigured: The asking rule is inside ``AnyOf`` or
                 ``Not``; two rules ask; the rule says the route's service
-                would not spend what it asks for; or another route already
-                answers ``POST`` on the twin's path.
+                would not spend what it asks for; its action requires
+                ``If-Match`` on an act on the collection; or another route
+                already answers ``POST`` on the twin's path.
         """
         spec = route.spec
         router = route.router
@@ -170,6 +175,12 @@ class AuthorizationRoute:
         if check is not None and (problem := check(route.service)) is not None:
             raise ImproperlyConfigured(
                 f"{label} asks for an authorization of its act, but {problem}."
+            )
+        action = getattr(found[0], "action", None)
+        if not route.detail and getattr(action, "require_if_match", False) is True:
+            raise ImproperlyConfigured(
+                f"{label} acts on the collection, which reads no If-Match, and its "
+                "action requires one (require_if_match=True): no ask would hold."
             )
         others = [each for each in _twins(router) if each.route.spec.path == spec.path]
         twin = cls(route, found[0], rules, by_method=bool(others))
@@ -229,14 +240,18 @@ class AuthorizationRoute:
 
         What ``show`` and ``binds`` load of the aggregate through it is
         checked, so a change made since the check above is ``412`` before
-        anything is stored. Without ``If-Match``, or a unit of work the
+        anything is stored. The expectation counts as checked: the twin
+        checked the aggregate itself, so ``request_action_authorization``
+        may cover the versions. Without ``If-Match``, or a unit of work the
         rule does not take, nothing is held.
         """
         if versions is None or not self.lends:
             yield
             return
         router = self.route.router
-        with context.uow.expect(router.model, context.ids[router.lookup], versions):
+        uow = context.uow
+        with uow.expect(router.model, context.ids[router.lookup], versions) as held:
+            held.checked = True
             yield
 
     def path(self, *, by_method: bool) -> str:
@@ -255,14 +270,17 @@ class AuthorizationRoute:
         Raises:
             NotFound: The aggregate is not there, or out of the caller's reach.
             PermissionDenied: A rule refuses the caller the aggregate.
-            PreconditionFailed: The aggregate is at none of the versions
+            PreconditionFailed: The aggregate is not at the version
                 ``If-Match`` names (412).
-            RuntimeError: The rule answered something else than its model.
+            RequestValidationError: ``If-Match`` lists several tags (422).
+            RuntimeError: The rule answered something else than its model,
+                or the aggregate loaded is not the one ``If-Match`` was to
+                be checked against.
         """
         route = self.route
-        command = await route.build(context)
         header = context.if_match
-        versions = None if header is None else expected_versions(header)
+        versions = asked_versions(header)
+        command = await route.build(context)
         if route.detail:
             uow = context.uow
             async with uow:
@@ -271,7 +289,14 @@ class AuthorizationRoute:
                 )
             await reach.check_object(context.request, aggregate, self.rules)
             if versions is not None:
-                self.expected(context, versions).check(aggregate)
+                expected = self.expected(context, versions)
+                expected.check(aggregate)
+                if not expected.checked:  # Never a pass unchecked, as conditionally.
+                    raise RuntimeError(
+                        f"The twin loaded {aggregate!r}, not the "
+                        f"{expected.model.__name__} {expected.id} the path names, "
+                        "so If-Match could not be checked."
+                    )
         lent: dict[str, object] = {"uow": context.uow} if self.lends else {}
         if self.passes:
             lent["if_match"] = header

@@ -177,11 +177,11 @@ def test_a_twin_refuses_a_file_replaced_since_the_page_read_it(
     assert asked.status_code == 201, asked.json()
 
 
-@pytest.mark.parametrize("sent", ['"abc"', "abc", '"1", "2"'])
+@pytest.mark.parametrize("sent", ['"abc"', "abc", '"1"'])
 def test_a_twin_refuses_a_tag_that_names_no_version_it_has(
     alice: Reviewer, sent: str
 ) -> None:
-    """A tag this API did not make, a malformed one, or none current: ``412``."""
+    """A tag this API did not make, a malformed one, or one not current: ``412``."""
     lamp = stock("Lamp")
     replaced(lamp)
     replaced(lamp)  # Version 3.
@@ -189,6 +189,24 @@ def test_a_twin_refuses_a_tag_that_names_no_version_it_has(
     refused = alice.asking(f"/products/{lamp}/publish", sent, WEB)
 
     assert code_of(refused) == (412, "precondition_failed")
+    assert rows() == []
+
+
+@pytest.mark.parametrize("sent", ['"1", "2"', '"1", W/"1-0a1b"', '"1", "1"'])
+def test_a_twin_takes_one_tag_the_version_its_page_read(
+    alice: Reviewer, sent: str
+) -> None:
+    """Several, even of one version: ``422``, nothing stored.
+
+    A twin that took ``"1", "2"`` bound an act that a page sending both
+    made on version 2, which no page had read (found in review).
+    """
+    lamp = stock("Lamp")
+
+    refused = alice.asking(f"/products/{lamp}/publish", sent, WEB)
+
+    assert refused.status_code == 422, refused.json()
+    assert refused.json()["errors"][0]["loc"] == ["header", "if-match"]
     assert rows() == []
 
 
@@ -204,11 +222,16 @@ def test_a_twin_refuses_an_if_match_longer_than_a_route_reads(
     assert rows() == []
 
 
-@pytest.mark.parametrize("sent", [None, "*", '"2"', 'W/"2-0123456789abcdef"'])
+@pytest.mark.parametrize(
+    "sent", [None, "", "*", '"2"', 'W/"2-0123456789abcdef"', '"1", "2"']
+)
 def test_an_act_without_the_if_match_its_twin_held_is_refused(
     alice: Reviewer, sent: str | None
 ) -> None:
-    """Asked with version 1, sent with none, any, or another: refused, voided."""
+    """Asked with version 1, sent with none, any, another, or more: refused, voided.
+
+    The digest pins the versions exactly: ``"1", "2"`` is not ``"1"``.
+    """
     lamp = stock("Lamp")
     url = f"/products/{lamp}/publish"
     authorization = alice.authorizing(url, alice.read(f"/products/{lamp}"), WEB)
@@ -303,26 +326,30 @@ def test_the_digest_covers_the_versions_the_twin_held(alice: Reviewer) -> None:
     """The SHA-256 of the command, what ``binds`` read, and the versions, sorted."""
     lamp = stock("Lamp")
 
-    asked = alice.asking(f"/products/{lamp}/publish", 'W/"7-0a1b", "1"', WEB)
+    asked = alice.asking(f"/products/{lamp}/publish", 'W/"1-0a1b"', WEB)
 
     assert asked.status_code == 201, asked.json()
     [row] = rows()
     command = shop.publish_product.command(product_id=lamp, channel="web")
-    held = shop.PUBLISH_PRODUCT.digest_of(command, row["bound"], {1, 7})
+    held = shop.PUBLISH_PRODUCT.digest_of(command, row["bound"], {1})
     assert row["digest"] == held
     assert held != shop.PUBLISH_PRODUCT.digest_of(command, row["bound"])
-    assert held != shop.PUBLISH_PRODUCT.digest_of(command, row["bound"], {1})
-    assert held != shop.PUBLISH_PRODUCT.digest_of(command, None, {1, 7})
+    assert held != shop.PUBLISH_PRODUCT.digest_of(command, row["bound"], {1, 2})
+    assert held != shop.PUBLISH_PRODUCT.digest_of(command, None, {1})
 
 
 def test_a_twin_documents_the_if_match_it_reads(alice: Reviewer) -> None:
-    """The twin of an item's act names ``If-Match``, optional, and ``412``."""
+    """The twin of an item's act names ``If-Match``, optional, and ``412``.
+
+    ``StepUp(for_=...)`` binds the act to it, and the twin says so.
+    """
     schema = alice.client.get("/openapi.json").json()
     twin = schema["paths"]["/products/{product_id}/publish/authorization"]["post"]
 
     [header] = [each for each in twin["parameters"] if each["in"] == "header"]
     assert header["name"] == "If-Match"
     assert not header.get("required")
+    assert "the act is bound to it" in header["description"]
     assert "412" in twin["responses"]
     assert "428" not in twin["responses"]
 
@@ -360,7 +387,7 @@ def test_a_file_replaced_while_the_twin_reads_it_is_refused_there(
     assert rows() == []
 
 
-@pytest.mark.parametrize("sent", [None, "*"])
+@pytest.mark.parametrize("sent", [None, "*", ""])
 def test_an_action_that_asks_for_if_match_refuses_a_twin_without_one(
     reviewer: Reviewer, sent: str | None
 ) -> None:
@@ -373,16 +400,21 @@ def test_an_action_that_asks_for_if_match_refuses_a_twin_without_one(
     assert rows() == []
 
 
+@pytest.mark.parametrize("sent", [None, ""])
 def test_an_action_that_asks_for_if_match_refuses_an_act_without_one_and_keeps_it(
-    reviewer: Reviewer, files: ModuleType
+    reviewer: Reviewer, files: ModuleType, sent: str | None
 ) -> None:
-    """``428`` at the act, voiding nothing: sent with the tag, it is made."""
+    """``428`` at the act, voiding nothing: sent with the tag, it is made.
+
+    An empty ``If-Match`` is none: it voided the authorization (found in
+    review).
+    """
     lamp = stock("contract.pdf")
     url = f"/files/{lamp}/approve"
     etag = reviewer.read(f"/files/{lamp}")
     authorization = reviewer.authorizing(url, etag)
 
-    refused = reviewer.act(url, authorization)
+    refused = reviewer.act(url, authorization, sent)
     kept = not ended(authorization)
     approved = reviewer.act(url, authorization, etag)
 
@@ -451,4 +483,97 @@ def test_require_if_match_is_true_or_false() -> None:
             subject=lambda command: f"shop.product:{command.product_id}",
             show=lambda command: Shown("Rename a product", {}),
             require_if_match="yes",  # type: ignore[arg-type]
+        )
+
+
+# A route of the project's own that forgets a step fails closed --------------------
+
+
+def test_a_projects_own_twin_that_checked_no_version_asks_nothing(
+    reviewer: Reviewer, files: ModuleType, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``show`` and ``binds`` load nothing held: refused, stored nothing, stale or not.
+
+    Its ``uow.expect`` held a unit of work nothing loaded through, and a
+    stale tag was covered unchecked, the phone asked (found in review).
+    """
+    lamp = stock("contract.pdf")
+    etag = reviewer.read(f"/files/{lamp}")
+    fresh = reviewer.asking(f"/unread/{lamp}/approve", etag)
+    replaced(lamp)
+    stale = reviewer.asking(f"/unread/{lamp}/approve", etag)
+    without = reviewer.asking(f"/unread/{lamp}/approve")
+
+    assert (fresh.status_code, stale.status_code) == (500, 500)
+    assert "nothing checked where show and binds read" in caplog.text
+    assert without.status_code == 201, without.json()  # No If-Match: as in 2.7.
+    assert len(rows()) == 1
+
+
+def test_a_projects_own_act_held_to_no_version_spends_nothing(
+    reviewer: Reviewer, files: ModuleType, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Bound to version 1, sent where no ``uow.expect`` holds: refused, kept.
+
+    The route forgot to hold its unit of work, and the authorization made
+    the act on version 2 (found in review).
+    """
+    lamp = stock("contract.pdf")
+    etag = reviewer.read(f"/files/{lamp}")
+    authorization = reviewer.authorizing(f"/own/{lamp}/approve", etag)
+    replaced(lamp)
+
+    refused = reviewer.act(f"/loose/{lamp}/approve", authorization, etag)
+
+    assert refused.status_code == 500
+    assert "the act's unit of work is not held to it" in caplog.text
+    assert list(files.APPROVED) == []
+    assert not ended(authorization)
+
+
+def test_a_projects_own_twin_takes_one_tag(
+    reviewer: Reviewer, files: ModuleType
+) -> None:
+    """As a resource's twin: several tags are ``422``, nothing stored."""
+    lamp = stock("contract.pdf")
+
+    refused = reviewer.asking(f"/own/{lamp}/approve", '"1", "2"')
+
+    assert refused.status_code == 422, refused.json()
+    assert rows() == []
+
+
+def test_an_action_that_asks_for_if_match_on_the_collection_is_refused() -> None:
+    """Its act reads no ``If-Match``: refused when the route is declared."""
+    from domainkit.contrib.auth import StepUp
+    from domainkit.contrib.auth.actions import requires_authorization
+    from domainkit.ddd import use_case
+    from domainkit.resources import ModelActions, ResourceRouter
+    from domainkit_tests.sample_domains.shop.models import Product
+
+    @use_case
+    async def stock_all(uow: shop.ShopUnitOfWork, name: str) -> None:
+        """Stock a product of that name."""
+
+    requiring = Action(
+        "shop.stock_all",
+        command=stock_all,
+        subject=lambda command: "shop.product:all",
+        show=lambda command: Shown("Stock", {"Name": command.name}),
+        require_if_match=True,
+    )
+    resource = ResourceRouter(
+        "/stock",
+        model=Product,
+        unit_of_work=shop.ShopUnitOfWork,
+        repository=lambda uow: uow.products,
+        rule=ModelActions(Product),
+        basename="stocked",
+    )
+
+    with pytest.raises(ImproperlyConfigured, match="acts on the collection"):
+        resource.use_case(
+            requires_authorization(requiring)(stock_all),
+            path="/all",
+            rule=StepUp(for_=requiring),
         )

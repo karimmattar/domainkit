@@ -5,6 +5,7 @@ does, checks what the act would check with the asking rule passing, and
 answers ``201`` with what the rule asks for (ADR 0144).
 """
 
+import copy
 from decimal import Decimal
 from typing import Any
 from uuid import UUID, uuid4
@@ -42,6 +43,7 @@ from domainkit_tests.conftest import UseAuth
 from domainkit_tests.gadgets import (
     FakeGadgetsUnitOfWork,
     Gadget,
+    GadgetId,
     InMemoryGadgets,
     make_gadget,
 )
@@ -466,6 +468,55 @@ def test_the_twin_holds_if_match_as_its_act_does(use_auth: UseAuth) -> None:
     assert held.held == [current, None, None]
     assert [type(each).__name__ for each in plain.asked] == ["RenameGadget"]
     assert store.items[gadget_id].version == gadget.version  # Nothing ran.
+    paths = client.get("/openapi.json").json()["paths"]
+    said = {
+        path: header["description"]
+        for path, operations in paths.items()
+        for header in operations.get("post", {}).get("parameters", [])
+        if header["name"] == "If-Match"
+    }
+    assert (
+        "the act is bound to it" in said["/gadgets/{gadget_id}/restock/authorization"]
+    )
+    assert "bound" not in said["/gadgets/{gadget_id}/authorization"]
+
+
+class Retyping(InMemoryGadgets):
+    """Gadgets in memory, each handed out with its id as text: not the path's id."""
+
+    async def find(
+        self, id_: GadgetId, *, include_deleted: bool = False
+    ) -> Gadget | None:
+        """The gadget, a copy whose id is text."""
+        found = await super().find(id_, include_deleted=include_deleted)
+        if found is None:
+            return None
+        retyped = copy.copy(found)
+        retyped.id = str(found.id)  # type: ignore[assignment]
+        return retyped
+
+
+def test_the_twin_never_passes_an_if_match_it_could_not_check(
+    use_auth: UseAuth,
+) -> None:
+    """An aggregate that is not the path's, by its id's type: an error, not a pass.
+
+    As a write's ``If-Match`` is: the twin let a tag through unchecked
+    (found in review).
+    """
+    use_auth()
+    store = Retyping([make_gadget("a")])
+    resource = gadgets(store)
+    resource.command_route(RenameGadget, service=rename, body=RenameIn, rule=Asks())
+    client = client_of(resource)
+    (gadget_id,) = store.items
+
+    with pytest.raises(RuntimeError, match="If-Match could not be checked"):
+        client.post(
+            f"{LOCATION}{gadget_id}/authorization",
+            json={"name": "b"},
+            headers=as_("changer", **{"If-Match": '"1"'}),
+        )
 
 
 class AsksOfItsService(Asks):
@@ -1017,6 +1068,9 @@ def test_openapi_documents_the_twin_as_its_own_operation(use_auth: UseAuth) -> N
         "$ref": "#/components/schemas/RenameIn"
     }
     assert [each["name"] for each in twin["parameters"]] == ["gadget_id", "If-Match"]
+    [header] = [each for each in twin["parameters"] if each["in"] == "header"]
+    assert "412" in header["description"]
+    assert "bound" not in header["description"]  # Its rule is given no If-Match.
     assert [each["name"] for each in made.get("parameters", [])] == []
     assert route.status_code == 201
     # The resource declares no rule; its routes with one are not open.

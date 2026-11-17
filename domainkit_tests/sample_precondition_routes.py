@@ -9,8 +9,11 @@ twin are routes of the project's own: each holds its unit of work to the
 request's ``If-Match`` (``uow.expect``), and the twin passes it to
 ``request_action_authorization``. ``/plain/{id}/approve/authorization``
 asks for the same act with an action that does not ask for ``If-Match``,
-as one asked before a deploy that added it. The shop's routes, auth's
-included, come along.
+as one asked before a deploy that added it. Two forget a step: the twin
+``/unread/{id}/approve/authorization`` of an action whose ``show`` reads
+in a unit of work of its own and that binds nothing, and the act
+``/loose/{id}/approve``, which holds its unit of work to nothing. The
+shop's routes, auth's included, come along.
 """
 
 from typing import Annotated, Any
@@ -28,7 +31,12 @@ from domainkit.contrib.auth.actions import (
 )
 from domainkit.ddd import Command, use_case
 from domainkit.http.access import Require
-from domainkit.resources import ModelActions, ResourceRouter, expected_versions
+from domainkit.resources import (
+    ModelActions,
+    ResourceRouter,
+    asked_versions,
+    expected_versions,
+)
 from domainkit_tests import sample_action_resources as shop
 from domainkit_tests.sample_domains.shop.models import Product, ProductId
 
@@ -37,6 +45,7 @@ __all__ = [
     "APPROVE_FILE",
     "APPROVE_OWN",
     "APPROVE_PLAIN",
+    "APPROVE_UNREAD",
     "RACING",
     "replace",
     "router",
@@ -125,6 +134,22 @@ APPROVE_REQUIRING = Action(
 """The same act once its action asks for ``If-Match``."""
 
 
+async def show_alone(command: ApproveOwn) -> Shown:
+    """The file's name, read in a unit of work of its own: not the one held."""
+    async with shop.ShopUnitOfWork() as uow:
+        product = await uow.products.get(ProductId(command.product_id))
+    return Shown("Approve a file", {"File": product.name})
+
+
+APPROVE_UNREAD = Action(
+    "shop.approve_unread",
+    command=ApproveOwn,
+    subject=lambda command: f"shop.product:{command.product_id}",
+    show=show_alone,
+)
+"""An act whose ``show`` and ``binds`` load nothing through the twin's unit of work."""
+
+
 async def _approve(command: ApproveOwn, uow: shop.ShopUnitOfWork) -> None:
     """Approve the file as stored, in one block."""
     async with uow:
@@ -162,7 +187,7 @@ async def _ask(
 ) -> ActionAuthorizationOut:
     """Ask for ``action`` on the file, held to ``if_match`` where binds reads it."""
     uow = shop.ShopUnitOfWork()
-    versions = None if if_match is None else expected_versions(if_match)
+    versions = asked_versions(if_match)
     with uow.expect(Product, ProductId(product_id), versions):
         asked = await request_action_authorization(
             request,
@@ -194,6 +219,17 @@ async def ask_own(
     return await _ask(request, APPROVE_OWN, product_id, if_match)
 
 
+@router.post("/unread/{product_id}/approve/authorization", status_code=201)
+async def ask_unread(
+    product_id: UUID,
+    request: Request,
+    user: AuthenticatedUser,
+    if_match: IfMatch = None,
+) -> ActionAuthorizationOut:
+    """The recipe, for an act whose ``show`` and ``binds`` load nothing held."""
+    return await _ask(request, APPROVE_UNREAD, product_id, if_match)
+
+
 @router.post("/plain/{product_id}/approve/authorization", status_code=201)
 async def ask_plain(
     product_id: UUID, request: Request, user: AuthenticatedUser
@@ -222,3 +258,13 @@ async def act_requiring(
 ) -> Response:
     """The act, its action now asking for ``If-Match``."""
     return await _act(approve_requiring, product_id, if_match)
+
+
+@router.post(
+    "/loose/{product_id}/approve",
+    dependencies=[Depends(Require(StepUp(for_=APPROVE_OWN)))],
+)
+async def act_loose(product_id: UUID, user: AuthenticatedUser) -> Response:
+    """The act, its unit of work held to nothing: a route that forgot."""
+    await approve_own(ApproveOwn(product_id=product_id), shop.ShopUnitOfWork())
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
