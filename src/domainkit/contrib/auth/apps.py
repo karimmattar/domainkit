@@ -757,18 +757,30 @@ def unprovable_step_ups(app: FastAPI) -> list[tuple[str, frozenset[str]]]:
 
 
 def action_problems(app: FastAPI) -> list[CheckMessage]:
-    """What ``check`` refuses of action authorizations (``auth.E108`` to ``E111``).
+    """What ``check`` refuses of action authorizations (``auth.E108`` to ``E112``).
 
     An action no installed way to confirm proves (``E108``); a route that
     asks for a purpose no registered action has (``E109``), or whose action
     nothing spends (``E110``: no decorated service, and no code that said
-    so with ``spent_in_code``); and ``StepUp(for_=...)`` on a WebSocket or
-    an event stream (``E111``).
+    so with ``spent_in_code``); ``StepUp(for_=...)`` on a WebSocket or
+    an event stream (``E111``); and ``AUTH.AUTHORIZATIONS.ACTIONS`` naming
+    a purpose no registered action has (``E112``), whose settings would
+    hold for nothing.
     """
     from .actions import provable, registered_actions
 
     actions = registered_actions()
     problems = [
+        CheckMessage(
+            "auth.E112",
+            f"AUTH.AUTHORIZATIONS.ACTIONS names {purpose!r}, which no registered "
+            "action has: its TTL and METHODS would hold for nothing. Correct the "
+            "purpose, turn on the setting that registers it, or remove it.",
+        )
+        for purpose in sorted(auth_settings().AUTHORIZATIONS.ACTIONS)
+        if purpose not in actions
+    ]
+    problems += [
         CheckMessage(
             "auth.E108",
             f"Action {purpose!r} asks confirming it to prove "

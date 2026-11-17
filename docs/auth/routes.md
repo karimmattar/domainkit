@@ -685,8 +685,15 @@ PUT  /admin/auth/users/6f1c.../groups {"groups": ["auditors"]}
   username taken) spends nothing. A change held for approval (`403
   approval_pending`) spends nothing either: once the request is approved,
   the same call makes it with an authorization, the first one while it
-  lives (`AUTH.AUTHORIZATIONS.TTL`) or a new one. A password compared
-  with the history is the exception above: it spends first.
+  lives (`AUTH.AUTHORIZATIONS.TTL`) or a new one. With
+  `AUTH.AUTHORIZATIONS.HELD_TTL` set (since 2.7), the first one is kept
+  while the request waits ([Held for approval](actions.md#held-for-approval)),
+  but for a password compared with the history, the exception above: it
+  spends first.
+- **Its own methods** (since 2.7): `AUTH.AUTHORIZATIONS.ACTIONS["auth.admin_change"]`
+  names what confirming a change must prove (`{"METHODS": ["phone"]}`)
+  and how long it lives, apart from the project's acts
+  ([Each act its own methods and lifetime](actions.md#each-act-its-own-methods-and-lifetime)).
 - **Staff acting as a user** cannot ask, and their changes are refused
   (`401 authorization_required`): the act is the staff member's own.
 

@@ -38,8 +38,8 @@ never published), with each section below.
 
 ## 2.6 to 2.7
 
-2.7 follows up 2.6. No table changes. Each item of this list says what a
-project that relied on 2.6's behaviour changes.
+2.7 follows up 2.6. Each item of this list says what a project that
+relied on 2.6's behaviour changes, and what to run.
 
 - **The framework's acts word their screens for people.** The admin
   API's act names flags and fields as a person reads them ("Staff: no",
@@ -131,6 +131,22 @@ project that relied on 2.6's behaviour changes.
   admin API's rules.** It no longer sees requests the rules refuse
   (anonymous, not staff, without the model permission or the
   authorization); rules you put in front of it for that can go.
+
+### Make and apply auth's migration for bound and held authorizations
+
+The action authorizations table (`domainkit_authorizations`) gains three
+nullable columns: `bound`, the SHA-256 of what an act's `binds` read of
+its record, and `held_until` and `held_for`, how long and for which
+request an authorization of an act held for approval is kept (ADR 0174).
+Run `python manage.py makemigrations`, review the revision, then
+`migrate` it before the new code serves. Until then every use of the
+table fails: asking for an authorization, reading one (the rule of every
+act), and the hourly purge raise `OperationalError`, so acts answer
+`500`; `check` reports nothing of it. Authorizations asked before bind
+no record and are held by nothing; an act that adds `binds` refuses
+those once, `409 action_record_changed`, and the client asks again.
+Nothing else changes until a project declares `binds`, or sets
+`AUTH.AUTHORIZATIONS.HELD_TTL` or `ACTIONS`.
 
 ## 2.5 to 2.6
 
