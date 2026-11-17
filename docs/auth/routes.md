@@ -420,10 +420,10 @@ action: `view`, `add`, `change`, or `delete` on the user model
 | Endpoint | Body | Answer |
 | --- | --- | --- |
 | `GET /users` | `?limit=50&cursor=&search=&id=` | A page of users, by the first field of `AUTH.IDENTIFIERS` (by username without it). `search` matches part of the username, or of the email address or mobile number where `AUTH.IDENTIFIERS` names them, in any case; a mobile number also in any form that normalizes to it. An encrypted field matches only its whole value, with a blind index. `id`, repeated up to 200 times (since 2.5), keeps the users it names, so a page of rows that refer to users names them in one request; unknown ids are left out. |
-| `POST /users` | `{"username", "password", "is_active", "is_staff", "is_superuser", "fields"}` | `201` and the user. The password is validated; without one, it is unusable. |
+| `POST /users` | `{"username", "password", "is_active", "is_staff", "is_superuser", "fields"}` | `201` and the user. The password is validated; without one, it is unusable. A username, an address, or a number another user has is `409` before your checks run (since 2.8). |
 | `GET /users/names` | `?limit=50&cursor=&search=&id=` | The page `GET /users` answers, with each user's `id`, `username`, `name`, and `identifiers`: no groups, permissions, or other fields, for a page that names its rows' people (since 2.7). `name` joins `first_name` and `last_name` where `/users` shows both among `fields` (the model's `admin_fields()`), else it is null; `identifiers` are the fields of `AUTH.IDENTIFIERS` that `/users` shows. `search` matches the username and the identifiers, as on `/users`, never a name. The same order and cursors; `auth.view_user`. |
 | `GET /users/{id}` | | The user. |
-| `PATCH /users/{id}` | `{"is_active", "is_staff", "is_superuser", "fields"}` | The user; what you leave out stays. A new email or mobile number is set at once, unproved, and drops one the user held ([Changing an address or a number](users.md#changing-an-address-or-a-number)). |
+| `PATCH /users/{id}` | `{"is_active", "is_staff", "is_superuser", "fields"}` | The user; what you leave out stays. A new email or mobile number is set at once, unproved, and drops one the user held ([Changing an address or a number](users.md#changing-an-address-or-a-number)). One another user has is `409` (`email_taken` where the address identifies users, `mobile_number_taken`) before your checks and approvals' hold run (since 2.8). |
 | `DELETE /users/{id}` | | `204`; the user's tokens, second factor (secret and recovery codes), and object permissions go too. |
 | `POST /users/{id}/password` | `{"password"}` | `204`; `null` makes it unusable. Every session of the user ends. A password among the user's last ones (`AUTH.PASSWORD_HISTORY`) is refused (`422`); past `AUTH.LOGIN_RATE` of those from one staff member for one user, `429` for a while (since 2.7). |
 | `POST /users/{id}/logout` | | `204`: every session of the user ends. |
@@ -613,6 +613,16 @@ PUT  /admin/auth/users/6f1c.../groups {"groups": ["auditors"]}
   the password itself. Another change, or the same change to another
   user, is refused (`403 action_not_authorized`), and voids it. A user
   created active and one created inactive are two acts.
+- **A group is bound by its id and what it grants** (since 2.8, [ADR
+  0179](../adr/0179-bind-the-admin-acts-groups-by-id-and-keep-a-held-confirmation-to-its-request.md)).
+  A change of a user's groups binds each group it adds as approvals'
+  `auth.set_groups` holds it: its id, its name, the keys it grants, and
+  its grants on single objects (how many, and their digest); and the id
+  of each it takes away. Before, it bound their names: a group renamed
+  while the change waited for approval, and another named so, was added
+  with the confirmation kept for the first (user report A17). A group
+  renamed, made again, or granted more since the staff member confirmed
+  is another act now (`403 action_not_authorized`).
 - **The screen says which user and what change**: "Change a user's
   groups", then "User: alice@example.com (…123456789abc)" (the user's
   first identifier and, since 2.7, the end of their id; a name too long
@@ -620,7 +630,12 @@ PUT  /admin/auth/users/6f1c.../groups {"groups": ["auditors"]}
   the flags that grant or take access ("Superuser", "Staff", "Active":
   yes or no), "Adds: auditors", "Takes away: clerks", the reason of an
   impersonation, then the other fields set, by name ("Email", "Display
-  name"). A list
+  name"). Since 2.8 a group added shows as approvals shows it, in a few
+  words: "Adds: auditors (…9abc) 3 perms + 2 object grants", and the
+  keys `AUTH.AUTHORIZATIONS.NAMED_PERMISSIONS` names among what they
+  grant show by name before them ("Grants:
+  companies.administer_company"); in a list of keys, those come first.
+  A list
   goes over as many lines as it takes ("Adds", "Adds (2)"). Six lines at
   most: with `AUTH["AUTHORIZATIONS"]["WHOLE"]` on (since 2.7), a change
   whose values or lists do not fit whole is refused at the twin (`422
@@ -641,11 +656,13 @@ PUT  /admin/auth/users/6f1c.../groups {"groups": ["auditors"]}
   true: a change your checks refuse is refused before the staff member
   confirms it (user report A17), and approvals' hold submits and spends
   nothing there. A check that writes should write nothing while
-  `asking`. The twin changes nothing. What only the change finds is
-  refused then, after the confirmation: a username or a group name
-  taken, and a password the user had before (`AUTH.PASSWORD_HISTORY`),
-  which the twin does not compare, as it would answer that guess
-  unconfirmed.
+  `asking`. The twin changes nothing. Since 2.8 it refuses a username,
+  an address, or a number another user has (`409`), as the change does
+  before its checks. What only the change finds is refused then, after
+  the confirmation: a group name taken, one of those values taken in the
+  moment between, and a password the user had before
+  (`AUTH.PASSWORD_HISTORY`), which the twin does not compare, as it
+  would answer that guess unconfirmed.
 - **A reused password spends the authorization** (since 2.7). The act
   binds only that a password is set, so before 2.7 one confirmation
   tested password after password against the user's history, refused
@@ -695,7 +712,10 @@ PUT  /admin/auth/users/6f1c.../groups {"groups": ["auditors"]}
   `AUTH.AUTHORIZATIONS.HELD_TTL` set (since 2.7), the first one is kept
   while the request waits ([Held for approval](actions.md#held-for-approval)),
   but for a password compared with the history, the exception above: it
-  spends first.
+  spends first. Kept for that request, it serves that request alone
+  (since 2.8): a call whose change now makes another request (a user
+  made active again who was put in a group since) is refused (`403
+  action_not_authorized`) before it submits it; a new confirmation does.
 - **Its own methods** (since 2.7): `AUTH.AUTHORIZATIONS.ACTIONS["auth.admin_change"]`
   names what confirming a change must prove (`{"METHODS": ["phone"]}`)
   and how long it lives, apart from the project's acts
