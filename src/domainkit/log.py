@@ -874,6 +874,7 @@ class _Pause:
 
     def __init__(self, listener: BackgroundListener) -> None:
         """Ask before ``listener``'s thread takes its next record."""
+        self.listener = listener
         self._forks = listener._forks
         self._forks.append(self)
 
@@ -991,20 +992,43 @@ def _after_fork_in_child() -> None:
     """Give every background handler a fresh queue in a forked child.
 
     The child's copies of the locks ``_before_fork`` took stay held, some
-    by threads the child does not have. So the child makes a new
-    ``_handlers_lock`` before it reads the handlers, as ``logging`` does
-    with its own and the handlers' (which it has done by now: its hook
-    runs first), and each listener a new turnstile (``restart_on``). The
-    child has no logging thread yet: each starts at its handler's first
-    record. Nothing is left to let go of after this fork, or a fork it
-    was nested in.
+    by threads the child does not have. So the child renews them
+    (``_renew``) and makes a new ``_handlers_lock`` before it reads the
+    handlers, as ``logging`` does with its own, and each listener a new
+    turnstile (``restart_on``). The child has no logging thread yet: each
+    starts at its handler's first record. Nothing is left to let go of
+    after this fork, or a fork it was nested in.
     """
     global _handlers_lock, _listening, _forking
+    _renew([item for held in _forking.held for item in held])
     _handlers_lock = threading.RLock()
     _listening = weakref.WeakSet()
     _forking = _Forks()
     for handler in _live_handlers():
         handler._after_fork()
+
+
+def _renew(taken: list[_Held]) -> None:
+    """Renew in a child the locks a fork took, held by its only thread.
+
+    ``logging`` renews the locks its own ``createLock`` made, not those a
+    handler makes itself: the child's logging thread would wait for one
+    at its first record. ``threading``'s locks are renewed in place; a
+    lock of another kind is made again by its handler's ``createLock``.
+    """
+    for item in taken:
+        renew = getattr(item, "_at_fork_reinit", None)
+        if renew is not None:
+            renew()
+    for pause in taken:
+        if not isinstance(pause, _Pause):
+            continue
+        for handler in pause.listener.handlers:
+            lock = handler.lock
+            if not hasattr(lock, "_at_fork_reinit") and any(
+                lock is item for item in taken
+            ):
+                handler.createLock()
 
 
 if hasattr(os, "register_at_fork"):  # pragma: no branch - POSIX has it.

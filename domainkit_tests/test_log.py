@@ -877,7 +877,7 @@ def test_forked_children_start_over(
     handler.handle(record("child"))
     assert handler.listener in log._listening
     handler.close()
-    parents_turnstile.release()
+    assert free_to_others(parents_turnstile)  # Renewed, as the fork had taken it.
     parents.put(log._STOP)  # End the parent's thread, which this test left.
     assert collect.lines == [
         "parent",
@@ -1513,6 +1513,45 @@ def test_a_fork_waits_for_a_write_through_the_same_handler_from_another_thread(
     assert went_on
     assert fork.holds(held.lock)
     handler.close()
+
+
+@pytest.mark.parametrize(
+    "make_lock",
+    [threading.RLock, lambda: RunsFirst(threading.RLock(), lambda: None)],
+    ids=["threading's", "another kind"],
+)
+def test_a_child_renews_the_locks_handlers_make_themselves(
+    make_lock: Callable[[], Any],
+    forks: "weakref.WeakSet[BackgroundListener]",
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``logging`` renews in a child only the locks its own ``createLock`` made.
+
+    A handler that makes its own kept it held by the forking thread, and
+    the child's logging thread waited for it at its first record.
+    """
+
+    class OwnLock(Collect):
+        def createLock(self) -> None:
+            self.lock = make_lock()
+
+    for name in ("_LOGGING_LOCK", "_handlers_lock"):  # Not the process's own.
+        monkeypatch.setattr(log, name, threading.RLock())
+    writes = OwnLock()
+    handler = BackgroundHandler.writing_to(writes)
+    monkeypatch.setattr(log, "_live_handlers", lambda: [handler])
+    handler.handle(record("parent"))
+    assert handler.wait_written(10)
+    parents = handler.queue
+
+    log._before_fork()  # This thread is the child's only one.
+    log._after_fork_in_child()
+
+    handler.handle(record("child"))
+    assert handler.wait_written(10)
+    assert writes.lines == ["parent", "child"]
+    handler.close()
+    parents.put(log._STOP)  # End the parent's thread, which this test left.
 
 
 def test_a_handler_without_a_lock_is_not_waited_for(
