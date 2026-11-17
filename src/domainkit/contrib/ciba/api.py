@@ -410,10 +410,11 @@ class SignInOut(BaseModel):
     """An act's purpose, title, details and digest, read from auth's record."""
     created_at: datetime
     expires_at: datetime
-    withdrawn: bool = False
-    """Its session withdrew it unanswered (``?withdrawn=true`` only): the
-    phone may report it, ``deny`` with ``report``, and nothing else, until
-    ``REQUEST_TTL`` after ``created_at``; ``expires_at`` is when it ended."""
+    withdrawn: bool | None = Field(default=None, exclude_if=lambda value: value is None)
+    """Listed with ``?withdrawn=true`` only, and only then in the answer:
+    its session withdrew it unanswered. The phone may report it, ``deny``
+    with ``report``, and nothing else, until ``REQUEST_TTL`` after
+    ``created_at``; ``expires_at`` is when it ended."""
 
 
 def _no_store(response: Response) -> None:
@@ -815,7 +816,7 @@ async def _out(
     sign_ins: list[SignInRequest],
     now: datetime | None = None,
 ) -> list[SignInOut]:
-    """What the phone is shown of each request; one ended by ``now`` is withdrawn."""
+    """What the phone is shown of each request; with ``now``, if it is withdrawn."""
     names: dict[str, str] = {}
     transactions: dict[UUID, TransactionOut | None] = {}
     acts: dict[UUID, ActOut | None] = {}
@@ -849,7 +850,7 @@ async def _out(
             authorization=acts.get(each.id),
             created_at=each.created_at,
             expires_at=each.expires_at,
-            withdrawn=now is not None and each.expired(now),
+            withdrawn=None if now is None else each.expired(now),
         )
         for each in sign_ins
     ]
@@ -896,7 +897,7 @@ async def list_sign_ins(
     since = now - ciba_settings().REQUEST_TTL if withdrawn else None
     async with CibaUnitOfWork() as uow:
         found = await uow.requests.waiting_for(user.id, now, withdrawn_since=since)
-        return await _out(uow, request, found, now)
+        return await _out(uow, request, found, now if withdrawn else None)
 
 
 @router.post(

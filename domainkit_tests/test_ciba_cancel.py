@@ -377,7 +377,7 @@ def test_the_app_lists_a_withdrawn_ask_to_report_it_without_its_push(
         gone = phone.send("GET", "/auth/app-sign-in/requests?withdrawn=true").json()
 
     assert live.status_code == 200, live.json()
-    assert [each["withdrawn"] for each in plain] == [False]
+    assert ["withdrawn" in each for each in plain] == [False]  # As in 2.6.
     assert [each["withdrawn"] for each in listed] == [True, True, False]
     assert plain[0]["id"] == listed[2]["id"]
     assert first["authorization"]["id"] == asked["id"]  # The act, as auth keeps it.
