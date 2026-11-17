@@ -152,7 +152,7 @@ class ActionAuthorization:
         return frozenset((self.amr or "").split())
 
     def expired(self, now: datetime | None = None) -> bool:
-        """Whether it no longer works."""
+        """Whether its expiry is past: it no longer works, unless held for approval."""
         return self.expires_at <= (now or utc_now())
 
 
