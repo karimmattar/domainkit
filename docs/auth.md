@@ -194,6 +194,7 @@ print(config.TOKEN_TTL, config.JWT.ACCESS_TOKEN_TTL)
 | --- | --- | --- |
 | `TTL` | 5 minutes | How long an action authorization works, from when it is asked for, its confirmation and its use included (30 minutes at most). An `Action(ttl=...)` sets its own. |
 | `METHODS` | `["otp"]` | What confirming one must prove, unless its `Action(methods=...)` names others: `otp` (a code of the authenticator app, which a bound device's key and a passkey stand for), `pwd` (the password too), or `phone` (a bound device's own screen: the phone's approval, or the app's own act; neither a code nor a passkey proves it). It must hold `otp` or `phone`, each method once. |
+| `WHOLE` | `False` | The framework's acts show what they do whole, or are refused when asked for (`422 too_much_to_show`): `auth.admin_change`, `approvals.submit`, and `approvals.approve`, and a request that could not be approved so is refused when it is submitted (*new in 2.7*, [What a screen shows](auth/actions.md#what-a-screen-shows)). Off: what does not fit is cut and counted. |
 
 | `AUTH["CLIENT_CERT"]` key | Default | Meaning |
 | --- | --- | --- |

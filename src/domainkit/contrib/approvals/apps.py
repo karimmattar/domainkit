@@ -57,6 +57,7 @@ class ApprovalsConfig(DomainConfig):
         """
         from .builtin import (
             check_admin_change,
+            check_admin_screen,
             guard_admin_changes,
             guard_entries,
             guard_superusers,
@@ -94,6 +95,7 @@ class ApprovalsConfig(DomainConfig):
         if registry.is_installed(AUTH):
             from domainkit.contrib.auth.gates import (
                 on_admin_change,
+                on_admin_screen,
                 on_create_staff,
                 on_make_superuser,
             )
@@ -105,6 +107,8 @@ class ApprovalsConfig(DomainConfig):
                 guard_admin_changes(config)
                 on_admin_change(check_admin_change, domain=self.label)
                 on_create_staff(refuse_staff_creation, domain=self.label)
+                if config.APPROVE_ACTION:  # The approver's screen, at the twin.
+                    on_admin_screen(check_admin_screen, domain=self.label)
 
     def application_problems(self, app: "FastAPI") -> list[str]:
         """``approvals.E001``: ``APPROVE_ACTION`` beside a step-up window.

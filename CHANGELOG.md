@@ -11,39 +11,73 @@ and a status.
 
 ### Added
 
+- `AUTH["AUTHORIZATIONS"]["WHOLE"]` (off): the framework's acts show what
+  they do whole on a phone's screen, or are refused when asked for (`422
+  too_much_to_show`): `auth.admin_change`, `approvals.submit`, and
+  `approvals.approve`, never for the name of the user or group they are
+  on. With `APPROVE_ACTION` on, a change of the admin API that approvals
+  would hold is refused at its twin when the approver's screen could not
+  show it whole (auth's new `on_admin_screen` hook), and a request whose
+  approval could not be shown whole is refused when it is submitted, so
+  none waits for an approval nobody could confirm. Rejecting and
+  cancelling are never refused for what they show ([What a screen shows](docs/auth/actions.md#what-a-screen-shows),
+  ADR 0173) (user reports A22, A23).
+
+- `domainkit.contrib.auth.screens`: `laid_out(details)` lays out an act's
+  labelled values on a screen's six lines, a list over as many lines as it
+  takes ("Adds", "Adds (2)"), so that two different texts never show
+  alike (a backslash doubled, a text item with a comma quoted), and
+  refuses what does not fit whole (`TooMuchToShow`, `422
+  too_much_to_show`), or with `whole=False` cuts it and counts it.
+  `named(name, id)` shows what an act is on by its name, cut to fit, and
+  the end of its id (user report A22).
+
+- `guard(show=...)` (and `Guard.show`): what a person deciding a request
+  is shown of its command, in place of its arguments by name, a plain or
+  `async` function that may read the database. The holds of users
+  (`auth.grant_superuser` and those `ADMIN_APPROVALS` names) show the user
+  by name and id, read when shown and never stored with the request, and
+  an impersonation's "Stated reason" (user report A23).
+
 - `TENANCY.ALL_TENANTS_PERMISSION` names a permission key that reaches
   every tenant: staff who hold it everywhere change, and act as, through
   the admin API, members of companies they do not belong to who hold no
   key there they lack everywhere; under `MEMBERSHIP` alone, every member.
   Unset, as before, staff change only the members of tenants they belong
   to, and a back office needed a superuser. ADR 0177 (user report D3).
+
 - `TENANCY.MEMBER_GRANTS`, a function of the user and a tenant id,
   answers what a member's roles grant there whatever the tenant's state.
   The admin API adds it to `MEMBER_PERMISSIONS`' answer, never in its
   place, so staff who hold a suspended company's looking keys no longer
   take over an owner who holds everything once it is reactivated.
   ADR 0177 (user report D3).
+
 - `MemberActions(..., keys={"invite": "organizations.add_membership"})`
   names the key of an action of the domain's own whole, where the
   model's (`companies.invite_company`) names nothing; `ModelActions`
   takes `keys` too. Under `keys`, a route of an action it does not name,
   other than `view`, `add`, `change`, and `delete`, is refused when
   declared. ADR 0177 (user report D3).
+
 - `check` names each `Throttle` on a route served as a tenant that says
   neither `per_tenant=True` nor `per_tenant=False` (`tenancy.W001`, in
   every environment): it counts per tenant, so moving routes under a
   tenant multiplied a person's limit by their tenants, unseen.
   `Throttle(per_tenant=None)`, the new default, counts as `True` did.
   ADR 0177 (user report D3).
+
 - `EveryWord(finder)` (`domainkit.http`) asks a `search_through` finder
   with every word of a search at once too, where a word alone reached
   `max_reference_matches`: "ada lovelace" finds Ada Lovelace's rows
   though each word names more users than the bound, which asked per word
   missed. ADR 0177 (user report D2).
+
 - The admin API's `GET /users/names` answers the page `GET /users` does,
   with each user's id, username, name, and identifiers only, not their
   groups, permissions, or other fields, and nothing `/users` hides.
   ADR 0177 (user report D2).
+
 - `domainkit.http.uploads.Upload`, the type `save_upload` and
   `receive_upload` take, is public: a file gateway of the infrastructure
   layer takes its route's file as it is without naming Starlette's
@@ -54,12 +88,34 @@ and a status.
 
 - The `kafka` extra accepts aiokafka up to 0.15 (`>=0.12.0,<0.16.0`),
   tested with 0.15.0.
+
 - The projects `init` writes take ruff `>=0.17.3,<0.18`, the range
   domainkit's own code is checked with.
+
 - CI and the release build run Poetry 2.4.3 (`make install` asks for
   Poetry 2.4): 2.2.1 wrote a crafted wheel's files outside its target
   (CVE-2026-34591), and its dulwich had nine advisories. CI audits the
   build's hash-pinned tools too.
+
+- `auth.admin_change`'s screen names flags and fields as a person reads
+  them ("Superuser: yes", "Email", "Display name", not `is_superuser:
+  true`), shows the user or group with its id, and puts a list of groups
+  or permissions over as many lines as it takes ("Adds", "Adds (2)")
+  before it counts what does not fit. An item that holds a comma is
+  quoted, and a backslash is doubled ([upgrading.md](docs/upgrading.md#26-to-27))
+  (user report A22).
+
+### Security
+
+- Approvals' screens no longer cut a list with no count. A grant of 30
+  permission keys showed one line of JSON cut after three keys, and a
+  user by id: a list now goes over the lines left, item by item, whatever
+  its items (an object or a list as compact JSON), and its last line says
+  how many more; the user a held change of the admin API is about shows
+  by name and id. A new line and a backslash followed by `n` no longer
+  show alike. With
+  `AUTH["AUTHORIZATIONS"]["WHOLE"]` on, such a request is refused rather
+  than counted (ADR 0173) (user report A23).
 
 ## [2.6.0] - 2026-11-17
 
