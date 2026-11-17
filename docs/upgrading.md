@@ -36,6 +36,23 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.5 to 2.6
+
+2.6 follows up 2.5. No table changes. Each item of this list says what a
+project that relied on 2.5's behaviour changes.
+
+- **A route of approvals' rules runs its own step's service.** A
+  `ResourceRouter` route whose rule is `RequestActions`, `ApproveAction`,
+  `RejectAction`, `CancelAction`, or `SubmitAction`, and whose service is
+  another step's (`cancel_request` behind `RejectAction`, say) or one of
+  the `record_*` functions, is refused when it is declared
+  (`ImproperlyConfigured`): its rule takes any authorization of the act,
+  and only the step's own service binds it to the request, so such a
+  route took a step with an authorization asked for another request
+  ([From the project's own code](contrib/approvals.md#from-the-projects-own-code)).
+  Run the step's own service on the route, and the `record_*` functions
+  from code no user reaches.
+
 ## 2.4 to 2.5
 
 2.5 answers a third report from the project that runs an identity

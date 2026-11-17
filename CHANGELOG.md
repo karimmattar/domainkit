@@ -9,6 +9,19 @@ and a status.
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-11-17
+
+2.6 follows up 2.5. The project's own code can take an approval
+request's steps without an action authorization, and a route of
+approvals' rules that would take them with another request's
+authorization is refused when it is declared (ADR 0163, amended). An
+upload check's lazy refusal, and any `APIError`'s lazy detail, are
+answered in the caller's language (ADR 0167, amended). A fork no longer
+catches domainkit's logging thread in the middle of a write, nor
+deadlocks against `dictConfig` (ADR 0051, amended). No table changes;
+read [upgrading.md](docs/upgrading.md#25-to-26) for the one change a
+route may meet.
+
 ### Added
 
 - `record_submission`, `record_approval`, `record_rejection`, and
@@ -8090,7 +8103,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.5.0...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.6.0...HEAD
+[2.6.0]: https://github.com/karimmattar/domainkit/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/karimmattar/domainkit/compare/v2.4.0...v2.5.0
 [2.4.0]: https://github.com/karimmattar/domainkit/compare/v2.3.0...v2.4.0
 [2.3.0]: https://github.com/karimmattar/domainkit/compare/v2.2.1...v2.3.0
