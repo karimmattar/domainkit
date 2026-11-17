@@ -100,7 +100,7 @@ import time
 import traceback
 import unicodedata
 import zipfile
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from posixpath import dirname, join, normpath
 from typing import IO, TYPE_CHECKING, Any, Final, Literal, Self
@@ -1396,14 +1396,14 @@ async def run_checks(
             _running -= 1
 
 
-def _child_path() -> list[str]:
-    """``sys.path`` for a check's process, as text.
+def _child_path(path: Iterable[object]) -> list[str]:
+    """``path`` (``sys.path``) as text, for a check's process.
 
-    A ``Path`` on ``sys.path``, which Python allows, made every checked
-    upload a 500; an entry that is no path at all, which the import system
-    skips, is left out.
+    Python lets ``sys.path`` hold anything. A ``Path`` is handed over as
+    text: handed as it was, it made every checked upload a 500. An entry
+    that is no path at all is left out.
     """
-    return [os.fspath(each) for each in sys.path if isinstance(each, str | os.PathLike)]
+    return [os.fspath(each) for each in path if isinstance(each, str | os.PathLike)]
 
 
 async def _in_a_process(
@@ -1416,7 +1416,7 @@ async def _in_a_process(
 
     The process has exited when this returns or raises, cancelled or not.
     """
-    config = {"path": _child_path(), "memory": memory, "seconds": seconds}
+    config = {"path": _child_path(sys.path), "memory": memory, "seconds": seconds}
     request = pickle.dumps(checks)
     process = await asyncio.create_subprocess_exec(
         sys.executable,

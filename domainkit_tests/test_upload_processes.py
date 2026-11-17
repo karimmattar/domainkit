@@ -297,18 +297,14 @@ async def test_a_path_on_sys_path_is_handed_as_text(
 
 
 def test_what_is_no_path_on_sys_path_is_left_out(tmp_path: Path) -> None:
-    """The import system skips an entry that is no path; so does a check's process.
+    """A check's process gets ``sys.path`` as text, without what is no path.
 
-    ``sys.path`` holds it only for the call. Coverage reads ``sys.path``
-    each time it meets a file it has not seen, and fails on such an entry:
-    an upload checked meanwhile, as this test did once, failed with it.
+    The entries are handed to the helper, never put on ``sys.path``:
+    coverage reads ``sys.path`` each time it meets a file it has not seen,
+    and fails on an entry that is no path, as a checked upload with one
+    there once did.
     """
-    original = sys.path
-    sys.path = ["/first", tmp_path, 7]  # type: ignore[list-item]  # Python allows it.
-    try:
-        path = inspection._child_path()
-    finally:
-        sys.path = original
+    path = inspection._child_path(["/first", tmp_path, 7])
 
     assert path == ["/first", str(tmp_path)]
 
