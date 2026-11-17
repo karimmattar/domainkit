@@ -185,7 +185,7 @@ statuses, and the amendments they name.
 | [0172](0172-hold-admin-changes-by-what-they-grant-and-check-before-the-hold.md) | Hold admin changes by what they grant, and check before the hold | Accepted |
 | [0173](0173-show-an-act-whole-or-refuse-it.md) | Show an act whole, or refuse it | Accepted |
 | [0174](0174-bind-an-act-to-the-record-it-decides-on-and-keep-a-held-acts-authorization.md) | Bind an act to the record it decides on, and keep a held act's authorization | Accepted |
-| [0175](0175-bound-page-content-check-an-acts-upload-once-and-read-a-signed-body-last.md) | Bound a PDF's page content, check an act's upload once, and read a signed body last | Accepted |
+| [0175](0175-bound-page-content-check-an-acts-upload-once-and-read-a-signed-body-last.md) | Bound a PDF's page content, check an act's upload once, and read a signed body last | Accepted; amended 2026-11-17 (at the end) |
 | [0176](0176-bound-what-a-pdf-decodes-list-placeholders-fill-drafts-and-clean-less.md) | Bound what a PDF decodes, list placeholders, fill drafts, and clean less | Accepted |
 | [0177](0177-let-a-key-reach-every-tenant-name-a-domains-own-keys-and-search-every-word-at-once.md) | Let a key reach every tenant, name a domain's own keys, and search every word at once | Accepted |
 
