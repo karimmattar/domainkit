@@ -898,7 +898,7 @@ _forking = _Forks()
 
 
 def _before_fork() -> None:
-    """Hold every logging thread between two writes, then the locks.
+    """Take ``logging``'s lock, hold every logging thread between two writes.
 
     A thread in the middle of a write holds its stream's lock (a
     ``BufferedWriter``'s). A child forked then has the lock held by a
@@ -906,21 +906,21 @@ def _before_fork() -> None:
     forever. Each handler writes under its own lock, so a fork asks every
     thread to wait at its turnstile and takes the turnstiles, so none
     starts another record, then each handler's lock, as its write ends.
-    The waits for the threads end ``FLUSH_TIMEOUT`` after the fork began:
-    a write still going on then is on a stuck stream, which the child
-    could not write to either, and the fork goes on without it.
 
-    Then ``logging``'s lock and ``_handlers_lock``, held across the fork so
-    no thread is changing the handlers then; ``logging``'s own hook takes
-    its lock again, after this one. The threads' locks come first, as
-    their handlers may take ``logging``'s while they write; ours last, as
-    ``dictConfig`` takes it under ``logging``'s. While another thread holds
-    ``logging``'s lock, the fork lets the threads write on, waits for the
-    lock as ``logging``'s own hook would, then holds them again: the
-    holder may be ``dictConfig``, which flushes the handlers it replaces
-    under it, taking their locks and waiting for their threads. A thread
-    started while this waited is held too; none starts once
-    ``_handlers_lock`` is held.
+    ``logging``'s lock comes first, taken as ``logging``'s own hook takes
+    it, holding nothing: a ``dictConfig`` under way finishes first, with
+    the flushes of the handlers it replaces, which take their locks and
+    wait for their threads. Held while the fork waits for the writes, it
+    lets code on this thread that takes it run (a signal handler that
+    logs, a collected handler's callback); other threads that need it
+    wait for the fork. The waits for the writes end ``FLUSH_TIMEOUT``
+    after the fork has ``logging``'s lock: a write still going on then is
+    on a stuck stream, which the child could not write to either, or in
+    a handler that waits for ``logging``'s lock itself, and the fork goes
+    on without it. Then ``_handlers_lock``, as ``dictConfig`` takes it
+    under ``logging``'s; both are held across the fork, so no thread is
+    changing the handlers then. A thread started while this waited is
+    held too; none starts once ``_handlers_lock`` is held.
 
     Each lock is noted as it is taken. A signal handler that raises while
     this waits (Ctrl-C) leaves nothing taken.
@@ -936,6 +936,7 @@ def _before_fork() -> None:
 
 def _hold_for_fork(held: list[_Held]) -> None:
     """Take what ``_before_fork`` takes, noting each in ``held``."""
+    _take(_LOGGING_LOCK, held, -1)
     deadline = _seconds() + FLUSH_TIMEOUT
     paused: set[BackgroundListener] = set()
     while True:
@@ -943,11 +944,6 @@ def _hold_for_fork(held: list[_Held]) -> None:
             started = sorted(set(_listening) - paused, key=id)
         paused.update(started)
         _pause(started, held, deadline)
-        if _LOGGING_LOCK not in held and not _take(_LOGGING_LOCK, held, 0):
-            _let_go(held)
-            paused.clear()
-            _take(_LOGGING_LOCK, held, -1)
-            continue
         _take(_handlers_lock, held, -1)
         if paused.issuperset(_listening):
             return
