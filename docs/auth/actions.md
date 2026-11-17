@@ -248,8 +248,9 @@ AUTH = {"ADMIN_ACTION": True, "AUTHORIZATIONS": {"TYPED_LINKS": "refused"}}
   locks its user or group. A group's name is checked where it is typed,
   as a screen may show it cut; a user's username, address, or number is
   an identifier, set as one, and never checked. A text field sent as it
-  is stored (a form saved whole) changes nothing: it is left off the
-  screen, so a stored link is never shown through it. Rejecting and cancelling
+  is stored (a form saved whole) changes nothing: it is not checked, and
+  with `TYPED_LINKS` refused it is left off the screen, so a stored link
+  is never shown through it (`"shown"` keeps 2.7's screen). Rejecting and cancelling
   check their own reason, never the request's, so a request stored before
   the setting can always be stopped.
 - **A guard's `show`** marks what its maker typed:
@@ -275,7 +276,8 @@ AUTH = {"ADMIN_ACTION": True, "AUTHORIZATIONS": {"TYPED_LINKS": "refused"}}
   digits, `INC0012345`, or joined by a hyphen to two runs of fewer than
   seven digits, `CVE-2024-12345`), unless the number holds a plus sign or
   a bracket, or the text a word that asks for a call (`call`, `tel`,
-  `ext`, `WhatsApp`, and their Arabic words): `call 555 010 0123 EUR` and
+  `ext`, `WhatsApp`, and their Arabic words, read through look-alike
+  letters) or a telephone's sign: `call 555 010 0123 EUR` and
   `support-555-010-0123` hold one. `v1.2`, `Q3 report`, `readers`,
   `2026-11-17`, and `invoice.pdf` hold none.
 - **Known false positives** read as links to a reader too, and are

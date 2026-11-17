@@ -112,8 +112,9 @@ service on the framework reported two gaps (user report A17):
   group's new name (`group_create`, `group_rename`); each text a change
   sets on a user but its identifiers (the username, the email,
   `IDENTIFIER_FIELDS`, `AUTH.IDENTIFIERS`: an address set is what is set);
-  such a text sent as stored (a form saved whole) changes nothing and is
-  left off the screen, though the act binds it; a rejection's and a
+  such a text sent as stored (a form saved whole) changes nothing, is not
+  marked, and with `TYPED_LINKS` refused is left off the screen, though
+  the act binds it (`"shown"` keeps 2.7's screen); a rejection's and a
   cancellation's reason. What an act is on (`named`) is never marked: a
   group's name is checked where it is typed, a user's username or address
   is an identifier, never checked. The admin API checks a group's new
@@ -141,7 +142,8 @@ service on the framework reported two gaps (user report A17):
   its digits, or joined by a hyphen or an underscore to two runs of fewer
   than seven digits: `INC0012345`, `CVE-2024-12345`), unless the number
   holds a plus sign or a bracket, or the text a word that asks for a call
-  (`call`, `tel`, `ext`, `WhatsApp`, and Arabic's words for them). The
+  (`call`, `tel`, `ext`, `WhatsApp`, and Arabic's words for them, read
+  through UTS #39's look-alike letters) or a telephone's sign. The
   package keeps IANA's list as published and the look-alike letters
   derived from `confusables.txt`, with Unicode's notice;
   `.github/scripts/screen_data.py` rebuilds both, and each release runs
@@ -158,8 +160,12 @@ service on the framework reported two gaps (user report A17):
   to call. The project's four hooks and twin dependencies go.
 - **The rule stops what reads as a link, not every way to spell one.**
   "evil . com", a number spelled in words or with letters for digits, a
-  code a letter touches (`x5550100123`) pass. They read oddly on a
-  confirmation screen; a project with a stricter rule registers it on
+  code a letter touches (`x5550100123`) pass. So does an amount's shape
+  beside a word that asks for a call in another language (`llame`,
+  `appelez`, `anrufen`) or misspelled (`cal`, `fone`, `whats app`):
+  `5,550,100,123` reads as an amount, and no phone writes its number in
+  threes by commas. They read oddly on a confirmation screen, and the
+  guard is opt-in; a project with a stricter rule registers it on
   `on_typed_text`.
 - **False positives** are text that is a link to a reader too: a file
   whose extension is a top-level domain (`notes.md`, `setup.zip`), a word
