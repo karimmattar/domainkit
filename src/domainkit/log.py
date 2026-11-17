@@ -923,8 +923,13 @@ def _before_fork() -> None:
     changing the handlers then. A thread started while this waited is
     held too; none starts once ``_handlers_lock`` is held.
 
-    Each lock is noted as it is taken. A signal handler that raises while
-    this waits (Ctrl-C) leaves nothing taken.
+    Each lock is noted as it is taken, and an exception lets go of what
+    was noted: a signal handler that raises while this waits (Ctrl-C)
+    leaves nothing held. One that raises in the instant after a lock is
+    taken and before it is noted, the few bytecodes after a wait, leaves
+    that lock held; after a thread is asked to wait (``_Pause``) and
+    before that is noted, the thread passes its turnstile at every
+    record from then on, which costs it a lock but holds nothing.
     """
     held: list[_Held] = []
     _forking.held.append(held)
