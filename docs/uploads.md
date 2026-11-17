@@ -484,12 +484,34 @@ A rule that read the body first leaves it whole for the route. A
 `ResourceRouter` does this for you with `upload_route`
 ([resources.md](resources.md#files)).
 
-`receive_upload(upload, *, types, max_size, filename=None)` receives the
-file and checks it as `save_upload` does, but stores nothing. It returns
-a `ReceivedUpload`, held in a temporary file: `store(storage,
-directory=)` stores it, drops the temporary file, and returns the
-`StoredUpload`; `unstored()` says what `store` would return but its
-name; and `close()` drops it without storing. Store it, or close it.
+`receive_upload(upload, *, types, max_size, filename=None,
+remember=None)` receives the file and checks it as `save_upload` does,
+but stores nothing. It returns a `ReceivedUpload`, held in a temporary
+file: `store(storage, directory=)` stores it, drops the temporary file,
+and returns the `StoredUpload`; `unstored()` says what `store` would
+return but its name; and `close()` drops it without storing. Store it,
+or close it.
+
+`remember=` names who receives the file, a route and its caller (*new in
+2.7*). A file its checks took under that name in the last 30 minutes,
+of the same content (its SHA-256) and with the same checks, is not
+checked again; one they take now is remembered. The verdict is kept in
+the default cache, signed with `SECRET_KEY`: a cache that is down, or
+holds anything else under its key, has the file checked. An act's twin
+and the act do this ([resources.md](resources.md#files)). Name the
+caller in it: a verdict shared between callers answers one of them
+sooner when another sent the same file, which tells of that file.
+
+- A verdict outlives a deploy that changes a check of your own, for up
+  to 30 minutes: a file the old check took is not checked by the new one
+  meanwhile. domainkit's version is part of where a verdict is kept, so
+  an upgrade of domainkit forgets them all. Empty the cache, or wait 30
+  minutes, after a deploy that makes a check of your own stricter.
+- The checks are compared as they pickle. A check that holds a set (a
+  `frozenset` of names) pickles its items in another order in each
+  process, as Python salts string hashes per process: its verdict is
+  found only in the process that kept it, and the file is checked again
+  elsewhere. Hold a tuple, sorted, instead.
 
 A gateway of the infrastructure layer may call `save_upload` with the
 bytes its route hands it: the [layer rules](reference/settings.md#layer-rules)
@@ -625,11 +647,19 @@ A Word document with macros, sent as `contract.docx`:
   deadline, `REQUEST_TIMEOUT`) kills it first. A client that goes away
   does not cancel its request under Granian or uvicorn: the check runs
   on, `SECONDS` at most. A type without a check takes no slot.
-- **Memory to give.** `MEMORY` must exceed the largest `max_size` a
-  checked type takes: the process holds the file whole, and Python with
-  pypdf or lxml takes about 100 MiB of address space before it reads a
-  byte. Each worker runs up to `PROCESSES` checks: workers times
-  `PROCESSES` times `MEMORY` must fit the host or the container.
+- **Memory to give.** Python with pypdf or lxml takes about 100 MiB of
+  address space before it reads a byte, and the process holds the file
+  whole. A PDF check also keeps what it decodes, as pypdf does: the
+  object streams, up to `max_decoded`, and the pages' content, up to
+  `max_content`, whose largest stream zlib holds twice as it is decoded.
+  So give `MEMORY` about 100 MiB, plus the largest `max_size` a checked
+  type takes, plus `max_decoded`, plus twice `max_content`: at the
+  defaults, about 300 MiB, within the 512 MiB default. Measured: a page
+  of 63 MiB took 166 MiB; with `max_content` of 128 MiB, a page of 127
+  MiB took 294 MiB; with 256 MiB, a page of 250 MiB needed 540 MiB, and
+  at 512 MiB was refused. Each worker runs up to `PROCESSES` checks:
+  workers times `PROCESSES` times `MEMORY` must fit the host or the
+  container.
 - **`CHECKED_PDF`** (`PdfCheck`) reads a PDF as a strict reader does,
   and only as its cross-reference tables say: an object they do not
   declare, or one not at its offset, makes the file `unreadable_file`,
@@ -643,7 +673,21 @@ A Word document with macros, sent as `contract.docx`:
   that launches a program, opens another file or sends data, a link to
   anything but `http`, `https` or `mailto`, media from a URL, an embedded
   file, rich media, and an XFA form. Names are decoded (`/J#61vaScript`
-  is `/JavaScript`).
+  is `/JavaScript`). *New in 2.7:* it decodes each page's content, as a
+  viewer does to draw it and a program that lays text over the page
+  does to write it again, and refuses a PDF whose pages' contents decode
+  to more than `max_content` (64 MiB) in all: a content stream drawn on
+  two pages counts twice. A 170 KB file of twenty pages, each 8 MiB of
+  spaces deflated, is refused ("The file is too large or too complex to
+  check."). Each stream is decoded as `overlay_pdf` decodes it, by one
+  policy ([What a PDF may decode](documents.md#what-a-pdf-may-decode),
+  ADR 0176): its filters read first, and refused when they could pass
+  the bounds (a predictor, which pypdf pads to whole rows; an image's
+  filter; ASCII85, ASCIIHex, run-length or LZW anywhere but first, or
+  storing more than `max_content / 32` in all, LZW `/ 512`); then decoded
+  no further than what is left of `max_content`, and the deadline read.
+  A stream named again is counted again, not decoded again; each name
+  is a value the check reads.
 - **`DOCX`, `XLSX`, `PPTX`** (`OfficeCheck`) refuse a document whose main
   part is macro-enabled (a `.docm` named `.docx`), macros (`vbaProject.bin`,
   Excel 4.0 macro sheets), OLE objects, ActiveX controls, chunks imported
@@ -653,17 +697,36 @@ A Word document with macros, sent as `contract.docx`:
   whatever its `TargetMode` says, a Word field that pulls content in or
   runs a program (`INCLUDEPICTURE`, `INCLUDETEXT`, `INCLUDE`, `IMPORT`,
   `LINK`, `DATABASE`, `DDE`, `DDEAUTO`) or whose instruction starts with
-  another field, OLE objects and controls written in the XML itself
-  (`w:object`, `o:OLEObject`, `w:control`), a picture or an object that
-  names a hyperlink's relationship, Excel's links to other workbooks,
+  another field (*since 2.7*, one never ended too, and one whose
+  instruction, or part of it, is a tracked deletion, `w:delInstrText`:
+  read with and without the deletion), OLE objects and controls written
+  in the XML itself (`w:object`, `o:OLEObject`, `w:control`), a picture
+  or an object that names a hyperlink's relationship (by `r:id`, or, since
+  2.7, VML's `o:relid`), a VML picture, fill or stroke that names a source
+  of its own (`src`, `o:href` or `o:althref`; *new in 2.7*), a `HYPERLINK`
+  field to anything but `http`, `https` or `mailto` (a file, a share; *new
+  in 2.7*, as a hyperlink's relationship already was), Excel's links to
+  other workbooks,
   data connections, query tables, formulas anywhere in a sheet (cells,
   names, conditional formats, validations, tables, charts) that call
   `WEBSERVICE`, `RTD`, `IMAGE` or DDE (`cmd|'...'!A0`), and an XML part
   with a DTD or an entity, or in another encoding than UTF-8 and UTF-16.
   A part is XML by its name (`.xml`, `.rels`, `.vml`) or its content
-  type (`+xml`), never by its first bytes; white space before its markup
+  type (`+xml`), whatever its first bytes; white space before its markup
   is passed over, however long, and a part that is not XML after all is
-  `unreadable_file`. An embedded workbook (a
+  `unreadable_file`. *Since 2.7*, a part a relationship names, of any
+  type, is XML too when its bytes start as XML does, whatever its name,
+  its content type, or its relationship's type: a reader follows a
+  header's relationship to `word/header2.png`, typed an image, and parses
+  it as the header it is. One lxml cannot read is passed over only if it
+  is binary data (a font's, that starts with `<`): lxml, asked again
+  with no limit of its own, stops within its first 64 characters, no
+  element or namespace begun. Any other is a document, refused however
+  lxml stopped (256 levels deep, a comment or an instruction of 10 MB
+  before its root, broken), as a reader may read further. Nothing that
+  begins an element counts as binary: an
+  embedded font whose scrambled first byte is `<` (1 in 256) begins one
+  about 4 times in 100, and is refused. An embedded workbook (a
   chart's data) is checked the same way. A template, or another kind of
   document, is not the type: with `OFFICE` the next type is tried, else
   415. Power Query reaches its data through a connection, which is
@@ -673,14 +736,17 @@ A Word document with macros, sent as `contract.docx`:
   ZIP is read from its directory before a byte is inflated: at most 2,000
   parts, 50 times the upload's size inflated in all and never more than
   200 MiB, and no part over 1 MiB inflating more than 200 times. A PDF's
-  streams decode to 16 MiB each and its object streams to 64 MiB in all;
-  its tables declare at most 200,000 objects; the check reads at most a
-  million values; a PDF pypdf read only in part is refused. Each check
+  streams decode to 16 MiB each, its object streams to 64 MiB in all, and
+  its pages' contents to 64 MiB in all (`max_content`, *new in 2.7*);
+  its tables declare at most 200,000 objects, in 32 sections at most,
+  each cross-reference stream deflated and decoding to 8 bytes an entry
+  (*new in 2.7*, as `overlay_pdf`'s); the check reads at most a million
+  values; a PDF pypdf read only in part is refused. Each check
   stops at its own deadline, 10 seconds, looked at per object or part.
   XML is parsed without entities, a DTD, or the network.
 - **Limits of your own.** `FileType(DOCX.content_type, ".docx",
   DOCX.matches, OfficeCheck("docx", max_expansion=100))`, or
-  `PdfCheck(max_pages=50, max_seconds=5)`.
+  `PdfCheck(max_pages=50, max_seconds=5, max_content=16 * 1024 * 1024)`.
 - `PDF` and `ZIP` read the first bytes, as before 2.5. A route that keeps
   them takes PDFs with scripts and Word documents with macros.
 - Without pypdf or lxml, a check raises `ImproperlyConfigured`, naming

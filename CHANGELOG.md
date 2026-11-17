@@ -188,6 +188,29 @@ and a status.
   beyond its own list is refused, never kept
   ([A narrower allowlist](docs/documents.md#a-narrower-allowlist),
   ADR 0176) (user report U2).
+- `upload_route` decides its `types`, `max_size`, `storage` and
+  `directory` per request: each may be a callable of the request and the
+  aggregate the route reached (`None` on the collection), sync or async,
+  run once the reach holds and before the body is read, on the act and
+  its twin. A `max_size` so decided needs `body_limit`. `upload_route`
+  takes `dependencies=` as `command_route` does, run on the act and never
+  on its twin
+  ([Bounds decided per request](docs/resources.md#bounds-decided-per-request),
+  ADR 0175) (user report U3).
+- `receive_upload(remember=...)` names who receives a file: a file its
+  checks took under that name in the last 30 minutes, of the same content
+  and checks, is not checked again. The verdict is kept in the default
+  cache, signed with `SECRET_KEY`. The act of an `upload_route` whose
+  rule asks for an authorization takes the verdict its twin's check gave
+  the same caller: one check process per confirmed upload, not two
+  ([uploads.md](docs/uploads.md#bytes-and-streams), ADR 0175) (user
+  report U5).
+- `DEVICES.CONTENT_DIGEST`: a signed request may say its body's SHA-256
+  in `Content-Digest` (RFC 9530), and its signature is then checked
+  before its body is read. `"required"` refuses a request that does not,
+  its body unread; `"optional"`, the default, checks it as before
+  ([The body, read last](docs/auth/devices.md#the-body-read-last),
+  ADR 0175) (user report U5).
 
 ### Changed
 
@@ -246,6 +269,12 @@ and a status.
   the footnotes, then the endnotes, each kind by part name. So
   `PlaceholderError.malformed` lists the braces in that order, as
   `placeholders` does (ADR 0176) (user report U2).
+- `ReceivedUpload.store` drops its temporary file when `STORAGES` has no
+  alias it is given; the file stayed open. An `upload_route` looks its
+  storage up, and checks its directory, before it reads the body: both
+  raised once the file was received and checked
+  ([Bounds decided per request](docs/resources.md#bounds-decided-per-request))
+  (user report U3).
 
 ### Security
 
@@ -321,6 +350,38 @@ and a status.
   refused: raise `max_decoded` for it
   ([What a PDF may decode](docs/documents.md#what-a-pdf-may-decode),
   ADR 0176) (user report U6).
+- `CHECKED_PDF` (`PdfCheck`) decodes each page's content in the check's
+  process and refuses a PDF whose pages' contents decode to more than
+  `max_content` (64 MiB, new) in all, a stream drawn twice counted
+  twice. A 170 KB file of twenty pages, each 8 MiB of spaces deflated,
+  passed, and laying text over it made 168 MB. The check opens and
+  decodes a PDF by the policy `overlay_pdf` decodes with, now in
+  `domainkit.inspection` (`bounded_reader`, `DecodeBudget`,
+  `filters_refused`; ADR 0176): a predictor (292 KB padded to 3.8 GB), a
+  filter pypdf runs in Python but first or past its share (60 KB of
+  deflate then ASCII85 made 5.7 GB; 2.5 KB of LZW took 11 s), an
+  image's filter, and more than 32 cross-reference sections are refused,
+  and the deadline is read after each stream. A PDF of more content,
+  which 2.6 took, is
+  refused: give `PdfCheck(max_content=...)` a bound of your own
+  ([Checking documents](docs/uploads.md#checking-documents), ADR 0175)
+  (user report U6).
+- `DOCX`, `XLSX` and `PPTX` (`OfficeCheck`) refuse a Word field that
+  pulls content in or runs a program when it never ends, or when its
+  instruction, or part of it, is a tracked deletion (`w:delInstrText`),
+  read with and without the deletion; a `HYPERLINK` field to a file or a
+  share; a VML picture, fill or stroke whose `src`, `o:href` or
+  `o:althref` names a source, or whose `o:relid` names a hyperlink's
+  relationship; and any of these in a part a relationship names, whatever
+  its content type says (a header named `header2.png`), when its bytes
+  start as XML does. Each passed, and a converter may fetch it
+  ([Checking documents](docs/uploads.md#checking-documents), ADR 0175)
+  (user report U5).
+- `DeviceSigned` looks the signing device up from the headers before it
+  reads the body, and refuses a request that names no device of the
+  caller's unread. It read the whole body first, up to the route's
+  limit, for any session ([The body, read last](docs/auth/devices.md#the-body-read-last),
+  ADR 0175) (user report U5).
 
 ## [2.6.0] - 2026-11-17
 

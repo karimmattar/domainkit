@@ -178,6 +178,49 @@ relied on 2.6's behaviour changes, and what to run.
   whole tuple may need its order changed; `missing` and `unused` were
   sorted and stay so.
 
+- **A PDF's page content is bounded, and decoded as `overlay_pdf`
+  decodes it** (security). `CHECKED_PDF` refuses, 422 `unsafe_file`
+  ("The file is too large or too complex to check."), a PDF whose pages'
+  contents decode to more than 64 MiB in all, and one the shared policy
+  refuses: a predictor or an image's filter on a page's content, ASCII85,
+  ASCIIHex, run-length or LZW anywhere but first or past their share,
+  more than 32 cross-reference sections, an object stream in another
+  ([Checking documents](uploads.md#checking-documents), ADR 0175, ADR
+  0176). A project that takes larger drawings gives its type a bound of
+  its own: `FileType("application/pdf", ".pdf", PDF.matches,
+  PdfCheck(max_content=128 * 1024 * 1024))`, and `UPLOAD_CHECKS` room to
+  decode it: the check keeps what it decodes, and holds the largest
+  stream twice, so a page of 127 MiB took 294 MiB, within the 512 MiB
+  `MEMORY`; one of 250 MiB, with `max_content` of 256 MiB, needed 540
+  MiB ([Memory to give](uploads.md#checking-documents)).
+- **Office documents with an unended or deleted field, a link to a file,
+  or a VML picture from elsewhere, are refused.** A Word field that pulls
+  content in and never ends, or whose instruction is a tracked deletion; a
+  `HYPERLINK` field to a file or a share; a VML picture, fill or stroke
+  whose `src`, `o:href` or `o:althref` names a source, or whose `o:relid`
+  names a hyperlink; and any of these in a part a relationship names
+  whatever its content type (a header typed as a PNG), are 422
+  `unsafe_file`. Accept or reject the tracked changes and save the
+  document again.
+- **An act's twin hands its verdict to the act.** An `upload_route` whose
+  rule asks for an authorization checks the file at the twin and takes
+  that verdict at the act, for the same caller and content, for 30
+  minutes. A deploy that makes a check of your own stricter leaves the
+  verdicts kept before it for those 30 minutes: empty the default cache
+  with the deploy if that matters
+  ([Bytes and streams](uploads.md#bytes-and-streams)).
+- **An upload route checks its storage and directory before the body.**
+  An alias `STORAGES` lacks, or a directory a storage refuses, raises
+  before the file is received (still a 500), and a size given as a float
+  is refused when the route is declared.
+- **`DeviceSigned` reads a body last.** A request naming no device of the
+  caller's is refused before its body is read, and a signed request takes
+  two short transactions, the device's lookup and the request's record
+  (which reads the device again), where it took one. Nothing to change;
+  once every app in use sends `Content-Digest`, set
+  `DEVICES.CONTENT_DIGEST = "required"`
+  ([The body, read last](auth/devices.md#the-body-read-last)).
+
 ### Make and apply auth's migration for bound and held authorizations
 
 The action authorizations table (`domainkit_authorizations`) gains three

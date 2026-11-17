@@ -180,10 +180,15 @@ Errors raised by the framework itself (`django.core.exceptions`).
 
 What an uploaded document holds, checked before it is kept (`documents` extra).
 
+- `DecodeBudget`: What a call may still decode, and pypdf's limits within it: one per call.
 - `FileRefused`: The file is of its type, but holds what is not accepted.
 - `NotOfType`: The file is not of the type its first bytes suggested.
 - `OfficeCheck`: Refuse an Office document with macros, objects, or outside links.
 - `PdfCheck`: Refuse a PDF that runs, sends, or hides something; or is too long.
+- `Tally`: What a `bounded_reader` may read of a file, and what it read.
+- `bounded_reader`: A `PdfReader` of pypdf that reads a file within a `Tally`'s bounds.
+- `decoded_in_python`: The filter of `IN_PYTHON` decoding `stream` first, and the bytes it stores.
+- `filters_refused`: Why `stream` is not decoded, read from its filters before it is, or None.
 - `run_checks`: Run `checks` on `file` in a process of their own; the first that took it.
 
 ## `domainkit.i18n`

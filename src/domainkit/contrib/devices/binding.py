@@ -25,6 +25,13 @@ requests sent at once pass in whatever order they arrive (ADR 0135).
 Keys are P-256 (ES256, the signature DER as both platforms make it) or
 Ed25519, sent as SubjectPublicKeyInfo or, for P-256, the raw point the
 Secure Enclave exports.
+
+The body is read once its device is found, the user's: a request that
+names no device of theirs is refused first. A request may also say the
+body's SHA-256 in ``Content-Digest`` (RFC 9530): its signature is then
+checked before the body is read, and the body against it after.
+``DEVICES.CONTENT_DIGEST = "required"`` refuses a request that does not
+(ADR 0175).
 """
 
 import base64
@@ -67,6 +74,8 @@ __all__ = [
 DEVICE_ID: Final = "x-device-id"
 DEVICE_TIME: Final = "x-device-time"
 DEVICE_SIGNATURE: Final = "x-device-signature"
+DIGEST_HEADER: Final = "content-digest"
+"""The body's digest the client declares (RFC 9530): ``sha-256=:<base64>:``."""
 VERSION: Final = b"domainkit-device-v1"
 SIGNING_DEVICE: Final = "domainkit.signing_device"
 """Where a request keeps the device that signed it, checked once."""
@@ -81,9 +90,14 @@ logger: Final = logging.getLogger(__name__)
 
 def signed_message(method: str, target: str, time: int, body: bytes) -> bytes:
     """What a device signs for a request."""
-    digest = base64.urlsafe_b64encode(hashlib.sha256(body).digest()).rstrip(b"=")
+    return _message(method, target, time, hashlib.sha256(body).digest())
+
+
+def _message(method: str, target: str, time: int, digest: bytes) -> bytes:
+    """What a device signs for a request whose body's SHA-256 is ``digest``."""
+    encoded = base64.urlsafe_b64encode(digest).rstrip(b"=")
     return b"\n".join(
-        (VERSION, method.encode(), target.encode(), str(time).encode(), digest)
+        (VERSION, method.encode(), target.encode(), str(time).encode(), encoded)
     )
 
 
@@ -208,6 +222,22 @@ async def read_signature(request: Request) -> tuple[int, bytes, bytes] | None:
     ``DEVICES.SIGNATURE_WINDOW``. The signature is not checked: the caller
     checks it with the key it expects.
     """
+    sent = _sent(request)
+    if sent is None:
+        return None
+    time, signature, _ = sent
+    body = await request.body()
+    return time, signature, signed_message(request.method, _target(request), time, body)
+
+
+def _sent(request: Request) -> tuple[int, bytes, bytes | None] | None:
+    """The time, the signature, and the body's declared digest, from the headers.
+
+    None when a header is missing or malformed, or the time is outside
+    ``DEVICES.SIGNATURE_WINDOW``. The digest is None when the request
+    declares none (no ``Content-Digest``, or none of SHA-256), or a
+    malformed one. Nothing of the body is read.
+    """
     headers = request.headers
     try:
         time = int(headers.get(DEVICE_TIME, ""))
@@ -221,14 +251,37 @@ async def read_signature(request: Request) -> tuple[int, bytes, bytes] | None:
     now = int(utc_now().timestamp() * 1000)
     if abs(now - time) > window.total_seconds() * 1000:
         return None
+    return time, signature, _declared(headers.get(DIGEST_HEADER, ""))
+
+
+def _declared(field: str) -> bytes | None:
+    """The SHA-256 a ``Content-Digest`` field declares, or None (RFC 9530).
+
+    The field is a dictionary of algorithms, each a byte sequence in
+    base64 between colons: ``sha-256=:...:, sha-512=:...:``. Only
+    ``sha-256`` is read; a malformed one declares nothing.
+    """
+    for member in field.split(","):
+        key, _, value = member.strip().partition("=")
+        if key.strip() != "sha-256":
+            continue
+        item = value.partition(";")[0].strip()  # Its parameters, if any, left out.
+        if len(item) < 2 or item[0] != ":" or item[-1] != ":":
+            return None
+        try:
+            digest = base64.b64decode(item[1:-1], validate=True)
+        except ValueError:
+            return None
+        return digest if len(digest) == hashlib.sha256().digest_size else None
+    return None
+
+
+def _target(request: Request) -> str:
+    """The request's path and query, as sent."""
     target = request.scope.get("raw_path", b"").decode("latin-1") or request.url.path
     if query := request.scope.get("query_string", b""):
         target = f"{target}?{query.decode('latin-1')}"
-    return (
-        time,
-        signature,
-        signed_message(request.method, target, time, await request.body()),
-    )
+    return target
 
 
 async def proves_key(request: Request, algorithm: int, key: bytes) -> bool:
@@ -266,7 +319,17 @@ async def bind_key(
 
 
 async def _check(connection: HTTPConnection, user: Any) -> DeviceProof | None:  # noqa: ANN401
-    """What the device signed, if every part holds; its time recorded."""
+    """What the device signed, if every part holds; its time recorded.
+
+    The device is looked up from the headers, and one that is not the
+    user's refused, before a byte of the body is read. With a declared
+    digest that the signature holds for, the body is read only then, and
+    must be the one declared; without one (or one the signature does not
+    hold for, unless ``CONTENT_DIGEST`` requires it), the signature is
+    checked once the body is read. No unit of work is open while the
+    body arrives: the device is read again in the one that records the
+    request, and refused if it was unbound, or its key changed, meanwhile.
+    """
     if not isinstance(connection, Request) or not getattr(
         user, "is_authenticated", False
     ):
@@ -275,30 +338,32 @@ async def _check(connection: HTTPConnection, user: Any) -> DeviceProof | None:  
         device_id = UUID(connection.headers.get(DEVICE_ID, ""))
     except ValueError:
         return None
-    signed = await read_signature(connection)
-    if signed is None:
-        return None
-    time, signature, message = signed
+    sent = _sent(connection)
     config = registry.settings(DevicesSettings)
+    if sent is None or (sent[2] is None and config.CONTENT_DIGEST == "required"):
+        return None
+    time, signature, declared = sent
+    async with DevicesUnitOfWork() as uow:
+        device = await uow.devices.get(device_id)
+    if device is None or device.user_id != user.id:
+        return None
+    message = await _signed(connection, device, time, signature, declared, config)
+    if message is None:
+        return None
     digest = hashlib.sha256(message).hexdigest()
     cached = config.SIGNATURE_STORE == "cache"
     now = utc_now()
     async with DevicesUnitOfWork() as uow:
-        device = await uow.devices.get(device_id)
-        if (
-            device is None
-            or device.user_id != user.id
-            or not verify_signature(
-                device.algorithm, device.public_key, signature, message
-            )
-        ):
+        current = await uow.devices.get(device.id)  # Unbound while the body came?
+        if current is None or _key_of(current) != _key_of(device):
             return None
         if cached:
             if not await _first_in_cache(device.id, digest, config.SIGNATURE_WINDOW):
                 return None
         elif not await uow.devices.use(device.id, digest, time):
             return None
-        stale = device.last_used_at is None or now - device.last_used_at > TOUCH_EVERY
+        last = current.last_used_at
+        stale = last is None or now - last > TOUCH_EVERY
         if stale:
             window = int(config.SIGNATURE_WINDOW.total_seconds() * 1000)
             await uow.devices.touch(
@@ -307,11 +372,43 @@ async def _check(connection: HTTPConnection, user: Any) -> DeviceProof | None:  
         if stale or not cached:
             await uow.commit()
     return DeviceProof(
-        device=device,
+        device=current,
         signed=message,
         signature=signature,
         signed_at=datetime.fromtimestamp(time / 1000, UTC),
     )
+
+
+def _key_of(device: BoundDevice) -> tuple[UUID, int, bytes]:
+    """Whose ``device`` is, and the key it signs with: what checks its signature."""
+    return device.user_id, device.algorithm, device.public_key
+
+
+async def _signed(
+    request: Request,
+    device: BoundDevice,
+    time: int,
+    signature: bytes,
+    declared: bytes | None,
+    config: DevicesSettings,
+) -> bytes | None:
+    """The message ``device`` signed for ``request``, or None if it signed none.
+
+    A declared digest the signature holds for is checked before the body
+    is read, and the body against it after.
+    """
+    target = _target(request)
+    if declared is not None:
+        message = _message(request.method, target, time, declared)
+        if verify_signature(device.algorithm, device.public_key, signature, message):
+            body = await request.body()
+            return message if hashlib.sha256(body).digest() == declared else None
+        if config.CONTENT_DIGEST == "required":
+            return None
+    message = signed_message(request.method, target, time, await request.body())
+    if verify_signature(device.algorithm, device.public_key, signature, message):
+        return message
+    return None
 
 
 async def _first_in_cache(device_id: UUID, digest: str, window: timedelta) -> bool:

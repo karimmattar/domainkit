@@ -20,7 +20,9 @@ it in a process of its own, under the system's limits of memory and time
 ``CHECKED_PDF``, ``DOCX``, ``XLSX`` and ``PPTX`` ship such hooks
 (``domainkit.inspection``, the ``documents`` extra); ``PDF`` and
 ``ZIP`` read the first bytes only. ``receive_upload`` does the same work
-without storing, for a route that stores later (ADR 0167).
+without storing, for a route that stores later (ADR 0167), and may
+remember a file it checked, so that the same content is not checked
+twice, as a twin and its act would (ADR 0175).
 
 ``serve`` answers with a stored file from a route, which must say who may
 call it (``Require(...)``, or ``Public`` on purpose), as every route must
@@ -29,6 +31,7 @@ call it (``Require(...)``, or ``Public`` on purpose), as every route must
 """
 
 import asyncio
+import contextlib
 import hashlib
 import logging
 import pickle
@@ -37,6 +40,7 @@ import tempfile
 import unicodedata
 from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable
 from dataclasses import dataclass, replace
+from datetime import timedelta
 from gettext import NullTranslations
 from typing import IO, Final
 from urllib.parse import quote
@@ -99,6 +103,14 @@ _FORBIDDEN: Final = frozenset('<>:"/\\|?*')
 _TEXT_CONTROLS: Final = frozenset(b"\t\n\r\f")
 SPOOL_MEMORY: Final = 1024 * 1024
 """How much of an upload held for a check stays in memory; the rest goes to disk."""
+CHECKED_FOR: Final = timedelta(minutes=30)
+"""How long ``receive_upload(remember=...)`` remembers a file it checked: as long
+as an action's authorization may live, so that the act finds what its twin
+checked."""
+REMEMBERED: Final = "domainkit.upload.checked:"
+"""Where a remembered verdict is kept in the default cache: this, then a digest."""
+CHECKED_SALT: Final = "domainkit.http.uploads.checked"
+"""What a remembered verdict is signed for: a cache may be written by others."""
 
 type Upload = UploadFile | bytes | AsyncIterable[bytes]
 """What ``save_upload`` takes: a form's file, bytes, or a stream of bytes.
@@ -317,13 +329,17 @@ class ReceivedUpload:
     ) -> StoredUpload:
         """Store it under a new name, streamed through ``UPLOAD_SCANNER`` if set.
 
+        The temporary file is dropped whatever happens, an alias
+        ``STORAGES`` lacks included.
+
         Raises:
             UploadRefused: 422 ``infected_file``; nothing is stored.
             ScannerUnavailable: The scanner could not scan it (503).
             ValueError: ``directory`` is malformed.
+            ImproperlyConfigured: ``STORAGES`` has no alias ``storage``.
         """
-        target = storages[storage] if isinstance(storage, str) else storage
         try:
+            target = storages[storage] if isinstance(storage, str) else storage
             stored = await _store(
                 target,
                 self.kind,
@@ -401,11 +417,23 @@ async def receive_upload(
     types: Iterable[FileType],
     max_size: int,
     filename: str | None = None,
+    remember: str | None = None,
 ) -> ReceivedUpload:
     """Receive ``upload`` whole and check it as ``save_upload`` does; store nothing.
 
     For a route that stores the file later, or not at all (an
     authorization's twin). Close what it returns, or store it.
+
+    ``remember`` names who receives the file: a route and its caller, as
+    a twin and its act do (New in 2.7). A file whose checks took it under
+    that name in the last 30 minutes, of the same content (its SHA-256)
+    and the same checks (as they pickle), is not checked again; one they
+    take now is remembered. The verdict is kept in the default cache,
+    signed with ``SECRET_KEY``; a cache that is down, or holds anything
+    else, has the file checked. A check of a project's own that a deploy
+    changes is not run again for a verdict kept before it, for those 30
+    minutes; and one that holds a set pickles in another order in each
+    process, so its verdict is found in the process that kept it only.
 
     Raises:
         UploadRefused: 400 ``empty_file``, 413 ``file_too_large``, 415
@@ -416,7 +444,8 @@ async def receive_upload(
     accepted = _accepted(types)
     reader = _Reader(upload, filename)
     head = await _first(reader, max_size)
-    return await _received(reader, head, _candidates(head, accepted), max_size)
+    candidates = _candidates(head, accepted)
+    return await _received(reader, head, candidates, max_size, remember)
 
 
 def _accepted(types: Iterable[FileType]) -> tuple[FileType, ...]:
@@ -515,9 +544,16 @@ async def _store(
 
 
 async def _received(
-    reader: _Reader, head: bytes, candidates: list[FileType], max_size: int
+    reader: _Reader,
+    head: bytes,
+    candidates: list[FileType],
+    max_size: int,
+    remember: str | None = None,
 ) -> ReceivedUpload:
     """The whole upload in a temporary file, and the first candidate it is.
+
+    With ``remember``, a verdict on the same content is taken as it was
+    kept (``receive_upload``).
 
     Raises:
         UploadRefused: 413, 415, or 422 (a check refused it).
@@ -535,12 +571,88 @@ async def _received(
                 await asyncio.to_thread(spool.write, chunk)  # It goes to disk.
             else:
                 spool.write(chunk)
-        kind = await _checked(spool, candidates)
+        kind = await _known(spool, candidates, digest.hexdigest(), remember)
     except BaseException:
         spool.close()
         raise
     filename = sanitize_filename(reader.filename)
     return ReceivedUpload(kind, size, digest.hexdigest(), filename, spool)
+
+
+async def _known(
+    file: IO[bytes], candidates: list[FileType], sha256: str, remember: str | None
+) -> FileType:
+    """The candidate ``file`` is: as its checks said, under ``remember``, or now.
+
+    Only a file a check reads is remembered: one whose first candidate
+    has none takes no process to tell.
+
+    Raises:
+        UploadRefused: As ``_checked``.
+        ServiceBusy: As ``_checked``.
+    """
+    if remember is None or candidates[0].inspect is None:
+        return await _checked(file, candidates)
+    key = _verdict_key(remember, sha256, candidates)
+    index = await _remembered(key)
+    if index is not None and index < len(candidates):
+        return candidates[index]
+    kind = await _checked(file, candidates)
+    await _remember(key, candidates.index(kind))
+    return kind
+
+
+def _verdict_key(remember: str, sha256: str, candidates: list[FileType]) -> str:
+    """Where the verdict on content ``sha256`` is kept, for ``remember``'s checks.
+
+    It names who received it, the content, the candidates and their checks
+    (pickled, as their process gets them), and domainkit's version: a
+    check changed with a release is a check that has not run.
+    """
+    import domainkit
+
+    checks = pickle.dumps(
+        [(kind.content_type, kind.extension, kind.inspect) for kind in candidates]
+    )
+    named = "\x1f".join(
+        (remember, sha256, hashlib.sha256(checks).hexdigest(), domainkit.__version__)
+    )
+    return REMEMBERED + hashlib.sha256(named.encode()).hexdigest()
+
+
+async def _remembered(key: str) -> int | None:
+    """The index of the candidate the checks took, as kept under ``key``; or None.
+
+    None when nothing is kept, the cache is down, or what is kept is not
+    signed for ``key``.
+    """
+    from domainkit import signing
+    from domainkit.cache import CacheError, caches
+
+    try:
+        kept = await caches["default"].get(key)
+    except CacheError:
+        return None
+    if not isinstance(kept, str):
+        return None
+    try:
+        named, _, index = signing.Signer(salt=CHECKED_SALT).unsign(kept).rpartition(":")
+    except signing.BadSignature:
+        return None
+    return int(index) if named == key and index.isdigit() else None
+
+
+async def _remember(key: str, index: int) -> None:
+    """Keep that the checks took candidate ``index``, signed, for 30 minutes.
+
+    A cache that is down keeps nothing: the next receive checks again.
+    """
+    from domainkit import signing
+    from domainkit.cache import CacheError, caches
+
+    signed = signing.Signer(salt=CHECKED_SALT).sign(f"{key}:{index}")
+    with contextlib.suppress(CacheError):
+        await caches["default"].set(key, signed, ttl=CHECKED_FOR)
 
 
 async def _checked(file: IO[bytes], candidates: list[FileType]) -> FileType:

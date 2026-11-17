@@ -59,6 +59,12 @@ class DevicesSettings(BaseModel):
     database. ``"cache"``: a key per request in the default cache, which
     every process must share (Redis); a signed request then writes to no
     database, and none is accepted while the cache is down."""
+    CONTENT_DIGEST: Literal["optional", "required"] = "optional"
+    """Whether a signed request must say its body's SHA-256 in ``Content-Digest``
+    (RFC 9530), so that its signature is checked before its body is read.
+    ``"optional"``: a request that says it is checked first; one that does
+    not, once its body is read. ``"required"``: one that does not is
+    refused, its body unread (New in 2.7)."""
     ENROLLMENT: bool = False
     """Let a user with no bound device bind the first one with a code, the
     password, and the new key's signature (``POST /devices/enroll``), with

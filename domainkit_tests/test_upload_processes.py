@@ -48,6 +48,7 @@ from domainkit.i18n.catalogs import compile_po
 from domainkit.i18n.lazy import LazyString
 from domainkit.i18n.translation import reset_catalogs
 from domainkit.inspection import (
+    COMPLEX,
     DAMAGED,
     PDF_STREAM_LIMIT,
     TOO_LONG,
@@ -211,22 +212,28 @@ def unended_strings(headers: int, filler: int) -> bytes:
 
 
 @pytest.mark.parametrize(
-    ("data", "seconds", "detail"),
+    ("data", "seconds", "expected"),
     [
-        (xref_chain(12), 30.0, TOO_MUCH),
-        (reparsed_index(40_000, 5_000), 1.0, TOO_LONG),
-        (unended_strings(2_000, 400_000), 1.0, TOO_LONG),
+        (xref_chain(12), 30.0, ("unsafe_file", COMPLEX)),
+        (reparsed_index(40_000, 5_000), 1.0, ("unreadable_file", TOO_LONG)),
+        (unended_strings(2_000, 400_000), 1.0, ("unreadable_file", TOO_LONG)),
     ],
     ids=["xref-chain", "reparsed-index", "unended-strings"],
 )
 async def test_what_pypdf_does_unbounded_is_stopped_by_the_system(
-    data: bytes, seconds: float, detail: str
+    data: bytes, seconds: float, expected: tuple[str, str]
 ) -> None:
-    """Memory or time: 422 ``unreadable_file`` within a few seconds, never stored."""
+    """Memory or time: 422 within a few seconds, never stored.
+
+    A chain of cross-reference streams, which pypdf decodes and keeps as
+    it opens a file, took the system's memory limit to stop; since 2.7
+    the decoding policy refuses it first: each stream decodes to 8 bytes
+    an entry at most (ADR 0176).
+    """
     with limited(seconds):
         status, code, said, taken = await refusal(data, CHECKED_PDF)
 
-    assert (status, code, said) == (422, "unreadable_file", detail)
+    assert (status, code, said) == (422, *expected)
     assert taken < 10
 
 
