@@ -570,13 +570,17 @@ PUT  /admin/auth/users/6f1c.../groups {"groups": ["auditors"]}
 - **The screen says which user and what change**: "Change a user's
   groups", then "User: alice@example.com" (the user's first identifier)
   or the group's name, the flags that grant or take access
-  (`is_superuser`, `is_staff`, `is_active`), "Adds: auditors", "Takes
+  ("Superuser", "Staff", "Active": yes or no), "Adds: auditors", "Takes
   away: clerks", the reason of an impersonation, then the other fields
-  set, by name. The flags and the lists always show: a list too long for
-  a line shows its first items and how many more ("auditors, clerks and 4
-  more"). Six values at most; the last line counts the fields not shown.
-  The phone shows these words, read from the server's record
-  ([Confirming one act](ciba.md#confirming-one-act)).
+  set, by name ("Email", "Display name"). A list goes over as many lines
+  as it takes ("Adds", "Adds (2)"). Six lines at most: with
+  `AUTH["AUTHORIZATIONS"]["WHOLE"]` on (since 2.7), a change that does not
+  fit whole is refused at the twin (`422 too_much_to_show`), and staff
+  make it in smaller steps; off, what does not fit is cut and counted,
+  the flags first ("auditors, clerks and 4 more", "2 more values"). The
+  phone shows these words, read from the server's record
+  ([Confirming one act](ciba.md#confirming-one-act), [What a screen
+  shows](actions.md#what-a-screen-shows)).
 - **The twin checks what the change checks**: the staff member's bounds,
   the fields, a password's validators, impersonation's rules, a user or
   group that is not there, the last active superuser deleted or

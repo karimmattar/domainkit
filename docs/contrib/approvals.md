@@ -159,6 +159,7 @@ by action. Its arguments:
 | `maker_fields` | The command's fields that hold who acts (`invited_by`, `granted_by`). The submit route sets them to the maker's id, whatever the client sent; a command your code submits (`submit_command`, a direct call with `submit`) must name its maker there (`invalid_arguments` otherwise); and the run checks them again. A name the command has not is refused when the guard is made. |
 | `http` | `True`: makers submit the command at `POST /requests`. `False` keeps it off that route (`404 unknown_action`): only your code submits it. |
 | `by_maker` | `True`: the approved command runs in its maker's own call, never in the worker (since 2.4). See [Run by its maker](#run-by-its-maker). |
+| `show` | What a person deciding the command is shown of it, in place of its arguments by name (since 2.7): a function of the command that returns labelled values, each a text or a list of texts, in the request's language (`{"Pay": "2500.00 EUR to Ada Lovelace"}`). It may be `async def` and read the database (a user by name rather than by id); it runs each time a screen is built, and nothing of it is stored with the request. See [What the approver is shown](#approving-with-an-authorization). |
 | `domain` | The installed domain that the guard belongs to, when you call `guard()` outside `ready()`. |
 
 ### What a direct call does
@@ -629,6 +630,14 @@ PATCH /admin/auth/users/6f1c... {"is_staff": true}                       200: th
   (`403 approval_required`, "Making staff needs approval: create the
   user, then make them staff."). Since 2.5 the refusal is auth's
   `on_create_staff` check, which the creation's twin asks too.
+- **The approver's screen names the user** (since 2.7): "User:
+  alice@example.com", their first identifier, read when the screen is
+  built and never stored with the request; then "Adds" and "Takes away",
+  each group or permission on as many lines as it takes, or an
+  impersonation's "Reason". With auth's `AUTHORIZATIONS.WHOLE` and
+  `APPROVE_ACTION` on, a change that the approver's screen could not show
+  whole is refused when it is submitted (`422 too_much_to_show`): the
+  staff member makes it in smaller steps, each approved whole.
 - **Superusers approve**, other than the staff member, and never the user
   the change is about (`interested_party`). With `ADMIN_APPROVERS` set,
   the holders of that permission approve instead; as with
@@ -740,11 +749,19 @@ POST /api/approvals/requests/6c0e.../approve {"fingerprint": "3f1b..."}
 
 **What the approver is shown** is built by the server from the stored
 request, never sent by a page: the title "Approve a request", the action,
-then the arguments by name, in the command's order. Each value is the
-argument as compact JSON (a string as itself), printable, cut to 64
-characters. A screen shows six values at most: with more than five
-arguments, four are shown, and the last line says how many more. The
-approver reads the whole request at `GET /requests/{id}`.
+then what the guard's `show` says of the command, or else its arguments
+by name, in the command's order. Each value is the argument as compact
+JSON (a string as itself), printable; a list of strings or numbers goes
+over as many lines as it takes ("added", "added (2)"), each item shown
+([What a screen shows](../auth/actions.md#what-a-screen-shows)). A screen
+holds six lines of 64 characters. What does not fit is cut and counted
+(since 2.7, a list's last line says how many more items: "… and 22
+more"), and with more arguments than lines, the last line says how many
+more. With auth's `AUTHORIZATIONS.WHOLE` on, it is refused instead (`422
+too_much_to_show`): asking to approve such a request, and, with
+`APPROVE_ACTION` on, submitting one, so that no request waits for an
+approval nobody could confirm whole. The approver reads the whole request
+at `GET /requests/{id}`.
 
 **Asking is refused as approving would be**: a request that is no longer
 pending (`request_not_pending`), the maker (`maker_cannot_decide`), a
@@ -815,10 +832,12 @@ POST /api/approvals/requests {"action": "treasury.payout", "arguments": {...}}
 
 - **What is shown** is built by the server: "Submit a request", "Reject
   a request", or "Cancel a request"; the action; the reason, when one is
-  given; then the arguments by name, as approving shows them (six values
-  at most, the last line counting those not shown). A submission shows
-  the arguments as they would be stored, the maker's fields set to the
-  maker.
+  given; then what the guard shows, or the arguments by name, as approving
+  shows them. A submission shows the arguments as they would be stored,
+  the maker's fields set to the maker. With auth's
+  `AUTHORIZATIONS.WHOLE` on, submitting refuses what does not fit whole,
+  as approving does; rejecting and cancelling never do: they stop a
+  request, so what does not fit is cut and counted.
 - **The act is bound.** A submission with other arguments, a rejection
   or a cancellation with another reason, or of another request, is
   refused (`403 action_not_authorized`), and voids the authorization.
@@ -1219,6 +1238,9 @@ With `APPROVE_ACTION` on, approving answers auth's refusals too:
 `401 authorization_required` without an authorization, `403
 action_not_authorized` with one that does not hold, and those of asking
 for one ([Errors and refusals](../auth/actions.md#errors-and-refusals)).
+With auth's `AUTHORIZATIONS.WHOLE` on as well, asking to approve, and
+submitting, a request whose screen cannot show it whole answers `422
+too_much_to_show` (`TooMuchToShow`).
 So do submitting, rejecting, and cancelling with `SUBMIT_ACTION`,
 `REJECT_ACTION`, and `CANCEL_ACTION` on.
 

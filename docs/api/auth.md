@@ -284,6 +284,13 @@ Transactions authorized for one amount and one payee (PSD2's dynamic linking).
 - `router`: The routes: transactions authorized for one amount and one payee (PSD2's dynamic linking).
 - `sca_transaction`: The user's transaction `challenge_id`: its amount, payee, and state.
 
+## `domainkit.contrib.auth.screens`
+
+What an act shows, laid out on a phone's screen: whole, or refused (ADR 0173).
+
+- `TooMuchToShow`: The act cannot be shown whole on one screen: make it in smaller steps (422).
+- `laid_out`: `details` on a screen's lines: six labelled lines of 64 characters at most.
+
 ## `domainkit.contrib.auth.signup`
 
 Signing up: anyone may ask for an account, if `AUTH.SIGNUP_ENABLED` says so.

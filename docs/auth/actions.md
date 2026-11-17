@@ -118,12 +118,70 @@ action_not_authorized`: the authorization was spent.
 `Shown(title, details)` is what a screen shows: a title of at most 64
 printable characters, and at most six labels and values of at most 64
 each, in order (a mapping, or pairs). Anything longer is a `ValueError`:
-shorten what you show. It is built when the authorization is asked for,
+shorten what you show, or lay a list over lines with `laid_out`
+([What a screen shows](#what-a-screen-shows)). It is built when the authorization is asked for,
 and kept: every screen shows the kept words, never words a page sent.
 
 `register_action(action)` in `ready()` registers it, a hook point of
 auth's ([ADR 0140](../adr/0140-auth-asks-other-apps-through-hooks.md)).
 Two actions of one purpose are refused.
+
+## What a screen shows
+
+*New in 2.7* ([ADR 0173](../adr/0173-show-an-act-whole-or-refuse-it.md)).
+The phone is the one screen a stolen session does not write, and the
+person confirms what it shows: the act must be there whole. A screen
+holds a title and six lines of 64 characters. `laid_out(details)`, in
+`domainkit.contrib.auth.screens`, puts an act's labelled values on those
+lines: a text on one line, a list over as many as it takes, the next
+lines numbered.
+
+```python
+from domainkit.contrib.auth.actions import Shown
+from domainkit.contrib.auth.screens import laid_out
+
+
+async def show_grant(command: GrantKeys, uow: AccountsUnitOfWork) -> Shown:
+    member = await uow.members.get(command.member_id)
+    details = {"Member": member.name, "Adds": command.keys}
+    return Shown("Grant permissions", laid_out(details))
+```
+
+```text
+Grant permissions
+Member    Ada Lovelace
+Adds      accounts.add_user, accounts.change_user, accounts.view_user
+Adds (2)  accounts.delete_user
+```
+
+- An item that holds a comma or a double quote is quoted
+  (`"readers, admins"`), so two items never read as one; a character that
+  is not printable is escaped (a new line as `\n`).
+- What does not fit whole is refused when the act is asked for:
+  `TooMuchToShow`, `422 too_much_to_show`. A text or an item longer than
+  a line, a label twice, or more than six lines. The person makes the act
+  in smaller steps, each shown whole.
+- `laid_out(details, whole=False)` cuts and counts instead: a text cut
+  ends with `…`, a list's last line says how many more ("auditors,
+  clerks and 4 more"), and a last line ("…") how many values are not
+  shown. Use it only for an act that does nothing the screen leaves out,
+  such as stopping something.
+
+**The framework's own acts** (`auth.admin_change`, and approvals'
+`approvals.submit`, `approvals.approve`, `approvals.reject`, and
+`approvals.cancel`) lay out their screens so. A list goes over as many
+lines as it takes ("Adds", "Adds (2)"); flags and fields are named as a
+person reads them ("Superuser: yes", "Email", "Display name"). With
+`AUTH["AUTHORIZATIONS"]["WHOLE"]` on, what does not fit whole is refused,
+and a request that its approvers could not be shown whole is refused
+when it is submitted, rather than left waiting. Rejecting and cancelling
+are never refused for what they show: they stop a request. Off, the
+default in 2.x, what does not fit is cut and counted, never left out
+unsaid.
+
+```python
+AUTH = {"ADMIN_ACTION": True, "AUTHORIZATIONS": {"WHOLE": True}}
+```
 
 ## A use case as the act
 
@@ -452,8 +510,9 @@ place of the step-up window:
   the approver, and the fingerprint they state. Its subject is
   `approvals.request:<id>`;
 - what is shown is built from the stored request: "Approve a request",
-  the action, and the arguments by name, each cut to 64 characters, six
-  values in all at most;
+  the action, and what the request's guard shows (its `show`), or its
+  arguments by name, laid out on the screen
+  ([What a screen shows](#what-a-screen-shows));
 - the approve route's twin, `POST /requests/{id}/approve/authorization`,
   asks for one, and refuses what approving would refuse: the maker, a
   request no longer pending, a fingerprint that is not the request's;
@@ -516,6 +575,7 @@ An app that confirms its own way (the phone of
 | --- | --- | --- |
 | `AUTHORIZATIONS.TTL` | 5 minutes | How long an authorization works, from asking to spending; 30 minutes at most. |
 | `AUTHORIZATIONS.METHODS` | `["otp"]` | What confirming one proves, unless its action names others: `otp`, `pwd`, `phone`. |
+| `AUTHORIZATIONS.WHOLE` | `False` | The framework's acts show what they do whole, or are refused (`422 too_much_to_show`); off, what does not fit is cut and counted. |
 | `MFA.RATE` | `"10/hour"` | Wrong codes per user, confirmations included. |
 | `LOGIN_RATE` | `"10/minute"` | Wrong passwords, where the act asks `pwd`. |
 
@@ -529,6 +589,7 @@ An app that confirms its own way (the phone of
 | `403 action_not_authorized` | Any authorization that does not hold for this act, these arguments, and this login. |
 | `400 step_up_unsupported` | Asking with credentials limited to scopes, or that cannot be told apart. |
 | `409 no_second_factor` | Asking, for a user with no way to confirm what the act asks. |
+| `422 too_much_to_show` | Asking, for an act its screen cannot show whole (`TooMuchToShow`): a `show` that lays it out whole, or a framework act under `AUTHORIZATIONS.WHOLE`. |
 | `409 authorization_confirmed`, `409 authorization_expired` | Confirming twice, or one ended; confirming too late. |
 | `409 authorization_needs_other_factors` | A code or a passkey where the act asks the phone; the phone asked for an act that asks the password. |
 | `409 authorization_changed` | The phone, or another app (the app's own act), confirms a digest other than the act's. |
