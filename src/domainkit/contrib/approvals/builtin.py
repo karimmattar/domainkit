@@ -679,37 +679,38 @@ async def _admin_command(
     Raises:
         ApprovalRequired: The change both makes the user staff and active
             again while both are held: two approvals, never one for both.
+        ImproperlyConfigured: A change of groups held does not name each
+            group it adds (``AdminChange.groups``).
     """
     held = guards()
-    user_id = target.id
-    found: tuple[str, Command] | None = None
     if change.kind == "update":
         return await _updated(target, change, held)
-    if change.kind == "groups" and change.added:
-        found = (
-            SET_GROUPS,
-            SetGroups(
-                user_id=user_id,
-                added=tuple(sorted(change.added)),
-                removed=tuple(sorted(change.removed)),
-                groups=_held_groups(change),
-            ),
+    action = USER_ACTIONS.get(change.kind)
+    granting = change.kind not in ("groups", "permissions") or bool(change.added)
+    if action is None or action not in held or not granting:
+        return None
+    user_id = target.id
+    added, removed = tuple(sorted(change.added)), tuple(sorted(change.removed))
+    if action == SET_GROUPS:
+        groups = _held_groups(change)
+        return action, SetGroups(
+            user_id=user_id, added=added, removed=removed, groups=groups
         )
-    elif change.kind == "permissions" and change.added:
-        found = (
-            SET_PERMISSIONS,
-            SetPermissions(
-                user_id=user_id,
-                added=tuple(sorted(change.added)),
-                removed=tuple(sorted(change.removed)),
-            ),
-        )
-    elif change.kind == "password":
-        found = SET_PASSWORD, SetPassword(user_id=user_id)
-    elif change.kind == "impersonate":
-        reason = str(change.values.get("reason", ""))
-        found = IMPERSONATE, Impersonate(user_id=user_id, reason=reason)
-    return found if found is not None and found[0] in held else None
+    if action == SET_PERMISSIONS:
+        return action, SetPermissions(user_id=user_id, added=added, removed=removed)
+    if action == SET_PASSWORD:
+        return action, SetPassword(user_id=user_id)
+    reason = str(change.values.get("reason", ""))
+    return action, Impersonate(user_id=user_id, reason=reason)
+
+
+USER_ACTIONS: Final[Mapping[str, str]] = {
+    "groups": SET_GROUPS,
+    "permissions": SET_PERMISSIONS,
+    "password": SET_PASSWORD,
+    "impersonate": IMPERSONATE,
+}
+"""The guarded action of each kind of change to a user but ``update``."""
 
 
 async def _updated(
