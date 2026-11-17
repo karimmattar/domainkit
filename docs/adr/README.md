@@ -187,7 +187,6 @@ statuses, and the amendments they name.
 | [0174](0174-bind-an-act-to-the-record-it-decides-on-and-keep-a-held-acts-authorization.md) | Bind an act to the record it decides on, and keep a held act's authorization | Accepted; amended by [0178](0178-bind-an-act-to-the-version-its-page-read.md) |
 | [0175](0175-bound-page-content-check-an-acts-upload-once-and-read-a-signed-body-last.md) | Bound a PDF's page content, check an act's upload once, and read a signed body last | Accepted |
 | [0176](0176-bound-what-a-pdf-decodes-list-placeholders-fill-drafts-and-clean-less.md) | Bound what a PDF decodes, list placeholders, fill drafts, and clean less | Accepted |
-| [0177](0177-let-a-key-reach-every-tenant-name-a-domains-own-keys-and-search-every-word-at-once.md) | Let a key reach every tenant, name a domain's own keys, and search every word at once | Accepted |
 | [0177](0177-let-a-key-reach-every-tenant-name-a-domains-own-keys-and-search-every-word-at-once.md) | Let a key reach every tenant, name a domain's own keys, and search every word at once | Accepted; amended by [0182](0182-let-a-gateway-raise-a-routes-problems-and-name-users-by-the-fields-a-project-chooses.md) |
 | [0178](0178-bind-an-act-to-the-version-its-page-read.md) | Bind an act to the version its page read | Accepted |
 | [0182](0182-let-a-gateway-raise-a-routes-problems-and-name-users-by-the-fields-a-project-chooses.md) | Let a gateway raise a route's problems, and name users by the fields a project chooses | Accepted |
