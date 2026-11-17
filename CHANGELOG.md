@@ -20,6 +20,20 @@ and a status.
   (CVE-2026-34591), and its dulwich had nine advisories. CI audits the
   build's hash-pinned tools too.
 
+### Security
+
+- `overlay_pdf` and `page_sizes` (`domainkit.documents`) decode
+  `max_decoded` bytes at most, in all, 32 MiB by default: the object
+  streams of each PDF, and the content of each page laid over and of its
+  overlay. Each is decoded before it is used, under pypdf's limits
+  lowered to what is left, for the call only (pypdf keeps them per
+  context), so a PDF that inflates past the budget is refused when it
+  runs out, not decoded whole: a 170 KB PDF became 168 MB in one preview.
+  A page laid over is written back deflated. A PDF that decodes past 32
+  MiB, which 2.6 laid over, is refused: raise `max_decoded` for it
+  ([What a PDF may decode](docs/documents.md#what-a-pdf-may-decode),
+  ADR 0176) (user report U6).
+
 ## [2.6.0] - 2026-11-17
 
 2.6 follows up 2.5. The project's own code can take an approval

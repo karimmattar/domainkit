@@ -178,10 +178,11 @@ statuses, and the amendments they name.
 | [0165](0165-let-an-operator-prove-a-superusers-address-or-promote-a-proved-account.md) | Let an operator prove a superuser's address, or promote a proved account | Accepted |
 | [0166](0166-let-a-domain-layer-mark-its-texts-extract-the-projects-own-and-add-a-translation-alone.md) | Let a domain layer mark its texts, extract the project's own, and add a translation alone | Accepted |
 | [0167](0167-check-an-upload-whole-and-let-a-resource-take-one.md) | Check an upload whole before it is kept, and let a resource take one | Accepted; amended 2026-11-17 (at the end) |
-| [0168](0168-render-documents-through-a-port-with-gotenberg-and-fill-them-locally.md) | Render documents through a port with Gotenberg, and fill them locally | Accepted |
+| [0168](0168-render-documents-through-a-port-with-gotenberg-and-fill-them-locally.md) | Render documents through a port with Gotenberg, and fill them locally | Accepted; amended by [0176](0176-bound-what-a-pdf-decodes-list-placeholders-fill-drafts-and-clean-less.md) |
 | [0169](0169-granians-http-versions-failed-starts-fcm-dry-runs-write-once-probes-clamd-over-tls-and-dropped-files.md) | Granian's HTTP versions and failed starts, FCM's dry runs, write-once probes, clamd over TLS, and dropped files | Accepted |
 | [0170](0170-let-a-resources-items-be-tenants-count-members-keys-alone-and-let-lists-name-what-they-refer-to.md) | Let a resource's items be tenants, count members' keys alone, and let lists name what they refer to | Accepted |
 | [0171](0171-prove-a-number-given-at-signup-by-its-own-code.md) | Prove a number given at signup by its own code | Accepted |
+| [0176](0176-bound-what-a-pdf-decodes-list-placeholders-fill-drafts-and-clean-less.md) | Bound what a PDF decodes, list placeholders, fill drafts, and clean less | Accepted |
 
 ### Decisions still without a record
 

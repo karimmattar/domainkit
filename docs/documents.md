@@ -26,7 +26,9 @@ pip install "domainkit[documents,httpclient]"
 ```
 
 The decisions are in
-[ADR 0168](adr/0168-render-documents-through-a-port-with-gotenberg-and-fill-them-locally.md).
+[ADR 0168](adr/0168-render-documents-through-a-port-with-gotenberg-and-fill-them-locally.md)
+and
+[ADR 0176](adr/0176-bound-what-a-pdf-decodes-list-placeholders-fill-drafts-and-clean-less.md).
 
 ## A first example
 
@@ -300,6 +302,48 @@ For some pages only, pass a mapping of page indexes to one-page PDFs:
 unreadable PDF is refused. Lay text over a PDF before it is signed: any
 change breaks a signature.
 
+### What a PDF may decode
+
+A PDF keeps a page's drawing, and most of its objects, deflated. A page
+of 8 KB may inflate to 8 MB, so a file of 170 KB can hold hundreds of
+megabytes once it is read. pypdf bounds each stream it decodes (75 MB by
+default), not what they come to together. So `overlay_pdf` and
+`page_sizes` take `max_decoded`, the bytes they decode in all: 32 MiB by
+default. *New in 2.7.*
+
+- `page_sizes` counts the PDF's object streams, where it keeps its
+  objects compressed.
+- `overlay_pdf` counts the object streams of the document and of the
+  overlays, and the content of each page it lays over, and of its
+  overlay.
+
+Each stream is decoded before it is used, and no further than what is
+left, so a PDF that inflates past the budget is refused with a
+`DocumentError` once the budget runs out, not decoded whole. A page's
+content is written back deflated: the result is about the size of the
+document, not of what it decoded.
+
+```python
+laid = await asyncio.to_thread(
+    overlay_pdf, drawing, overlay, max_decoded=128 * 1024 * 1024
+)
+```
+
+The default holds a contract of hundreds of pages. Raise it for drawings
+or maps of many megabytes a page, and keep it as low as your documents
+allow: what is decoded is held in memory, about twice over, while the
+call runs.
+
+pypdf's limits are lowered for the call only. pypdf keeps them in a
+context variable, so other threads, and the code around the call, keep
+their own, and a limit lower than `max_decoded` that your code set with
+`pypdf.apply_configuration` still holds. The cross-reference streams
+pypdf reads as it opens a file are held to its limits each, not counted
+in all. A PDF a person uploads is checked before it is stored
+([Uploads](uploads.md)); `max_decoded` bounds what is laid over later
+all the same, whether it was stored before, or converted from a Word
+document.
+
 ## Rich text from people
 
 A person writes a contract's terms in an editor. Before the text goes
@@ -369,7 +413,7 @@ document, rendered by Gotenberg:
 | What you see | Why | What to do |
 | --- | --- | --- |
 | `PlaceholderError` | Placeholders and values disagree; `missing`, `unused`, and `malformed` list each problem. | Fix the template or the values. For a template a user uploaded, answer 422 with the lists. |
-| `DocumentError` | A document cannot be read (not a `.docx`, past `ArchiveLimits`, a DTD, an encrypted PDF), or overlays do not fit their pages. The base of `PlaceholderError` and `RenderingRefused`; also a `ValueError`. | Read its message. |
+| `DocumentError` | A document cannot be read (not a `.docx`, past `ArchiveLimits`, a DTD, an encrypted PDF, a PDF that decodes past `max_decoded`), or overlays do not fit their pages. The base of `PlaceholderError` and `RenderingRefused`; also a `ValueError`. | Read its message. |
 | `RenderingRefused` | Gotenberg refused the input: 400 (a form or a document it cannot read), 409 (a resource did not load), 413 (past its body limit). `status` and `trace` say which. | Fix the document; sending it again changes nothing. |
 | 503 `renderer_unavailable` (`RendererUnavailable`) | Gotenberg could not be reached, failed once the retries were spent, refused the login, or answered something other than a PDF. | Try again later; check Gotenberg and its login. |
 | 503 `upstream_unavailable`, 504 `upstream_timeout`, 502 `upstream_response_too_large` | The client's own: the circuit is open, `TIMEOUT` passed, or the PDF is past `MAX_RESPONSE_BYTES`. | See [outgoing calls](reference/http.md). |
@@ -417,6 +461,8 @@ small documents built in the test.
   gives the size as shown.
 - **Calling `fill_docx` on the event loop.** A large document holds every
   request meanwhile; use `asyncio.to_thread`.
+- **Raising `max_decoded` for every document.** Raise it where a kind of
+  document needs it, not for files people upload.
 
 ## See also
 

@@ -9,14 +9,19 @@ shown. So a rotated page that shifted the overlay would fail here.
 """
 
 import io
+import struct
+import zlib
 from typing import Any, Final, TypedDict
 
+import pypdf
 import pytest
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import (
+    ArrayObject,
     DecodedStreamObject,
     DictionaryObject,
     NameObject,
+    NullObject,
     NumberObject,
     RectangleObject,
 )
@@ -24,6 +29,8 @@ from pypdf.generic import (
 from domainkit.documents import DocumentError, overlay_pdf, page_sizes
 
 ROTATIONS: Final = (0, 90, 180, 270, -90, 450)
+KiB: Final = 1024
+MiB: Final = 1024 * KiB
 
 
 class Page(TypedDict, total=False):
@@ -35,6 +42,8 @@ class Page(TypedDict, total=False):
     crop: tuple[float, float, float, float]
     rotate: int
     content: bytes
+    deflated: bool
+    """The content deflated, as most PDFs keep it: it decodes when read."""
 
 
 def pdf(*pages: Page, password: str | None = None) -> bytes:
@@ -62,7 +71,8 @@ def pdf(*pages: Page, password: str | None = None) -> bytes:
         )
         stream = DecodedStreamObject()
         stream.set_data(spec.get("content", b""))
-        page[NameObject("/Contents")] = writer._add_object(stream)
+        kept = stream.flate_encode(level=9) if spec.get("deflated") else stream
+        page[NameObject("/Contents")] = writer._add_object(kept)
     if password is not None:
         writer.encrypt(password, algorithm="AES-128")
     out = io.BytesIO()
@@ -94,6 +104,64 @@ def shown(
 
     page.extract_text(visitor_text=visit)
     return found
+
+
+def inflating(size: int, at: tuple[float, float] = (10, 10)) -> bytes:
+    """Content that writes ``MARK`` ``at``, then ``size`` bytes of spaces."""
+    return text(at) + b" " * size
+
+
+def streamed(*sizes: int, broken: bool = False, stray: bool = False) -> bytes:
+    """A PDF of one page whose object streams decode to ``sizes`` bytes each.
+
+    ``broken`` adds an object stream of a filter pypdf does not know;
+    ``stray`` an entry whose object stream is the catalog, no stream.
+    Nothing refers to the objects the streams hold.
+    """
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] >>",
+    ]
+    held: list[int] = []  # The stream of each object held, in order.
+    for size in sizes:
+        number = 100 + len(held)
+        header = f"{number} 0 ".encode()
+        data = zlib.compress(header + b" " * size + b"null")
+        objects.append(
+            f"<< /Type /ObjStm /N 1 /First {len(header)} /Filter /FlateDecode "
+            f"/Length {len(data)} >>\nstream\n".encode()
+            + data
+            + b"\nendstream"
+        )
+        held.append(len(objects))
+    if broken:
+        objects.append(
+            b"<< /Type /ObjStm /N 1 /First 6 /Filter /Bogus /Length 10 >>\n"
+            b"stream\n100 0 null\nendstream"
+        )
+        held.append(len(objects))
+    if stray:
+        held.append(1)
+    out = b"%PDF-1.7\n"
+    offsets = []
+    for number, body in enumerate(objects, 1):
+        offsets.append(len(out))
+        out += f"{number} 0 obj\n".encode() + body + b"\nendobj\n"
+    table = len(objects) + 1
+    rows = [struct.pack(">BIH", 0, 0, 65535)]
+    rows += [struct.pack(">BIH", 1, offset, 0) for offset in offsets]
+    rows.append(struct.pack(">BIH", 1, len(out), 0))
+    rows += [struct.pack(">BIH", 0, 0, 0)] * (100 - len(rows))
+    rows += [struct.pack(">BIH", 2, stream, 0) for stream in held]
+    data = zlib.compress(b"".join(rows))
+    start = len(out)
+    out += (
+        f"{table} 0 obj\n<< /Type /XRef /Size {len(rows)} /W [1 4 2] /Root 1 0 R "
+        f"/Filter /FlateDecode /Length {len(data)} >>\nstream\n"
+    ).encode()
+    out += data + b"\nendstream\nendobj\n"
+    return out + f"startxref\n{start}\n%%EOF\n".encode()
 
 
 def overlay_for(document: bytes, at: tuple[float, float] = (30, 40)) -> bytes:
@@ -279,3 +347,135 @@ def test_a_page_pypdf_cannot_merge_is_refused() -> None:
 
     with pytest.raises(DocumentError, match=r"could not be laid over \("):
         overlay_pdf(broken.getvalue(), overlay_for(document))
+
+
+# What is decoded ----------------------------------------------------------------------
+
+
+def test_a_small_pdf_that_inflates_far_is_refused_by_default() -> None:
+    """The report's file: pages of deflated spaces, a few kilobytes each.
+
+    pypdf's own limit is 75 MB a stream; each page is under it, and the
+    pages together are far past ``MAX_DECODED`` (32 MiB). Nothing is laid
+    over, and what is decoded stops where the budget ends.
+    """
+    document = pdf(*(Page(content=inflating(8 * MiB), deflated=True) for _ in range(5)))
+    assert len(document) < 100 * KiB
+
+    with pytest.raises(DocumentError) as refused:
+        overlay_pdf(document, overlay_for(document))
+
+    assert str(refused.value) == (
+        "The document and its overlays decode to more than 33,554,432 bytes "
+        "(max_decoded), or past pypdf's limit on a stream."
+    )
+
+
+def test_the_pages_laid_over_and_their_overlays_count_in_all() -> None:
+    """Each fits ``max_decoded`` alone; together they do not."""
+    document = pdf(
+        *(Page(content=inflating(400 * KiB), deflated=True) for _ in range(3))
+    )
+    overlay = overlay_for(document)
+    big = pdf(Page(content=inflating(700 * KiB, (30, 40))))
+
+    laid = overlay_pdf(document, {0: pdf(Page()), 1: pdf(Page())}, max_decoded=MiB)
+    with pytest.raises(DocumentError, match="decode to more than 1,048,576 bytes"):
+        overlay_pdf(document, overlay, max_decoded=MiB)
+    with pytest.raises(DocumentError, match="decode to more than 1,048,576 bytes"):
+        overlay_pdf(document, {2: big}, max_decoded=MiB)
+    assert shown(overlay_pdf(document, {2: big}, max_decoded=2 * MiB), 2) == [
+        (10.0, 10.0),
+        (30.0, 40.0),
+    ]
+    assert len(PdfReader(io.BytesIO(laid)).pages) == 3
+
+
+def test_a_page_laid_over_is_written_deflated() -> None:
+    """Its content is not written back as it decoded: 170 KB stays small."""
+    document = pdf(Page(content=inflating(4 * MiB), deflated=True), Page())
+
+    laid = overlay_pdf(document, overlay_for(document))
+
+    assert len(laid) < 64 * KiB
+    assert shown(laid) == [(10.0, 10.0), (30.0, 40.0)]
+    assert shown(laid, 1) == [(30.0, 40.0)]
+
+
+def test_a_page_of_many_streams_or_none_is_counted_as_it_is() -> None:
+    """``/Contents`` may be an array, hold a null, or be left out."""
+    reader = PdfReader(io.BytesIO(pdf(Page(content=text((10, 10))), Page())))
+    writer = PdfWriter(clone_from=reader)
+    first, second = writer.pages
+    contents = ArrayObject([first.raw_get("/Contents"), NullObject()])
+    first[NameObject("/Contents")] = writer._add_object(contents)
+    del second[NameObject("/Contents")]
+    out = io.BytesIO()
+    writer.write(out)
+    document = out.getvalue()
+
+    laid = overlay_pdf(document, overlay_for(document), max_decoded=1000)
+
+    assert [shown(laid, index) for index in range(2)] == [
+        [(10.0, 10.0), (30.0, 40.0)],
+        [(30.0, 40.0)],
+    ]
+
+
+def test_object_streams_count_in_all_too() -> None:
+    """Where a PDF keeps its objects compressed: each decoded, every one."""
+    document = streamed(600 * KiB, 600 * KiB)
+
+    assert page_sizes(document, max_decoded=2 * MiB) == [(300.0, 400.0)]
+    with pytest.raises(DocumentError) as refused:
+        page_sizes(document, max_decoded=MiB)
+    assert str(refused.value) == (
+        "The document decode to more than 1,048,576 bytes (max_decoded), or "
+        "past pypdf's limit on a stream."
+    )
+    with pytest.raises(DocumentError, match="decode to more than 1,048,576"):
+        overlay_pdf(document, overlay_for(streamed()), max_decoded=MiB)
+
+
+def test_an_object_stream_pypdf_cannot_decode_fails_only_where_it_is_used() -> None:
+    """Unused, as these are, it is skipped, as before the budget."""
+    document = streamed(100, broken=True, stray=True)
+
+    assert page_sizes(document, max_decoded=1000) == [(300.0, 400.0)]
+    assert len(overlay_pdf(document, overlay_for(document), max_decoded=1000)) > 0
+
+
+def test_pypdfs_limits_are_lowered_for_the_call_only() -> None:
+    """The caller's configuration is the same after; a lower limit of its own holds.
+
+    pypdf keeps its configuration in a context variable: what a call sets,
+    no other thread sees.
+    """
+    document = pdf(Page(content=inflating(4000), deflated=True))
+    overlay = overlay_for(document)
+    before = pypdf.get_configuration()
+
+    overlay_pdf(document, overlay)
+    with pytest.raises(DocumentError):
+        overlay_pdf(document, overlay, max_decoded=1000)
+    assert pypdf.get_configuration() == before
+    with (
+        pypdf.apply_configuration(zlib_maximum_output_length=1000),
+        pytest.raises(DocumentError, match="past pypdf's limit on a stream"),
+    ):
+        overlay_pdf(document, overlay)
+    with pypdf.apply_configuration(zlib_maximum_output_length=0):  # Unbounded.
+        with pytest.raises(DocumentError, match="more than 1,000 bytes"):
+            overlay_pdf(document, overlay, max_decoded=1000)
+        assert pypdf.get_configuration().zlib_maximum_output_length == 0
+
+
+@pytest.mark.parametrize("bound", [0, -1])
+def test_max_decoded_is_more_than_nothing(bound: int) -> None:
+    """A budget of nothing would refuse every page."""
+    document = pdf(Page())
+
+    with pytest.raises(ValueError, match=f"max_decoded is more than 0, not {bound}"):
+        overlay_pdf(document, document, max_decoded=bound)
+    with pytest.raises(ValueError, match="max_decoded is more than 0"):
+        page_sizes(document, max_decoded=bound)

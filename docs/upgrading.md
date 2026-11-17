@@ -36,6 +36,23 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.6 to 2.7
+
+2.7 answers the project's notes on 2.6. Each item of this list says what
+a project that relied on 2.6's behaviour changes.
+
+- **A PDF that decodes past 32 MiB is not laid over** (security).
+  `overlay_pdf` and `page_sizes` decode `max_decoded` bytes at most, in
+  all: the object streams of each PDF, and the content of each page laid
+  over and of its overlay. 2.6 decoded them whole, held only by pypdf's
+  limit of 75 MB on each stream, so a PDF of 170 KB could take hundreds
+  of megabytes in the worker. Past the budget, the call raises
+  `DocumentError`. For drawings or maps of many megabytes a page, pass a
+  larger `max_decoded`, for that kind of document only
+  ([What a PDF may decode](documents.md#what-a-pdf-may-decode)). A page
+  laid over is now written back deflated: the PDF looks the same, and is
+  smaller.
+
 ## 2.5 to 2.6
 
 2.6 follows up 2.5. No table changes. Each item of this list says what a
