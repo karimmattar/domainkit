@@ -379,6 +379,37 @@ MARKS: Final = {
     codecs.BOM_UTF16_BE: "utf-16-be",
 }
 """The byte order marks an XML part may start with, and their encodings."""
+XML_MARKS: Final = (
+    codecs.BOM_UTF8,
+    codecs.BOM_UTF16_LE,
+    codecs.BOM_UTF16_BE,
+    codecs.BOM_UTF32_LE,
+    codecs.BOM_UTF32_BE,
+    b"\x4c\x6f\xa7\x94",
+)
+"""How XML may start, but for ``<``: a byte order mark, or EBCDIC's ``<?xm``."""
+XML_BLANKS: Final = b" \t\r\n\x00"
+"""What may come before an XML part's ``<``: white space, and the zero bytes of
+UTF-16 and UTF-32."""
+BINARY_RELATIONSHIPS: Final = frozenset(
+    {
+        "image",
+        "hdphoto",
+        "media",
+        "audio",
+        "video",
+        "font",
+        "printersettings",
+        "thumbnail",
+        "package",
+        "origin",
+        "attachedtoolbars",
+        "legacydoctextinfo",
+    }
+)
+"""Relationships to parts no reader takes as XML, by the last segment of their
+type, in lower case: an image, a font, a printer's settings, an embedded package.
+Every other part a relationship names is read as XML if it starts as XML."""
 XML_EXTENSIONS: Final = frozenset({"xml", "rels", "vml"})
 """Parts XML by their name."""
 XML_TYPES: Final = frozenset({"application/xml", "text/xml"})
@@ -1008,6 +1039,9 @@ class _Package:
     """Each part's content type, by its name in lower case."""
     hyperlinks: dict[str, set[str]] = field(default_factory=dict)
     """The ids of each part's hyperlinks to outside the package, by part."""
+    reached: set[str] = field(default_factory=set)
+    """The parts a relationship names that a reader may parse as XML: a header,
+    a footnote, whatever their content type says."""
 
     def check(self, file: IO[bytes], kind: Kind, *, nested: bool) -> None:
         """Check the package ``file`` holds as a ``kind`` document.
@@ -1142,6 +1176,8 @@ class _Package:
                 self._check_relationship(archive, kind, target, external, nested=nested)
                 if external:  # A hyperlink, as the check of it found.
                     self.hyperlinks.setdefault(source, set()).add(rid)
+                elif kind.rpartition("/")[2] not in BINARY_RELATIONSHIPS:
+                    self.reached.add(target)
             return
         data = self._xml(archive, name)
         if data is None:
@@ -1155,11 +1191,14 @@ class _Package:
         fields.close()
 
     def _xml(self, archive: zipfile.ZipFile, name: str) -> bytes | None:
-        """The part ``name``, if its name or content type says XML; refused if bad.
+        """The part ``name``, if it is XML, or may be read as XML; refused if bad.
 
-        Whether a part is XML is never read from its bytes, which may start
-        with anything. It is read whole, but never past its stated size;
-        another part (an image) is opened all the same, and not read.
+        A part is XML by its name or its content type, whatever its bytes
+        start with. A part a relationship names (``reached``) may be read as
+        XML whatever its content type, as a reader follows a header's
+        relationship to it: it is XML too when its bytes start as XML does,
+        after any white space. It is read whole, but never past its stated
+        size; another part (an image) is opened all the same, and not read.
 
         Raises:
             FileRefused: It declares a DTD or an entity, or is XML in an
@@ -1167,12 +1206,14 @@ class _Package:
                 stated size.
         """
         info = self.parts[name]
+        buffer = io.BytesIO()
         with archive.open(info) as part:
-            if not _is_xml(name, self.types.get(name, "")):
+            if not _is_xml(name, self.types.get(name, "")) and not (
+                name in self.reached and _starts_as_xml(part, buffer)
+            ):
                 return None
             # In chunks, and never past the stated size: read whole at
             # once, zipfile copies what it has so far, four times the part.
-            buffer = io.BytesIO()
             shutil.copyfileobj(part, buffer, CHUNK)
         data = buffer.getvalue()
         encoding = _xml_encoding(data)
@@ -1278,6 +1319,23 @@ class _Package:
                     del element.getparent()[0]
         except self.etree.XMLSyntaxError as exc:
             raise FileRefused(DAMAGED, code=UNREADABLE) from exc
+
+
+def _starts_as_xml(part: IO[bytes], buffer: IO[bytes]) -> bool:
+    """Whether ``part`` starts as XML does, what was read of it kept in ``buffer``.
+
+    A byte order mark, or ``<`` after any white space (zero bytes, as UTF-16
+    and UTF-32 write it, included), however long: an XML reader takes those
+    as XML. EBCDIC's ``<?xm`` too, which ``_xml_encoding`` then refuses.
+    """
+    while chunk := part.read(CHUNK):
+        buffer.write(chunk)
+        if buffer.tell() == len(chunk) and chunk.startswith(XML_MARKS):
+            return True
+        first = chunk.lstrip(XML_BLANKS)
+        if first:
+            return first.startswith(b"<")
+    return False
 
 
 def _is_xml(name: str, content_type: str) -> bool:

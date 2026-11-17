@@ -9,8 +9,10 @@ ended, and only from ``w:instrText``; and it took a VML picture's source
 from ``r:id`` alone (ADR 0175).
 """
 
+import codecs
 import gzip
 import io
+import random
 import time
 import tracemalloc
 import zlib
@@ -29,7 +31,7 @@ from domainkit.inspection import (
     OfficeCheck,
     PdfCheck,
 )
-from domainkit_tests.support.documents import R, document, office, pdf
+from domainkit_tests.support.documents import R, W, document, office, pdf, relationships
 
 MIB: Final = 1024 * 1024
 VML: Final = 'xmlns:v="urn:schemas-microsoft-com:vml"'
@@ -150,6 +152,7 @@ def test_other_filters_are_held_to_what_is_left() -> None:
 def test_page_content_is_counted_never_held() -> None:
     """32 MiB of content is inflated a chunk at a time: nothing near it is kept."""
     data = paged([0], stream(spaces(32 * MIB)))
+    assert verdict(PdfCheck(), paged([0], stream(spaces(10)))) == "ok"  # Imports.
 
     tracemalloc.start()
     try:
@@ -330,3 +333,134 @@ def test_a_workbooks_vml_drawing_is_checked_alike() -> None:
     )
 
     assert verdict(OfficeCheck("xlsx"), data) == EXTERNAL
+
+
+DRAWINGML: Final = (
+    'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" '
+    'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+    'xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture" '
+    f"{RELS}"
+)
+HEADER_REFERENCE: Final = (
+    f"<w:p/><w:sectPr><w:headerReference {RELS} "
+    'w:type="default" r:id="rId1"/></w:sectPr>'
+)
+
+
+def blip(attribute: str) -> str:
+    """A paragraph holding a DrawingML picture whose ``a:blip`` has ``attribute``."""
+    return (
+        f"<w:p><w:r><w:drawing><wp:inline {DRAWINGML}>"
+        '<wp:extent cx="914400" cy="914400"/><wp:docPr id="1" name="p"/>'
+        '<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/'
+        'drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="1" name="p"/>'
+        f"<pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip {attribute}/>"
+        "</pic:blipFill><pic:spPr/></pic:pic></a:graphicData></a:graphic>"
+        "</wp:inline></w:drawing></w:r></w:p>"
+    )
+
+
+def headed(name: str, header: str | bytes, *rels: tuple[str, ...]) -> bytes:
+    """A document whose header is the part ``word/<name>``, a PNG by its type."""
+    parts: dict[str, str | bytes] = {f"word/{name}": header}
+    if rels:
+        parts[f"word/_rels/{name}.rels"] = relationships(*rels)  # type: ignore[arg-type]
+    return office(
+        main=document(HEADER_REFERENCE),
+        main_relationships=[(f"{R}header", name)],
+        parts=parts,
+        defaults={"png": "image/png"},
+    )
+
+
+def header(body: str) -> str:
+    """A Word header of ``body``."""
+    return f'<w:hdr xmlns:w="{W}">{body}</w:hdr>'
+
+
+SHUFFLED: Final = random.Random(7)  # noqa: S311 - white space, not a secret.
+WHITE: Final = "".join(SHUFFLED.choice(" \t\r\n") for _ in range(70_000))
+"""White space a reader passes over before the markup, more than a chunk of it."""
+
+
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        pytest.param(
+            headed(
+                "header2.png",
+                header(blip('r:link="rId1"')),
+                (f"{R}hyperlink", "https://a.example/x.png", "External"),
+            ),
+            EXTERNAL,
+            id="picture-linked-to-a-hyperlink",
+        ),
+        pytest.param(
+            headed("header2.png", header(field(BEGIN, PICTURE, END))),
+            EXTERNAL,
+            id="png",
+        ),
+        pytest.param(
+            headed("header3.dat", header(field(BEGIN, PICTURE, END))),
+            EXTERNAL,
+            id="no-type",
+        ),
+        pytest.param(
+            headed("header2.png", WHITE + header(field(BEGIN, PICTURE, END))),
+            EXTERNAL,
+            id="white-space-first",
+        ),
+        pytest.param(
+            headed(
+                "header2.png",
+                codecs.BOM_UTF16_LE
+                + header(field(BEGIN, PICTURE, END)).encode("utf-16-le"),
+            ),
+            EXTERNAL,
+            id="utf-16",
+        ),
+        pytest.param(
+            headed("header2.png", header("<w:p/>").encode("utf-16-be")),
+            "unreadable_file",
+            id="utf-16-unmarked",
+        ),
+        pytest.param(headed("header2.png", header("<w:p/>")), "ok", id="harmless"),
+        pytest.param(
+            headed("header2.png", b"\x89PNG\r\n\x1a\n" + b"<" * 100),
+            "ok",
+            id="a-png",
+        ),
+        pytest.param(headed("header2.png", b""), "ok", id="empty"),
+        pytest.param(
+            headed("header2.png", "<w:hdr"), "unreadable_file", id="not-xml-after-all"
+        ),
+    ],
+)
+def test_a_part_a_relationship_names_is_read_as_the_reader_reads_it(
+    data: bytes, expected: str
+) -> None:
+    """A header called ``header2.png``, typed a PNG, is still a header.
+
+    A reader follows the relationship and parses the part as XML whatever
+    its content type: so is it checked, when its bytes start as XML does.
+    One that does not start so is no XML to any reader.
+    """
+    assert verdict(OfficeCheck("docx"), data) == expected
+
+
+def test_a_part_no_reader_takes_as_xml_is_not_read_as_xml() -> None:
+    """An image, a font, an embedded package: not parsed, whatever they hold."""
+    data = office(
+        main=document(),
+        main_relationships=[
+            (f"{R}image", "media/x.png"),
+            (f"{R}font", "fonts/f.odttf"),
+        ],
+        parts={"word/media/x.png": "<not xml", "word/fonts/f.odttf": "< nor this"},
+        defaults={
+            "png": "image/png",
+            "odttf": "application/vnd.openxmlformats-officedocument.obfuscatedFont",
+        },
+    )
+
+    assert verdict(OfficeCheck("docx"), data) == "ok"
