@@ -137,17 +137,24 @@ def test_staff_typing_a_link_is_refused_at_the_admin_twin(
 def test_without_the_act_a_group_is_never_named_with_a_link(
     client: TestClient, frozen: FrozenClock
 ) -> None:
-    """Its name reaches approvers' screens later: refused where staff type it."""
+    """Its name reaches approvers' screens later: refused where staff type it.
+
+    As a screen may show it: cut past its twentieth character.
+    """
     root = Staff(client, frozen, "root", superuser=True)
     readers = make_group("readers")
 
     with override_settings(AUTH={**REFUSED, "ADMIN_ACTION": False}):
         created = root.call("POST", "/groups", {"name": "evil.example.com"})
         renamed = root.call("PATCH", f"/groups/{readers}", {"name": "call 5550100123"})
+        cut = root.call(
+            "POST", "/groups", {"name": "a team for the vendor evil.corporate"}
+        )
         named = root.call("POST", "/groups", {"name": "auditors"})
 
     problem(created, 422, "link_not_shown")
     problem(renamed, 422, "link_not_shown")
+    problem(cut, 422, "link_not_shown")  # Shown cut, as "...vendor evil.co…".
     assert named.status_code == 201, named.json()
 
 
@@ -310,3 +317,55 @@ def test_a_reason_about_a_user_is_shown_as_its_maker_typed_it(
     assert typed[1] == ("Stated reason", "Ticket 42")
     assert isinstance(typed[1][1], Typed)
     assert none[1] == ("Stated reason", None)
+
+
+def test_a_cut_reason_or_name_is_checked_as_the_phone_shows_it(
+    client: TestClient, frozen: FrozenClock
+) -> None:
+    """Off ``WHOLE``, the phone shows 63 characters and ``…``: a link may begin there.
+
+    ``evil.corporate`` names no domain, ``evil.co…`` does; a number's
+    letters cut off leave a number to call. A cut inside an address or a
+    link is refused as the whole is (review of ADR 0180).
+    """
+    root = Staff(client, frozen, "root", superuser=True)
+    target = create_user("target")
+    domain = "Approved; details at our partner evil.co".rjust(63, "x") + "rporate"
+    number = "For any question please call 555 0100 123".rjust(63, "x") + "abc"
+    address = "Write to ann@example.com".rjust(70, "x")
+    link = "See https://evil.example/x".rjust(70, "x")
+    impersonate = f"/users/{target}/impersonate/authorization"
+    patch = f"/users/{target}/authorization/patch"
+
+    shown = root.ask(impersonate, {"reason": domain})
+    with override_settings(AUTH=REFUSED):
+        refused = [
+            root.ask(impersonate, {"reason": domain}),
+            root.ask(patch, {"fields": {"first_name": number}}),
+            root.ask(impersonate, {"reason": address}),
+            root.ask(impersonate, {"reason": link}),
+        ]
+
+    assert ("Reason", domain[:63] + "…") in pairs(shown)
+    for response in refused:
+        problem(response, 422, "link_not_shown")
+
+
+def test_a_form_saved_whole_sends_a_stored_name_unchanged(
+    client: TestClient, frozen: FrozenClock
+) -> None:
+    """Only what the change sets anew is typed: a name stored before is shown, kept."""
+    root = Staff(client, frozen, "root", superuser=True)
+    stored_name = "call +1 555 0100 123"
+    target = create_user("target", first_name=stored_name)
+    patch = f"/users/{target}/authorization/patch"
+
+    with override_settings(AUTH=REFUSED):
+        saved = root.ask(
+            patch, {"fields": {"first_name": stored_name, "last_name": "Jones"}}
+        )
+        changed = root.ask(patch, {"fields": {"first_name": "call +1 555 0100 124"}})
+
+    assert ("First name", stored_name) in pairs(saved)
+    assert ("Last name", "Jones") in pairs(saved)
+    problem(changed, 422, "link_not_shown")

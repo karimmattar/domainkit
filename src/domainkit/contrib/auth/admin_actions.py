@@ -208,7 +208,8 @@ async def show(act: AdminAct) -> Shown:
     away that does not fit whole is refused; off, it is cut and counted,
     the first lines kept for what comes first. What staff typed is
     ``Typed`` (since 2.8): the reason, a group's new name, and each text a
-    change sets on a user but the fields that identify them. Then the
+    change sets on a user but the fields that identify them, and those
+    sent as they are stored (a form saved whole). Then the
     ``on_admin_screen`` checks of a change to a user run, or the
     ``on_admin_group_screen`` checks of a change to a stored group (since
     2.7): approvals refuses there a change it would hold that its
@@ -257,7 +258,8 @@ async def show(act: AdminAct) -> Shown:
     for name, value in sorted(values.items()):
         label = field_label(name)
         label = name if label in taken else label  # A field "group" beside "Group".
-        details.append((label, value if name in identifiers else _typed(value)))
+        kept = user is not None and jsonable(getattr(user, name, None)) == value
+        details.append((label, value if name in identifiers or kept else _typed(value)))
         taken.add(label)
     whole = auth_settings().AUTHORIZATIONS.WHOLE
     shown = Shown(fitted(gettext(title)), laid_out(details, whole=whole))

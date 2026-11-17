@@ -256,6 +256,8 @@ LINKS: Final = (
     "evil.zip",
     "Q3.report",
     "evil.c0m",
+    "evil\u2022com",
+    "evil\ua78fcom",
     "x.xn--p1ai",
     "\u0441\u0430\u0439\u0442.\u0440\u0444",
     "\u0e01.\u0e44\u0e17\u0e22",
@@ -291,6 +293,8 @@ NUMBERS: Final = (
     "Call 555\u2800010\u28000100",
     "Call 18005550100",
     "Call 5550-10-01",
+    "Call 612 345 678",
+    "Call 5550100123 all day",
     "Call+15550100123",
     "1-800-555-0100",
     "555\u200b0100\u200b123",
@@ -313,6 +317,17 @@ PLAIN: Final = (
     "Duplicate of 2026/11/17",
     "Amount 1250000.00 is over the limit",
     "Wrong amount: 1,250,000.00",
+    "1.234.567,89",
+    "amount 1.250.000,00",
+    "1 234 567,89",
+    "1.234.567",
+    "12 500 000 EUR",
+    "EUR 1250000",
+    "1250000 EGP",
+    "$1250000",
+    "JIRA-1234567",
+    "CVE-2024-12345",
+    "user_1234567",
     "invoice.pdf",
     "Mr.Smith",
     "e.g. this, i.e. that",
@@ -335,6 +350,17 @@ PLAIN: Final = (
     "\u0661\u0660\u0660 \u062c\u0646\u064a\u0647",
 )
 """Reasons and names that hold no link: versions, codes, dates, amounts, files."""
+READ_AS_LINKS: Final = (
+    "notes.md",
+    "Q3.report",
+    "team.legal",
+    "GB29 NWBK 6016 1331 9268 19",
+    "100-0001",
+    "01310-100",
+    "build 1234567",
+)
+"""Text that holds no link, read as one: a top-level domain after a dot, seven
+digits or more apart by spaces or hyphens (ADR 0180's false positives)."""
 
 
 @pytest.mark.parametrize("text", LINKS + NUMBERS)
@@ -347,6 +373,12 @@ def test_a_link_an_address_or_a_number_is_read_as_a_person_reads_it(text: str) -
 def test_text_without_one_holds_no_link(text: str) -> None:
     """A version, a code touching its letters, a date, an amount, a file's name."""
     assert not holds_link(text)
+
+
+@pytest.mark.parametrize("text", READ_AS_LINKS)
+def test_text_a_reader_takes_for_a_link_is_read_as_one(text: str) -> None:
+    """The false positives the docs name: write them otherwise."""
+    assert holds_link(text)
 
 
 def test_typed_text_with_a_link_is_refused_as_the_setting_says(
@@ -396,3 +428,55 @@ def test_a_project_checks_what_was_typed_its_own_way(use_auth: UseAuth) -> None:
     assert calm == [("Reason", "Ticket 42"), ("Note", "LOUD")]
     assert seen == ["Ticket 42", "LOUD"]
     assert all(type(each) is str for each in seen)
+
+
+def test_a_typed_line_is_checked_as_it_is_shown(use_auth: UseAuth) -> None:
+    """Cut, escaped, or after a list's first items, a line can read as a link.
+
+    ``evil.corporate`` names no domain; cut to ``evil.co…`` it does, and
+    a phone links it. A code's letters cut off leave a number to call; a
+    new line shown as a backslash and ``n`` makes ``n.com``. Items joined
+    with a comma never make one (review of ADR 0180).
+    """
+    use_auth()
+    domain = "Approved; details at our partner evil.co"
+    domain = domain.rjust(63, "x") + "rporate"
+    number = "Closed. For any question please call 555 0100 123".rjust(63, "x") + "abc"
+    first = ("z" * 44 + " evil.co").ljust(52, "z") + "rporate here"
+    cuts: list[Details] = [
+        {"Reason": Typed(domain)},
+        {"Name": Typed(number)},
+        {"Adds": (Typed(domain), "b")},
+        {**{f"k{each}": "v" for each in range(5)}, "Adds": (Typed(first), "b")},
+    ]
+    shown = [dict(laid_out(details, whole=False)) for details in cuts]
+    use_auth(AUTHORIZATIONS={"TYPED_LINKS": "refused"})
+
+    assert not any(map(holds_link, (domain, number, first, "evil\n.com")))
+    assert shown[0]["Reason"].endswith(" evil.co…")
+    assert shown[1]["Name"].endswith(" 123…")
+    assert shown[2]["Adds"].endswith(" evil.co…")
+    assert shown[3]["Adds"].endswith(" evil.co… and 1 more")
+    for details in cuts:
+        with pytest.raises(LinkNotShown):
+            laid_out(details, whole=False)
+    with pytest.raises(LinkNotShown):
+        laid_out({"Reason": Typed("evil\n.com")})
+    assert laid_out({"Adds": (Typed("555 010"), Typed("0100"))}) == [
+        ("Adds", "555 010, 0100")
+    ]
+    assert laid_out({"Reason": "x" * 63 + "abc"}, whole=False) == [
+        ("Reason", "x" * 63 + "…")
+    ]
+
+
+def test_a_name_shown_later_is_checked_as_a_screen_may_cut_it(
+    use_auth: UseAuth,
+) -> None:
+    """From its twentieth character, each cut, as ``named`` and lists cut it."""
+    use_auth(AUTHORIZATIONS={"TYPED_LINKS": "refused"})
+
+    check_typed("finance.readers")
+    check_typed("evil.corporate")
+    with pytest.raises(LinkNotShown):
+        check_typed("a team for the vendor evil.corporate")

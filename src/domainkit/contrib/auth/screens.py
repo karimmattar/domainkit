@@ -101,12 +101,12 @@ IGNORED: Final = re.compile(
 DOTS: Final = str.maketrans(
     dict.fromkeys(
         "\u00b7\u0701\u0702\u1427\u16eb\u2027\u2219\u22c5\u2e31\u2e33\u3002\u30fb"
-        "\ua4f8\ua60e\uabec\U00010a50\U0001d16d\U0001ecae",
+        "\u2022\ua4f8\ua60e\ua78f\uabec\U00010a50\U0001d16d\U0001ecae",
         ".",
     )
 )
 """Characters read as a full stop, once in NFKC: UTS #46's label separators,
-the dots UTS #39 says look like one, and the middle dots."""
+the dots UTS #39 says look like one, and the middle dots, a bullet among them."""
 ZERO_DOT: Final = re.compile("(?<=[^\\W\\d_])[\u0660\u06f0](?=[^\\W\\d_])")
 """An Arabic-Indic zero, which looks like a dot, between two letters."""
 DEFANGED: Final = (
@@ -134,6 +134,20 @@ DATE: Final = re.compile(
 """A date, year first or last: ``2026-11-17``, ``17.11.2026``."""
 AMOUNT: Final = re.compile(r"(?<![\d.,])\d+[.,]\d{2}(?![\d.,])")
 """An amount with its cents: ``1250000.00``."""
+GROUPED: Final = re.compile(
+    r"(?<![\d.,])\d{1,3}(?P<sep>[., ])\d{3}(?:(?P=sep)\d{3})*"
+    r"(?:(?P<point>[.,])\d{2})?(?![\d.,]?\d)"
+)
+"""Digits in groups of three, apart by a dot, a comma, or a space, and the cents
+if any: an amount where they are ``1.234.567``, ``1 234 567,89``, or priced."""
+NUMBER: Final = re.compile(r"(?<![\d.,])\d+(?:[.,]\d{1,2})?(?![\d.,]?\d)")
+"""Digits written as one amount, with its cents if any: priced, an amount."""
+CODES: Final = 3, 8
+"""How many letters a currency's code holds: ISO 4217's three, up to eight."""
+CODE_JOINERS: Final = "-_"
+"""What joins a code's letters to its digits: ``JIRA-1234567``, ``user_1234567``."""
+SHORTEST_CUT: Final = 20
+"""The fewest characters of a name a screen shows when it cuts it (``check_typed``)."""
 DIGITS: Final = re.compile(
     "(?:\\+\\s?)?\\(?\\d(?:[\\s.\\-_\u2010-\u2015\u2022\u2212\u2800()/]{0,3}\\d)*"
 )
@@ -146,6 +160,8 @@ type Value = object
 a dict) on one line, or a list or a tuple of them over lines."""
 type Details = Mapping[str, Value] | Iterable[tuple[str, Value]]
 """Labelled values, in the order a screen shows them."""
+type Line = tuple[str, str, int]
+"""A line laid out: its label, its text, and which value it shows (-1 for none)."""
 
 
 class TooMuchToShow(BusinessRuleViolation):
@@ -189,8 +205,9 @@ class Typed(str):
     holds a link (``holds_link``) with ``AUTH.AUTHORIZATIONS.TYPED_LINKS``
     set to ``"refused"`` (``LinkNotShown``). Mark what the person asking
     wrote: a reason, a name given, a note. Not what the act is on
-    (``named``): a name stored is checked where it was typed, and never
-    locks what it names.
+    (``named``), which never locks what it names: a group's name is
+    checked where it is typed (``check_typed``), and a user's username or
+    address is an identifier, set as one.
     """
 
     __slots__ = ()
@@ -205,12 +222,15 @@ on_typed_text: Final[HookPoint[TypedCheck]] = HookPoint(
 """Register a check of text a person typed for an act (since 2.8).
 
 ``laid_out`` calls it with each ``Typed`` value and item, as given, when
-the act is asked for, before an authorization is stored, whatever
-``AUTH.AUTHORIZATIONS.TYPED_LINKS`` says; raise to refuse the act. The
-framework's acts mark an impersonation's reason, a group's new name, the
-text fields a change sets on a user (but its identifiers), a rejection's
-or a cancellation's reason, and an impersonation's reason held for
-approval.
+a screen is built, whatever ``AUTH.AUTHORIZATIONS.TYPED_LINKS`` says, and
+``check_typed`` with text typed where a screen shows it later; raise to
+refuse the act. The framework's acts mark an impersonation's reason, a
+group's new name, the text fields a change sets on a user (but its
+identifiers), a rejection's or a cancellation's reason, and an
+impersonation's reason held for approval. One text may be checked more
+than once (a held impersonation's twin builds two screens, and the act
+checks it again; a group's name is checked at its twin and at the
+change): a check reads, and has no side effect.
 """
 
 
@@ -227,17 +247,23 @@ def holds_link(text: str) -> bool:
     numbers joined by dots, a name ending in a top-level domain IANA
     lists (``evil.example.com``, ``www.anything``, the same with Cyrillic
     letters that read as Latin ones), or seven digits or more written as
-    one number (``+1 555 010 0100``), but a date, an amount with its
-    cents, or a code whose letters touch its digits (``INC0012345``).
-    ``v1.2``, ``Q3 report``, and ``readers`` hold none.
+    one number (``+1 555 010 0100``), but a date, an amount (with its
+    cents, in groups of three, or beside a currency's code or sign:
+    ``1.234.567,89``, ``12 500 000 EUR``), or a code whose letters touch
+    its digits or join them with a hyphen or an underscore
+    (``INC0012345``, ``JIRA-1234567``). ``v1.2``, ``Q3 report``, and
+    ``readers`` hold none.
     """
-    plain = _as_read(text)
+    seen = _as_read(text)
+    plain = seen.casefold()
+    for pattern, meant in DEFANGED:
+        plain = pattern.sub(meant, plain)
     return bool(
         SCHEME.search(plain)
         or ADDRESS.search(plain)
         or any(_is_ipv4(found[1]) for found in IPV4.finditer(plain))
         or any(_is_domain(labels) for labels in _names(plain))
-        or _calls(plain)
+        or _calls(seen)
     )
 
 
@@ -247,31 +273,79 @@ def check_typed(text: str) -> None:
     For text typed where no screen shows it yet, which one will (a
     group's name, given without ``AUTH.ADMIN_ACTION``, is shown when a
     grant of it is approved): refused where it is typed, as ``laid_out``
-    refuses it as ``Typed``.
+    refuses it as ``Typed``. A screen may show it cut, ended with ``…``,
+    past its ``SHORTEST_CUT``-th character: each such cut is checked too
+    (``evil.corporate`` cut to ``evil.co…``).
 
     Raises:
-        LinkNotShown: ``TYPED_LINKS`` is ``"refused"`` and it holds a link.
+        LinkNotShown: ``TYPED_LINKS`` is ``"refused"``, and it or a cut of
+            it holds a link.
         Exception: What an ``on_typed_text`` check raises.
     """
-    if auth_settings().AUTHORIZATIONS.TYPED_LINKS == "refused" and holds_link(text):
+    shown = _printable(text)
+    cuts = (shown[:end] + CUT for end in range(SHORTEST_CUT, len(shown)))
+    if _links_refused() and (holds_link(text) or any(map(holds_link, cuts))):
         raise LinkNotShown
+    _check_by_hooks(text)
+
+
+def _check_typed(values: Iterable[object]) -> None:
+    """Each ``Typed`` value of ``values``, or item of one, checked as typed.
+
+    Raises:
+        LinkNotShown: ``TYPED_LINKS`` is ``"refused"`` and one holds a link.
+        Exception: What an ``on_typed_text`` check raises.
+    """
+    refused = None
+    for value in values:
+        for text in _typed_in(value):
+            refused = _links_refused() if refused is None else refused
+            if refused and holds_link(text):
+                raise LinkNotShown
+            _check_by_hooks(text)
+
+
+def _check_shown(values: list[object], lines: list[tuple[str, str, int]]) -> None:
+    """Refuse a line that shows typed text and holds a link, as it is shown.
+
+    Cut, escaped, or joined, a line may read as a link its text did not
+    (``evil.corporate`` cut to ``evil.co…``).
+
+    Raises:
+        LinkNotShown: ``TYPED_LINKS`` is ``"refused"`` and such a line
+            holds a link.
+    """
+    typed = {index for index, value in enumerate(values) if any(_typed_in(value))}
+    shown = (text for _, text, index in lines if index in typed)
+    if typed and _links_refused() and any(map(holds_link, shown)):
+        raise LinkNotShown
+
+
+def _typed_in(value: object) -> Iterator[Typed]:
+    """``value`` if it is ``Typed``, or each ``Typed`` item of a list of them."""
+    for each in value if isinstance(value, list | tuple) else (value,):
+        if isinstance(each, Typed):
+            yield each
+
+
+def _links_refused() -> bool:
+    """Whether typed text that holds a link is refused (``TYPED_LINKS``)."""
+    return auth_settings().AUTHORIZATIONS.TYPED_LINKS == "refused"
+
+
+def _check_by_hooks(text: str) -> None:
+    """Run each ``on_typed_text`` check on ``text``, a plain ``str``.
+
+    Raises:
+        Exception: What a check raises.
+    """
     for hook in on_typed_text:
         hook.call(str(text))
 
 
-def _check_typed(values: Iterable[object]) -> None:
-    """``check_typed`` on each ``Typed`` value of ``values``, or item of one."""
-    for value in values:
-        for each in value if isinstance(value, list | tuple) else (value,):
-            if isinstance(each, Typed):
-                check_typed(each)
-
-
 def _as_read(text: str) -> str:
-    """``text`` as a person reads it, for ``holds_link``: see there."""
-    plain = IGNORED.sub("", unicodedata.normalize("NFKC", text)).casefold()
-    for pattern, meant in DEFANGED:
-        plain = pattern.sub(meant, plain)
+    """``text`` as a person reads it, for ``holds_link``: see there; case kept."""
+    plain = IGNORED.sub("", unicodedata.normalize("NFKC", text))
     return ZERO_DOT.sub(".", plain.translate(DOTS))
 
 
@@ -345,19 +419,83 @@ def _latin(label: str) -> Iterator[str]:
 def _calls(text: str) -> bool:
     """Whether ``text`` holds seven digits or more written as one number.
 
-    Not a date, an amount with its cents, or a code: digits a letter
-    touches, unless after a plus sign (``INC0012345``, but ``call+1555…``).
+    Not a date, an amount (``_amount_or_digits``), or a code: digits a
+    letter touches, or that a hyphen or an underscore joins to one, unless
+    after a plus sign (``INC0012345``, ``JIRA-1234567``, but ``call+1555…``).
     """
-    text = AMOUNT.sub(" ", DATE.sub(_date_or_digits, text))
+    text = DATE.sub(_date_or_digits, text)
+    text = AMOUNT.sub(
+        " ", NUMBER.sub(_amount_or_digits, GROUPED.sub(_amount_or_digits, text))
+    )
     for found in DIGITS.finditer(text):
         number = found[0]
         if sum(each.isdigit() for each in number) < CALLABLE_DIGITS:
             continue
-        before = text[found.start() - 1] if found.start() else " "
-        after = text[found.end()] if found.end() < len(text) else " "
-        if number.startswith("+") or not (before.isalpha() or after.isalpha()):
+        if number.startswith("+") or not (
+            _code_letter(text, found.start() - 1, -1)
+            or _code_letter(text, found.end(), 1)
+        ):
             return True
     return False
+
+
+def _code_letter(text: str, at: int, step: int) -> bool:
+    """Whether a letter is at ``at``, or past a hyphen or an underscore there."""
+    if 0 <= at < len(text) and text[at] in CODE_JOINERS:
+        at += step
+    return 0 <= at < len(text) and text[at].isalpha()
+
+
+def _amount_or_digits(found: re.Match[str]) -> str:
+    """A space for an amount; the digits, as found, otherwise.
+
+    An amount is priced (beside a currency's code or sign), or, in groups
+    of three, has its cents apart by the other mark (``1 234 567,89``), or
+    is grouped by dots (``1.234.567``). Grouped by spaces alone, it may be
+    a number to call (``612 345 678``).
+    """
+    groups = found.groupdict()
+    grouped = groups.get("sep")
+    point = groups.get("point")
+    if (
+        (grouped and point and point != grouped)
+        or (grouped == "." and not point)
+        or _priced(found.string, found.start(), found.end())
+    ):
+        return " "
+    return found[0]
+
+
+def _priced(text: str, start: int, end: int) -> bool:
+    """Whether a currency's code or sign is next to ``text[start:end]``, a space apart.
+
+    A code is in capitals, and known (``domainkit.money.currencies``):
+    ``EUR 1250000``, ``12 500 000 EUR``, ``$1250000``.
+    """
+    before = start - 1 if start and text[start - 1] == " " else start
+    after = end + 1 if end < len(text) and text[end] == " " else end
+    first = before
+    while first and text[first - 1].isalpha():
+        first -= 1
+    last = after
+    while last < len(text) and text[last].isalpha():
+        last += 1
+    signs = (
+        text[before - 1] if before else "",
+        text[after] if after < len(text) else "",
+    )
+    return any(sign and unicodedata.category(sign) == "Sc" for sign in signs) or any(
+        _is_currency(word) for word in (text[first:before], text[after:last])
+    )
+
+
+def _is_currency(word: str) -> bool:
+    """Whether ``word`` is a currency's code, in capitals: ``EUR``, ``EGP``."""
+    if not (CODES[0] <= len(word) <= CODES[1] and word.isupper() and word.isascii()):
+        return False
+    from domainkit.money import currencies
+
+    return any(each.code == word for each in currencies())
 
 
 def _date_or_digits(found: re.Match[str]) -> str:
@@ -417,7 +555,9 @@ def laid_out(
     A ``Typed`` value or item, text a person typed, is checked first,
     whole or not (since 2.8): the ``on_typed_text`` checks run on it, and
     with ``AUTH.AUTHORIZATIONS.TYPED_LINKS`` set to ``"refused"`` one
-    that holds a link is refused (``holds_link``).
+    that holds a link is refused (``holds_link``), and so is each line
+    that shows one and holds a link as it is shown: cut, escaped, or
+    joined to the next item.
 
     Raises:
         TooMuchToShow: With ``whole``, a label, a text, or an item is longer
@@ -429,14 +569,16 @@ def laid_out(
             ``Decimal``): say what it is as text.
     """
     pairs = list(details.items() if isinstance(details, Mapping) else details)
-    _check_typed(value for _, value in pairs)
+    values = [value for _, value in pairs]
+    _check_typed(values)
     entries = [(_printable(str(label)), _shown(value)) for label, value in pairs]
     lines = _whole(entries)
-    if lines is not None:
-        return lines
-    if whole:
-        raise TooMuchToShow
-    return _counted(entries, more or _more_values)
+    if lines is None:
+        if whole:
+            raise TooMuchToShow
+        lines = _counted(entries, more or _more_values)
+    _check_shown(values, lines)
+    return [(label, text) for label, text, _ in lines]
 
 
 def named(name: str | None, subject_id: object) -> str:
@@ -493,26 +635,26 @@ def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
-def _whole(entries: list[tuple[str, str | list[str]]]) -> list[tuple[str, str]] | None:
+def _whole(entries: list[tuple[str, str | list[str]]]) -> list[Line] | None:
     """Every value whole, each list over as many lines as it takes; None if none fit."""
-    lines: list[tuple[str, str]] = []
-    for label, value in entries:
+    lines: list[Line] = []
+    for index, (label, value) in enumerate(entries):
         if isinstance(value, str):
-            lines.append((label, value))
+            lines.append((label, value, index))
             continue
         if any(len(item) > DETAIL_MAX_LENGTH for item in value):
             return None
         rows = _packed(value)
         lines.extend(
-            (_continued(label, number), SEPARATOR.join(row))
+            (_continued(label, number), SEPARATOR.join(row), index)
             for number, row in enumerate(rows, 1)
         )
-    labels = [label for label, _ in lines]
+    labels = [label for label, _, _ in lines]
     if (
         len(lines) > MAX_DETAILS
         or len(set(labels)) != len(labels)
         or not all(labels)
-        or any(len(text) > DETAIL_MAX_LENGTH for line in lines for text in line)
+        or any(len(text) > DETAIL_MAX_LENGTH for line in lines for text in line[:2])
     ):
         return None
     return lines
@@ -520,29 +662,29 @@ def _whole(entries: list[tuple[str, str | list[str]]]) -> list[tuple[str, str]] 
 
 def _counted(
     entries: list[tuple[str, str | list[str]]], more: Callable[[int], str]
-) -> list[tuple[str, str]]:
+) -> list[Line]:
     """What fits, each value cut, each list and the rest counted past the room.
 
     Every value shown has a line; the lines left go to the lists, in order.
     """
     labels = {MORE_LABEL}
-    kept: list[tuple[str, str | list[str]]] = []
+    kept: list[tuple[str, str | list[str], int]] = []
     hidden = 0
-    for label, value in entries:
+    for index, (label, value) in enumerate(entries):
         cut = fitted(label)
         if not cut or cut in labels:
             hidden += 1
             continue
         labels.add(cut)
-        kept.append((cut, value))
+        kept.append((cut, value, index))
     if len(kept) + (1 if hidden else 0) > MAX_DETAILS:
         hidden += len(kept) - (MAX_DETAILS - 1)
         kept = kept[: MAX_DETAILS - 1]
     spare = MAX_DETAILS - len(kept) - (1 if hidden else 0)
-    lines: list[tuple[str, str]] = []
-    for label, value in kept:
+    lines: list[Line] = []
+    for label, value, index in kept:
         if isinstance(value, str):
-            lines.append((label, fitted(value)))
+            lines.append((label, fitted(value), index))
             continue
         names = [label]
         for number in range(2, spare + 2):
@@ -553,9 +695,9 @@ def _counted(
             names.append(name)
         rows = _counted_rows(value, len(names))
         spare -= len(rows) - 1
-        lines.extend(zip(names, rows, strict=False))
+        lines.extend((name, row, index) for name, row in zip(names, rows, strict=False))
     if hidden:
-        lines.append((MORE_LABEL, fitted(more(hidden))))
+        lines.append((MORE_LABEL, fitted(more(hidden)), -1))
     return lines
 
 
