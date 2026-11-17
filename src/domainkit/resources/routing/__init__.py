@@ -129,6 +129,8 @@ if TYPE_CHECKING:
     from domainkit.http.uploads import FileType
     from domainkit.storage.base import Storage
 
+    from .uploading import Decided
+
 
 class ResourceRouter(APIRouter):
     """The routes of one aggregate type (see the module)."""
@@ -781,10 +783,10 @@ class ResourceRouter(APIRouter):
         *,
         service: Service,
         field: str,
-        types: "Iterable[FileType]",
-        max_size: int,
-        storage: "Storage | str" = "default",
-        directory: str = "",
+        types: "Iterable[FileType] | Decided[Iterable[FileType]]",
+        max_size: "int | Decided[int]",
+        storage: "Storage | str | Decided[Storage | str]" = "default",
+        directory: "str | Decided[str]" = "",
         digest: str | None = None,
         returns: Returns = DEFAULT,
         method: Literal["POST", "PUT", "PATCH"] = "POST",
@@ -797,6 +799,7 @@ class ResourceRouter(APIRouter):
         provide: Mapping[str, Callable[..., object]] | None = None,
         body_limit: int | None = None,
         retry: Retry | None = None,
+        dependencies: Sequence[params.Depends] = (),
     ) -> None:
         """Add a route that stores the file sent and runs ``command`` with it.
 
@@ -810,16 +813,28 @@ class ResourceRouter(APIRouter):
         SHA-256, in hex. A request that fails before the service returns
         deletes the file (New in 2.5).
 
+        ``types``, ``max_size``, ``storage`` and ``directory`` may each be
+        decided per request (New in 2.7): a callable given the request and
+        the aggregate the route reached (None on the collection), sync or
+        async, run once the reach is checked and before the body is read.
+        A ``max_size`` so decided needs ``body_limit``, the most a request
+        may send.
+
         The rest is ``command_route``'s: the path's ids, ``provide``, the
         aggregate within the caller's reach, ``If-Match``, ``returns``,
-        ``retry``, and a twin that asks for an authorization of the act
-        when a rule asks for one; the twin takes the same body, stores
-        nothing, and gives ``field`` an upload whose name is empty.
-        ``body_limit`` defaults to ``max_size`` and 64 KiB for a form.
+        ``retry``, ``dependencies`` (New in 2.7), and a twin that asks for
+        an authorization of the act when a rule asks for one; the twin
+        takes the same body, stores nothing, gives ``field`` an upload
+        whose name is empty, and runs none of ``dependencies``. The act
+        does not check again a file of the content its twin checked for
+        the same caller. ``body_limit`` defaults to ``max_size`` and 64 KiB
+        for a form.
 
         Raises:
             TypeError: The command lacks ``field`` or ``digest``, ``provide``
-                gives one of them, or the command needs fields nothing gives.
+                gives one of them, or the command needs fields nothing
+                gives; or ``max_size`` is decided per request without a
+                ``body_limit``.
             ValueError: No type is taken, ``max_size`` is not positive, or
                 the body limit is out of bounds.
         """
@@ -846,6 +861,7 @@ class ResourceRouter(APIRouter):
             provide=provide,
             body_limit=body_limit,
             retry=retry,
+            dependencies=dependencies,
         ).declare()
 
     def before_items(self, route: BaseRoute) -> None:

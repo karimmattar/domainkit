@@ -23,18 +23,27 @@ command route gets (``authorizing``): it checks the reach first too,
 takes the same body, receives and checks the file, stores nothing, and
 builds the command with an upload whose name is empty. An ``Action``
 binds an upload by its content, not its name (``Action.arguments``), so
-the twin and the act agree on the file.
+the twin and the act agree on the file. The twin's checks are
+remembered for its caller (``receive_upload(remember=...)``): the act
+does not check the same content again (ADR 0175).
+
+The file's types, its size, and where it is stored may be decided per
+request: a callable given the request and the aggregate the route
+reached (None on the collection), sync or async, in place of a value
+(``Decided``). It runs once the reach is checked, before the body is
+read, on the act and on its twin.
 """
 
 import dataclasses
+import inspect
 import logging
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from contextlib import aclosing
-from typing import TYPE_CHECKING, Final, Literal, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 from urllib.parse import unquote
 
 import anyio
-from fastapi import Request, Response, status
+from fastapi import Request, Response, params, status
 from fastapi.routing import APIRoute
 from starlette.datastructures import UploadFile
 
@@ -74,6 +83,21 @@ CHANGED: Final = "This was changed since you read it; read it again before chang
 """The detail of a 412, as a command route's."""
 logger: Final = logging.getLogger(__name__)
 
+type Decided[T] = Callable[[Request, Any], T | Awaitable[T]]
+"""A bound of an upload decided per request: given the request and the aggregate
+the route reached (None on the collection), it returns the bound, or an
+awaitable of it."""
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class Bounds:
+    """What one request's file is held to, and where it goes."""
+
+    types: tuple[FileType, ...]
+    max_size: int
+    storage: Storage | str
+    directory: str
+
 
 class UploadRoute(CommandRoute):
     """``ResourceRouter.upload_route`` (see the module)."""
@@ -85,10 +109,10 @@ class UploadRoute(CommandRoute):
         *,
         service: "Service",
         field: str,
-        types: Iterable[FileType],
-        max_size: int,
-        storage: Storage | str,
-        directory: str,
+        types: "Iterable[FileType] | Decided[Iterable[FileType]]",
+        max_size: "int | Decided[int]",
+        storage: "Storage | str | Decided[Storage | str]",
+        directory: "str | Decided[str]",
         digest: str | None,
         returns: "Returns",
         method: Literal["POST", "PUT", "PATCH"],
@@ -101,12 +125,15 @@ class UploadRoute(CommandRoute):
         provide: Mapping[str, Callable[..., object]] | None,
         body_limit: int | None,
         retry: "Retry | None",
+        dependencies: Sequence[params.Depends] = (),
     ) -> None:
         """Check the command against what gives its fields, and the upload's bounds.
 
         Raises:
             TypeError: The command lacks ``field`` or ``digest``, ``provide``
-                gives one of them, or the command needs fields nothing gives.
+                gives one of them, or the command needs fields nothing gives;
+                or ``max_size`` is decided per request and no ``body_limit``
+                bounds it.
             ValueError: No type is taken, or ``max_size`` is not positive.
         """
         given = {field} if digest is None else {field, digest}
@@ -117,11 +144,15 @@ class UploadRoute(CommandRoute):
             )
         self.field = field
         self.digest = digest
-        self.types = tuple(types)
-        if not self.types:
-            raise ValueError("An upload route needs the types it accepts.")
-        if max_size < 1:
-            raise ValueError(f"max_size is 1 byte or more, not {max_size!r}.")
+        self.types: Iterable[FileType] | Decided[Iterable[FileType]] = (
+            types if callable(types) else _types(types)
+        )
+        if callable(max_size) and body_limit is None:
+            raise TypeError(
+                "max_size is decided per request: give body_limit=, the most a "
+                "request may send, file and form."
+            )
+        default = None if callable(max_size) else _size(max_size) + FORM_ROOM
         self.max_size = max_size
         self.storage = storage
         self.directory = directory
@@ -140,8 +171,9 @@ class UploadRoute(CommandRoute):
             summary=summary,
             # The file gives these: named here so the command's fields check.
             provide={**(provide or {}), **dict.fromkeys(given, _from_the_file)},
-            body_limit=max_size + FORM_ROOM if body_limit is None else body_limit,
+            body_limit=default if body_limit is None else body_limit,
             retry=retry,
+            dependencies=dependencies,
         )
 
     def declare(self) -> None:
@@ -166,8 +198,9 @@ class UploadRoute(CommandRoute):
         stored: StoredUpload | None = request.scope.get(STORED)
         if stored is None:  # The twin: the reach first, then the file, kept nowhere.
             assert self.twin is not None  # noqa: S101 - only a twin builds before storing.
-            await self._reachable(context, self.twin.rules)
-            received = await self.received(request)
+            aggregate = await self._reachable(context, self.twin.rules)
+            bounds = await self.bounds(request, aggregate)
+            received = await self.received(request, bounds)
             received.close()
             stored = received.unstored()
         else:
@@ -190,17 +223,18 @@ class UploadRoute(CommandRoute):
             PreconditionFailed: ``If-Match`` names another version (412).
             PreconditionRequired: The resource requires ``If-Match`` (428).
         """
-        await self._reachable(context, self.rules, conditions=True)
+        aggregate = await self._reachable(context, self.rules, conditions=True)
         request = context.request
-        received = await self.received(request)
-        stored = await received.store(self.storage, directory=self.directory)
+        bounds = await self.bounds(request, aggregate)
+        received = await self.received(request, bounds)
+        stored = await received.store(bounds.storage, directory=bounds.directory)
         request.scope[STORED] = stored
         committed = context.uow.committed
         try:
             return await super().handle(context)
         except BaseException:
             if context.uow.committed == committed:
-                await _forget(self.storage, stored.name)
+                await _forget(bounds.storage, stored.name)
             raise
 
     async def _reachable(
@@ -209,12 +243,13 @@ class UploadRoute(CommandRoute):
         rules: "tuple[Rule, ...]",
         *,
         conditions: bool = False,
-    ) -> None:
+    ) -> object:
         """Refuse the request before its body is read, as the act would.
 
         On one aggregate: within the caller's reach, the rules on it, and,
         with ``conditions``, ``If-Match``. A route on the collection has
-        nothing to reach (its parent's checked already).
+        nothing to reach (its parent's checked already). The aggregate
+        reached, or None on the collection.
 
         Raises:
             NotFound: The aggregate is out of the caller's reach.
@@ -223,22 +258,43 @@ class UploadRoute(CommandRoute):
             PreconditionRequired: The resource requires ``If-Match``.
         """
         if not self.detail:
-            return
+            return None
         uow = context.uow
         async with uow:
             aggregate = await reach.load(self.router, uow, context.request, context.ids)
         await reach.check_object(context.request, aggregate, rules)
         if not conditions:
-            return
+            return aggregate
         header = context.if_match
         versions = None if header is None else expected_versions(header)
         if versions is None and self.router.require_if_match:
             raise PreconditionRequired
         if versions is not None and getattr(aggregate, "version", None) not in versions:
             raise PreconditionFailed(CHANGED)
+        return aggregate
 
-    async def received(self, request: Request) -> ReceivedUpload:
-        """The request's file, received and checked once.
+    async def bounds(self, request: Request, aggregate: object) -> Bounds:
+        """The request's types, size, storage and directory, each decided now.
+
+        Raises:
+            TypeError: A callable decided something of the wrong kind.
+            ValueError: It decided no type, or a size that is not positive.
+        """
+        types = await _decided(self.types, request, aggregate)
+        max_size = await _decided(self.max_size, request, aggregate)
+        storage = await _decided(self.storage, request, aggregate)
+        directory = await _decided(self.directory, request, aggregate)
+        if not isinstance(storage, Storage | str) or not isinstance(directory, str):
+            raise TypeError(
+                "An upload route's storage is a Storage or an alias, and its "
+                f"directory text: not {storage!r}, {directory!r}."
+            )
+        return Bounds(_types(types), _size(max_size), storage, directory)
+
+    async def received(
+        self, request: Request, bounds: Bounds | None = None
+    ) -> ReceivedUpload:
+        """The request's file, received and checked once, as ``bounds`` say.
 
         Raises:
             UploadRefused: It is empty, too large, not of a type taken, or
@@ -246,28 +302,48 @@ class UploadRoute(CommandRoute):
         """
         found = request.scope.get(RECEIVED)
         if found is None:
-            found = request.scope[RECEIVED] = await self._receive(request)
+            assert bounds is not None  # noqa: S101 - the first receive decides them.
+            found = request.scope[RECEIVED] = await self._receive(request, bounds)
         return cast("ReceivedUpload", found)
 
-    async def _receive(self, request: Request) -> ReceivedUpload:
-        """Receive the body as the file, or the form's part named after the field."""
+    async def _receive(self, request: Request, bounds: Bounds) -> ReceivedUpload:
+        """Receive the body as the file, or the form's part named after the field.
+
+        On a route that asks for an authorization, the checks' verdict is
+        remembered for its caller: the twin's is the act's.
+        """
+        remember = self._remembered_as(request)
         kind = request.headers.get("content-type", "").split(";")[0].strip().lower()
         if kind == "multipart/form-data":
             async with request.form(max_files=1, max_fields=MAX_FORM_FIELDS) as form:
                 part = form.get(self.field)
                 return await receive_upload(
                     part if isinstance(part, UploadFile) else b"",
-                    types=self.types,
-                    max_size=self.max_size,
+                    types=bounds.types,
+                    max_size=bounds.max_size,
+                    remember=remember,
                 )
         header = request.headers.get(FILENAME_HEADER)
         async with aclosing(request.stream()) as body:
             return await receive_upload(
                 body,
-                types=self.types,
-                max_size=self.max_size,
+                types=bounds.types,
+                max_size=bounds.max_size,
                 filename=None if header is None else unquote(header),
+                remember=remember,
             )
+
+    def _remembered_as(self, request: Request) -> str | None:
+        """The name the twin and the act remember a file under, or None.
+
+        The route's and its caller's: a verdict is never another caller's,
+        whose files a quicker answer would tell of. None on a route with no
+        twin, or for a caller with no id.
+        """
+        caller = getattr(request.scope.get("user"), "id", None)
+        if self.twin is None or caller is None:
+            return None
+        return f"{self.router.name_prefix}{self.spec.name}\x1f{caller}"
 
     def _document(self, route: APIRoute) -> None:
         """Document the body the route takes: the file, or a form holding it."""
@@ -278,7 +354,7 @@ class UploadRoute(CommandRoute):
             "description": (
                 f"The file: the body itself, its name in {FILENAME_HEADER} "
                 f"(percent-encoded UTF-8); or a form's {self.field!r} part. Up to "
-                f"{self.max_size} bytes, of the types the route takes, by content."
+                f"{_shown(self.max_size)}, of the types the route takes, by content."
             ),
             "content": {
                 "application/octet-stream": {"schema": binary},
@@ -312,6 +388,48 @@ class UploadRoute(CommandRoute):
 
 async def _from_the_file() -> None:
     """Nothing: the file gives the field, once it is received (``build``)."""
+
+
+async def _decided[T](
+    value: "T | Decided[T]", request: Request, aggregate: object
+) -> T:
+    """``value``, or what it decides for ``request`` and ``aggregate``, awaited."""
+    if not callable(value):
+        return value
+    found = value(request, aggregate)
+    return cast("T", await found if inspect.isawaitable(found) else found)
+
+
+def _types(types: Iterable[FileType]) -> tuple[FileType, ...]:
+    """``types``, as a tuple.
+
+    Raises:
+        ValueError: There are none.
+    """
+    found = tuple(types)
+    if not found:
+        raise ValueError("An upload route needs the types it accepts.")
+    return found
+
+
+def _size(max_size: object) -> int:
+    """``max_size``, a number of bytes, 1 or more.
+
+    Raises:
+        ValueError: It is not.
+    """
+    if (
+        isinstance(max_size, bool)
+        or not isinstance(max_size, int | float)
+        or not max_size >= 1
+    ):
+        raise ValueError(f"max_size is 1 byte or more, not {max_size!r}.")
+    return cast("int", max_size)
+
+
+def _shown(max_size: "int | Decided[int]") -> str:
+    """The route's size bound, as OpenAPI says it."""
+    return "the size decided per request" if callable(max_size) else f"{max_size} bytes"
 
 
 async def _forget(storage: Storage | str, name: str) -> None:
