@@ -700,9 +700,21 @@ PATCH /admin/auth/users/6f1c... {"is_staff": true}                       200: th
   auth's `AUTHORIZATIONS.WHOLE` and `APPROVE_ACTION` on, a change that
   the approver's screen could not show whole is refused at the admin
   API's twin, before the staff member confirms it (auth's
-  `on_admin_screen`), or when it is submitted without one (`422
-  too_much_to_show`): the staff member makes it in smaller steps, each
-  approved whole.
+  `on_admin_screen`, and `on_admin_group_screen` for a grant to a group),
+  or when it is submitted without one (`422 too_much_to_show`): the
+  staff member makes it in smaller steps, each approved whole.
+- **The holds of what a request grants say it in words** (since 2.7).
+  `auth.set_groups` shows each group added on a line of its own: its
+  name, read when the screen is built, the end of its id, and what it
+  grants ("readers (…123456789abc): 3 permissions; 2 object grants").
+  `auth.reactivate` shows the user, "Superuser" and "Staff" where they
+  come back as such, their "Groups" by name, and how many permissions
+  of their own and grants on objects they hold ("Also holds").
+  `auth.set_group_permissions` shows the "Group" by its name now (the
+  name held, if it is gone) and the end of its id, then the keys it adds
+  and takes away. A name too long for its line is cut beside the id,
+  never refused; with `WHOLE`, what is refused is a grant too large to
+  show, never a name.
 - **Superusers approve**, other than the staff member, and never the user
   the change is about (`interested_party`). With `ADMIN_APPROVERS` set,
   the holders of that permission approve instead; as with

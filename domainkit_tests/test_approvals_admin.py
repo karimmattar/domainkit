@@ -23,6 +23,7 @@ from sqlalchemy import select, update
 from domainkit import clock, setup
 from domainkit.apps import registry
 from domainkit.checks import CheckMessage
+from domainkit.clock import FrozenClock
 from domainkit.conf import override_settings
 from domainkit.context import RequestContext, bind_request
 from domainkit.contrib.approvals import (
@@ -32,12 +33,16 @@ from domainkit.contrib.approvals import (
     SET_GROUPS,
     SET_STAFF,
     ApprovalsSettings,
+    HeldGroup,
     Reactivate,
+    SetGroupPermissions,
+    SetGroups,
     SetStaff,
     approvers_of,
     fingerprint,
     guards,
 )
+from domainkit.contrib.approvals.authorizing import details_of, shown_of
 from domainkit.contrib.approvals.builtin import (
     _updated,
     check_admin_change,
@@ -58,6 +63,7 @@ from domainkit.contrib.auth.gates import (
     GroupChange,
     on_admin_change,
 )
+from domainkit.contrib.auth.screens import TooMuchToShow, laid_out
 from domainkit.contrib.messaging.testing import drain
 from domainkit.db import connections
 from domainkit.ddd import PermissionDenied
@@ -67,6 +73,8 @@ from domainkit.i18n import gettext, override
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import ALPHA, Migrated, Shape
 from domainkit_tests.support.auth import create_user, grant
+from domainkit_tests.test_admin_actions import ACTS, Staff, end_of
+from domainkit_tests.test_admin_actions import frozen as frozen  # The fixture.
 from domainkit_tests.test_approvals import APPROVALS, AUDIT, MESSAGING
 from domainkit_tests.test_approvals_api import APPROVALS_API, problem
 from domainkit_tests.test_auth_admin import NEW_PASSWORD, join, make_group, token_for
@@ -1293,3 +1301,193 @@ def test_one_approval_is_one_comparison_when_calls_race(
     assert set(codes) <= {204, "invalid_password", "approval_pending"}, codes
     assert len(compared) == len(claimed), (compared, codes)
     assert read(client, held, ann)["status"] == "executed"
+
+
+HELD_SCREENS: Final = Shape(
+    "approvals_admin_screens",
+    "approvals",
+    {
+        **ACTS.settings,
+        "APPROVALS": {
+            **ACTS.settings["APPROVALS"],
+            "APPROVE_ACTION": True,
+            "ADMIN_APPROVALS": {
+                "auth.set_groups": 1,
+                "auth.reactivate": 1,
+                "auth.set_group_permissions": 1,
+            },
+        },
+    },
+)
+"""Every change an act; groups, returns, and a group's grants held, approved
+with an act of their own."""
+WHOLE_AUTH: Final = {**ACTS.settings["AUTH"], "AUTHORIZATIONS": {"WHOLE": True}}
+"""``AUTH`` of ``HELD_SCREENS`` with ``AUTHORIZATIONS.WHOLE`` on."""
+
+
+def screen_of(action: str, command: Any, *, whole: bool) -> list[tuple[str, str]]:  # noqa: ANN401 - a command.
+    """What approving ``command`` shows: its action, then its guard's ``show``."""
+    guard = guards()[action]
+    return details_of(action, run_async(shown_of(guard, command)), whole=whole)
+
+
+def keys_on(lines: int) -> list[str]:
+    """Permission keys that take ``lines`` lines of a screen as one list, no more."""
+    every = run_async(_keys())
+    for count in range(1, len(every)):
+        try:
+            taken = len(laid_out([("Adds", every[:count])], whole=True))
+        except TooMuchToShow:
+            break
+        if taken == lines and len(laid_out([("Adds", every[: count + 1])])) > lines:
+            return every[:count]
+    raise AssertionError(f"No keys take {lines} lines.")
+
+
+async def _keys() -> list[str]:
+    """Every permission's key, sorted."""
+    async with AuthUnitOfWork() as uow:
+        return sorted(permission.key for permission in await uow.permissions.all())
+
+
+def test_each_hold_shows_what_it_grants_in_words(migrated: Migrated) -> None:
+    """A group added by name, id, and what it grants; a return; a group's grant.
+
+    A group's name of 150 characters is cut beside its id, so even with
+    ``WHOLE`` on it is never refused for its name; thirty keys granted to
+    a group are counted, or, with ``WHOLE``, refused (user reports A21,
+    A23).
+    """
+    with migrated(HELD_SCREENS), TestClient(get_asgi_application()):
+        bob = create_user("bob")
+        long = make_group("g" * 150, "auth.view_user", "auth.add_user")
+        readers = make_group("readers")
+        long_held, readers_held = (
+            HeldGroup(each, name, keys)
+            for each, name, keys in (
+                (long, "g" * 150, ("auth.add_user", "auth.view_user")),
+                (readers, "readers", ()),
+            )
+        )
+        joined = SetGroups(
+            user_id=bob, added=("g" * 150, "readers"), groups=(long_held, readers_held)
+        )
+        returning = comes_back(
+            bob,
+            is_staff=True,
+            is_superuser=True,
+            groups=(readers_held,),
+            permissions=("auth.add_user", "auth.view_user"),
+            object_grants=1,
+            object_grants_digest="0" * 64,
+        )
+        thirty = run_async(_keys())[:30]
+        granted = SetGroupPermissions(
+            group_id=readers, name="readers", added=tuple(thirty)
+        )
+
+        groups_screen = screen_of(SET_GROUPS, joined, whole=True)
+        return_screen = screen_of(REACTIVATE, returning, whole=True)
+        counted = screen_of(SET_GROUP_PERMISSIONS, granted, whole=False)
+        with pytest.raises(TooMuchToShow):
+            screen_of(SET_GROUP_PERMISSIONS, granted, whole=True)
+
+    long_line = groups_screen[2][1]
+    assert groups_screen[:2] == [
+        ("Action", SET_GROUPS),
+        ("User", f"bob ({end_of(bob)})"),
+    ]
+    assert groups_screen[2][0] == "Adds"
+    assert long_line.startswith("ggg")
+    assert long_line.endswith(f"… ({end_of(long)}): 2 permissions")
+    assert len(long_line) == 64
+    assert groups_screen[3] == (
+        "Adds (2)",
+        f"readers ({end_of(readers)}): 0 permissions",
+    )
+    assert return_screen == [
+        ("Action", REACTIVATE),
+        ("User", f"bob ({end_of(bob)})"),
+        ("Superuser", "yes"),
+        ("Staff", "yes"),
+        ("Groups", "readers"),
+        ("Also holds", "2 permissions; 1 object grant"),
+    ]
+    assert counted[:2] == [
+        ("Action", SET_GROUP_PERMISSIONS),
+        ("Group", f"readers ({end_of(readers)})"),
+    ]
+    assert [label for label, _ in counted[2:]] == [
+        "Adds",
+        "Adds (2)",
+        "Adds (3)",
+        "Adds (4)",
+    ]
+    assert counted[-1][1].endswith("more")
+    assert all(len(value) <= 64 for _, value in groups_screen + counted)
+
+
+def test_a_grant_to_a_group_its_approver_could_not_see_whole_is_refused_at_its_twin(
+    migrated: Migrated, frozen: FrozenClock
+) -> None:
+    """With ``WHOLE``, a held grant to a group that would not fit is never asked for.
+
+    The approver's screen shows the action above what the staff member's
+    shows: a grant that fills the staff member's screen would not fit the
+    approver's, and the group's twin refuses it, as a user's does
+    (``on_admin_group_screen``). Thirty keys fit neither.
+    """
+    with (
+        migrated(HELD_SCREENS),
+        TestClient(get_asgi_application()) as client,
+        override_settings(
+            AUTH={**ACTS.settings["AUTH"], "AUTHORIZATIONS": {"WHOLE": True}}
+        ),
+    ):
+        root = Staff(client, frozen, "root", superuser=True)
+        group = make_group("readers")
+        path = f"/groups/{group}/permissions/authorization"
+        full = keys_on(5)
+        filled = root.ask(path, {"permissions": full})
+        thirty = root.ask(path, {"permissions": run_async(_keys())[:30]})
+        fewer = root.ask(path, {"permissions": full[:2]})
+
+    problem(filled, 422, "too_much_to_show")
+    problem(thirty, 422, "too_much_to_show")
+    assert fewer.status_code == 201, fewer.json()
+
+
+def test_a_renamed_group_shows_its_name_now_when_approved(
+    migrated: Migrated, frozen: FrozenClock
+) -> None:
+    """The approver reads the group's name as it is now, beside the id it binds."""
+    with migrated(HELD_SCREENS), TestClient(get_asgi_application()) as client:
+        root = Staff(client, frozen, "root", superuser=True)
+        boss = Staff(client, frozen, "boss", superuser=True)
+        group = make_group("readers")
+        body = {"permissions": ["auth.view_user"]}
+        path = f"/groups/{group}/permissions"
+        authorization = root.authorized(f"{path}/authorization", body)
+        request_id = root.call("PUT", path, body, authorization).json()[
+            "approval_request_id"
+        ]
+        renamed = root.authorized(
+            f"/groups/{group}/authorization/patch", {"name": "auditors"}
+        )
+        root.call("PATCH", f"/groups/{group}", {"name": "auditors"}, renamed)
+        read = client.get(f"/approvals/requests/{request_id}", headers=boss.headers)
+        asked = client.post(
+            f"/approvals/requests/{request_id}/approve/authorization",
+            json={"fingerprint": read.json()["fingerprint"]},
+            headers=boss.headers,
+        )
+
+    assert asked.status_code == 201, asked.json()
+    details = [
+        (each["label"], each["value"]) for each in asked.json()["shown"]["details"]
+    ]
+    assert details == [
+        ("Action", SET_GROUP_PERMISSIONS),
+        ("Group", f"auditors ({end_of(group)})"),
+        ("Adds", "auth.view_user"),
+    ]

@@ -100,13 +100,18 @@ def fingerprint_of(person: Staff, request_id: str) -> str:
 def test_an_approver_sees_the_user_by_name_and_every_group_added(
     client: TestClient, frozen: FrozenClock
 ) -> None:
-    """The user by name and id, and each group, on as many lines as needed."""
+    """The user by name and id, and each group in words, on as many lines as needed.
+
+    Each group by its name, the end of its id, and what it grants (user
+    report A21: a request holds a group's id and permissions).
+    """
     root = Staff(client, frozen, "root", superuser=True)
     boss = Staff(client, frozen, "boss", superuser=True)
     target = create_user("target")
-    names = (*(f"aaa_harmless_{each}" for each in range(5)), "zz_admins")
-    for name in names:
-        make_group(name)
+    names = ("aaa_harmless_0", "aaa_harmless_1", "zz_admins")
+    first = make_group(names[0])
+    second = make_group(names[1])
+    admins = make_group(names[2], "auth.view_user")
 
     request_id = held(root, str(target), names).json()["approval_request_id"]
     fingerprint = fingerprint_of(boss, request_id)
@@ -117,13 +122,15 @@ def test_an_approver_sees_the_user_by_name_and_every_group_added(
     assert pairs(asked) == [
         ("Action", "auth.set_groups"),
         ("User", f"target ({end_of(target)})"),
-        ("Adds", "aaa_harmless_0, aaa_harmless_1, aaa_harmless_2, aaa_harmless_3"),
-        ("Adds (2)", "aaa_harmless_4, zz_admins"),
+        ("Adds", f"aaa_harmless_0 ({end_of(first)}): 0 permissions"),
+        ("Adds (2)", f"aaa_harmless_1 ({end_of(second)}): 0 permissions"),
+        ("Adds (3)", f"zz_admins ({end_of(admins)}): 1 permission"),
     ]
     assert [label for label, _ in pairs(arabic)][1:] == [
         "User",
         "Adds",
         "Adds (2)",
+        "Adds (3)",
     ]
 
 
@@ -189,7 +196,8 @@ def test_a_grant_longer_than_the_screen_says_how_many_more(
         "Adds (3)",
         "Adds (4)",
     ]
-    assert counted[-1][1] == f"{LONG_NAMES[6]} and 23 more"
+    assert counted[-1][1].startswith(LONG_NAMES[3])
+    assert counted[-1][1].endswith(" and 26 more")  # One group in words a line.
     assert all(len(value) <= 64 for _, value in counted)
     problem(approving, 422, "too_much_to_show")
     assert [label for label, _ in pairs(rejecting)][:4] == [
@@ -206,11 +214,12 @@ def test_with_whole_on_a_grant_no_approver_could_see_whole_is_never_submitted(
 ) -> None:
     """The maker's screen holds the change; the approver's, a line longer, does not.
 
-    Ten groups take five lines: the maker's screen would show the user and
-    them. The approver's would show the action too, seven lines: the
-    maker's twin refuses the change before an authorization is stored.
-    Without the act (``ADMIN_ACTION`` off), the change is refused when it
-    is submitted. Either way no request is stored; eight groups wait.
+    Ten groups take five lines on the maker's screen, with the user. The
+    approver's shows the action too, and each group in words on a line of
+    its own (user report A21): the maker's twin refuses the change before
+    an authorization is stored. Without the act (``ADMIN_ACTION`` off),
+    the change is refused when it is submitted. Either way no request is
+    stored; four groups wait.
     """
     root = Staff(client, frozen, "root", superuser=True)
     target = create_user("target")
@@ -223,7 +232,7 @@ def test_with_whole_on_a_grant_no_approver_could_see_whole_is_never_submitted(
         before = len(stored())
         asked = root.ask(f"/users/{target}/groups/authorization", body)
         unasked = len(stored()) - before
-        fewer = held(root, str(target), names[:8])
+        fewer = held(root, str(target), names[:4])
     with override_settings(AUTH={**WHOLE, "ADMIN_ACTION": False}):
         submitted = root.call("PUT", f"/users/{target}/groups", body)
 
@@ -249,7 +258,7 @@ def test_with_whole_on_a_long_name_never_locks_a_user_or_a_group(
     long = "u" * 150
     target = create_user(long)
     group = make_group("g" * 150)
-    make_group("readers")
+    readers = make_group("readers")
     user_line = ("User", f"{'u' * 47}… ({end_of(target)})")
     group_line = ("Group", f"{'g' * 47}… ({end_of(group)})")
 
@@ -276,7 +285,7 @@ def test_with_whole_on_a_long_name_never_locks_a_user_or_a_group(
     assert pairs(approving) == [
         ("Action", "auth.set_groups"),
         user_line,
-        ("Adds", "readers"),
+        ("Adds", f"readers ({end_of(readers)}): 0 permissions"),
     ]
 
 

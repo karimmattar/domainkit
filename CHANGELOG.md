@@ -63,6 +63,15 @@ and a status.
   change makes (a password the user had before), run once, when the
   change will surely be made; approvals' hold runs it under the approved
   request's lock, before spending it (user report A19).
+- What approving `auth.set_groups`, `auth.reactivate`, and
+  `auth.set_group_permissions` shows says what each grants in words:
+  each group added by name, the end of its id, and how many permissions
+  and grants on objects it holds; a user's return with its flags, groups,
+  and counts; a group by its name now. A name too long is cut beside the
+  id, never refused under `WHOLE`. `on_admin_group_screen`
+  (`domainkit.contrib.auth.gates`) lets approvals refuse, at a group's
+  twin, a held grant its approver could not see whole (user reports A21,
+  A23).
 - `ObjectGrant.expires_at`: when a grant on an object ends, which
   `domainkit.contrib.objectpermissions` gives; not compared (user report
   A21).

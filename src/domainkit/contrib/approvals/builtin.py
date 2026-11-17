@@ -62,7 +62,7 @@ from domainkit.apps import registry
 from domainkit.context import current_request
 from domainkit.ddd import Command, PermissionDenied, ValueObject
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.i18n import gettext, gettext_noop
+from domainkit.i18n import gettext, gettext_noop, ngettext, pgettext
 
 from .exceptions import ApprovalRequired, MakerNotAllowed
 from .guards import (
@@ -132,6 +132,17 @@ SHOWN_LABELS: Final = {
 
 An impersonation's reason is the "Stated reason": a rejection's or a
 cancellation's own "Reason" shows beside it."""
+GROUP: Final = gettext_noop("Group")
+"""The label of the group a grant to a group is on, shown by name and id."""
+GROUPS: Final = gettext_noop("Groups")
+"""The label of the groups a user made active again comes back in."""
+SUPERUSER: Final = gettext_noop("Superuser")
+STAFF: Final = gettext_noop("Staff")
+ALSO_HOLDS: Final = gettext_noop("Also holds")
+"""The label of how many permissions of their own, and grants on objects, a
+user made active again comes back with."""
+SHOWN_ID: Final = 12
+"""How many of a group's id's last characters a line shows, as ``named`` does."""
 
 
 @requires_approval(POST_ENTRY)
@@ -379,6 +390,158 @@ async def show_about_user(command: Any) -> list[tuple[str, object]]:  # noqa: AN
     return shown
 
 
+async def show_set_groups(command: "SetGroups") -> list[tuple[str, object]]:
+    """What adding a user to groups shows: the user, then each group in words.
+
+    The user by name and id, as ``show_about_user`` shows one. Each group
+    added ("Adds", over as many lines as it takes) by its name, read now
+    (the name held, if it is gone), the end of its id, and what it grants:
+    "readers (…123456789abc): 3 permissions; 2 object grants". A name too
+    long for its line is cut, never refused: the request binds the id.
+    Then the names of the groups it takes away ("Takes away").
+    """
+    shown = [await _user_line(command.user_id)]
+    names = await _group_names(group.id for group in command.groups)
+    items = [
+        _held_group(names.get(group.id, group.name), group) for group in command.groups
+    ]
+    if not command.groups:  # A request of 2.6, which held names alone.
+        items = [_item(name) for name in command.added]
+    if items:
+        shown.append((gettext(SHOWN_LABELS["added"]), items))
+    if command.removed:
+        removed = [_item(name) for name in command.removed]
+        shown.append((gettext(SHOWN_LABELS["removed"]), removed))
+    return shown
+
+
+async def show_reactivation(command: "Reactivate") -> list[tuple[str, object]]:
+    """What making a user active again shows: the user, and what they come back with.
+
+    The user by name and id; "Superuser" and "Staff" where they come back
+    as such; their groups by name, read now ("Groups"); and how many
+    permissions of their own and grants on objects they hold ("Also
+    holds"). A name too long for its line is cut, never refused.
+    """
+    shown: list[tuple[str, object]] = [await _user_line(command.user_id)]
+    yes = pgettext("flag", "yes")
+    if command.is_superuser:
+        shown.append((gettext(SUPERUSER), yes))
+    if command.is_staff:
+        shown.append((gettext(STAFF), yes))
+    if command.groups:
+        names = await _group_names(group.id for group in command.groups)
+        groups = [_item(names.get(group.id, group.name)) for group in command.groups]
+        shown.append((gettext(GROUPS), groups))
+    held = _counts(len(command.permissions), command.object_grants)
+    if held:
+        shown.append((gettext(ALSO_HOLDS), held))
+    return shown
+
+
+async def show_group_permissions(
+    command: "SetGroupPermissions",
+) -> list[tuple[str, object]]:
+    """What granting a group permissions shows: the group, then the keys.
+
+    The group by its name, read now (the name held, if it is gone), and the
+    end of its id; then the permissions it adds and takes away, each list
+    over as many lines as it takes ("Adds", "Takes away"). A name too long
+    is cut beside the id, never refused.
+    """
+    from domainkit.contrib.auth.screens import named
+
+    names = await _group_names([command.group_id])
+    name = names.get(command.group_id, command.name)
+    shown: list[tuple[str, object]] = [(gettext(GROUP), named(name, command.group_id))]
+    if command.added:
+        shown.append((gettext(SHOWN_LABELS["added"]), list(command.added)))
+    if command.removed:
+        shown.append((gettext(SHOWN_LABELS["removed"]), list(command.removed)))
+    return shown
+
+
+async def _user_line(user_id: UUID) -> tuple[str, object]:
+    """The user a request is about, by name, read now, and id."""
+    from domainkit.contrib.auth import AuthUnitOfWork, UserId
+    from domainkit.contrib.auth.screens import named
+
+    async with AuthUnitOfWork() as uow:
+        user = await uow.users.find(UserId(user_id))
+    return gettext(USER), named("" if user is None else user.get_username(), user_id)
+
+
+async def _group_names(ids: Iterable[UUID]) -> dict[UUID, str]:
+    """The names of the groups ``ids`` names, as stored now; those gone are left out."""
+    from domainkit.contrib.auth import AuthUnitOfWork, GroupId
+
+    found: dict[UUID, str] = {}
+    async with AuthUnitOfWork() as uow:
+        for each in ids:
+            group = await uow.groups.find(GroupId(each))
+            if group is not None:
+                found[each] = group.name
+    return found
+
+
+def _held_group(name: str, group: "HeldGroup") -> str:
+    """A group added, in words, on one line: its name, the end of its id, its grants."""
+    ident = str(group.id)
+    ident = "…" + ident[-SHOWN_ID:] if len(ident) > SHOWN_ID else ident
+    grants = _counts(len(group.permissions), group.object_grants, plain=True)
+    line = pgettext("held group", "{name} ({id}): {grants}")
+    return _fitting(lambda text: line.format(name=text, id=ident, grants=grants), name)
+
+
+def _counts(permissions: int, grants: int, *, plain: bool = False) -> str:
+    """How many permissions, and grants on objects if any ("" for none of either).
+
+    ``plain``: the permissions are counted even when there are none.
+    """
+    parts: list[str] = []
+    if permissions or plain:
+        many = ngettext("{count} permission", "{count} permissions", permissions)
+        parts.append(many.format(count=permissions))
+    if grants:
+        many = ngettext("{count} object grant", "{count} object grants", grants)
+        parts.append(many.format(count=grants))
+    return "; ".join(parts)
+
+
+def _item(name: str) -> str:
+    """``name``, cut where need be, so that a list shows it on one line."""
+    return _fitting(lambda text: text, name)
+
+
+def _fitting(make: Callable[[str], str], name: str) -> str:
+    """``make(name)``, the name cut and ended with ``…`` where a line needs it.
+
+    Measured as a screen lays a list's item out (quoted, escaped), so what
+    a request grants is never refused for the length of a name.
+    """
+    from domainkit.contrib.auth.screens import TooMuchToShow, laid_out
+
+    def fits(text: str) -> bool:
+        try:
+            laid_out([("·", [text])], whole=True)
+        except TooMuchToShow:
+            return False
+        return True
+
+    whole = make(name)
+    if fits(whole):
+        return whole
+    low, high, best = 0, len(name) - 1, make("…")
+    while low <= high:
+        middle = (low + high) // 2
+        candidate = make(name[:middle] + "…")
+        if fits(candidate):
+            best, low = candidate, middle + 1
+        else:
+            high = middle - 1
+    return best
+
+
 def _promoted(command: GrantSuperuser) -> list[str]:
     """The user a grant promotes: they do not decide it."""
     return [str(command.user_id)]
@@ -590,7 +753,12 @@ ADMIN_SERVICES: Final[Mapping[str, Service]] = {
     action: _admin_service(action) for action in ADMIN_COMMANDS
 }
 """Each admin action's decorated service."""
-ADMIN_SHOWS: Final[Mapping[str, Show]] = dict.fromkeys(ADMIN_COMMANDS, show_about_user)
+ADMIN_SHOWS: Final[Mapping[str, Show]] = {
+    **dict.fromkeys(ADMIN_COMMANDS, show_about_user),
+    SET_GROUPS: show_set_groups,
+    REACTIVATE: show_reactivation,
+    SET_GROUP_PERMISSIONS: show_group_permissions,
+}
 """What each admin action's request shows; a hold of a group gives its own."""
 
 
@@ -776,6 +944,26 @@ async def check_admin_screen(target: "AbstractBaseUser", change: "AdminChange") 
     from .authorizing import check_approvable
 
     await check_approvable(guards()[held[0]], held[1])
+
+
+async def check_group_screen(group: "Group", change: "GroupChange") -> None:
+    """Refuse, at a group change's twin, a held change no approver could see whole.
+
+    Auth's ``on_admin_group_screen`` calls it as ``check_admin_screen`` is
+    called for a user's change: granting a group permissions that
+    ``ADMIN_APPROVALS`` holds is refused (``TooMuchToShow``) where approving
+    it could not be shown whole. It reads, and writes nothing.
+
+    Raises:
+        TooMuchToShow: With ``AUTH.AUTHORIZATIONS.WHOLE`` on, approving it
+            could not be shown whole (auth's, 422).
+    """
+    command = _group_command(group, change)
+    if command is None:
+        return
+    from .authorizing import check_approvable
+
+    await check_approvable(guards()[SET_GROUP_PERMISSIONS], command)
 
 
 async def _with_groups(change: "AdminChange") -> "AdminChange":

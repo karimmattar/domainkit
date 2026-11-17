@@ -1437,6 +1437,35 @@ msgstr "اجعل المستخدم من الموظفين ونشطًا من جدي
 msgid "Too many of this user's old passwords were sent; try again later."
 msgstr "أُرسلت كلمات مرور قديمة كثيرة جدًا لهذا المستخدم؛ حاول مرة أخرى لاحقًا."
 
+#. domainkit.contrib.approvals: what a held change of the admin API shows
+msgid "Groups"
+msgstr "المجموعات"
+
+msgid "Also holds"
+msgstr "يملك أيضًا"
+
+msgctxt "held group"
+msgid "{name} ({id}): {grants}"
+msgstr "{name} ({id}): {grants}"
+
+msgid "{count} permission"
+msgid_plural "{count} permissions"
+msgstr[0] "{count} صلاحية"
+msgstr[1] "صلاحية واحدة"
+msgstr[2] "صلاحيتان"
+msgstr[3] "{count} صلاحيات"
+msgstr[4] "{count} صلاحية"
+msgstr[5] "{count} صلاحية"
+
+msgid "{count} object grant"
+msgid_plural "{count} object grants"
+msgstr[0] "{count} منحة على عناصر"
+msgstr[1] "منحة واحدة على عنصر"
+msgstr[2] "منحتان على عنصرين"
+msgstr[3] "{count} منح على عناصر"
+msgstr[4] "{count} منحة على عناصر"
+msgstr[5] "{count} منحة على عناصر"
+
 msgid "Requests are made and decided in one's own name only."
 msgstr "تُقدَّم الطلبات ويُبتّ فيها باسم صاحبها فقط."
 

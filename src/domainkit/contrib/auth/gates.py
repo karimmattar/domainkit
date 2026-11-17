@@ -82,6 +82,7 @@ __all__ = [
     "manages_logins",
     "on_admin_change",
     "on_admin_group_change",
+    "on_admin_group_screen",
     "on_admin_screen",
     "on_create_staff",
     "on_login_gate",
@@ -318,6 +319,24 @@ never writes. ``domainkit.contrib.approvals`` registers one with
 ``APPROVE_ACTION`` and ``AUTH.AUTHORIZATIONS.WHOLE``: a change it would
 hold that the approver's screen could not show whole is refused before
 the staff member confirms it (``too_much_to_show``, ADR 0173).
+"""
+
+type GroupScreenCheck = Callable[[Group, GroupChange], Awaitable[None]]
+"""A check of what another screen would show of a group's change."""
+
+on_admin_group_screen: Final[HookPoint[GroupScreenCheck]] = HookPoint(
+    "admin group screen", arguments=2, awaited=True
+)
+"""Register a check of what a change of the admin API to a group shows (since 2.7).
+
+As ``on_admin_screen`` for a user's change: the twin of a change to a
+group that is stored (renaming it, granting or taking its permissions,
+deleting it) runs it as it builds the staff member's screen, before an
+authorization is stored, with the group and the ``GroupChange``; it
+reads, and raises to refuse the change there. ``domainkit.contrib.approvals``
+registers one with ``APPROVE_ACTION``: a grant to a group it would hold
+that the approver's screen could not show whole is refused
+(``too_much_to_show``).
 """
 
 _passed: ContextVar[Any] = ContextVar("login_gates_passed", default=None)

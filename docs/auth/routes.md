@@ -503,7 +503,9 @@ what.
   instead, with the user and the `AdminChange`, before an authorization
   is stored: it reads, and raises to refuse the change there (approvals
   refuses a change it would hold that its approver's screen could not
-  show whole).
+  show whole). The twin of a change to a stored group calls
+  `on_admin_group_screen(check)` the same way, with the group and the
+  `GroupChange`.
 - **Every change to a group passes them too** (since 2.7):
   `on_admin_group_change(check)` is called with the staff member, the
   group as stored (None when creating one), and a `GroupChange`: its

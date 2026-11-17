@@ -1398,6 +1398,27 @@ msgstr ""
 msgid "Too many of this user's old passwords were sent; try again later."
 msgstr ""
 
+#. domainkit.contrib.approvals: what a held change of the admin API shows
+msgid "Groups"
+msgstr ""
+
+msgid "Also holds"
+msgstr ""
+
+msgctxt "held group"
+msgid "{name} ({id}): {grants}"
+msgstr ""
+
+msgid "{count} permission"
+msgid_plural "{count} permissions"
+msgstr[0] ""
+msgstr[1] ""
+
+msgid "{count} object grant"
+msgid_plural "{count} object grants"
+msgstr[0] ""
+msgstr[1] ""
+
 msgid "Requests are made and decided in one's own name only."
 msgstr ""
 

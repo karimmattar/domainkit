@@ -207,6 +207,7 @@ Login gates: checks every login passes before it is issued (ADR 0128).
 - `manages_logins`: A route's dependency: the request may manage its user's logins.
 - `on_admin_change`: Register a check of every change the admin API makes to a user.
 - `on_admin_group_change`: Register a check of every change the admin API makes to a group (since 2.7).
+- `on_admin_group_screen`: Register a check of what a change of the admin API to a group shows (since 2.7).
 - `on_admin_screen`: Register a check of what a change of the admin API to a user shows.
 - `on_create_staff`: Register a check of creating a user who is staff in the admin API.
 - `on_login_gate`: Register a gate every login passes (`on_login_gate(gate)` in `ready()`).
