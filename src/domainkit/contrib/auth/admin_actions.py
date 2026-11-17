@@ -22,22 +22,36 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
-from domainkit.i18n import gettext, gettext_noop, ngettext, pgettext
+from domainkit.i18n import gettext, gettext_noop, pgettext
 from domainkit.utils.decimals import jsonable
 
 from .actions import Action, Shown, spent_in_code
 from .exceptions import GroupNotFound, UserNotFound
 from .gates import AdminChange
 from .models import AbstractBaseUser, GroupId, UserId
-from .repositories.authorizations import DETAIL_MAX_LENGTH, MAX_DETAILS
+from .screens import Value, fitted, laid_out
+from .settings import auth_settings
 from .uow import AuthUnitOfWork
 
 PURPOSE: Final = "auth.admin_change"
 """The action each change of the admin API is, with ``ADMIN_ACTION`` on."""
 NEW: Final = "new"
 """The id in the subject of a user or a group being created."""
-FLAGS: Final = ("is_superuser", "is_staff", "is_active")
-"""The flags a change sets that grant or take access: shown first, always."""
+FLAGS: Final = {
+    "is_superuser": gettext_noop("Superuser"),
+    "is_staff": gettext_noop("Staff"),
+    "is_active": gettext_noop("Active"),
+}
+"""The flags a change sets that grant or take access, and their labels: shown first."""
+FIELDS: Final = {
+    "email": gettext_noop("Email"),
+    "mobile_number": gettext_noop("Mobile number"),
+    "first_name": gettext_noop("First name"),
+    "last_name": gettext_noop("Last name"),
+}
+"""The labels of the built-in user's fields; another is named after its field."""
+FLAG_STATES: Final = {True: "yes", False: "no"}
+"""What a flag set is shown as: in the context ``flag``."""
 GROUP_KINDS: Final = frozenset(
     {"group_create", "group_rename", "group_permissions", "group_delete"}
 )
@@ -86,10 +100,6 @@ TAKES_AWAY: Final = gettext_noop("Takes away")
 PASSWORD: Final = gettext_noop("Password")
 PASSWORD_STATES: Final = {True: "set", False: "none"}
 """Whether a user is created with a password: in the context ``password``."""
-MORE_LABEL: Final = "…"
-"""The label of the line that says how many values are not shown."""
-CUT: Final = "…"
-"""What ends a text cut to fit."""
 
 
 class AdminAct(BaseModel):
@@ -178,43 +188,75 @@ async def show(act: AdminAct) -> Shown:
 
     The title says the kind of change; then the user or group by its
     first identifier or name, the name given, the flags that grant or take
-    access (``is_superuser``, ``is_staff``, ``is_active``), the reason of
-    an impersonation, what is added and taken away (as many as fit, and
-    how many more), whether a new user gets a password, and the other
-    values set, by field. Those come first and are never left out; of the
-    other values, six lines in all at most, the last saying how many are
-    not shown.
+    access ("Superuser", "Staff", "Active": yes or no), the reason of an
+    impersonation, what is added and taken away (a list over as many lines
+    as it takes: "Adds", "Adds (2)"), whether a new user gets a password,
+    and the other values set, by field ("Email", "Display name"). Laid out
+    on a screen (``laid_out``): with ``AUTH.AUTHORIZATIONS.WHOLE`` on,
+    what does not fit whole is refused; off, it is cut and counted, the
+    first lines kept for what comes first.
 
     Raises:
         UserNotFound: The user is gone.
         GroupNotFound: The group is gone.
+        TooMuchToShow: With ``WHOLE`` on, the change does not fit whole.
     """
     title = TITLES[act.kind]
     if act.kind == "password" and act.password is False:
         title = UNUSABLE
-    leading: list[tuple[str, str]] = []
+    details: list[tuple[str, Value]] = []
     if act.user_id is not None:
-        leading.append((gettext(USER), await _user_named(act.user_id)))
+        details.append((gettext(USER), await _user_named(act.user_id)))
     if act.group_id is not None:
-        leading.append((gettext(GROUP), await _group_named(act.group_id)))
+        details.append((gettext(GROUP), await _group_named(act.group_id)))
     if act.name is not None:
         label = {"group_create": GROUP, "group_rename": NEW_NAME}.get(
             act.kind, USERNAME
         )
-        leading.append((gettext(label), act.name))
+        details.append((gettext(label), act.name))
     values = dict(act.values)
-    leading.extend((flag, _text(values.pop(flag))) for flag in FLAGS if flag in values)
+    details.extend(
+        (gettext(label), _flag(values.pop(flag)))
+        for flag, label in FLAGS.items()
+        if flag in values
+    )
     if act.kind == "impersonate":
-        leading.append((gettext(REASON), _text(values.pop("reason", ""))))
+        details.append((gettext(REASON), _text(values.pop("reason", ""))))
     if act.added:
-        leading.append((gettext(ADDS), listed(act.added)))
+        details.append((gettext(ADDS), act.added))
     if act.removed:
-        leading.append((gettext(TAKES_AWAY), listed(act.removed)))
+        details.append((gettext(TAKES_AWAY), act.removed))
     if act.kind == "create" and act.password is not None:
         state = pgettext("password", PASSWORD_STATES[act.password])
-        leading.append((gettext(PASSWORD), state))
-    named = [(name, _text(value)) for name, value in sorted(values.items())]
-    return Shown(fitted(gettext(title)), fit(leading, named))
+        details.append((gettext(PASSWORD), state))
+    taken = {label for label, _ in details}
+    for name, value in sorted(values.items()):
+        label = field_label(name)
+        label = name if label in taken else label  # A field "group" beside "Group".
+        details.append((label, _text(value)))
+        taken.add(label)
+    whole = auth_settings().AUTHORIZATIONS.WHOLE
+    return Shown(fitted(gettext(title)), laid_out(details, whole=whole))
+
+
+def field_label(name: str) -> str:
+    """How a screen names the user's field ``name``: "Email", "Display name".
+
+    The built-in user's fields have labels in the request's language;
+    another is its name, its underscores spaces, its first letter a
+    capital, as Django names a field without a ``verbose_name``.
+    """
+    if name in FIELDS:
+        return gettext(FIELDS[name])
+    spaced = name.replace("_", " ").strip()
+    return spaced[:1].upper() + spaced[1:] if spaced else name
+
+
+def _flag(value: JsonValue) -> str:
+    """A flag's value: "yes" or "no", in the request's language."""
+    if isinstance(value, bool):
+        return pgettext("flag", FLAG_STATES[value])
+    return _text(value)
 
 
 async def _user_named(user_id: UUID) -> str:
@@ -243,81 +285,11 @@ async def _group_named(group_id: UUID) -> str:
     return group.name
 
 
-def fit(
-    leading: list[tuple[str, str]], named: list[tuple[str, str]]
-) -> list[tuple[str, str]]:
-    """``leading``, then ``named``, each fitted: six labelled values at most.
-
-    A named value whose label is taken already is not shown, and counted.
-    With more than fit, the last line says how many are not shown.
-    """
-    details = [(fitted(label), fitted(value)) for label, value in leading]
-    labels = {label for label, _ in details} | {MORE_LABEL}
-    kept = []
-    for name, value in named:
-        label = fitted(name)
-        if label and label not in labels:
-            labels.add(label)
-            kept.append((label, fitted(value)))
-    room = MAX_DETAILS - len(details)
-    if len(kept) == len(named) and len(kept) <= room:
-        return [*details, *kept]
-    shown = kept[: room - 1]
-    hidden = len(named) - len(shown)
-    more = ngettext("{count} more value", "{count} more values", hidden)
-    return [*details, *shown, (MORE_LABEL, fitted(more.format(count=hidden)))]
-
-
-def listed(items: tuple[str, ...]) -> str:
-    """``items``, joined, as many as fit on a line, and how many more.
-
-    A list too long for 64 characters shows its first items and says how
-    many it leaves out ("auditors, clerks and 4 more"): a screen never
-    drops one without saying so. A single item too long is cut.
-    """
-    names = [_printable(each) for each in items]
-    if len(names) == 1 or len(whole := ", ".join(names)) <= DETAIL_MAX_LENGTH:
-        return fitted(names[0]) if len(names) == 1 else whole
-    for shown in range(len(names) - 1, 0, -1):
-        text = _and_more(names[:shown], len(names) - shown)
-        if len(text) <= DETAIL_MAX_LENGTH:
-            return text
-    hidden = len(names) - 1
-    room = DETAIL_MAX_LENGTH - len(_and_more([""], hidden)) - len(CUT)
-    return _and_more([names[0][:room] + CUT], hidden)
-
-
-def _and_more(names: list[str], hidden: int) -> str:
-    """``names``, joined, and the count of those ``hidden``."""
-    more = ngettext("{items} and {count} more", "{items} and {count} more", hidden)
-    return more.format(items=", ".join(names), count=hidden)
-
-
 def _text(value: object) -> str:
     """``value`` as text: a string as itself, anything else as compact JSON."""
     if isinstance(value, str):
         return value
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-
-
-def fitted(text: str) -> str:
-    """``text`` as a screen shows it: printable, at most 64 characters.
-
-    A character that is not printable is shown escaped, as Python writes
-    it; a longer text is cut, and ends with ``…``.
-    """
-    printable = _printable(text)
-    if len(printable) <= DETAIL_MAX_LENGTH:
-        return printable
-    return printable[: DETAIL_MAX_LENGTH - len(CUT)] + CUT
-
-
-def _printable(text: str) -> str:
-    """``text``, each character that is not printable escaped as Python writes it."""
-    return "".join(
-        each if each.isprintable() else each.encode("unicode_escape").decode("ascii")
-        for each in text
-    )
 
 
 ADMIN_CHANGE: Final = spent_in_code(

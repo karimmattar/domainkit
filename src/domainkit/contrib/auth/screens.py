@@ -1,0 +1,247 @@
+"""What an act shows, laid out on a phone's screen: whole, or refused (ADR 0173).
+
+A screen holds what ``Shown`` holds (ADR 0144): a title, and six labelled
+lines of 64 printable characters at most. ``laid_out`` puts labelled
+values on those lines: a text on one line, a list over as many as it
+takes, the first labelled as given and the next ones numbered
+("Adds", "Adds (2)").
+
+With ``whole=True``, what cannot be shown whole is refused
+(``TooMuchToShow``, ``422 too_much_to_show``): a text or an item longer
+than a line, or more lines than the screen has. Otherwise it is cut and
+counted, never left out unsaid: a text cut ends with ``…``, a list's last
+line says how many more ("auditors, clerks and 4 more"), and a last line
+("…") says how many values are not shown.
+
+    from domainkit.contrib.auth.actions import Shown
+    from domainkit.contrib.auth.screens import laid_out
+
+    Shown("Grant permissions", laid_out({"Member": name, "Adds": keys}))
+"""
+
+import json
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from typing import Final
+
+from domainkit.ddd import BusinessRuleViolation
+from domainkit.i18n import ngettext, pgettext
+
+from .repositories.authorizations import DETAIL_MAX_LENGTH, MAX_DETAILS
+
+__all__ = ["TooMuchToShow", "laid_out"]
+
+SEPARATOR: Final = ", "
+"""What joins a list's items on a line."""
+MORE_LABEL: Final = "…"
+"""The label of the line that says how many values are not shown."""
+CUT: Final = "…"
+"""What ends a text cut to fit."""
+AMBIGUOUS: Final = (",", '"')
+"""What an item may not hold as is: it is quoted, so that items stay apart."""
+
+type Value = str | Sequence[str]
+"""What a label shows: a text, on one line, or a list of texts, over lines."""
+type Details = Mapping[str, Value] | Iterable[tuple[str, Value]]
+"""Labelled values, in the order a screen shows them."""
+
+
+class TooMuchToShow(BusinessRuleViolation):
+    """The act cannot be shown whole on one screen: make it in smaller steps (422).
+
+    A text or an item is longer than a line, or the act needs more lines
+    than a screen has (``laid_out(..., whole=True)``).
+    """
+
+    code = "too_much_to_show"
+
+    def __init__(self) -> None:
+        """Say what to do: a smaller act fits."""
+        super().__init__(
+            "This act cannot be shown whole on one screen: make it in smaller steps."
+        )
+
+
+def laid_out(
+    details: Details, *, whole: bool = True, more: Callable[[int], str] | None = None
+) -> list[tuple[str, str]]:
+    """``details`` on a screen's lines: six labelled lines of 64 characters at most.
+
+    A text is one line. A list's items are joined with ``, `` on a line
+    while they fit, then go on to the next line, labelled with its number
+    ("Adds (2)"); an item that holds a comma or a double quote is quoted.
+    A character that is not printable is shown escaped, as Python writes
+    it (a new line as a backslash and ``n``).
+
+    ``whole``: what would be cut or left out is refused. Otherwise a text
+    longer than a line is cut and ends with ``…``; a list given fewer
+    lines than it takes says how many more on its last one; and with more
+    values than lines, or a label twice, the last line says how many
+    values are not shown (``more(count)``, "3 more values" by default).
+
+    Raises:
+        TooMuchToShow: With ``whole``, a label, a text, or an item is longer
+            than a line, or empty for a label; a label comes twice; or the
+            whole takes more than six lines.
+    """
+    pairs = details.items() if isinstance(details, Mapping) else details
+    entries = [(_printable(str(label)), _shown(value)) for label, value in pairs]
+    lines = _whole(entries)
+    if lines is not None:
+        return lines
+    if whole:
+        raise TooMuchToShow
+    return _counted(entries, more or _more_values)
+
+
+def _shown(value: Value) -> str | list[str]:
+    """``value`` as a screen shows it: a printable text, or printable items."""
+    if isinstance(value, str):
+        return _printable(value)
+    return [_item(str(each)) for each in value]
+
+
+def _item(text: str) -> str:
+    """An item of a list, quoted if it could be read as two, or as none."""
+    if not text or text != text.strip() or any(each in text for each in AMBIGUOUS):
+        return _printable(json.dumps(text, ensure_ascii=False))
+    return _printable(text)
+
+
+def _whole(entries: list[tuple[str, str | list[str]]]) -> list[tuple[str, str]] | None:
+    """Every value whole, each list over as many lines as it takes; None if none fit."""
+    lines: list[tuple[str, str]] = []
+    for label, value in entries:
+        if isinstance(value, str):
+            lines.append((label, value))
+            continue
+        if any(len(item) > DETAIL_MAX_LENGTH for item in value):
+            return None
+        rows = _packed(value)
+        lines.extend(
+            (_continued(label, number), SEPARATOR.join(row))
+            for number, row in enumerate(rows, 1)
+        )
+    labels = [label for label, _ in lines]
+    if (
+        len(lines) > MAX_DETAILS
+        or len(set(labels)) != len(labels)
+        or not all(labels)
+        or any(len(text) > DETAIL_MAX_LENGTH for line in lines for text in line)
+    ):
+        return None
+    return lines
+
+
+def _counted(
+    entries: list[tuple[str, str | list[str]]], more: Callable[[int], str]
+) -> list[tuple[str, str]]:
+    """What fits, each value cut, each list and the rest counted past the room.
+
+    Every value shown has a line; the lines left go to the lists, in order.
+    """
+    labels = {MORE_LABEL}
+    kept: list[tuple[str, str | list[str]]] = []
+    hidden = 0
+    for label, value in entries:
+        cut = fitted(label)
+        if not cut or cut in labels:
+            hidden += 1
+            continue
+        labels.add(cut)
+        kept.append((cut, value))
+    if len(kept) + (1 if hidden else 0) > MAX_DETAILS:
+        hidden += len(kept) - (MAX_DETAILS - 1)
+        kept = kept[: MAX_DETAILS - 1]
+    spare = MAX_DETAILS - len(kept) - (1 if hidden else 0)
+    lines: list[tuple[str, str]] = []
+    for label, value in kept:
+        if isinstance(value, str):
+            lines.append((label, fitted(value)))
+            continue
+        names = [label]
+        for number in range(2, spare + 2):
+            name = fitted(_continued(label, number))
+            if name in labels:
+                break
+            labels.add(name)
+            names.append(name)
+        rows = _counted_rows(value, len(names))
+        spare -= len(rows) - 1
+        lines.extend(zip(names, rows, strict=False))
+    if hidden:
+        lines.append((MORE_LABEL, fitted(more(hidden))))
+    return lines
+
+
+def _counted_rows(items: list[str], room: int) -> list[str]:
+    """``items`` on ``room`` lines at most, the last saying how many more if need be."""
+    cut = [fitted(each) for each in items]
+    rows = _packed(cut)
+    if len(rows) <= room:
+        return [SEPARATOR.join(row) for row in rows]
+    head = rows[: room - 1]
+    rest = cut[sum(len(row) for row in head) :]
+    return [*(SEPARATOR.join(row) for row in head), _and_more(rest)]
+
+
+def _and_more(items: list[str]) -> str:
+    """The first of ``items`` that fit on a line, and how many more."""
+    for shown in range(len(items) - 1, 0, -1):
+        text = _more_items(items[:shown], len(items) - shown)
+        if len(text) <= DETAIL_MAX_LENGTH:
+            return text
+    hidden = len(items) - 1
+    room = DETAIL_MAX_LENGTH - len(_more_items([""], hidden)) - len(CUT)
+    return _more_items([items[0][:room] + CUT], hidden)
+
+
+def _packed(items: list[str]) -> list[list[str]]:
+    """``items``, in order, as many on each line as fit."""
+    rows: list[list[str]] = [[]]
+    for item in items:
+        if rows[-1] and len(SEPARATOR.join([*rows[-1], item])) > DETAIL_MAX_LENGTH:
+            rows.append([item])
+        else:
+            rows[-1].append(item)
+    return rows
+
+
+def _continued(label: str, number: int) -> str:
+    """The label of a list's line ``number``: the label itself, then numbered."""
+    if number == 1:
+        return label
+    return pgettext("continued", "{label} ({number})").format(
+        label=label, number=number
+    )
+
+
+def _more_items(items: list[str], hidden: int) -> str:
+    """``items``, joined, and the count of those ``hidden``."""
+    more = ngettext("{items} and {count} more", "{items} and {count} more", hidden)
+    return more.format(items=SEPARATOR.join(items), count=hidden)
+
+
+def _more_values(hidden: int) -> str:
+    """The last line's words: how many values are not shown."""
+    more = ngettext("{count} more value", "{count} more values", hidden)
+    return more.format(count=hidden)
+
+
+def fitted(text: str) -> str:
+    """``text`` as a screen shows it: printable, at most 64 characters.
+
+    A character that is not printable is shown escaped; a longer text is
+    cut, and ends with ``…``.
+    """
+    printable = _printable(text)
+    if len(printable) <= DETAIL_MAX_LENGTH:
+        return printable
+    return printable[: DETAIL_MAX_LENGTH - len(CUT)] + CUT
+
+
+def _printable(text: str) -> str:
+    """``text``, each character that is not printable escaped as Python writes it."""
+    return "".join(
+        each if each.isprintable() else each.encode("unicode_escape").decode("ascii")
+        for each in text
+    )
