@@ -695,7 +695,10 @@ WHITE: Final = "".join(SHUFFLED.choice(" \t\r\n") for _ in range(70_000))
             id="a-png",
         ),
         pytest.param(headed("header2.png", b""), "ok", id="empty"),
-        pytest.param(headed("header2.png", "<w:hdr"), "ok", id="not-xml-after-all"),
+        pytest.param(
+            headed("header2.png", "<w:hdr"), COMPLEX, id="an-element-begun-and-broken"
+        ),
+        pytest.param(headed("header2.png", "< w:hdr"), "ok", id="no-element-begun"),
     ],
 )
 def test_a_part_a_relationship_names_is_read_as_the_reader_reads_it(
@@ -718,6 +721,17 @@ DEEP: Final = "<w:sdt>" * 300 + blip('r:link="rId1"') + "</w:sdt>" * 300
 at 256, and LibreOffice reads on and fetches it."""
 
 
+QUOTED: Final = (
+    f'<w:hdr q=">" xmlns:w="{W}">'
+    + f'<w:sdt q=">" xmlns:w="{W}">' * 300
+    + blip('r:link="rId1"').replace("<wp:inline ", '<wp:inline q=">" ')
+    + "</w:sdt>" * 300
+    + "</w:hdr>"
+)
+"""The deep header, each tag that declares a namespace holding a ``>`` in quotes
+first: a pattern of the bytes would take the quoted ``>`` for the tag's end."""
+
+
 @pytest.mark.parametrize("kind", ["header", "image"])
 def test_a_part_too_deep_for_lxml_is_refused(kind: str) -> None:
     """Once an element of a namespace opened, a part lxml stops reading is refused.
@@ -726,14 +740,21 @@ def test_a_part_too_deep_for_lxml_is_refused(kind: str) -> None:
     ``header2.png`` and typed a header or an image, passed, and a
     LibreOffice conversion fetched its picture 14 times.
     """
-    data = headed(
-        "header2.png",
-        header(DEEP),
-        (f"{R}hyperlink", "https://a.example/x.png", "External"),
-        kind=kind,
-    )
+    hyperlink = (f"{R}hyperlink", "https://a.example/x.png", "External")
 
-    assert verdict(OfficeCheck("docx"), data) == COMPLEX
+    assert (
+        verdict(
+            OfficeCheck("docx"),
+            headed("header2.png", header(DEEP), hyperlink, kind=kind),
+        )
+        == COMPLEX
+    )
+    assert (
+        verdict(
+            OfficeCheck("docx"), headed("header2.png", QUOTED, hyperlink, kind=kind)
+        )
+        == COMPLEX
+    )
 
 
 @pytest.mark.parametrize(
@@ -750,6 +771,18 @@ def test_a_part_too_deep_for_lxml_is_refused(kind: str) -> None:
             id="bytes-not-utf-8",
         ),
         pytest.param(header("<w:p>")[:-12].encode(), id="cut-short"),
+        pytest.param(
+            (
+                f'<w:hdr q=">" xmlns:w="{W}">'
+                + "".join(
+                    f"<w:p>{SHUFFLED.randbytes(16).hex()}</w:p>" for _ in range(2000)
+                )
+                + "<w:p>QQ</w:p></w:hdr>"
+            )
+            .encode()
+            .replace(b"QQ", b"\xff\xfe"),
+            id="bytes-not-utf-8-past-a-chunk",
+        ),
     ],
 )
 def test_a_part_broken_after_an_element_of_a_namespace_is_refused(
@@ -779,10 +812,21 @@ def test_a_binary_part_that_starts_as_xml_is_not_refused() -> None:
     )
 
     assert verdict(OfficeCheck("docx"), data) == "ok"
-    blob = b"<" + bytes(range(256)) * 4
-    font_like = office(
-        main=document(),
-        main_relationships=[(f"{R}font", "fonts/f.odttf")],
-        parts={"word/fonts/f.odttf": blob},
-    )
-    assert verdict(OfficeCheck("docx"), font_like) == "ok"
+    scrambled = random.Random(11)  # noqa: S311 - a font's bytes, not a secret.
+
+    def font(blob: bytes) -> bytes:
+        return office(
+            main=document(),
+            main_relationships=[(f"{R}font", "fonts/f.odttf")],
+            parts={"word/fonts/f.odttf": blob},
+        )
+
+    for _ in range(50):
+        stops = bytes([scrambled.randrange(1, 32)])  # No element begins.
+        assert (
+            verdict(OfficeCheck("docx"), font(b"<" + stops + scrambled.randbytes(2000)))
+            == "ok"
+        )
+    # Nothing that begins an element counts as binary: about 4 in 100 such
+    # blobs do (``<f.`` then a control byte), refused with the documents.
+    assert verdict(OfficeCheck("docx"), font(b"<f.\x18I'\x95" + bytes(100))) == COMPLEX

@@ -394,6 +394,8 @@ MARKS: Final = {
     codecs.BOM_UTF16_BE: "utf-16-be",
 }
 """The byte order marks an XML part may start with, and their encodings."""
+UNMARKED: Final = {"utf-16-le": "UTF-16LE", "utf-16-be": "UTF-16BE"}
+"""lxml's names of the encodings ``_xml_encoding`` reads from a part's zero bytes."""
 XML_MARKS: Final = (
     codecs.BOM_UTF8,
     codecs.BOM_UTF16_LE,
@@ -406,8 +408,6 @@ XML_MARKS: Final = (
 XML_BLANKS: Final = b" \t\r\n\x00"
 """What may come before an XML part's ``<``: white space, and the zero bytes of
 UTF-16 and UTF-32."""
-NAMESPACED: Final = re.compile(r"<[^\s<>/!?]+\s[^<>]*?\bxmlns(?::[^\s=<>]+)?\s*=")
-"""A start tag that declares a namespace, its own or its prefix's."""
 XML_EXTENSIONS: Final = frozenset({"xml", "rels", "vml"})
 """Parts XML by their name."""
 XML_TYPES: Final = frozenset({"application/xml", "text/xml"})
@@ -1642,13 +1642,43 @@ class _Package:
         except FileRefused as refused:
             if refused.code != UNREADABLE or _is_xml(name, self.types.get(name, "")):
                 raise
-            if _declares_namespace(data):
+            if self._opened(data):
                 # A document, which a reader may read further than lxml did
                 # (lxml stops 256 elements deep, LibreOffice does not).
                 raise FileRefused(COMPLEX) from None
-            # XML by its first bytes alone, and no element of a namespace in
-            # it: an image or a font that starts as XML does.
+            # XML by its first bytes alone, and stopped before its first
+            # element: an image or a font that starts as XML does.
         fields.close()
+
+    def _opened(self, data: bytes) -> bool:
+        """Whether an element, or a namespace, opened in ``data`` before it broke.
+
+        Read by lxml's own events, ``CHUNK`` bytes fed at a time, up to the
+        error that stopped it: a part that broke before its first element
+        is binary data that starts with ``<`` (a font's); one that broke
+        after is a document a reader may read further than lxml.
+        """
+        # Its encoding as _xml_encoding read it, where no mark tells lxml:
+        # UTF-16 with no byte order mark is read as a reader may read it.
+        encoding = _xml_encoding(data)
+        marked = data.startswith(tuple(MARKS)) or encoding == "utf-8"
+        parser = self.etree.XMLPullParser(
+            events=("start-ns", "start"),
+            resolve_entities=False,
+            no_network=True,
+            load_dtd=False,
+            huge_tree=False,
+            encoding=None if marked else UNMARKED[encoding],
+        )
+        try:
+            for at in range(0, len(data), CHUNK):
+                parser.feed(data[at : at + CHUNK])
+                if next(iter(parser.read_events()), None) is not None:
+                    return True
+            parser.close()
+        except self.etree.XMLSyntaxError:
+            pass
+        return next(iter(parser.read_events()), None) is not None
 
     def _xml(self, archive: zipfile.ZipFile, name: str) -> bytes | None:
         """The part ``name``, if it is XML, or may be read as XML; refused if bad.
@@ -1658,7 +1688,7 @@ class _Package:
         may be read as XML whatever its content type, as a reader follows a
         header's relationship to it: it is XML too when its bytes start as
         XML does, after any white space; one lxml stops reading is passed
-        over if no start tag of it declares a namespace (``_check_part``). It
+        over if it stopped before its first element (``_check_part``). It
         is read whole, but never past its stated size; another part (an
         image) is opened all the same, and not read.
 
@@ -1798,17 +1828,6 @@ def _starts_as_xml(part: IO[bytes], buffer: IO[bytes]) -> bool:
         if first:
             return first.startswith(b"<")
     return False
-
-
-def _declares_namespace(data: bytes) -> bool:
-    """Whether a start tag of the XML part ``data`` declares a namespace.
-
-    Where a document's elements of a namespace begin: a part lxml cannot
-    read that has one is a document a reader may read further; binary data
-    that starts with ``<`` (a font's) has none.
-    """
-    text = data.decode(_xml_encoding(data), "replace")
-    return NAMESPACED.search(text) is not None
 
 
 def _is_xml(name: str, content_type: str) -> bool:

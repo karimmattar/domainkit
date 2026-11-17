@@ -173,10 +173,14 @@ How `upload_route` decides per request:
   type and its relationship's type say: a reader follows a header's
   relationship to `header2.png`, typed an image, and parses it, and a
   LibreOffice conversion fetched what such a header linked. One lxml
-  cannot read is passed over only if none of its start tags declares a
-  namespace (an embedded font's scrambled first byte is `<` one time in a
-  few hundred); one that does is refused, too deep or broken, as
-  LibreOffice reads 300 levels where lxml stops at 256.
+  cannot read is passed over only if it broke before its first element,
+  as lxml's own events say, read 64 KiB at a time up to the error (a
+  pattern of the bytes took a `>` in quotes for a tag's end); one where
+  an element or a namespace began is refused, too deep or broken, as
+  LibreOffice reads 300 levels where lxml stops at 256. An embedded
+  font's scrambled first byte is `<` 1 time in 256, and 4 such fonts in
+  100 begin an element, measured on 10,000: about 1 embedded font in
+  6,600 is refused.
 - **`receive_upload(..., remember=None)`** (New in 2.7) names who receives
   the file. With it, a file whose checks took it under that name within
   30 minutes (`AUTHORIZATIONS.TTL`'s most), of the same content and

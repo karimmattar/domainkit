@@ -718,10 +718,13 @@ A Word document with macros, sent as `contract.docx`:
   type, is XML too when its bytes start as XML does, whatever its name,
   its content type, or its relationship's type: a reader follows a
   header's relationship to `word/header2.png`, typed an image, and parses
-  it as the header it is. One lxml cannot read is passed over only if
-  none of its start tags declares a namespace (binary data, a font's,
-  that starts with `<`); one that does, too deep for lxml (256 levels) or
-  broken, is refused, as a reader may read further. An embedded workbook (a
+  it as the header it is. One lxml cannot read is passed over only if it
+  broke before its first element, by lxml's own events (binary data, a
+  font's, that starts with `<`); one where an element or a namespace
+  began is refused, too deep for lxml (256 levels) or broken, as a reader
+  may read further. Nothing that begins an element counts as binary: an
+  embedded font whose scrambled first byte is `<` (1 in 256) begins one
+  about 4 times in 100, and is refused. An embedded workbook (a
   chart's data) is checked the same way. A template, or another kind of
   document, is not the type: with `OFFICE` the next type is tried, else
   415. Power Query reaches its data through a connection, which is
