@@ -29,9 +29,10 @@ does not check the same content again (ADR 0175).
 
 The file's types, its size, and where it is stored may be decided per
 request: a callable given the request and the aggregate the route
-reached (None on the collection), sync or async, in place of a value
-(``Decided``). It runs once the reach is checked, before the body is
-read, on the act and on its twin.
+reached (None on the collection), sync or async, in place of a value.
+It runs once the reach is checked, before the body is read, on the act
+and on its twin; the storage an alias names, and the directory, are
+checked then too.
 """
 
 import dataclasses
@@ -51,7 +52,7 @@ from domainkit.ddd.exceptions import PreconditionFailed
 from domainkit.ddd.messages import Command
 from domainkit.http.errors import error_responses
 from domainkit.http.uploads import FileType, ReceivedUpload, receive_upload
-from domainkit.storage.base import Storage, StoredUpload
+from domainkit.storage.base import Storage, StoredUpload, new_name
 from domainkit.storage.handler import storages
 
 from ..conditional import PreconditionRequired, expected_versions
@@ -95,7 +96,8 @@ class Bounds:
 
     types: tuple[FileType, ...]
     max_size: int
-    storage: Storage | str
+    storage: Storage
+    """The storage itself: an alias is looked up when the bounds are decided."""
     directory: str
 
 
@@ -276,9 +278,14 @@ class UploadRoute(CommandRoute):
     async def bounds(self, request: Request, aggregate: object) -> Bounds:
         """The request's types, size, storage and directory, each decided now.
 
+        Before the body is read: the storage an alias names is looked up,
+        and the directory checked as a storage takes it.
+
         Raises:
             TypeError: A callable decided something of the wrong kind.
-            ValueError: It decided no type, or a size that is not positive.
+            ValueError: It decided no type, a size that is not a positive
+                integer, or a malformed directory.
+            ImproperlyConfigured: ``STORAGES`` has no such alias.
         """
         types = await _decided(self.types, request, aggregate)
         max_size = await _decided(self.max_size, request, aggregate)
@@ -289,7 +296,9 @@ class UploadRoute(CommandRoute):
                 "An upload route's storage is a Storage or an alias, and its "
                 f"directory text: not {storage!r}, {directory!r}."
             )
-        return Bounds(_types(types), _size(max_size), storage, directory)
+        new_name(directory)  # Malformed: ValueError, before a byte is read.
+        target = storages[storage] if isinstance(storage, str) else storage
+        return Bounds(_types(types), _size(max_size), target, directory)
 
     async def received(
         self, request: Request, bounds: Bounds | None = None
@@ -413,18 +422,14 @@ def _types(types: Iterable[FileType]) -> tuple[FileType, ...]:
 
 
 def _size(max_size: object) -> int:
-    """``max_size``, a number of bytes, 1 or more.
+    """``max_size``, a whole number of bytes, 1 or more.
 
     Raises:
-        ValueError: It is not.
+        ValueError: It is not: a boolean, a float, or under 1.
     """
-    if (
-        isinstance(max_size, bool)
-        or not isinstance(max_size, int | float)
-        or not max_size >= 1
-    ):
+    if not isinstance(max_size, int) or isinstance(max_size, bool) or max_size < 1:
         raise ValueError(f"max_size is 1 byte or more, not {max_size!r}.")
-    return cast("int", max_size)
+    return max_size
 
 
 def _shown(max_size: "int | Decided[int]") -> str:

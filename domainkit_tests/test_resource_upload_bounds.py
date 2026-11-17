@@ -21,10 +21,11 @@ from fastapi.testclient import TestClient
 from domainkit import signing
 from domainkit.cache import Cache, CacheUnavailable, caches
 from domainkit.contrib.auth import AnyUser
+from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import uploads
 from domainkit.http.errors import install_exception_handlers
 from domainkit.http.middleware import RequestBodyLimitMiddleware
-from domainkit.http.uploads import CHECKED_PDF, IMAGES, PDF, FileType
+from domainkit.http.uploads import CHECKED_PDF, IMAGES, PDF, FileType, receive_upload
 from domainkit.inspection import PdfCheck, run_checks
 from domainkit.resources import ResourceRouter, asking_authorization
 from domainkit.storage import MemoryStorage
@@ -411,18 +412,31 @@ def test_a_size_decided_per_request_needs_a_body_limit(store: InMemoryGadgets) -
         ("types", [], ValueError),
         ("max_size", 0, ValueError),
         ("max_size", True, ValueError),
+        ("max_size", 2.5, ValueError),
+        ("max_size", float("inf"), ValueError),
         ("storage", 7, TypeError),
+        ("storage", "nowhere", ImproperlyConfigured),
         ("directory", None, TypeError),
+        ("directory", "../up", ValueError),
+        ("directory", "/root", ValueError),
+        ("directory", "a//b", ValueError),
+        ("directory", ".", ValueError),
     ],
 )
 def test_what_a_callable_decides_is_checked(
     store: InMemoryGadgets,
     use_auth: UseAuth,
+    counted: Counted,
     option: str,
     decided: object,
     error: type[Exception],
 ) -> None:
-    """A mistake of the route's own: a 500, before the body is read."""
+    """A mistake of the route's own: a 500, before the body is read.
+
+    An alias ``STORAGES`` lacks, and a directory a storage refuses, are
+    found before the file is received or checked: no temporary file is
+    left open.
+    """
     use_auth()
     resource = gadgets(store)
     options: dict[str, Any] = {
@@ -442,6 +456,65 @@ def test_what_a_callable_decides_is_checked(
             content=PDF_FILE,
             headers=as_("changer"),
         )
+    assert counted.files == []
+
+
+@pytest.mark.parametrize(
+    ("options", "error"),
+    [
+        ({"directory": "../up"}, ValueError),
+        ({"storage": "nowhere"}, ImproperlyConfigured),
+    ],
+)
+def test_a_declared_storage_and_directory_are_checked_before_the_body(
+    store: InMemoryGadgets,
+    use_auth: UseAuth,
+    counted: Counted,
+    options: dict[str, str],
+    error: type[Exception],
+) -> None:
+    """As a decided one is: they refused only once the file was checked."""
+    use_auth()
+    resource = gadgets(store)
+    declared: dict[str, Any] = {"types": [CHECKED_PDF], "max_size": 1000, **options}
+    resource.upload_route(
+        AttachManual, service=Run().attach, field="manual", path="/manual", **declared
+    )
+
+    with pytest.raises(error):
+        App(resource).client.post(
+            f"{LOCATION}{ids(store)['a']}/manual",
+            content=PDF_FILE,
+            headers=as_("changer"),
+        )
+    assert counted.files == []
+
+
+def test_a_size_given_when_declaring_is_a_whole_number(
+    store: InMemoryGadgets,
+) -> None:
+    """A float, infinity included, is refused as a decided one is."""
+    resource = gadgets(store)
+
+    for size in (2.5, float("inf"), True):
+        with pytest.raises(ValueError, match="max_size is 1 byte or more"):
+            resource.upload_route(
+                AttachManual,
+                service=Run().attach,
+                field="manual",
+                types=[CHECKED_PDF],
+                max_size=size,  # type: ignore[arg-type]
+                path="/manual",
+            )
+
+
+async def test_storing_to_an_alias_storages_lacks_drops_the_temporary_file() -> None:
+    """The alias is looked up where the file is dropped whatever happens."""
+    received = await receive_upload(PNG_FILE, types=IMAGES, max_size=1000)
+
+    with pytest.raises(ImproperlyConfigured, match="nowhere"):
+        await received.store("nowhere")
+    assert received.file.closed
 
 
 # Dependencies ------------------------------------------------------------------------

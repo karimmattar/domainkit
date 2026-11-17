@@ -323,13 +323,17 @@ class ReceivedUpload:
     ) -> StoredUpload:
         """Store it under a new name, streamed through ``UPLOAD_SCANNER`` if set.
 
+        The temporary file is dropped whatever happens, an alias
+        ``STORAGES`` lacks included.
+
         Raises:
             UploadRefused: 422 ``infected_file``; nothing is stored.
             ScannerUnavailable: The scanner could not scan it (503).
             ValueError: ``directory`` is malformed.
+            ImproperlyConfigured: ``STORAGES`` has no alias ``storage``.
         """
-        target = storages[storage] if isinstance(storage, str) else storage
         try:
+            target = storages[storage] if isinstance(storage, str) else storage
             stored = await _store(
                 target,
                 self.kind,
@@ -416,11 +420,14 @@ async def receive_upload(
 
     ``remember`` names who receives the file: a route and its caller, as
     a twin and its act do (New in 2.7). A file whose checks took it under
-    that name in the last ``CHECKED_FOR``, of the same content (its
-    SHA-256) and the same checks, is not checked again; one they take now
-    is remembered. The verdict is kept in the default cache, signed with
-    ``SECRET_KEY``; a cache that is down, or holds anything else, has the
-    file checked.
+    that name in the last 30 minutes, of the same content (its SHA-256)
+    and the same checks (as they pickle), is not checked again; one they
+    take now is remembered. The verdict is kept in the default cache,
+    signed with ``SECRET_KEY``; a cache that is down, or holds anything
+    else, has the file checked. A check of a project's own that a deploy
+    changes is not run again for a verdict kept before it, for those 30
+    minutes; and one that holds a set pickles in another order in each
+    process, so its verdict is found in the process that kept it only.
 
     Raises:
         UploadRefused: 400 ``empty_file``, 413 ``file_too_large``, 415
@@ -630,7 +637,7 @@ async def _remembered(key: str) -> int | None:
 
 
 async def _remember(key: str, index: int) -> None:
-    """Keep that the checks took candidate ``index``, signed, for ``CHECKED_FOR``.
+    """Keep that the checks took candidate ``index``, signed, for 30 minutes.
 
     A cache that is down keeps nothing: the next receive checks again.
     """
