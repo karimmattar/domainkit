@@ -1,6 +1,6 @@
 # 0170. Let a resource's items be tenants, count members' keys alone, and let lists name what they refer to
 
-- Status: Accepted
+- Status: Accepted; amended by [0177](0177-let-a-key-reach-every-tenant-name-a-domains-own-keys-and-search-every-word-at-once.md)
 - Date: 2026-11-16
 - Amends: [0150](0150-take-the-tenant-from-the-path-and-let-members-hold-permissions.md)
 

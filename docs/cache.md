@@ -850,7 +850,10 @@ mail_limit = Throttle("10/hour", key="address", scope="mail")
 While a tenant is served, a throttle counts per tenant, as every key
 is the tenant's own. `per_tenant=False` keeps one count for every
 tenant: a member of ten tenants gets the rate once (since 2.5,
-[tenancy](tenancy.md#caches-limits-and-logs)).
+[tenancy](tenancy.md#caches-limits-and-logs)). On a route served as a
+tenant, say `per_tenant=True` where each tenant's count is meant:
+`check` names a throttle there that says neither (`tenancy.W001`, since
+2.7).
 
 With `Throttle("2/minute")` on `/search`, the third request in a minute
 got this answer:
@@ -985,7 +988,7 @@ The arguments of the decorators and of `Throttle`:
 | `@cached(*, ttl=DEFAULT_TTL, cache="default", name=None)` | `name` starts every key; default: the function's import path. |
 | `@cache_page(ttl=DEFAULT_TTL, *, cache="default", vary=(), vary_on_user=False, max_age=0, name=None, borrows=True)` | `vary`: request headers the answer depends on. `max_age`: seconds clients may reuse the answer. |
 | `invalidate_on(event_type, keys, *, cache="default", bus=event_bus)` | `keys(event)` returns the keys to delete. |
-| `Throttle(rate, *, key="user", scope=None, backend=None, per_tenant=True)` | `key`: `"user"`, `"address"`, or a function. `scope`: a shared count. `per_tenant=False`: one count across tenants ([tenancy](tenancy.md#caches-limits-and-logs)). |
+| `Throttle(rate, *, key="user", scope=None, backend=None, per_tenant=None)` | `key`: `"user"`, `"address"`, or a function. `scope`: a shared count. `per_tenant=False`: one count across tenants; `True`, or `None` (unsaid), one per tenant, and `check` warns of an unsaid one on a tenant's route (`tenancy.W001`, [tenancy](tenancy.md#caches-limits-and-logs)). |
 
 ## Errors and refusals
 

@@ -5,9 +5,12 @@ own after 2.4 took the tenant from the path (ADR 0150): ``PathTenant``
 did not fit a ``ResourceRouter`` whose list has no tenant in its path,
 ``MembershipBackend``'s keys were counted with a user's global grants, so
 staff who are members acted in a tenant as staff, and a limit inside a
-tenant's routes counted per tenant only (ADR 0170).
+tenant's routes counted per tenant only (ADR 0170). Then (2.6) that a
+member's rule could not name a key of the domain's own, and that nothing
+told a person's limit from a tenant's (ADR 0177).
 """
 
+import io
 from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Annotated, Any, Final
@@ -22,7 +25,7 @@ from starlette.requests import HTTPConnection
 from starlette.testclient import WebSocketDenialResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from domainkit.conf import override_settings
+from domainkit.conf import UNSET, override_settings
 from domainkit.contrib.auth import AnonymousUser, AnyUser
 from domainkit.ddd import Command, use_case
 from domainkit.ddd.query import CriteriaLike
@@ -38,9 +41,11 @@ from domainkit.http.access import (
 from domainkit.http.application import application_problems
 from domainkit.http.errors import install_exception_handlers
 from domainkit.http.ratelimit import MemoryBackend, Throttle
+from domainkit.management import call_command
 from domainkit.resources import (
     FieldPolicy,
     HasMemberModelPermission,
+    HasModelPermission,
     MemberActions,
     ModelActions,
     ResourceRouter,
@@ -53,6 +58,7 @@ from domainkit.tenancy import (
     current_tenant,
     path_tenant,
     tenant,
+    unsaid_throttles,
 )
 from domainkit_tests.conftest import UseAuth
 from domainkit_tests.gadgets import (
@@ -1103,3 +1109,246 @@ def test_a_limit_may_hold_across_tenants(limited: TestClient) -> None:
     assert sent("invitations") == [200, 200, 429, 429]
     other = limited.post("/orgs/acme/invitations", headers=as_("bob"))
     assert other.status_code == 404  # Bob is no member: the tenant comes first.
+
+
+INVITE: Final = "organizations.add_membership"
+"""A key of another domain's own: inviting someone into a company."""
+
+
+def test_member_actions_name_a_domains_own_keys(
+    store: InMemoryGadgets, members: None
+) -> None:
+    """``keys=`` names an action's key whole: an invitation asks for ``INVITE``.
+
+    Without it, ``MemberActions`` asks ``shop.invite_gadget``, which no
+    model has, so no member could be given the action (user report D3).
+    The other actions keep their model's keys, and ``ModelActions`` takes
+    ``keys`` alike; a key that is not ``<domain>.<codename>`` is refused.
+    """
+    a = ids(store)["a"]
+    MEMBERS[("bob", str(a))] = frozenset({INVITE})
+    rule = MemberActions(GADGETS, outside=IsAuthenticated(), keys={"invite": INVITE})
+    resource = companies(store, rule=rule)
+    resource.command_route(
+        RenameGadget, service=rename, body=RenameIn, path="/invite", action="invite"
+    )
+    client = client_of(resource)
+
+    def sends(path: str, name: str) -> int:
+        url = f"/gadgets/{a}{path}"
+        return client.post(url, json={"name": "x"}, headers=as_(name)).status_code
+
+    def keys_of(actions: Any, action: str) -> str:  # noqa: ANN401 - Actions.
+        last = actions.rules_for(action)[-1]
+        assert isinstance(last, HasModelPermission)
+        return last.permission()
+
+    assert {name: sends("/invite", name) for name in ("ann", "bob")} == {
+        "ann": 403,
+        "bob": 200,
+    }
+    assert {name: sends("/rename", name) for name in ("ann", "bob")} == {
+        "ann": 200,
+        "bob": 403,
+    }
+    assert keys_of(MemberActions(GADGETS), "invite") == "shop.invite_gadget"
+    assert keys_of(MemberActions(GADGETS, keys={"invite": INVITE}), "invite") == INVITE
+    assert keys_of(ModelActions(GADGETS, keys={"invite": INVITE}), "invite") == INVITE
+    assert keys_of(ModelActions(GADGETS, keys={"invite": INVITE}), "view") == (
+        "shop.view_gadget"
+    )
+    for refused in ("add_membership", "a.b.c", "", 3):
+        with pytest.raises(ValueError, match="not a permission's key"):
+            MemberActions(GADGETS, keys={"invite": refused})  # type: ignore[dict-item]
+    with pytest.raises(ValueError, match="not a permission's key"):
+        HasModelPermission("view", GADGETS, key="view gadget")
+
+
+def test_keys_refuse_a_route_of_an_action_they_do_not_name(
+    store: InMemoryGadgets, members: None
+) -> None:
+    """Under ``keys``, a misspelt action is refused when its route is declared.
+
+    The four actions every model has still take their model's keys. A
+    rule given as ``outside`` names its own keys: it takes none of the
+    member's (review of user report D3).
+    """
+    rule = MemberActions(GADGETS, outside=IsAuthenticated(), keys={"invite": INVITE})
+    resource = companies(store, rule=rule)
+
+    with pytest.raises(ImproperlyConfigured, match=r"'invte' is not in keys \(did"):
+        resource.command_route(
+            RenameGadget, service=rename, body=RenameIn, path="/x", action="invte"
+        )
+    with pytest.raises(ImproperlyConfigured, match="'approve' is not in keys"):
+        ModelActions(GADGETS, keys={"invite": INVITE}).rules_for("approve")
+    assert [
+        rule.permission()
+        for action in ("view", "add", "change", "delete")
+        for rule in MemberActions(GADGETS, keys={"invite": INVITE}).rules_for(action)
+        if isinstance(rule, HasModelPermission)
+    ] == [
+        "shop.view_gadget",
+        "shop.add_gadget",
+        "shop.change_gadget",
+        "shop.delete_gadget",
+    ]
+    joined = MemberActions(
+        GADGETS, outside=ModelActions(GADGETS), keys={"invite": INVITE}
+    ).rules_for("invite")
+    assert [each.permission() for each in _model_rules(joined)] == [
+        INVITE,
+        "shop.invite_gadget",
+    ]
+
+
+def _model_rules(rules: Any) -> list[HasModelPermission]:  # noqa: ANN401 - rules.
+    """Every ``HasModelPermission`` within ``rules``, joined ones too."""
+    found: list[HasModelPermission] = []
+    for each in rules:
+        if isinstance(each, HasModelPermission):
+            found.append(each)
+        found.extend(_model_rules(getattr(each, "rules", ())))
+    return found
+
+
+def test_subclasses_that_set_their_own_fields_keep_working() -> None:
+    """A rule or a throttle whose ``__init__`` skips ``super()``'s still answers.
+
+    ``key`` and ``per_tenant_said`` have class defaults, so a subclass of
+    2.6's kind asks its model's key, and is named as unsaid (review of user
+    report D3).
+    """
+
+    class Viewing(HasModelPermission):
+        def __init__(self) -> None:
+            self.action = "view"
+            self.model = GADGETS
+
+    class Fixed(Throttle):
+        def __init__(self) -> None:
+            self.limit, self.period, self.key = 5, 60, "user"
+            self.scope, self.backend, self.per_tenant = None, None, True
+
+    org = APIRouter(
+        prefix="/orgs/{org_id}", dependencies=[Depends(PathTenant("org_id"))]
+    )
+
+    @org.post("/notes", dependencies=[Public, Depends(Fixed())])
+    async def note() -> None: ...
+
+    app = FastAPI()
+    app.include_router(org)
+
+    assert Viewing().permission() == "shop.view_gadget"
+    assert [found.split(", and")[0] for found in unsaid_throttles(app)] == [
+        "POST /orgs/{org_id}/notes is served as a tenant"
+    ]
+
+
+def throttled_app(*, middleware: bool = False) -> FastAPI:
+    """Routes of an organisation and of no tenant, each throttled every way.
+
+    And a Starlette route, which takes no dependency, so no throttle.
+    """
+    unsaid = Throttle("5/minute", scope="unsaid")
+    each = Throttle("5/minute", scope="each", per_tenant=True)
+    every = Throttle("5/minute", scope="every", per_tenant=False)
+    org = APIRouter(
+        prefix="/orgs/{org_id}", dependencies=[Depends(PathTenant("org_id"))]
+    )
+    plain = APIRouter(prefix="/plain")
+    for router in (org, plain):
+
+        @router.post(
+            "/notes",
+            dependencies=[Public, Depends(unsaid), Depends(each), Depends(every)],
+        )
+        async def note() -> None: ...
+
+    async def raw(request: Request) -> Response:
+        return Response()
+
+    app = FastAPI()
+    app.include_router(org)
+    app.include_router(plain)
+    app.add_route("/raw", raw)  # Starlette's: no dependencies to read.
+    if middleware:
+        app.add_middleware(TenantMiddleware)
+    return app
+
+
+def test_check_names_throttles_counted_per_tenant_unsaid(
+    store: InMemoryGadgets, members: None
+) -> None:
+    """``tenancy.W001``: a throttle on a route served as a tenant says how it counts.
+
+    A route that takes its tenant from the path counts each tenant apart
+    unless its throttle says ``per_tenant=False``: one that says neither is
+    named, so moving routes under a tenant never multiplies a person's
+    limit unseen (user report D3). Under ``TenantMiddleware`` every route
+    is served as a tenant, but a tenants' collection, which serves none.
+    """
+    by_path = unsaid_throttles(throttled_app())
+    with override_settings(TENANCY={"HEADER": "X-Tenant", "REQUIRED": False}):
+        by_middleware = unsaid_throttles(throttled_app(middleware=True))
+        resource = companies(store, dependencies=[Depends(Throttle("1/second"))])
+        app = FastAPI()
+        app.include_router(resource)
+        app.add_middleware(TenantMiddleware)
+        on_resource = unsaid_throttles(app)
+
+    assert by_path == [
+        (
+            "POST /orgs/{org_id}/notes is served as a tenant, and its "
+            "Throttle('5/minute') counts per tenant: a caller who belongs to ten "
+            "tenants gets ten times the rate. Say per_tenant=False to count each "
+            "caller once, or per_tenant=True to keep each tenant's count."
+        )
+    ]
+    assert [found.split(" is ")[0] for found in by_middleware] == [
+        "POST /orgs/{org_id}/notes",
+        "POST /plain/notes",
+    ]
+    assert sorted(found.split(" is ")[0] for found in on_resource) == [
+        "GET /gadgets/{gadget_id}",
+        "POST /gadgets/{gadget_id}/rename",
+    ]
+
+
+throttled = APIRouter(
+    prefix="/orgs/{org_id}", dependencies=[Depends(PathTenant("org_id"))]
+)
+"""A project's routes: an organisation's notes, throttled without saying how."""
+
+
+@throttled.post("/notes", dependencies=[Public, Depends(Throttle("5/minute"))])
+async def throttled_note() -> None:
+    """Write a note."""
+
+
+def test_check_warns_of_a_throttle_counted_per_tenant_unsaid() -> None:
+    """``check`` lists ``tenancy.W001``, which ``SILENCED_CHECKS`` may silence."""
+
+    def checked(**options: Any) -> str:  # noqa: ANN401 - settings.
+        output = io.StringIO()
+        with override_settings(
+            INSTALLED_DOMAINS=["domainkit.contrib.contenttypes"],
+            ROOT_ROUTER=f"{HERE}.throttled",
+            ALPHA=UNSET,
+            **options,
+        ):
+            call_command("check", stdout=output)
+        return output.getvalue()
+
+    assert checked() == (
+        "System check identified no issues and 1 warning. Domains: contenttypes.\n"
+        "  Warning: tenancy.W001: POST /orgs/{org_id}/notes is served as a "
+        "tenant, and its Throttle('5/minute') counts per tenant: a caller who "
+        "belongs to ten tenants gets ten times the rate. Say per_tenant=False "
+        "to count each caller once, or per_tenant=True to keep each tenant's "
+        "count.\n"
+    )
+    assert checked(SILENCED_CHECKS=["tenancy.W001"]) == (
+        "System check identified no issues (1 silenced). Domains: contenttypes.\n"
+    )

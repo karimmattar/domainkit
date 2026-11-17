@@ -58,7 +58,7 @@ from domainkit.db.encrypted import EncryptedType
 from domainkit.ddd import PermissionDenied
 from domainkit.ddd.query import And, F
 from domainkit.ddd.query import Selection as Listing
-from domainkit.http import Pagination, error_responses
+from domainkit.http import PageRequest, Pagination, error_responses
 from domainkit.http.access import BasePermission, IsUnscoped, Principal, Require
 from domainkit.http.errors import APIError
 from domainkit.resources import HasModelPermission as HasModelPermission
@@ -132,6 +132,8 @@ HIDDEN_FIELDS: Final = frozenset(
 """Fields ``/users`` never shows among ``fields`` (``last_login`` has its own key)."""
 IDENTIFIED: Final = ("email", "mobile_number")
 """Fields a user changes by proving the new value first (ADR 0153)."""
+NAME_FIELDS: Final = ("first_name", "last_name")
+"""The fields ``/users/names`` joins into a name, where ``/users`` shows both."""
 
 router = APIRouter(tags=["auth admin"])
 pages = Pagination(default_limit=PAGE_SIZE, max_limit=MAX_PAGE_SIZE)
@@ -328,6 +330,47 @@ class UserPage(BaseModel):
     next_cursor: str | None
 
 
+class UserNameOut(BaseModel):
+    """A user as a page names them: who they are, not what they hold."""
+
+    id: UUID
+    username: str
+    name: str | None
+    """``first_name`` and ``last_name``, joined, where ``/users`` shows both
+    (``admin_fields``); else null."""
+    identifiers: dict[str, JsonValue]
+    """The fields of ``AUTH.IDENTIFIERS`` among those ``/users`` shows, by name."""
+
+    @classmethod
+    def of(cls, user: AbstractBaseUser) -> Self:
+        """Name ``user`` by what ``/users`` shows of them, and nothing more.
+
+        The name is built from ``NAME_FIELDS``, never from a model's
+        ``get_full_name``, which may read fields staff are not shown.
+        """
+        model = type(user)
+        shown = model.admin_fields() - HIDDEN_FIELDS
+        parts = (str(getattr(user, name) or "") for name in NAME_FIELDS)
+        name = " ".join(filter(None, parts)) if shown >= set(NAME_FIELDS) else ""
+        return cls(
+            id=user.id,
+            username=user.get_username(),
+            name=name or None,
+            identifiers={
+                name: jsonable(getattr(user, name))
+                for name in identifier_fields(model)
+                if name in shown
+            },
+        )
+
+
+class UserNamePage(BaseModel):
+    """Users by name, and the cursor of the next page."""
+
+    items: list[UserNameOut]
+    next_cursor: str | None
+
+
 class AdminUserIn(BaseModel):
     """A new user: without a password, it cannot log in with one."""
 
@@ -521,6 +564,29 @@ users = ResourceRouter(
 )
 """``GET /users`` (``search`` matches part of an identifier; ``id`` names
 users) and ``/users/{id}``."""
+
+
+@router.get("/users/names", responses=_errors(*COMMON))
+async def list_user_names(
+    actor: Annotated[AnyUser, _users("view")],
+    listing: Annotated[Listing, Depends(user_listing)],
+    page: Annotated[PageRequest, Depends(pages)],
+) -> UserNamePage:
+    """Users by name: ``GET /users``' page, without what each user holds.
+
+    ``search`` and ``id`` keep the users they name, in the same order, so a
+    cursor of either list reads the next page of both. Each user is their
+    id, ``username``, name, and identifiers, each only where ``/users``
+    shows it: a page of rows that refer to users names them without their
+    groups and permissions (user report D2). ``search`` matches the
+    username and the identifiers, as on ``/users``, never a name.
+    """
+    async with AuthUnitOfWork() as uow:
+        found = await page.fetch(uow.users, listing)
+    out = page.respond(found, [UserNameOut.of(user) for user in found.items], listing)
+    return UserNamePage(items=out.items, next_cursor=out.next_cursor)
+
+
 groups = ResourceRouter(
     "/groups",
     model=Group,
@@ -1712,6 +1778,9 @@ async def may_change(actor: AnyUser, user: AbstractBaseUser) -> None:
     who belongs to a tenant they do not, or holds keys there they lack
     (``tenants_beyond``); while ``TENANCY.MEMBER_PERMISSIONS`` is set
     without ``MEMBER_TENANTS``, only superusers change users (ADR 0150).
+    Staff who hold ``TENANCY.ALL_TENANTS_PERMISSION`` everywhere change a
+    tenant's member they do not share it with, when they hold everywhere
+    what the member holds there (ADR 0177).
     """
     if user.is_superuser:
         _superusers_only(actor, "Only superusers may change superusers.")
