@@ -969,7 +969,13 @@ def _pause(
 
 
 def _take(lock: _Lock, held: list[_Held], timeout: float) -> bool:
-    """Take ``lock`` within ``timeout`` (-1: as long as it takes) and note it."""
+    """Take ``lock`` within ``timeout`` (-1: as long as it takes) and note it.
+
+    Not again if a fork on this thread holds it already: a handler may be
+    behind two queues, and a plain lock would wait for its own thread.
+    """
+    if any(item is lock for taken in _forking.held for item in taken):
+        return True
     if not lock.acquire(timeout=timeout):
         return False
     held.append(lock)

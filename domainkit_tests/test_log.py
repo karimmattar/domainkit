@@ -1554,6 +1554,42 @@ def test_a_child_renews_the_locks_handlers_make_themselves(
     parents.put(log._STOP)  # End the parent's thread, which this test left.
 
 
+def plain_lock() -> Any:  # noqa: ANN401 - a Lock.
+    """A lock its own thread cannot take twice."""
+    return threading.Lock()
+
+
+class PlainLock(Collect):
+    """Writes under a plain lock."""
+
+    def createLock(self) -> None:
+        """A plain lock, not ``logging``'s reentrant one."""
+        self.lock = plain_lock()
+
+
+def test_a_handler_behind_two_queues_is_waited_for_once(
+    forks: "weakref.WeakSet[BackgroundListener]",
+    start_fork: Callable[[], Fork],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lock the fork holds already is not taken again: a plain one waited."""
+    monkeypatch.setattr(log, "FLUSH_TIMEOUT", 60.0)
+    shared = PlainLock()
+    queues = [BackgroundHandler.writing_to(shared) for _ in range(2)]
+    for handler in queues:
+        handler.handle(record("starts its thread"))
+        assert handler.wait_written(10)
+
+    fork = start_fork()
+    went_on = fork.ready.wait(10)
+    assert fork.finish()
+
+    assert went_on
+    assert [item for item in fork.held if item is shared.lock] == [shared.lock]
+    for handler in queues:
+        handler.close()
+
+
 def test_a_handler_without_a_lock_is_not_waited_for(
     forks: "weakref.WeakSet[BackgroundListener]", start_fork: Callable[[], Fork]
 ) -> None:
