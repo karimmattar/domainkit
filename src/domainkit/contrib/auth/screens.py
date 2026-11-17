@@ -13,14 +13,19 @@ counted, never left out unsaid: a text cut ends with ``…``, a list's last
 line says how many more ("auditors, clerks and 4 more"), and a last line
 ("…") says how many values are not shown.
 
-    from domainkit.contrib.auth.actions import Shown
-    from domainkit.contrib.auth.screens import laid_out
+What the act is on is named by ``named(name, id)``: its name, cut to fit
+if need be, and its id, whole. The act binds the id; the name is a hint,
+and never a reason to refuse it.
 
-    Shown("Grant permissions", laid_out({"Member": name, "Adds": keys}))
+    from domainkit.contrib.auth.actions import Shown
+    from domainkit.contrib.auth.screens import laid_out, named
+
+    details = {"Member": named(member.name, member.id), "Adds": keys}
+    Shown("Grant permissions", laid_out(details))
 """
 
 import json
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping
 from typing import Final
 
 from domainkit.ddd import BusinessRuleViolation
@@ -28,8 +33,12 @@ from domainkit.i18n import ngettext, pgettext
 
 from .repositories.authorizations import DETAIL_MAX_LENGTH, MAX_DETAILS
 
-__all__ = ["TooMuchToShow", "laid_out"]
+__all__ = ["LINES", "LINE_LENGTH", "TooMuchToShow", "fitted", "laid_out", "named"]
 
+LINE_LENGTH: Final = DETAIL_MAX_LENGTH
+"""The most characters (code points) a line, its label, or a title holds: 64."""
+LINES: Final = MAX_DETAILS
+"""The most labelled lines a screen holds: 6."""
 SEPARATOR: Final = ", "
 """What joins a list's items on a line."""
 MORE_LABEL: Final = "…"
@@ -37,10 +46,11 @@ MORE_LABEL: Final = "…"
 CUT: Final = "…"
 """What ends a text cut to fit."""
 AMBIGUOUS: Final = (",", '"')
-"""What an item may not hold as is: it is quoted, so that items stay apart."""
+"""What a text item may not hold as is: it is quoted, so that items stay apart."""
 
-type Value = str | Sequence[str]
-"""What a label shows: a text, on one line, or a list of texts, over lines."""
+type Value = object
+"""What a label shows: a text, or a JSON value (a number, ``True``, ``None``,
+a dict) on one line, or a list or a tuple of them over lines."""
 type Details = Mapping[str, Value] | Iterable[tuple[str, Value]]
 """Labelled values, in the order a screen shows them."""
 
@@ -66,11 +76,15 @@ def laid_out(
 ) -> list[tuple[str, str]]:
     """``details`` on a screen's lines: six labelled lines of 64 characters at most.
 
-    A text is one line. A list's items are joined with ``, `` on a line
-    while they fit, then go on to the next line, labelled with its number
-    ("Adds (2)"); an item that holds a comma or a double quote is quoted.
-    A character that is not printable is shown escaped, as Python writes
-    it (a new line as a backslash and ``n``).
+    A text is one line; another value is compact JSON on one line (a dict
+    whole, ``1``, ``true``, ``null``). A list's or a tuple's items are
+    joined with ``, `` on a line while they fit, then go on to the next
+    line, labelled with its number ("Adds (2)"): a text item as itself,
+    quoted if it holds a comma or a double quote, has spaces around it,
+    or is empty; any other item as compact JSON. A character that is not
+    printable, and a backslash, are shown escaped as Python writes them (a
+    new line as a backslash and ``n``, a backslash as two), so two values
+    never show alike.
 
     ``whole``: what would be cut or left out is refused. Otherwise a text
     longer than a line is cut and ends with ``…``; a list given fewer
@@ -82,6 +96,8 @@ def laid_out(
         TooMuchToShow: With ``whole``, a label, a text, or an item is longer
             than a line, or empty for a label; a label comes twice; or the
             whole takes more than six lines.
+        TypeError: A value or an item is not JSON (bytes, a set, a
+            ``Decimal``): say what it is as text.
     """
     pairs = details.items() if isinstance(details, Mapping) else details
     entries = [(_printable(str(label)), _shown(value)) for label, value in pairs]
@@ -93,18 +109,54 @@ def laid_out(
     return _counted(entries, more or _more_values)
 
 
+def named(name: str | None, subject_id: object) -> str:
+    """What an act is on, on one line: its name, cut to fit if need be, and its id.
+
+    "ann@example.com (6f1c9c1e-…)": the id whole, the name cut and ended
+    with ``…`` where both do not fit. An empty name (a user erased) shows
+    as "erased". The act binds the id: whatever the name, this is never
+    too much to show.
+    """
+    shown = name or pgettext("subject", "erased")
+    line = pgettext("subject", "{name} ({id})")
+    ident = _printable(str(subject_id))
+    room = LINE_LENGTH - len(line.format(name="", id=ident))
+    return line.format(name=fitted(shown, room), id=ident)
+
+
 def _shown(value: Value) -> str | list[str]:
-    """``value`` as a screen shows it: a printable text, or printable items."""
+    """``value`` as a screen shows it: a printable text, or printable items.
+
+    Raises:
+        TypeError: It is not JSON.
+    """
     if isinstance(value, str):
         return _printable(value)
-    return [_item(str(each)) for each in value]
+    if isinstance(value, list | tuple):
+        return [_item(each) for each in value]
+    return _printable(_json(value))
 
 
-def _item(text: str) -> str:
-    """An item of a list, quoted if it could be read as two, or as none."""
-    if not text or text != text.strip() or any(each in text for each in AMBIGUOUS):
-        return _printable(json.dumps(text, ensure_ascii=False))
-    return _printable(text)
+def _item(value: object) -> str:
+    """An item of a list: a text quoted if it could be read as two, or as none.
+
+    Raises:
+        TypeError: It is not JSON.
+    """
+    if not isinstance(value, str):
+        return _printable(_json(value))
+    if not value or value != value.strip() or any(each in value for each in AMBIGUOUS):
+        return '"' + _printable(value).replace('"', '\\"') + '"'
+    return _printable(value)
+
+
+def _json(value: object) -> str:
+    """``value`` as compact JSON, keys sorted.
+
+    Raises:
+        TypeError: It is not JSON (bytes, a set, a ``Decimal``).
+    """
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
 def _whole(entries: list[tuple[str, str | list[str]]]) -> list[tuple[str, str]] | None:
@@ -227,21 +279,27 @@ def _more_values(hidden: int) -> str:
     return more.format(count=hidden)
 
 
-def fitted(text: str) -> str:
-    """``text`` as a screen shows it: printable, at most 64 characters.
+def fitted(text: str, length: int = LINE_LENGTH) -> str:
+    """``text`` as a screen shows it: printable, at most ``length`` characters.
 
-    A character that is not printable is shown escaped; a longer text is
-    cut, and ends with ``…``.
+    A character that is not printable, and a backslash, are shown escaped;
+    a longer text is cut, and ends with ``…``.
     """
     printable = _printable(text)
-    if len(printable) <= DETAIL_MAX_LENGTH:
+    if len(printable) <= length:
         return printable
-    return printable[: DETAIL_MAX_LENGTH - len(CUT)] + CUT
+    return printable[: max(length - len(CUT), 0)] + CUT
 
 
 def _printable(text: str) -> str:
-    """``text``, each character that is not printable escaped as Python writes it."""
+    """``text``, a backslash and each character not printable escaped as Python does.
+
+    A backslash is doubled, so that a backslash and ``n`` shown is a new
+    line, never those two characters.
+    """
     return "".join(
-        each if each.isprintable() else each.encode("unicode_escape").decode("ascii")
+        each
+        if each.isprintable() and each != "\\"
+        else each.encode("unicode_escape").decode("ascii")
         for each in text
     )

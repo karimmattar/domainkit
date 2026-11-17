@@ -298,7 +298,7 @@ def test_staff_ask_confirm_and_change_once(
     assert asked.json()["shown"] == {
         "title": "Change a user's groups",
         "details": [
-            {"label": "User", "value": "target"},
+            {"label": "User", "value": f"target ({target})"},
             {"label": "Adds", "value": "auditors, clerks"},
         ],
     }
@@ -493,13 +493,14 @@ def test_the_screen_names_the_user_or_group_and_the_change(
         "/groups/authorization", {"name": "made", "permissions": ["auth.view_user"]}
     )
 
+    who = ("User", f"target ({target})")
     assert unusable["title"] == "Make a user's password unusable"
-    assert pairs(unusable) == [("User", "target")]
+    assert pairs(unusable) == [who]
     assert reason["title"] == "Act as a user"
-    assert pairs(reason) == [("User", "target"), ("Reason", "Ticket\\n42")]
+    assert pairs(reason) == [who, ("Reason", "Ticket\\n42")]
     assert many["title"] == "Change a user"
     assert pairs(many) == [
-        ("User", "target"),
+        who,
         ("Superuser", "no"),
         ("Staff", "no"),
         ("Active", "yes"),
@@ -512,11 +513,12 @@ def test_the_screen_names_the_user_or_group_and_the_change(
         ("Active", "yes"),
         ("Password", "set"),
     ]
+    group = ("Group", f"crew ({crew})")
     assert renamed["title"] == "Rename a group"
-    assert pairs(renamed) == [("Group", "crew"), ("New name", "team")]
-    assert (deleted["title"], pairs(deleted)) == ("Delete a group", [("Group", "crew")])
+    assert pairs(renamed) == [group, ("New name", "team")]
+    assert (deleted["title"], pairs(deleted)) == ("Delete a group", [group])
     assert logged_out["title"] == "End a user's sessions"
-    assert pairs(left) == [("User", "target"), ("Takes away", "crew")]
+    assert pairs(left) == [who, ("Takes away", "crew")]
     assert granting["title"] == "Create a group"
     assert pairs(granting) == [("Group", "made"), ("Adds", "auth.view_user")]
 

@@ -1517,6 +1517,20 @@ msgctxt "continued"
 msgid "{label} ({number})"
 msgstr ""
 
+#. What an act is on: its name, cut to fit, and its id: "ann (6f1c…)".
+msgctxt "subject"
+msgid "{name} ({id})"
+msgstr ""
+
+#. Shown for a user whose name was erased, beside their id.
+msgctxt "subject"
+msgid "erased"
+msgstr ""
+
+#. An impersonation's reason, as its maker gave it, on an approver's screen.
+msgid "Stated reason"
+msgstr ""
+
 msgid "This act cannot be shown whole on one screen: make it in smaller steps."
 msgstr ""
 

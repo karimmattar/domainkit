@@ -15,9 +15,8 @@ What staff are shown is built here, from the act and the stored user or
 group: which one, and what changes.
 """
 
-import json
 from collections.abc import Iterable, Mapping
-from typing import Final, Literal
+from typing import Final, Literal, cast
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
@@ -27,9 +26,9 @@ from domainkit.utils.decimals import jsonable
 
 from .actions import Action, Shown, spent_in_code
 from .exceptions import GroupNotFound, UserNotFound
-from .gates import AdminChange
+from .gates import AdminChange, AdminKind, on_admin_screen
 from .models import AbstractBaseUser, GroupId, UserId
-from .screens import Value, fitted, laid_out
+from .screens import Value, fitted, laid_out, named
 from .settings import auth_settings
 from .uow import AuthUnitOfWork
 
@@ -186,15 +185,19 @@ def subject_of(act: AdminAct) -> str:
 async def show(act: AdminAct) -> Shown:
     """Which user or group, and what changes, read from the stored one.
 
-    The title says the kind of change; then the user or group by its
-    first identifier or name, the name given, the flags that grant or take
-    access ("Superuser", "Staff", "Active": yes or no), the reason of an
-    impersonation, what is added and taken away (a list over as many lines
-    as it takes: "Adds", "Adds (2)"), whether a new user gets a password,
-    and the other values set, by field ("Email", "Display name"). Laid out
-    on a screen (``laid_out``): with ``AUTH.AUTHORIZATIONS.WHOLE`` on,
-    what does not fit whole is refused; off, it is cut and counted, the
-    first lines kept for what comes first.
+    The title says the kind of change; then the user or group, by its
+    first identifier or name and its id ("ann@example.com (6f1c…)", the
+    name cut to fit if need be: the act binds the id), the name given, the
+    flags that grant or take access ("Superuser", "Staff", "Active": yes or
+    no), the reason of an impersonation, what is added and taken away (a
+    list over as many lines as it takes: "Adds", "Adds (2)"), whether a new
+    user gets a password, and the other values set, by field ("Email",
+    "Display name"). Laid out on a screen (``laid_out``): with
+    ``AUTH.AUTHORIZATIONS.WHOLE`` on, what the change sets, adds, or takes
+    away that does not fit whole is refused; off, it is cut and counted,
+    the first lines kept for what comes first. Then the ``on_admin_screen``
+    checks of a change to a user run: approvals refuses there a change it
+    would hold that its approver's screen could not show whole.
 
     Raises:
         UserNotFound: The user is gone.
@@ -205,10 +208,12 @@ async def show(act: AdminAct) -> Shown:
     if act.kind == "password" and act.password is False:
         title = UNUSABLE
     details: list[tuple[str, Value]] = []
-    if act.user_id is not None:
-        details.append((gettext(USER), await _user_named(act.user_id)))
+    user = None if act.user_id is None else await _user(act.user_id)
+    if user is not None:
+        details.append((gettext(USER), named(user.get_username(), user.id)))
     if act.group_id is not None:
-        details.append((gettext(GROUP), await _group_named(act.group_id)))
+        name = await _group_named(act.group_id)
+        details.append((gettext(GROUP), named(name, act.group_id)))
     if act.name is not None:
         label = {"group_create": GROUP, "group_rename": NEW_NAME}.get(
             act.kind, USERNAME
@@ -221,7 +226,7 @@ async def show(act: AdminAct) -> Shown:
         if flag in values
     )
     if act.kind == "impersonate":
-        details.append((gettext(REASON), _text(values.pop("reason", ""))))
+        details.append((gettext(REASON), values.pop("reason", "")))
     if act.added:
         details.append((gettext(ADDS), act.added))
     if act.removed:
@@ -233,10 +238,27 @@ async def show(act: AdminAct) -> Shown:
     for name, value in sorted(values.items()):
         label = field_label(name)
         label = name if label in taken else label  # A field "group" beside "Group".
-        details.append((label, _text(value)))
+        details.append((label, value))
         taken.add(label)
     whole = auth_settings().AUTHORIZATIONS.WHOLE
-    return Shown(fitted(gettext(title)), laid_out(details, whole=whole))
+    shown = Shown(fitted(gettext(title)), laid_out(details, whole=whole))
+    if user is not None and act.kind not in GROUP_KINDS:
+        change = _change_of(act)
+        for hook in on_admin_screen:
+            await hook.call(user, change)
+    return shown
+
+
+def _change_of(act: AdminAct) -> AdminChange:
+    """The ``AdminChange`` ``act`` binds, as the admin API's checks see it."""
+    fields = frozenset(act.values) if act.kind in ("create", "update") else frozenset()
+    return AdminChange(
+        cast("AdminKind", act.kind),
+        fields,
+        added=frozenset(act.added),
+        removed=frozenset(act.removed),
+        values=dict(act.values),
+    )
 
 
 def field_label(name: str) -> str:
@@ -252,15 +274,15 @@ def field_label(name: str) -> str:
     return spaced[:1].upper() + spaced[1:] if spaced else name
 
 
-def _flag(value: JsonValue) -> str:
-    """A flag's value: "yes" or "no", in the request's language."""
+def _flag(value: JsonValue) -> JsonValue:
+    """A flag's value: "yes" or "no", in the request's language; else as given."""
     if isinstance(value, bool):
         return pgettext("flag", FLAG_STATES[value])
-    return _text(value)
+    return value
 
 
-async def _user_named(user_id: UUID) -> str:
-    """How the screen names the user: their first identifier (``get_username``).
+async def _user(user_id: UUID) -> AbstractBaseUser:
+    """The user the change is to, as stored.
 
     Raises:
         UserNotFound: There is none.
@@ -269,7 +291,7 @@ async def _user_named(user_id: UUID) -> str:
         user = await uow.users.find(UserId(user_id))
     if user is None:
         raise UserNotFound("No such user.")
-    return user.get_username()
+    return user
 
 
 async def _group_named(group_id: UUID) -> str:
@@ -283,13 +305,6 @@ async def _group_named(group_id: UUID) -> str:
     if group is None:
         raise GroupNotFound("No such group.")
     return group.name
-
-
-def _text(value: object) -> str:
-    """``value`` as text: a string as itself, anything else as compact JSON."""
-    if isinstance(value, str):
-        return value
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
 ADMIN_CHANGE: Final = spent_in_code(

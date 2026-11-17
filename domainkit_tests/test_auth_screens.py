@@ -7,12 +7,14 @@ text on one, a list over as many as it takes ("Adds", "Adds (2)"). With
 (``TooMuchToShow``, 422); otherwise it is cut and counted (ADR 0173).
 """
 
+from decimal import Decimal
 from typing import Final
+from uuid import UUID
 
 import pytest
 
 from domainkit.contrib.auth.actions import Shown
-from domainkit.contrib.auth.screens import Details, TooMuchToShow, laid_out
+from domainkit.contrib.auth.screens import Details, TooMuchToShow, laid_out, named
 from domainkit.http.errors import status_code_for
 from domainkit.i18n import override
 
@@ -133,3 +135,74 @@ def test_numbered_labels_and_counts_speak_the_request_language() -> None:
 
     assert [label for label, _ in lines] == ["يضيف", "يضيف (2)"]
     assert "أخرى" in counted[-1][1]
+
+
+def test_two_values_never_show_alike() -> None:
+    """A backslash is escaped too: a new line and a backslash and "n" differ.
+
+    So do a zero-width space and the six characters that write it, in a
+    text and in a list's items (review of ADR 0173).
+    """
+    pairs = [
+        ("a\nb", "a\\nb"),
+        ("admins​", "admins\\u200b"),
+        ('say "hi"', 'say \\"hi\\"'),
+    ]
+
+    for one, other in pairs:
+        texts = laid_out({"Name": one}), laid_out({"Name": other})
+        items = laid_out({"Adds": (one,)}), laid_out({"Adds": (other,)})
+        assert texts[0] != texts[1], (one, other)
+        assert items[0] != items[1], (one, other)
+    assert laid_out({"Name": "a\\b\nc"}) == [("Name", "a\\\\b\\nc")]
+    assert laid_out({"Adds": ('a"b',)}) == [("Adds", '"a\\"b"')]
+
+
+def test_json_values_and_items_show_as_compact_json() -> None:
+    """A dict is one JSON value; a list's items each one; bytes are refused."""
+    lines = laid_out(
+        {
+            "meta": {"k": "v", "a": 1},
+            "n": 2,
+            "on": True,
+            "none": None,
+            "lines": [{"a": 1}, ["b", "c"], 3, "d"],
+        }
+    )
+    counted = laid_out(
+        {"lines": [{"account": "a" * 30, "n": each} for each in range(9)]}, whole=False
+    )
+
+    assert lines == [
+        ("meta", '{"a":1,"k":"v"}'),
+        ("n", "2"),
+        ("on", "true"),
+        ("none", "null"),
+        ("lines", '{"a":1}, ["b","c"], 3, d'),
+    ]
+    assert counted[0] == ("lines", '{"account":"' + "a" * 30 + '","n":0}')
+    assert counted[-1] == (
+        "lines (6)",
+        '{"account":"' + "a" * 30 + '","n":5} and 3 more',
+    )
+    for value in (b"admins", {"a", "b"}, Decimal("1.5"), [b"x"]):
+        with pytest.raises(TypeError):
+            laid_out({"Bad": value})
+    with pytest.raises(TooMuchToShow):
+        laid_out({"lines": [{"account": "a" * 70}]})
+
+
+def test_what_an_act_is_on_shows_its_id_whole_and_its_name_cut_to_fit() -> None:
+    """Never too much to show: the act binds the id; an empty name is "erased"."""
+    user_id = UUID(int=42)
+    short = named("ann", user_id)
+    long = named("u" * 150, user_id)
+    erased = named("", user_id)
+
+    assert short == f"ann ({user_id})"
+    assert long == f"{'u' * 24}… ({user_id})"
+    assert len(long) == 64
+    assert erased == f"erased ({user_id})"
+    assert laid_out({"User": long}) == [("User", long)]
+    with override("ar"):
+        assert named("", user_id) == f"مُزال ({user_id})"
