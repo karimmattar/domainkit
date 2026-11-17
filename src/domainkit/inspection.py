@@ -406,25 +406,6 @@ XML_MARKS: Final = (
 XML_BLANKS: Final = b" \t\r\n\x00"
 """What may come before an XML part's ``<``: white space, and the zero bytes of
 UTF-16 and UTF-32."""
-BINARY_RELATIONSHIPS: Final = frozenset(
-    {
-        "image",
-        "hdphoto",
-        "media",
-        "audio",
-        "video",
-        "font",
-        "printersettings",
-        "thumbnail",
-        "package",
-        "origin",
-        "attachedtoolbars",
-        "legacydoctextinfo",
-    }
-)
-"""Relationships to parts no reader takes as XML, by the last segment of their
-type, in lower case: an image, a font, a printer's settings, an embedded package.
-Every other part a relationship names is read as XML if it starts as XML."""
 XML_EXTENSIONS: Final = frozenset({"xml", "rels", "vml"})
 """Parts XML by their name."""
 XML_TYPES: Final = frozenset({"application/xml", "text/xml"})
@@ -1507,8 +1488,8 @@ class _Package:
     hyperlinks: dict[str, set[str]] = field(default_factory=dict)
     """The ids of each part's hyperlinks to outside the package, by part."""
     reached: set[str] = field(default_factory=set)
-    """The parts a relationship names that a reader may parse as XML: a header,
-    a footnote, whatever their content type says."""
+    """The parts a relationship names, which a reader may parse as XML: a header,
+    a footnote, whatever their content type, or their relationship's, says."""
 
     def check(self, file: IO[bytes], kind: Kind, *, nested: bool) -> None:
         """Check the package ``file`` holds as a ``kind`` document.
@@ -1643,29 +1624,38 @@ class _Package:
                 self._check_relationship(archive, kind, target, external, nested=nested)
                 if external:  # A hyperlink, as the check of it found.
                     self.hyperlinks.setdefault(source, set()).add(rid)
-                elif kind.rpartition("/")[2] not in BINARY_RELATIONSHIPS:
+                else:  # Whatever its type: a header may be called an image.
                     self.reached.add(target)
             return
-        data = self._xml(archive, name)
-        if data is None:
-            return
         fields = _Fields()
-        hyperlinks = self.hyperlinks.get(name, set())
-        for element in self._elements(data):
-            fields.read(element)
-            _check_formula(element)
-            _check_element(element, hyperlinks)
+        try:
+            data = self._xml(archive, name)
+            if data is None:
+                return
+            hyperlinks = self.hyperlinks.get(name, set())
+            for element in self._elements(data):
+                fields.read(element)
+                _check_formula(element)
+                _check_element(element, hyperlinks)
+        except FileRefused as refused:
+            if refused.code != UNREADABLE or _is_xml(name, self.types.get(name, "")):
+                raise
+            # A part XML by its bytes alone, and not XML past them (an image or
+            # a font that starts as XML does): no reader reads further, and
+            # what came before was checked.
         fields.close()
 
     def _xml(self, archive: zipfile.ZipFile, name: str) -> bytes | None:
         """The part ``name``, if it is XML, or may be read as XML; refused if bad.
 
         A part is XML by its name or its content type, whatever its bytes
-        start with. A part a relationship names (``reached``) may be read as
-        XML whatever its content type, as a reader follows a header's
-        relationship to it: it is XML too when its bytes start as XML does,
-        after any white space. It is read whole, but never past its stated
-        size; another part (an image) is opened all the same, and not read.
+        start with. A part a relationship names (``reached``), of any type,
+        may be read as XML whatever its content type, as a reader follows a
+        header's relationship to it: it is XML too when its bytes start as
+        XML does, after any white space; one that is not XML past them is
+        passed over (``_check_part``). It is read whole, but never past its
+        stated size; another part (an image) is opened all the same, and not
+        read.
 
         Raises:
             FileRefused: It declares a DTD or an entity, or is XML in an

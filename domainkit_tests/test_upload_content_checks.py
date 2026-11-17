@@ -600,14 +600,20 @@ def blip(attribute: str) -> str:
     )
 
 
-def headed(name: str, header: str | bytes, *rels: tuple[str, ...]) -> bytes:
-    """A document whose header is the part ``word/<name>``, a PNG by its type."""
+def headed(
+    name: str, header: str | bytes, *rels: tuple[str, ...], kind: str = "header"
+) -> bytes:
+    """A document whose header is the part ``word/<name>``, a PNG by its type.
+
+    ``kind`` types the relationship to it: a reader takes the part as the
+    header the main part names (``headerReference``) whatever it says.
+    """
     parts: dict[str, str | bytes] = {f"word/{name}": header}
     if rels:
         parts[f"word/_rels/{name}.rels"] = relationships(*rels)  # type: ignore[arg-type]
     return office(
         main=document(HEADER_REFERENCE),
-        main_relationships=[(f"{R}header", name)],
+        main_relationships=[(f"{R}{kind}", name)],
         parts=parts,
         defaults={"png": "image/png"},
     )
@@ -659,9 +665,27 @@ WHITE: Final = "".join(SHUFFLED.choice(" \t\r\n") for _ in range(70_000))
             EXTERNAL,
             id="utf-16",
         ),
+        *(
+            pytest.param(
+                headed(
+                    "header2.png",
+                    header(blip('r:link="rId1"')),
+                    (f"{R}hyperlink", "https://a.example/x.png", "External"),
+                    kind=kind,
+                ),
+                EXTERNAL,
+                id=f"typed-{kind}",
+            )
+            for kind in ("image", "font", "hdphoto")
+        ),
+        pytest.param(
+            headed("header2.png", header(field(BEGIN, PICTURE, END)) + "<<< not XML"),
+            EXTERNAL,
+            id="refused-before-it-breaks",
+        ),
         pytest.param(
             headed("header2.png", header("<w:p/>").encode("utf-16-be")),
-            "unreadable_file",
+            "ok",
             id="utf-16-unmarked",
         ),
         pytest.param(headed("header2.png", header("<w:p/>")), "ok", id="harmless"),
@@ -671,9 +695,7 @@ WHITE: Final = "".join(SHUFFLED.choice(" \t\r\n") for _ in range(70_000))
             id="a-png",
         ),
         pytest.param(headed("header2.png", b""), "ok", id="empty"),
-        pytest.param(
-            headed("header2.png", "<w:hdr"), "unreadable_file", id="not-xml-after-all"
-        ),
+        pytest.param(headed("header2.png", "<w:hdr"), "ok", id="not-xml-after-all"),
     ],
 )
 def test_a_part_a_relationship_names_is_read_as_the_reader_reads_it(
@@ -682,14 +704,20 @@ def test_a_part_a_relationship_names_is_read_as_the_reader_reads_it(
     """A header called ``header2.png``, typed a PNG, is still a header.
 
     A reader follows the relationship and parses the part as XML whatever
-    its content type: so is it checked, when its bytes start as XML does.
-    One that does not start so is no XML to any reader.
+    its content type, and its relationship's (an image's, a font's): so is
+    it checked, when its bytes start as XML does. One that does not start
+    so, or is not XML past its start, is no XML to any reader past that:
+    what came before is checked.
     """
     assert verdict(OfficeCheck("docx"), data) == expected
 
 
-def test_a_part_no_reader_takes_as_xml_is_not_read_as_xml() -> None:
-    """An image, a font, an embedded package: not parsed, whatever they hold."""
+def test_a_binary_part_that_starts_as_xml_is_not_refused() -> None:
+    """An image or a font whose first byte is ``<``: parsed, not XML, passed over.
+
+    An embedded font's first bytes are scrambled: one in a few hundred
+    starts as XML does.
+    """
     data = office(
         main=document(),
         main_relationships=[
