@@ -15,7 +15,7 @@ import weakref
 from collections import Counter
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Final
 
 import pytest
 from fastapi import APIRouter
@@ -1275,6 +1275,10 @@ class RunsFirst:
         """Let the lock go."""
         self.lock.release()
 
+    def _at_fork_reinit(self) -> None:
+        """Renew the lock in a child, as a thread's lock is."""
+        self.lock._at_fork_reinit()
+
 
 def test_code_on_the_forking_thread_may_take_loggings_lock_during_dictconfig(
     forks: "weakref.WeakSet[BackgroundListener]",
@@ -1515,13 +1519,7 @@ def test_a_fork_waits_for_a_write_through_the_same_handler_from_another_thread(
     handler.close()
 
 
-@pytest.mark.parametrize(
-    "make_lock",
-    [threading.RLock, lambda: RunsFirst(threading.RLock(), lambda: None)],
-    ids=["threading's", "another kind"],
-)
 def test_a_child_renews_the_locks_handlers_make_themselves(
-    make_lock: Callable[[], Any],
     forks: "weakref.WeakSet[BackgroundListener]",
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1533,7 +1531,7 @@ def test_a_child_renews_the_locks_handlers_make_themselves(
 
     class OwnLock(Collect):
         def createLock(self) -> None:
-            self.lock = make_lock()
+            self.lock = threading.RLock()
 
     for name in ("_LOGGING_LOCK", "_handlers_lock"):  # Not the process's own.
         monkeypatch.setattr(log, name, threading.RLock())
@@ -1552,6 +1550,63 @@ def test_a_child_renews_the_locks_handlers_make_themselves(
     assert writes.lines == ["parent", "child"]
     handler.close()
     parents.put(log._STOP)  # End the parent's thread, which this test left.
+
+
+SHARED_LOCK: Final = """\
+import logging, multiprocessing, os, sys, time, warnings
+from domainkit.log import BackgroundHandler, flush_logs
+
+warnings.simplefilter("ignore", DeprecationWarning)
+
+
+class Shared(logging.Handler):
+    def createLock(self):
+        self.lock = multiprocessing.get_context("fork").RLock()
+
+    def emit(self, record):
+        pass
+
+
+shared = Shared()
+logging.getLogger().addHandler(BackgroundHandler.writing_to(shared))
+logging.getLogger().setLevel(logging.INFO)
+logging.info("before the fork")
+flush_logs(5)
+held, given = os.pipe()
+pid = os.fork()
+if pid == 0:
+    shared.lock.acquire()
+    os.write(given, b"1")
+    time.sleep(1.0)
+    shared.lock.release()
+    os._exit(0)
+os.read(held, 1)
+got = shared.lock.acquire(timeout=0.3)
+if got:
+    shared.lock.release()
+os.waitpid(pid, 0)
+print(f"parent took it while the child held it: {got}")
+"""
+"""A handler whose lock keeps processes from writing at once, then a fork."""
+
+
+def test_a_lock_shared_between_processes_still_keeps_them_apart() -> None:
+    """The fork takes a thread's lock only, never a ``multiprocessing`` one.
+
+    Taken at the fork, it was the child's too (its owner's thread is the
+    forking one): the child took it again without waiting while the
+    parent let it go, and both wrote at once (review of 2.6).
+    """
+    result = subprocess.run(  # noqa: S603 - this interpreter, fixed code.
+        [sys.executable, "-c", SHARED_LOCK],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "parent took it while the child held it: False\n"
 
 
 def plain_lock() -> Any:  # noqa: ANN401 - a Lock.
@@ -1637,6 +1692,10 @@ class InterruptedOnce:
     def __exit__(self, *exc: object) -> None:
         """Let the lock go."""
         self.lock.release()
+
+    def _at_fork_reinit(self) -> None:
+        """Renew the lock in a child, as a thread's lock is."""
+        self.lock._at_fork_reinit()  # type: ignore[attr-defined] # Private, as in log.py.
 
 
 @pytest.mark.parametrize("waiting_for", ["a write", "_handlers_lock"])

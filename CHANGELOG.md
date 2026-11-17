@@ -93,8 +93,10 @@ route may meet.
   it. Meanwhile other threads that need `logging`'s lock wait for the
   fork. The fork takes domainkit's own lock last, as `dictConfig` does: a
   fork while another thread configured logging could wait for it in a
-  circle. The child renews the handlers' locks the fork took, those a
-  handler makes itself included
+  circle. The fork takes a handler's lock only if it is a thread's
+  lock, which the child renews, one a handler makes itself included; a
+  lock shared between processes (a `multiprocessing` one) is not taken,
+  and keeps them apart as before
   ([runtime.md](docs/runtime.md#writing-logs-off-the-loop))
   (follow-up of 2.5.0).
 

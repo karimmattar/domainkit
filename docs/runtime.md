@@ -966,8 +966,11 @@ How the handler works:
   going on then is on a stream that stays blocked, which the child
   could not write to either. Meanwhile, threads that need `logging`'s
   lock (to configure logging, make a logger, or read a level not cached
-  yet) wait for the fork. The child renews the handlers' locks and
-  starts with an empty queue, and its thread at its first record.
+  yet) wait for the fork. The fork takes a handler's lock only if it
+  is a thread's lock, which the child renews; a lock shared between
+  processes (a `multiprocessing` one) is not taken, and keeps them
+  apart as before. The child starts with an empty queue, and its thread
+  at its first record.
 
 `flush_logs(timeout=5.0)` waits for the queue to drain, and returns
 whether it did. `aflush_logs(seconds=5.0)` does the same without holding
