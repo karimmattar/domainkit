@@ -339,6 +339,13 @@ def test_the_settings_hash_by_every_key() -> None:
     assert hash(plain) != hash(phone)
 
 
+@pytest.mark.parametrize("held_for", ["", "approvals.request:" + "7" * 183])
+def test_a_hold_names_what_it_waits_on_in_200_characters(held_for: str) -> None:
+    """The column holds 200: a longer reference, or none, is refused at once."""
+    with pytest.raises(ValueError, match="1 to 200 characters"):
+        hold_authorizations(datetime(2027, 1, 5, tzinfo=UTC), held_for=held_for)
+
+
 def test_without_auth_a_held_call_keeps_no_authorization(installed: None) -> None:
     """Approvals keeps the held call's authorization only where auth is installed."""
     from domainkit.contrib.approvals.services import _keep_authorizations

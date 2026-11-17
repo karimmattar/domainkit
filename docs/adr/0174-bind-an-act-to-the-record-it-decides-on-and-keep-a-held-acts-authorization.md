@@ -83,9 +83,17 @@ its own, leaves a window between the check and the decision. Reading it
 once per act, at the first block, left the next ones unchecked: a run
 `uow.run` retries after a lost race, or a decision in a second
 transaction, went on with the record renamed meanwhile (found in
-review). What keeps a writer off between the check and the commit is
-the database's: a row lock taken in `binds` on PostgreSQL; on SQLite,
-which has no row locks, only the version of an aggregate the act writes.
+review). Reading it at every outermost block then failed both ways (found
+in a second review): `SqlAlchemyUnitOfWork` opens a session at every
+enter, so a block nested in an open one, an outer block going on after
+a caught inner failure, or a second task's block decided unchecked in a
+session of its own (and, with `binds` locking, waited on the first
+session's lock until `503 database_busy`, leaving it open); and a block
+after the act committed was read against a record the act's own write
+had changed, `409` for an act already made. What keeps a writer off
+between the check and the commit is the database's: a row lock taken in
+`binds` on PostgreSQL; on SQLite, which has no row locks, only the
+version of an aggregate the act writes.
 
 How the twin's value is kept: the digest, which the HMAC code covers and
 the phone signs, is of the command and what was bound; the row keeps the
@@ -138,8 +146,8 @@ an administrator's.
   carry it, the code covers it.
 - **At the act**: `requires_authorization` checks the command against the
   digest with the stored `bound`, as before (`403`, voided), then reads
-  `binds` each time the service opens its unit of work (`async with
-  uow`, the outermost block), or commits with none open. Another value:
+  `binds` in each transaction the service opens (`async with uow`, the
+  outermost block), or as it commits with none open. Another value:
   the unit of work is left, the authorization voided, the trail told
   `record_changed`, and the act refused `409 action_record_changed`
   (`ActionRecordChanged`). A `binds` that raises `NotFound` voids it too
@@ -147,6 +155,16 @@ an administrator's.
   `spend_authorization(uow, ...)` reads it in `uow`, open, first.
 - A race the version check catches is `409 concurrent_update`, and
   spends and voids nothing; the next attempt meets the check.
+- A block opened while one is open (nested, or another task's) joins
+  its transaction, rather than opening a session of its own: it was
+  read there, and holds what `binds` locked. Its error leaves it as the
+  unit of work would raise it; its end commits nothing.
+- The act lands at the first commit that wrote: a flush of changes, or
+  an `INSERT`, `UPDATE` or `DELETE`, as the act's session's events say
+  (the spend and the commit's own staging do not count). After it, a
+  block is not read against the screen; before it, every transaction
+  is, a commit that wrote nothing included. A unit of work without a
+  SQLAlchemy session lands at its first commit.
 - `ImproperlyConfigured`: `binds` not callable, a value JSON cannot
   hold, a `binds` that commits, asking without the act's unit of work,
   a service that takes none or never opens it.
@@ -169,7 +187,14 @@ an administrator's.
   within their time. A held authorization works only while a hook
   answers True and none False, its own expiry left or not; past its
   expiry, before `held_until` and within `HELD_TTL` of its expiry. The
-  purge keeps it while `held_until` is ahead.
+  purge keeps it while `held_until` is ahead. `held_for` is 1 to 200
+  characters, the column's width.
+- The hook is asked when the route's rule reads the authorization, not in
+  the act's transaction: a request rejected in between lets the maker's
+  call submit one request more. The authorization is held for the first
+  alone, so the new request needs a confirmation once approved: no act is
+  made without one. Asking again in approvals' transaction would need
+  auth to tell approvals what it holds, for a window of milliseconds.
 - It holds where the act takes the authorization and leaves it unspent
   when the guard refuses: the admin API, and `requires_authorization`
   outside `requires_approval`, on auth's database. Elsewhere it is spent

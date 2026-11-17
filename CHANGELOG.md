@@ -14,8 +14,9 @@ and a status.
 - `Action(binds=...)` binds an act to the record it decides on:
   `binds(command, uow)` reads it (an aggregate's `version`, the fields
   the act decides on) in the act's unit of work, where `show` reads when
-  the authorization is asked for, and again each time the act's service
-  opens its unit of work. The digest the phone signs covers what it
+  the authorization is asked for, and again in each transaction the
+  act's service opens until the act lands. The digest the phone signs
+  covers what it
   read; the act refuses a record that reads otherwise, `409
   action_record_changed` (`ActionRecordChanged`), and voids the
   authorization, as it does a record gone (`NotFound`). An approval

@@ -94,12 +94,16 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import KW_ONLY, dataclass, field, replace
 from datetime import UTC, datetime, timedelta
+from types import TracebackType
 from typing import TYPE_CHECKING, Any, Final, NoReturn, Self, cast, get_type_hints
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from pydantic_core import PydanticSerializationError, to_jsonable_python
+from sqlalchemy import event
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import ORMExecuteState, Session
 from starlette.requests import HTTPConnection
 from starlette.types import Message, Receive, Scope, Send
 
@@ -493,8 +497,9 @@ class Action:
         """The SHA-256 of what ``binds(command, uow)`` reads, as canonical JSON.
 
         ``uow`` is the act's unit of work, open: it is lent as one that
-        cannot commit. A set is read sorted, as ``arguments`` reads one, so
-        two processes agree whatever their hash seeds.
+        cannot commit. Every set is read sorted, wherever it is (a model's
+        field, aliased or not, a dataclass, a mapping, a list), so two
+        processes agree whatever their hash seeds.
 
         Raises:
             ImproperlyConfigured: The action binds nothing, or ``binds``
@@ -507,7 +512,7 @@ class Action:
         read = _Reading(uow, self.purpose, "binds(command, uow)")
         value = await _awaited(self.binds(command, read))
         try:
-            return _sha256(_by_content(value, to_jsonable_python(value)), strict=True)
+            return _sha256(to_jsonable_python(_canonical(value)), strict=True)
         except (PydanticSerializationError, ValueError):
             raise ImproperlyConfigured(
                 f"Action {self.purpose!r}: binds(command, uow) must answer what "
@@ -698,6 +703,35 @@ def _by_content(value: object, dumped: Any) -> Any:  # noqa: ANN401 - JSON value
             for key, item in dumped.items()
         }
     return dumped
+
+
+def _canonical(value: object) -> object:
+    """``value`` with every set in it sorted, and models and dataclasses as dicts.
+
+    A model or a dataclass is read field by field, by the fields' names,
+    never their aliases; a set or a frozenset becomes a list, sorted by
+    each item's canonical JSON. A set's order is its items' hashes', which
+    differ from one process to the next.
+    """
+    if isinstance(value, BaseModel):
+        return {
+            name: _canonical(getattr(value, name)) for name in type(value).model_fields
+        }
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return {
+            each.name: _canonical(getattr(value, each.name))
+            for each in dataclasses.fields(value)
+        }
+    if isinstance(value, Mapping):
+        return {key: _canonical(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_canonical(item) for item in value]
+    if isinstance(value, set | frozenset):
+        items = [_canonical(item) for item in value]
+        return sorted(
+            items, key=lambda item: json.dumps(to_jsonable_python(item), sort_keys=True)
+        )
+    return value
 
 
 def _sha256(value: object, *, strict: bool = False) -> str:
@@ -1162,6 +1196,7 @@ A hook takes the reference ``hold_authorizations`` was given
 approved and not yet carried out; False once it is over; None for a
 reference of another app's. A hold that no hook answers True for, or one
 answers False for, is over. Approvals registers one for its requests.
+Hooks are asked when the route's rule reads the authorization.
 """
 
 
@@ -1281,7 +1316,7 @@ def _spending(action: Action, service: Service) -> Service:
             await _refuse_changed(accepted, changed)
         if check is None:
             return await service(command, uow, *args, **kwargs)
-        bound = _Acting(uow, accepted, check)
+        bound = _Acting(uow, held, accepted, check)
         try:
             return bound.opened(await service(command, bound, *args, **kwargs))
         except _Changed as changed:
@@ -1552,50 +1587,160 @@ def _used(authorization: ActionAuthorization) -> ActionAuthorizationUsed:
     )
 
 
-class _Acting:
-    """A service's unit of work, which reads the record its act binds as it opens.
+_quiet: ContextVar[bool] = ContextVar("domainkit_auth_quiet", default=False)
+"""Set while the act's wrapper itself writes (the spend, a commit's staging):
+what it writes is not the act's."""
 
-    Each time it is opened, it reads what the action ``binds`` in the new
-    transaction, before the service reads anything, and refuses the act if
-    it reads otherwise (ADR 0174): a run ``uow.run`` retries, and a second
-    transaction after a first, read it again. A commit made with no block
-    open reads it first. Everything else is the unit of work's own.
+
+@contextmanager
+def _quietly() -> Iterator[None]:
+    """Write in the block without it counting as the act's own write."""
+    token = _quiet.set(True)
+    try:
+        yield
+    finally:
+        _quiet.reset(token)
+
+
+def _pending(session: Session) -> bool:
+    """Whether ``session`` holds changes not yet flushed."""
+    return bool(session.new or session.deleted) or any(
+        session.is_modified(each) for each in session.dirty
+    )
+
+
+class _Acting:
+    """A service's unit of work, which reads the record its act binds per transaction.
+
+    Each transaction the service opens (``async with uow``, the outermost
+    block) reads what the action ``binds`` before the service reads, and
+    refuses the act if it reads otherwise (ADR 0174): a run ``uow.run``
+    retries, and a second transaction after a first, read it again. A
+    block opened while one is open, inside it or by another task, joins
+    its transaction rather than opening a session of its own: it was
+    read there, and holds what ``binds`` locked. A commit made with no
+    block open reads it first. Once a commit wrote something, the act has
+    landed: a block after it reads what it saved, unchecked. A unit of
+    work without a SQLAlchemy session cannot tell a commit that wrote,
+    and its first commit lands the act. Everything else is the unit of
+    work's own.
     """
 
-    def __init__(self, uow: object, accepted: _Accepted, check: Check | None) -> None:
-        """Wrap ``uow`` (a unit of work, or a wrapper lending it)."""
+    def __init__(
+        self,
+        uow: object,
+        held: UnitOfWork | None,
+        accepted: _Accepted,
+        check: Check | None,
+    ) -> None:
+        """Wrap ``uow`` (the unit of work ``held``, or a wrapper lending it)."""
         self._uow = uow
+        self._held = held
         self._accepted = accepted
         self._check = check
         self.checked = check is None
         """Whether the record was read once at least, if the act binds one."""
         self._open = 0
-        """How many blocks are open: the outermost one reads the record."""
+        """How many blocks are open: the outermost holds the transaction."""
+        self._landed = False
+        """Whether a commit that wrote made the act."""
+        self._wrote = False
+        """Whether the open transaction wrote, as its session's events say."""
+        self._watched: Session | None = None
+        self._on_flush = self._flushing
+        self._on_execute = self._executing
 
     def __getattr__(self, name: str) -> Any:  # noqa: ANN401 - the unit of work's.
         """The wrapped unit of work's attribute (its repositories, ``run``, ...)."""
         return getattr(self._uow, name)
 
     async def __aenter__(self) -> Self:
-        """Enter the unit of work as it enters; then read what the act binds.
+        """Open a transaction and read what the act binds; or join the open one.
 
         Raises:
             _Changed: It reads otherwise: the unit of work is left.
         """
+        if self._check is not None and self._open:
+            self._open += 1
+            return self
         await self._uow.__aenter__()  # type: ignore[attr-defined]
         try:
-            if not self._open:
+            self._watch()
+            if not self._landed:
                 await self._bound()
         except BaseException as exc:
+            self._unwatch()
             await self._uow.__aexit__(type(exc), exc, exc.__traceback__)  # type: ignore[attr-defined]
             raise
         self._open += 1
         return self
 
-    async def __aexit__(self, *exc: object) -> None:
-        """Leave the unit of work as it leaves; the next block reads again."""
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Leave the unit of work as it leaves, once its outermost block ends.
+
+        A block that joined another's raises what failed in it as the unit
+        of work would leaving it (a lost race as ``ConcurrentUpdate``): it
+        may be another task's than the outermost's.
+
+        Raises:
+            Exception: What the unit of work makes of the block's error.
+        """
         self._open -= 1
-        await self._uow.__aexit__(*exc)  # type: ignore[attr-defined]
+        if self._check is not None and self._open:
+            if isinstance(exc, Exception):
+                translated = cast(UnitOfWork, self._held)._translate(exc)
+                if translated is not None:
+                    raise translated from exc
+            return
+        self._unwatch()
+        await self._uow.__aexit__(exc_type, exc, traceback)  # type: ignore[attr-defined]
+
+    def _watch(self) -> None:
+        """Hear of the writes of the transaction just opened, if the act binds."""
+        session = getattr(self._held, "session", None)
+        if self._check is None or not isinstance(session, AsyncSession):
+            return
+        self._wrote = False
+        self._watched = session.sync_session
+        event.listen(self._watched, "before_flush", self._on_flush)
+        event.listen(self._watched, "do_orm_execute", self._on_execute)
+
+    def _unwatch(self) -> None:
+        """Hear no more of the session watched."""
+        if self._watched is not None:
+            event.remove(self._watched, "before_flush", self._on_flush)
+            event.remove(self._watched, "do_orm_execute", self._on_execute)
+            self._watched = None
+
+    def _flushing(self, session: Session, *_: object) -> None:
+        """A flush of changes is the act's write, unless the wrapper makes it."""
+        if not _quiet.get() and _pending(session):
+            self._wrote = True
+
+    def _executing(self, state: ORMExecuteState) -> None:
+        """An ``INSERT``, ``UPDATE`` or ``DELETE`` is the act's write, likewise."""
+        if not _quiet.get() and (state.is_insert or state.is_update or state.is_delete):
+            self._wrote = True
+
+    def _writes(self) -> bool:
+        """Whether the transaction about to commit wrote: it lands the act.
+
+        Without a SQLAlchemy session to hear, a commit is taken to write.
+        """
+        session = getattr(self._held, "session", None)
+        if not isinstance(session, AsyncSession):
+            return True
+        return self._wrote or _pending(session.sync_session)
+
+    def _committed(self, wrote: bool) -> None:
+        """A commit succeeded: the act landed if it wrote; a transaction begins."""
+        self._landed = self._landed or wrote
+        self._wrote = False
 
     async def _bound(self) -> None:
         """Read what the act binds, in the unit of work's transaction now.
@@ -1609,12 +1754,12 @@ class _Acting:
         await self._check(self._uow)
 
     async def _before_commit(self) -> None:
-        """Read what the act binds, unless a block open read it.
+        """Read what the act binds, unless a block read it, or the act landed.
 
         Raises:
             _Changed: It reads otherwise.
         """
-        if not self._open:
+        if not self._open and not self._landed:
             await self._bound()
 
     async def commit(self) -> None:
@@ -1624,7 +1769,10 @@ class _Acting:
             _Changed: It reads otherwise: nothing commits.
         """
         await self._before_commit()
-        await self._uow.commit()  # type: ignore[attr-defined]
+        wrote = self._writes()
+        with _quietly():
+            await self._uow.commit()  # type: ignore[attr-defined]
+        self._committed(wrote)
 
     def opened(self, result: object) -> Any:  # noqa: ANN401 - what the service returns.
         """``result``, if the record the act binds was read.
@@ -1653,8 +1801,7 @@ class _Spending(_Acting):
         self, uow: object, held: UnitOfWork, accepted: _Accepted, check: Check | None
     ) -> None:
         """Wrap ``uow`` (the unit of work ``held``, or a wrapper lending it)."""
-        super().__init__(uow, accepted, check)
-        self._held = held
+        super().__init__(uow, held, accepted, check)
         self.spent = False
         """Whether a commit spent the authorization."""
 
@@ -1666,18 +1813,22 @@ class _Spending(_Acting):
                 commits.
             _Changed: What the act binds reads otherwise: nothing commits.
         """
-        if self.spent:
-            await self._uow.commit()  # type: ignore[attr-defined]
-            return
         await self._before_commit()
-        users = UserRepository(getattr(self._held, "session"))  # noqa: B009
-        await _consume(self._held, users, self._accepted)
-        setattr(self._held, USERS, users)
-        try:
-            await self._uow.commit()  # type: ignore[attr-defined]
-        finally:
-            delattr(self._held, USERS)
-        self.spent = True
+        wrote = self._writes()
+        held = cast(UnitOfWork, self._held)
+        with _quietly():
+            if self.spent:
+                await self._uow.commit()  # type: ignore[attr-defined]
+            else:
+                users = UserRepository(getattr(held, "session"))  # noqa: B009
+                await _consume(held, users, self._accepted)
+                setattr(held, USERS, users)
+                try:
+                    await self._uow.commit()  # type: ignore[attr-defined]
+                finally:
+                    delattr(held, USERS)
+                self.spent = True
+        self._committed(wrote)
 
 
 # The end of a request ------------------------------------------------------------
@@ -1778,7 +1929,15 @@ def hold_authorizations(until: datetime, *, held_for: str) -> None:
     ``held_for`` still waits, and is never held for another. Written as
     the response starts, whatever it is; nothing while ``HELD_TTL`` is
     None, the default, nor outside a request.
+
+    Raises:
+        ValueError: ``held_for`` is empty, or longer than 200 characters.
     """
+    if not 0 < len(held_for) <= SUBJECT_MAX_LENGTH:
+        raise ValueError(
+            f"held_for names what the act waits on in 1 to {SUBJECT_MAX_LENGTH} "
+            f"characters, such as approvals.request:<id>: {held_for[:40]!r}..."
+        )
     kept = _kept.get()
     if kept is None:
         return

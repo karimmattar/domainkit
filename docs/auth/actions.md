@@ -226,13 +226,28 @@ APPROVE_DOCUMENT = Action(
 - **Read where `show` reads, then again where the act runs.** Asking
   reads it in the act's unit of work, the one `show(command, uow)` is
   lent, first: what is bound is what the screen was built from. The act
-  reads it again each time its service opens its unit of work (`async
-  with uow`), before the service reads anything, in the transaction of
-  the decision: a run that `uow.run(...)` retries after a lost race, or a
-  second transaction after a first that read, reads it again. A service
-  that commits with no block open reads it as it commits.
-  `spend_authorization(uow, ...)` reads it in `uow`, open: call it
-  before the act changes what it binds.
+  reads it again in each transaction its service opens (`async with
+  uow`, the outermost block), before the service reads anything: a run
+  that `uow.run(...)` retries after a lost race, or a second transaction
+  after a first that read, reads it again. A service that commits with
+  no block open reads it as it commits. `spend_authorization(uow, ...)`
+  reads it in `uow`, open: call it before the act changes what it binds.
+- **One transaction per block, until the act lands.** A block opened
+  while one is open, inside it (a helper's) or by another task (under
+  `asyncio.gather`), joins the open block's transaction instead of
+  opening a session of its own: it was read there, and holds what
+  `binds` locked. Its error leaves it as the unit of work would raise it
+  (a lost race as `409 concurrent_update`), and its end commits nothing:
+  the outermost block's does. Once a commit wrote something (a flush of
+  changes, an `INSERT`, `UPDATE` or `DELETE`), the act has landed: a
+  block after it reads what it saved, and is not read against the
+  screen, which the act's own write may have changed. A commit that
+  wrote nothing lands nothing: the next transaction is read again. A
+  unit of work without a SQLAlchemy session (in memory) cannot tell, and
+  its first commit lands the act.
+- **Only the act's unit of work.** A decision the service makes in
+  another unit of work, one it opens itself, is not read against the
+  screen: decide in the one the act is given.
 - **The digest covers it.** The row keeps the SHA-256 of the value, as
   canonical JSON, and the act's digest is of the command and that: the
   phone signs the record as it was shown, and the trail's digest names
@@ -548,12 +563,19 @@ once the request is approved, spends it as any act does, once.
   a confirmed authorization of an act that waits is kept.
 - **`None`, the default**, keeps 2.6's behaviour: the maker confirms
   again, once approved, with a new authorization.
+- **The request is asked at the rule.** Whether it still waits is read
+  when the route's rule reads the authorization, before the act. A
+  request rejected in that moment, before the maker's call reaches
+  approvals, lets that call submit one request more; the authorization
+  is held for the first only, so the new one needs a confirmation of its
+  own once approved.
 - Code that holds an act of its own for approval says so with
   `hold_authorizations(until, held_for="<app>.<kind>:<id>")`, from
   `domainkit.contrib.auth.actions`, in the request of the held call (it
   is written as the response starts), and registers an `on_held_act`
   hook, `async (held_for) -> bool | None`, that answers whether it still
   waits (None for another app's). A hold no hook answers for is over.
+  `held_for` holds 1 to 200 characters (`ValueError` otherwise).
 
 ## The trail, privacy, and the purge
 

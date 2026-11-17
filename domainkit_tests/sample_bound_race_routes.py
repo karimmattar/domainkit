@@ -5,8 +5,11 @@ renames the product in a connection of its own: again on a retry
 (``uow.run(..., retry=Retry(retry_on=(ConcurrentUpdate,)))``), in a
 second transaction after a first that read, in one transaction that a
 version check catches, or, ``binds`` locking the row, in one that does
-not write the product. The act was confirmed for the product as it was;
-it must not decide on the product renamed.
+not write the product; in a block opened inside another, after an inner
+block's failure was caught, or in a second task's block. The act was
+confirmed for the product as it was; it must not decide on the product
+renamed. Once it decided and committed, a block that follows reads what
+it saved, and passes.
 """
 
 import asyncio
@@ -70,12 +73,36 @@ APPROVE = Action(
 
 
 async def rename(product_id: UUID, name: str) -> None:
-    """Someone else renames the product, in a unit of work and connection of theirs."""
+    """Someone else renames the product, in a unit of work and connection of theirs.
+
+    A rename a lock holds off for 1.5 seconds gives up, and says so.
+    """
+    try:
+        await asyncio.wait_for(_rename(product_id, name), 1.5)
+    except TimeoutError:
+        EVENTS.append("the rename waited for the lock")
+
+
+async def _rename(product_id: UUID, name: str) -> None:
+    """Rename the product, and say so."""
     async with shop.ShopUnitOfWork() as other:
         stored = await other.products.get(ProductId(product_id))
         stored.name = name
         await other.commit()
     EVENTS.append(f"renamed to {name}")
+
+
+class Refused(Exception):
+    """What an inner block raises, and the service catches."""
+
+
+async def decide(command: Approve, uow: Any) -> None:  # noqa: ANN401 - a uow.
+    """Approve the product as ``uow`` reads it now: write it, commit."""
+    product = await uow.products.get(ProductId(command.product_id))
+    decided = product.name
+    product.name = f"{decided} (approved)"
+    await uow.commit()
+    APPROVED.append((command.product_id, decided))
 
 
 @requires_authorization(APPROVE)
@@ -129,13 +156,77 @@ async def approve_written(command: Approve, uow: Any) -> None:  # noqa: ANN401 -
 async def approve_unwritten(command: Approve, uow: Any) -> None:  # noqa: ANN401 - a uow.
     """Decide without writing the product; a rename tries to come in meanwhile."""
     async with uow:
-        try:
-            await asyncio.wait_for(rename(command.product_id, "Lava lamp"), 1.5)
-        except TimeoutError:
-            EVENTS.append("the rename waited for the lock")
+        await rename(command.product_id, "Lava lamp")
         product = await uow.products.get(ProductId(command.product_id))
         await uow.commit()
     APPROVED.append((command.product_id, product.name))
+
+
+@requires_authorization(APPROVE)
+async def approve_nested(command: Approve, uow: Any) -> None:  # noqa: ANN401 - a uow.
+    """Read, then decide in a block a helper opens inside the first."""
+    async with uow:
+        await uow.products.get(ProductId(command.product_id))
+        await rename(command.product_id, "Lava lamp")
+        async with uow:
+            await decide(command, uow)
+
+
+@requires_authorization(APPROVE)
+async def approve_after_a_caught_failure(command: Approve, uow: Any) -> None:  # noqa: ANN401
+    """An inner block fails, and is caught; the outer one decides."""
+    async with uow:
+        try:
+            async with uow:
+                raise Refused
+        except Refused:
+            pass
+        await rename(command.product_id, "Lava lamp")
+        await decide(command, uow)
+
+
+@requires_authorization(APPROVE)
+async def approve_gathered(command: Approve, uow: Any) -> None:  # noqa: ANN401 - a uow.
+    """Two tasks open the unit of work at once; the second decides."""
+    first_in = asyncio.Event()
+    decided = asyncio.Event()
+
+    async def holder() -> None:
+        async with uow:
+            first_in.set()
+            await decided.wait()
+
+    async def decider() -> None:
+        await first_in.wait()
+        await rename(command.product_id, "Lava lamp")
+        try:
+            async with uow:
+                await decide(command, uow)
+        finally:
+            decided.set()
+
+    await asyncio.gather(holder(), decider())
+
+
+@requires_authorization(APPROVE)
+async def approve_then_read(command: Approve, uow: Any) -> None:  # noqa: ANN401 - a uow.
+    """Decide and commit, then read what was saved in a block of its own."""
+    async with uow:
+        await decide(command, uow)
+    async with uow:
+        product = await uow.products.get(ProductId(command.product_id))
+    EVENTS.append(f"read {product.name}")
+
+
+@requires_authorization(APPROVE)
+async def approve_after_a_read_commit(command: Approve, uow: Any) -> None:  # noqa: ANN401
+    """Read and commit, which writes nothing; then decide in a second block."""
+    async with uow:
+        await uow.products.get(ProductId(command.product_id))
+        await uow.commit()
+    await rename(command.product_id, "Lava lamp")
+    async with uow:
+        await decide(command, uow)
 
 
 SERVICES: dict[str, Any] = {
@@ -143,6 +234,11 @@ SERVICES: dict[str, Any] = {
     "in-two": approve_in_two,
     "written": approve_written,
     "unwritten": approve_unwritten,
+    "nested": approve_nested,
+    "caught": approve_after_a_caught_failure,
+    "gathered": approve_gathered,
+    "then-read": approve_then_read,
+    "read-commit": approve_after_a_read_commit,
 }
 ASKING = [Depends(Require(StepUp(for_=APPROVE)))]
 

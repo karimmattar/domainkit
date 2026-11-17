@@ -334,6 +334,86 @@ def test_binds_that_locks_the_row_holds_off_a_rename_until_the_act_commits(
     assert list(races.APPROVED) == [(lamp, "Lamp")]
 
 
+@pytest.mark.parametrize("way", ["nested", "caught", "gathered"])
+def test_a_block_inside_another_or_beside_it_decides_on_the_record_shown(
+    approver: Approver, way: str
+) -> None:
+    """A block opened inside an open one, or by a second task, joins its transaction.
+
+    Each such block opened a session of its own, unchecked: a helper's
+    block, an outer block going on after an inner one failed, a second
+    task under ``asyncio.gather`` decided on the product renamed (found in
+    review). Joined, it decides on the product ``binds`` loaded, whose
+    version the save holds it to: the rename is a lost race.
+    """
+    lamp = stock("Lamp")
+    authorization = approver.approving(lamp)
+
+    raced = approver.approve(way, lamp, authorization)
+
+    assert races.EVENTS == ["renamed to Lava lamp"]
+    assert code_of(raced) == (409, "concurrent_update")
+    assert list(races.APPROVED) == []
+    assert not ended(authorization)
+
+
+@pytest.mark.skipif(not ON_POSTGRES, reason=f"set {POSTGRES_VARIABLE}")
+@pytest.mark.parametrize("way", ["nested", "caught", "gathered"])
+def test_a_block_that_joins_the_locked_one_waits_on_nothing(
+    approver: Approver, way: str
+) -> None:
+    """PostgreSQL, ``binds`` locking: one connection, and the rename waits.
+
+    A second session would wait on the first's lock until the database
+    gave up (``503 database_busy``), and the first was left open, holding
+    it (found in review). The act decides on the product as shown, and
+    leaves nothing locked: a rename after it goes through.
+    """
+    races.LOCKING[0] = True
+    lamp = stock("Lamp")
+    authorization = approver.approving(lamp)
+
+    approved = approver.approve(way, lamp, authorization)
+    run_async(races.rename(lamp, "Floor lamp"))
+
+    assert approved.status_code == 204, approved.text
+    assert list(races.APPROVED) == [(lamp, "Lamp")]
+    assert races.EVENTS == ["the rename waited for the lock", "renamed to Floor lamp"]
+    assert ended(authorization)
+
+
+def test_a_block_after_the_act_landed_reads_its_result_unchecked(
+    approver: Approver,
+) -> None:
+    """Decided and committed, the act has landed: a block that follows passes.
+
+    The act's own write changed what ``binds`` reads: checked again, the
+    follow-up answered ``409 action_record_changed`` for an act already
+    made, and the client would ask to make it again (found in review).
+    """
+    lamp = stock("Lamp")
+    authorization = approver.approving(lamp)
+
+    made = approver.approve("then-read", lamp, authorization)
+
+    assert made.status_code == 204, made.text
+    assert list(races.APPROVED) == [(lamp, "Lamp")]
+    assert races.EVENTS == ["read Lamp (approved)"]
+    assert ended(authorization)
+
+
+def test_a_commit_that_wrote_nothing_has_not_landed_the_act(approver: Approver) -> None:
+    """Read and committed, then decided in a second block: still read, refused."""
+    lamp = stock("Lamp")
+    authorization = approver.approving(lamp)
+
+    refused = approver.approve("read-commit", lamp, authorization)
+
+    assert code_of(refused) == (409, "action_record_changed")
+    assert list(races.APPROVED) == []
+    assert ended(authorization)
+
+
 # Kept elsewhere: spent before the act, read when the act opens its unit of work.
 
 
@@ -590,16 +670,32 @@ def test_binds_answers_only_what_json_writes(value: object) -> None:
 
 
 SEEDED: Final = """
-import asyncio, sys
+import asyncio, dataclasses, sys
 from uuid import UUID
+from pydantic import BaseModel, Field
 from domainkit.contrib.auth.actions import Action, Shown
 from domainkit.ddd import Command
 
 class Note(Command):
     note_id: UUID
 
+class Labels(BaseModel):
+    tags: frozenset[str] = Field(alias="labels")
+
+@dataclasses.dataclass
+class Shelf:
+    names: set[str]
+    labels: Labels
+
 def binds(command, uow):
-    return {"tags": frozenset(f"tag-{n}" for n in range(12)), "ids": {3, 1, 2}}
+    words = [f"tag-{n}" for n in range(12)]
+    return {
+        "tags": frozenset(words),
+        "ids": {3, 1, 2},
+        "labels": Labels(labels=frozenset(words)),
+        "shelf": Shelf(set(words), Labels(labels=frozenset(words))),
+        "pairs": [(frozenset(words), {"inner": set(words)})],
+    }
 
 action = Action(
     "notes.publish", command=Note, subject=lambda command: "notes.note:1",
@@ -612,11 +708,12 @@ print(asyncio.run(action.bound_in(note, object())))
 
 
 def test_a_set_is_bound_alike_whatever_the_hash_seed() -> None:
-    """Sorted as ``arguments`` sorts one: the twin and the act may run apart.
+    """Every set sorted, wherever it is: the twin and the act may run apart.
 
     A set's order follows its items' hashes, which differ from one process
     to the next: a twin on one worker and the act on another read other
-    values (found in review).
+    values (found in review), in a model's aliased field too, in a
+    dataclass, a tuple, a mapping.
     """
     source = str(Path(__file__).parents[1] / "src")
     bound = {
