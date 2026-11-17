@@ -61,7 +61,8 @@ The phone (a user's credentials without scopes, and a request signed by
 one of their bound devices, ``DeviceSigned``):
 
 - ``GET /app-sign-in/requests``: the requests waiting for an answer, with
-  who asks and from where.
+  who asks and from where; ``?withdrawn=true``, the asks their session
+  withdrew too, while the phone may still report them.
 - ``POST /app-sign-in/requests/claim`` ``{"code"}``: the QR request scanned.
 - ``POST /app-sign-in/requests/{id}/approve`` ``{"match_code"?}``, and an
   act's ``{"digest"}``.
@@ -409,6 +410,10 @@ class SignInOut(BaseModel):
     """An act's purpose, title, details and digest, read from auth's record."""
     created_at: datetime
     expires_at: datetime
+    withdrawn: bool = False
+    """Its session withdrew it unanswered (``?withdrawn=true`` only): the
+    phone may report it, ``deny`` with ``report``, and nothing else, until
+    ``REQUEST_TTL`` after ``created_at``; ``expires_at`` is when it ended."""
 
 
 def _no_store(response: Response) -> None:
@@ -805,9 +810,12 @@ async def _device(request: Request, user: AbstractBaseUser) -> BoundDevice:
 
 
 async def _out(
-    uow: CibaUnitOfWork, request: Request, sign_ins: list[SignInRequest]
+    uow: CibaUnitOfWork,
+    request: Request,
+    sign_ins: list[SignInRequest],
+    now: datetime | None = None,
 ) -> list[SignInOut]:
-    """What the phone is shown of each request."""
+    """What the phone is shown of each request; one ended by ``now`` is withdrawn."""
     names: dict[str, str] = {}
     transactions: dict[UUID, TransactionOut | None] = {}
     acts: dict[UUID, ActOut | None] = {}
@@ -841,6 +849,7 @@ async def _out(
             authorization=acts.get(each.id),
             created_at=each.created_at,
             expires_at=each.expires_at,
+            withdrawn=now is not None and each.expired(now),
         )
         for each in sign_ins
     ]
@@ -871,15 +880,23 @@ async def _act(request_id: UUID, user_id: UUID) -> ActOut | None:
 
 @router.get("/app-sign-in/requests")
 async def list_sign_ins(
-    request: Request, user: Annotated[AbstractBaseUser, DEVICE_SIGNED]
+    request: Request,
+    user: Annotated[AbstractBaseUser, DEVICE_SIGNED],
+    withdrawn: bool = False,
 ) -> list[SignInOut]:
-    """The user's sign-ins waiting for an answer, oldest first."""
+    """The user's sign-ins waiting for an answer, oldest first.
+
+    With ``?withdrawn=true`` (since 2.7), the asks their session withdrew
+    unanswered too, until ``REQUEST_TTL`` after they were asked, each
+    ``"withdrawn": true``: the phone may report them, and nothing else.
+    """
     from domainkit.contrib.auth.integration import utc_now
 
+    now = utc_now()
+    since = now - ciba_settings().REQUEST_TTL if withdrawn else None
     async with CibaUnitOfWork() as uow:
-        return await _out(
-            uow, request, await uow.requests.waiting_for(user.id, utc_now())
-        )
+        found = await uow.requests.waiting_for(user.id, now, withdrawn_since=since)
+        return await _out(uow, request, found, now)
 
 
 @router.post(

@@ -40,6 +40,12 @@ and a status.
   (`auth.E112`)
   ([Each act its own methods and lifetime](docs/auth/actions.md#each-act-its-own-methods-and-lifetime),
   ADR 0174) (user report A17).
+- `GET /app-sign-in/requests?withdrawn=true` lists the asks a session
+  withdrew unanswered, until `REQUEST_TTL` after they were asked, each
+  `"withdrawn": true`: an app opened without the push reports them, as
+  the push let it. The list without it is as before
+  ([Withdrawing a request](docs/auth/ciba.md#withdrawing-a-request),
+  ADR 0174) (user report A17).
 
 ### Changed
 
