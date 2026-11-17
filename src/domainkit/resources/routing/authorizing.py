@@ -272,13 +272,17 @@ class AuthorizationRoute:
             PermissionDenied: A rule refuses the caller the aggregate.
             PreconditionFailed: The aggregate is not at the version
                 ``If-Match`` names (412).
-            RequestValidationError: ``If-Match`` lists several tags (422).
+            RequestValidationError: ``If-Match`` lists several tags, on
+                one line or several (422).
             RuntimeError: The rule answered something else than its model,
                 or the aggregate loaded is not the one ``If-Match`` was to
                 be checked against.
         """
         route = self.route
         header = context.if_match
+        lines = context.request.headers.getlist("if-match")
+        if len(lines) > 1:  # One list (RFC 9110, 5.3): a page sends one tag.
+            header = ", ".join(lines)
         versions = asked_versions(header)
         command = await route.build(context)
         if route.detail:

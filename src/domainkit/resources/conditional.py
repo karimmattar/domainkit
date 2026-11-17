@@ -74,27 +74,29 @@ def asked_versions(header: str | None) -> frozenset[int] | None:
     None without one, an empty one, or ``*``; otherwise as
     ``expected_versions`` reads it, so a tag that names no version, or a
     malformed value, matches nothing. A page reads one version: a list
-    of several tags is refused.
+    of several tags, counted by the commas between them, however many,
+    is refused. Several header lines are one list (RFC 9110, 5.3): join
+    them with ``", "`` first.
 
     Raises:
         RequestValidationError: The value lists more than one tag (422).
     """
     if header is None or not header.strip():
         return None
-    tags = parse_tags(header)
-    if tags is not None and len(tags) > 1:
+    count = sum(1 for part in header.split(",") if part.strip())
+    if count > 1:
         raise RequestValidationError(
             [
                 {
                     "type": "too_long",
                     "loc": ("header", "if-match"),
                     "msg": f"List should have at most 1 item after validation, "
-                    f"not {len(tags)}",
+                    f"not {count}",
                     "input": header,
                     "ctx": {
                         "field_type": "List",
                         "max_length": 1,
-                        "actual_length": len(tags),
+                        "actual_length": count,
                     },
                 }
             ]

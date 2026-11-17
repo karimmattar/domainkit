@@ -192,11 +192,13 @@ def test_a_twin_refuses_a_tag_that_names_no_version_it_has(
     assert rows() == []
 
 
-@pytest.mark.parametrize("sent", ['"1", "2"', '"1", W/"1-0a1b"', '"1", "1"'])
+@pytest.mark.parametrize(
+    "sent", ['"1", "2"', '"1", W/"1-0a1b"', '"1", "1"', ", ".join(['"1"'] * 21)]
+)
 def test_a_twin_takes_one_tag_the_version_its_page_read(
     alice: Reviewer, sent: str
 ) -> None:
-    """Several, even of one version: ``422``, nothing stored.
+    """Several, even of one version, however many: ``422``, nothing stored.
 
     A twin that took ``"1", "2"`` bound an act that a page sending both
     made on version 2, which no page had read (found in review).
@@ -208,6 +210,58 @@ def test_a_twin_takes_one_tag_the_version_its_page_read(
     assert refused.status_code == 422, refused.json()
     assert refused.json()["errors"][0]["loc"] == ["header", "if-match"]
     assert rows() == []
+
+
+@pytest.mark.parametrize("url", ["/products/{}/publish", "/own/{}/approve"])
+def test_a_twin_takes_one_if_match_line(reviewer: Reviewer, url: str) -> None:
+    """Two lines are one list of two tags (RFC 9110, 5.3): ``422``, not the first.
+
+    A resource's twin and a route of the project's own alike; they read
+    the first line and dropped the second (found in review).
+    """
+    lamp = stock("contract.pdf")
+    etag = reviewer.read(f"/files/{lamp}")
+    headers = [*reviewer.headers.items(), ("If-Match", etag), ("If-Match", '"9"')]
+
+    refused = reviewer.client.post(
+        f"{url.format(lamp)}/authorization", json=WEB, headers=headers
+    )
+
+    assert refused.status_code == 422, refused.json()
+    assert rows() == []
+
+
+def test_a_unit_of_work_may_name_an_attribute_expectations() -> None:
+    """2.8 reserves no attribute of a project's unit of work: what it holds is read.
+
+    ``UnitOfWork.expectations``, a property, refused a repository of that
+    name (found in review).
+    """
+    from domainkit.ddd import UnitOfWork
+    from domainkit.ddd.uow import expectations_of
+    from domainkit_tests.sample_domains.shop.models import Product
+
+    class Ledger(UnitOfWork):
+        """A unit of work with a repository called ``expectations``."""
+
+        def __init__(self) -> None:
+            """Name it."""
+            super().__init__()
+            self.expectations = ["the project's own"]
+
+        async def _commit(self) -> None:
+            """Nothing to write."""
+
+        async def _rollback(self) -> None:
+            """Nothing to undo."""
+
+    uow = Ledger()
+    with uow.expect(Product, "p1", {1}) as expected:
+        held = expectations_of(uow)
+
+    assert held == (expected,)
+    assert expectations_of(uow) == ()
+    assert uow.expectations == ["the project's own"]
 
 
 def test_a_twin_refuses_an_if_match_longer_than_a_route_reads(

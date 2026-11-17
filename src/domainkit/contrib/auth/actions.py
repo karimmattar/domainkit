@@ -124,6 +124,7 @@ from domainkit.ddd import (
     UseCase,
     fingerprint,
 )
+from domainkit.ddd.uow import expectations_of
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import IsUnscoped, NotAuthenticated, Require
 from domainkit.http.errors import APIError, FieldError, error_response, error_responses
@@ -1068,7 +1069,8 @@ async def request_action_authorization(
             to scopes, or cannot be told apart from the user's others.
         PreconditionRequired: The action requires ``If-Match``, and
             ``if_match`` names no version (428).
-        RequestValidationError: ``if_match`` lists several tags (422).
+        RequestValidationError: ``if_match`` lists several tags, or the
+            request sent several ``If-Match`` lines (422).
         PreconditionFailed: ``show`` or ``binds`` loaded the record at
             another version (412).
         NoSecondFactor: The user has no way to confirm what the act asks.
@@ -1094,7 +1096,7 @@ async def request_action_authorization(
         )
     subject = action.subject_of(command)
     digest = action.digest_of(command)
-    versions = _asked(if_match)
+    versions = _asked(if_match, request)
     if versions is None and action.require_if_match:
         raise _precondition_required()
     if not await _can_confirm(user.id, action.required()):
@@ -1124,13 +1126,17 @@ async def request_action_authorization(
     return authorization
 
 
-def _asked(header: str | None) -> frozenset[int] | None:
-    """The version a twin's ``If-Match`` names, one tag (``asked_versions``)."""
+def _asked(header: str | None, request: HTTPConnection) -> frozenset[int] | None:
+    """The version a twin's ``If-Match`` names, one tag (``asked_versions``).
+
+    The request's ``If-Match`` lines, if it sent several, are one list.
+    """
     if header is None:
         return None
     from domainkit.resources.conditional import asked_versions
 
-    return asked_versions(header)
+    lines = request.headers.getlist(IF_MATCH)
+    return asked_versions(", ".join(lines) if len(lines) > 1 else header)
 
 
 def _checked_where_read(
@@ -1144,7 +1150,7 @@ def _checked_where_read(
     """
     lent = None if unit_of_work is None else _unit_of_work_of(unit_of_work())
     if lent is None or not any(
-        each.checked and each.versions == versions for each in lent.expectations
+        each.checked and each.versions == versions for each in expectations_of(lent)
     ):
         raise ImproperlyConfigured(
             f"Action {action.purpose!r}: If-Match names versions nothing checked "
@@ -1607,7 +1613,8 @@ def _binding(
     """
     versions = accepted.versions
     if versions is not None and (
-        held is None or not any(each.versions == versions for each in held.expectations)
+        held is None
+        or not any(each.versions == versions for each in expectations_of(held))
     ):
         raise ImproperlyConfigured(
             f"Action {action.purpose!r}: its authorization holds the version "

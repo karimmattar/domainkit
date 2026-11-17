@@ -289,11 +289,6 @@ class UnitOfWork(ABC):
         self._begun = self._run_marks()
         return self
 
-    @property
-    def expectations(self) -> tuple[Expectation, ...]:
-        """What the open ``expect`` blocks hold the unit of work to, outermost first."""
-        return tuple(self._expected)
-
     @contextmanager
     def expect(
         self, model: type, id_: Hashable, versions: Collection[int] | None
@@ -578,6 +573,15 @@ class UnitOfWork(ABC):
     @abstractmethod
     async def _rollback(self) -> None:
         """Roll the underlying transaction back."""
+
+
+def expectations_of(uow: UnitOfWork) -> tuple[Expectation, ...]:
+    """What the open ``expect`` blocks hold ``uow`` to now, outermost first.
+
+    A function, not an attribute: a project's unit of work may name its
+    own attributes as it likes.
+    """
+    return tuple(uow._expected)
 
 
 def _clean(aggregates: Iterable[Any]) -> None:
