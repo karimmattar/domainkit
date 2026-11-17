@@ -1063,16 +1063,29 @@ class Fork:
 
 @pytest.fixture
 def start_fork() -> Iterator[Callable[[], Fork]]:
-    """Start a fork's hooks; those after it run at the end, if the test did not."""
+    """Start a fork's hooks; those after it run at the end, if the test did not.
+
+    Nothing is collected meanwhile: a handler collected calls ``logging``
+    back (``_removeHandlerRef``), which waits for its lock on the thread
+    that collects, here the test's, while the fork or the test's
+    ``dictConfig`` holds it on another.
+    """
     started: list[Fork] = []
 
     def start() -> Fork:
         started.append(Fork())
         return started[-1]
 
-    yield start
-    for fork in started:
-        fork.finish()
+    collecting = gc.isenabled()
+    gc.collect()
+    gc.disable()
+    try:
+        yield start
+    finally:
+        for fork in started:
+            fork.finish()
+        if collecting:
+            gc.enable()
 
 
 def test_a_fork_waits_for_the_write_in_progress(
