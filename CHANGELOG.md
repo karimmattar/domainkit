@@ -26,9 +26,11 @@ and a status.
   /users/names` names a user by, as entries tried in order, each a field
   or fields joined by a space; the first that gives text is the name,
   as in `("display_name", ("first_name", "last_name"))`. Each field must
-  be one `GET /users` shows among a user's `fields`, or `check` refuses
-  to start (`auth.E012`); a field that stops being shown gives no name,
-  and search still never matches a name. Unset, a user is named by
+  be a text field `GET /users` shows, among a user's `fields` or as the
+  username, or `check` refuses to start (`auth.E012`, a message for each
+  case: no such field, never shown, not shown by the model, not text). A
+  field that stops being shown, or a value that is not text, gives no
+  name, and search still never matches a name. Unset, a user is named by
   `first_name` and `last_name`, as in 2.7
   ([The admin API](docs/auth/routes.md#the-admin-api), ADR 0182) (user
   report D2).
@@ -48,6 +50,9 @@ and a status.
   `error.type` name that module, not `domainkit.http.errors`: a filter
   or an alert on the old name needs the new one
   ([upgrading.md](docs/upgrading.md#27-to-28)) (user report D2).
+- `GET /users/names` strips the names it joins: a first or last name of
+  white space alone no longer makes a name of spaces, and a padded one
+  is answered without its padding (user report D2).
 
 ## [2.7.0] - 2026-11-17
 

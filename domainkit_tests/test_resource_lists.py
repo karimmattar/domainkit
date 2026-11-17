@@ -559,16 +559,19 @@ def test_the_names_show_no_field_the_user_list_hides(
 def test_the_names_follow_the_fields_a_project_chooses(api: Api) -> None:
     """``AUTH.NAME_FIELDS``: the first entry that gives text names the user.
 
-    An entry is a field, or fields joined by a space; one whose fields are
-    all empty gives way to the next, and none leaves the name null. Search
-    stays ``/users``' own: a name, configured or not, is never matched
-    (user report D2, 2.7).
+    An entry is a field, or fields joined by a space, each stripped; one
+    whose fields hold nothing but white space gives way to the next, the
+    username among them, and none leaves the name null. Search stays
+    ``/users``' own: a name, configured or not, is never matched (user
+    report D2, 2.7).
     """
-    client = api(NAME_FIELDS=(("last_name", "first_name"), "email"))
+    client = api(NAME_FIELDS=(("last_name", "first_name"), "email", "username"))
     headers = staff("admin", "auth.view_user")
-    ann = create_user("ann", email="ann@example.com", first_name="Ann", last_name="Lee")
-    bob = create_user("bob", email="bob@example.com")
-    cy = create_user("cy")
+    ann = create_user(
+        "ann", email="ann@example.com", first_name=" Ann\t", last_name="Lee "
+    )
+    bob = create_user("bob", email="bob@example.com", first_name="  ")
+    cy = create_user("cy", email=" ", first_name="\n", last_name=" ")
     url = f"{ADMIN}/users/names"
 
     def names(**params: Any) -> list[str | None]:  # noqa: ANN401 - parameters.
@@ -579,7 +582,7 @@ def test_the_names_follow_the_fields_a_project_chooses(api: Api) -> None:
     assert names(id=[str(ann), str(bob), str(cy)]) == [
         "Lee Ann",
         "bob@example.com",
-        None,
+        "cy",
     ]
     assert names(search="Lee") == []
     assert names(search="example") == []
@@ -590,12 +593,15 @@ def test_a_name_field_the_user_list_does_not_show_gives_no_name(
 ) -> None:
     """A name is built of what ``/users`` shows when it is asked, field by field.
 
-    ``check`` refuses a field ``/users`` does not show (``auth.E012``); a
-    field that stops being shown later, or settings ``check`` never read,
-    still give no name: the entry gives way to the next, and the name is
-    null when none is left (review of user report D2).
+    ``check`` refuses a field ``/users`` does not show, or one that holds
+    no text (``auth.E012``); a field that stops being shown later, or
+    settings ``check`` never read, still give no name: a date gives no
+    text, an entry with a field not shown gives way to the next, and the
+    name is null when none is left (review of user report D2).
     """
-    client = api(NAME_FIELDS=(("first_name", "last_name"), "email", "password"))
+    client = api(
+        NAME_FIELDS=(("first_name", "last_name"), "date_joined", "email", "password")
+    )
     headers = staff("admin", "auth.view_user")
     ann = create_user(
         "ann", email="ann@example.com", first_name="Ann", last_name="Secret"
@@ -621,35 +627,60 @@ def test_a_name_field_the_user_list_does_not_show_gives_no_name(
     assert with_password_shown is None
 
 
-def test_name_fields_are_fields_the_user_list_shows(
+def test_name_fields_are_text_the_user_list_shows(
     use_auth: UseAuth, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``auth.E012`` names each field ``/users`` does not show, once.
+    """``auth.E012`` says, case by case, why a field cannot name users.
 
-    A field the model lacks, one it holds but does not show, and one
-    ``/users`` hides whatever ``admin_fields()`` holds are refused when
-    the service starts. Left unset, nothing is checked, as in 2.7.
+    A field the model lacks; one the admin API never shows, whatever
+    ``admin_fields()`` holds (``password``, ``last_login``); one this
+    model does not show, which ``EDITABLE_FIELDS`` or ``READ_ONLY_FIELDS``
+    would; and one that holds no text (a date, a flag). The username, its
+    own key on ``/users``, is taken. Left unset, nothing is checked.
     """
     use_auth()
     model = get_user_model()
-    monkeypatch.setattr(model, "READ_ONLY_FIELDS", frozenset({"last_login"}))
+    monkeypatch.setattr(
+        model, "READ_ONLY_FIELDS", model.READ_ONLY_FIELDS | {"last_login"}
+    )
     with pytest.raises(CheckFailed) as refused:
         use_auth(
             NAME_FIELDS=(
                 "display_name",
-                ("first_name", "is_staff"),
-                ("last_login", "display_name"),
+                ("first_name", "password"),
+                "is_staff",
+                ("date_joined", "username"),
+                ("email_verified", "last_login", "display_name"),
             )
         )
 
-    [problem] = refused.value.messages
-    assert getattr(problem, "id", None) == "auth.E012"
-    assert str(problem).startswith(
-        "AUTH.NAME_FIELDS names 'display_name', 'is_staff', 'last_login', which "
-        "the admin API's GET /users does not show (User.admin_fields())"
+    assert [getattr(problem, "id", None) for problem in refused.value.messages] == [
+        "auth.E012"
+    ] * 4
+    missing, hidden, unshown, not_text = map(str, refused.value.messages)
+    assert missing == (
+        "AUTH.NAME_FIELDS names 'display_name', which User has no field for: "
+        "name fields of User."
     )
-    use_auth(NAME_FIELDS=("email", ("first_name", "last_name")))
-    assert auth_settings().NAME_FIELDS == (("email",), ("first_name", "last_name"))
+    assert hidden == (
+        "AUTH.NAME_FIELDS names 'password', 'last_login', which the admin API "
+        "never shows (credentials, grants, ids): name fields GET /users shows."
+    )
+    assert unshown == (
+        "AUTH.NAME_FIELDS names 'is_staff', which GET /users does not show of "
+        "User: add them to User.EDITABLE_FIELDS or READ_ONLY_FIELDS, or name "
+        "fields it shows."
+    )
+    assert not_text == (
+        "AUTH.NAME_FIELDS names 'date_joined', 'email_verified', which do not "
+        "hold text: a name is built of text fields only."
+    )
+    use_auth(NAME_FIELDS=("email", ("first_name", "last_name"), "username"))
+    assert auth_settings().NAME_FIELDS == (
+        ("email",),
+        ("first_name", "last_name"),
+        ("username",),
+    )
 
 
 def test_a_project_names_its_users_by_a_field_of_its_own(use_auth: UseAuth) -> None:
@@ -663,7 +694,7 @@ def test_a_project_names_its_users_by_a_field_of_its_own(use_auth: UseAuth) -> N
         "USER_MODEL": f"{ACCOUNTS}.models.Account",
         "USER_TABLE": f"{ACCOUNTS}.tables.accounts",
     }
-    with pytest.raises(CheckFailed, match="names 'risk_flag', which"):
+    with pytest.raises(CheckFailed, match="'risk_flag', which GET /users does not"):
         use_auth(settings=domains, NAME_FIELDS=("risk_flag",), **custom)
     use_auth(settings=domains, NAME_FIELDS=("phone", ("first_name",)), **custom)
     account = Account.create(

@@ -49,6 +49,9 @@ relied on 2.7's behaviour changes, and what to run.
   ...`), and tracing's `error.type`. Change a log filter, an alert, or an
   error tracker's rule that matches `APIError` under the old module,
   `domainkit.http.errors`, to match `domainkit.http.problems.APIError`.
+- **`GET /users/names` strips the names it joins.** A first or last name
+  of white space alone gives no name, where 2.7 answered the spaces, and
+  a padded one loses its padding.
 
 ## 2.6 to 2.7
 

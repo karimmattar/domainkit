@@ -341,8 +341,9 @@ class UserNameOut(BaseModel):
     username: str
     name: str | None
     """The first entry of ``AUTH.NAME_FIELDS`` that gives text, its fields
-    joined by a space (``first_name`` and ``last_name`` by default), of the
-    fields ``/users`` shows (``admin_fields``); else null."""
+    stripped and joined by a space (``first_name`` and ``last_name`` by
+    default), of the text ``/users`` shows (``admin_fields``, the username);
+    else null."""
     identifiers: dict[str, JsonValue]
     """The fields of ``AUTH.IDENTIFIERS`` among those ``/users`` shows, by name."""
 
@@ -354,14 +355,15 @@ class UserNameOut(BaseModel):
         without it), never from a model's ``get_full_name`` or a method of
         its own, which may read fields staff are not shown. An entry with
         a field ``/users`` does not show gives nothing, whatever ``check``
-        found when the service started (``auth.E012``).
+        found when the service started (``auth.E012``); nor does a value
+        that is not text, or only white space.
         """
         model = type(user)
         shown = model.admin_fields() - HIDDEN_FIELDS
         return cls(
             id=user.id,
             username=user.get_username(),
-            name=_name(user, shown),
+            name=_name(user, shown | ({model.USERNAME_FIELD} - HIDDEN_FIELDS)),
             identifiers={
                 name: jsonable(getattr(user, name))
                 for name in identifier_fields(model)
@@ -371,7 +373,10 @@ class UserNameOut(BaseModel):
 
 
 def _name(user: AbstractBaseUser, shown: frozenset[str]) -> str | None:
-    """The first entry of the name's fields that gives text, of fields ``shown``."""
+    """The first entry of the name's fields that gives text, of fields ``shown``.
+
+    ``shown`` holds what ``/users`` shows: the user's ``fields`` and username.
+    """
     for entry in auth_settings().NAME_FIELDS or (NAME_FIELDS,):
         if shown >= set(entry) and (name := " ".join(_parts(user, entry))):
             return name
@@ -379,9 +384,14 @@ def _name(user: AbstractBaseUser, shown: frozenset[str]) -> str | None:
 
 
 def _parts(user: AbstractBaseUser, entry: Iterable[str]) -> Iterator[str]:
-    """The text of each field of ``entry`` that holds some, in order."""
+    """The text of each field of ``entry`` that holds some, stripped, in order.
+
+    A value that is not text (a date, a flag, a number) gives none: ``str()``
+    of it is not what ``/users`` shows, and it names no one.
+    """
     for name in entry:
-        if text := str(getattr(user, name) or ""):
+        value = getattr(user, name)
+        if isinstance(value, str) and (text := value.strip()):
             yield text
 
 

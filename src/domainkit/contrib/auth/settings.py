@@ -659,11 +659,11 @@ class AuthSettings(BaseModel):
     ) = Field(default=None, min_length=1, max_length=MAX_NAME_FIELDS)
     """How the admin API's ``GET /users/names`` names a user (New in 2.8):
     entries tried in order, each a field, or fields joined by a space; the
-    first that gives text is the name, as in ``("display_name",
-    ("first_name", "last_name"))``. Each field must be one ``GET /users``
-    shows (the model's ``admin_fields()``), or ``check`` refuses to start
-    (``auth.E012``, ADR 0182). None: ``first_name`` and ``last_name``
-    joined, as in 2.7."""
+    first that gives text, stripped, is the name, as in ``("display_name",
+    ("first_name", "last_name"))``. Each field must be a text field that
+    ``GET /users`` shows (the model's ``admin_fields()``, or the username),
+    or ``check`` refuses to start (``auth.E012``, ADR 0182). None:
+    ``first_name`` and ``last_name`` joined, as in 2.7."""
     CODE_TTL: timedelta = Field(
         default=timedelta(minutes=10),
         ge=timedelta(minutes=1),
