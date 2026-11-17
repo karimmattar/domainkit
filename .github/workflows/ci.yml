@@ -33,7 +33,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  POETRY_VERSION: "2.2.1"
+  POETRY_VERSION: "2.4.3"
   POETRY_VIRTUALENVS_IN_PROJECT: "true"
   POETRY_NO_INTERACTION: "1"
 
@@ -81,7 +81,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       - run: pipx install "poetry==${POETRY_VERSION}"
@@ -104,7 +104,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       - run: pipx install "poetry==${POETRY_VERSION}"
@@ -140,7 +140,7 @@ jobs:
         with:
           persist-credentials: false
       - if: needs.changes.outputs.code != 'false'
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python }}
       - if: needs.changes.outputs.code != 'false'
@@ -159,7 +159,7 @@ jobs:
           poetry run pytest -n auto --dist worksteal --cov --cov-report=term
           --cov-report=xml --junitxml=junit.xml
       - if: ${{ always() && needs.changes.outputs.code != 'false' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-results-${{ matrix.python }}
           path: |
@@ -167,7 +167,7 @@ jobs:
             junit.xml
           retention-days: 14
       - if: needs.changes.outputs.code != 'false'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-test-${{ matrix.python }}
           path: .coverage.test-${{ matrix.python }}
@@ -198,17 +198,11 @@ jobs:
     if: ${{ !cancelled() && !failure() && github.event_name != 'schedule' && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
-    # Poetry 2.2.1 installs the default build's wheels (cp314) on
-    # free-threaded Python, whose extensions 3.14t cannot load (pydantic-core
-    # fails to import); 2.4.3 installs the cp314t wheels from the same lock
-    # file. The other jobs, and the lock check, keep 2.2.1.
-    env:
-      POETRY_VERSION: "2.4.3"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.14t"
       - run: pipx install "poetry==${POETRY_VERSION}"
@@ -241,15 +235,13 @@ jobs:
     if: ${{ !cancelled() && !failure() && github.event_name != 'schedule' && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
-    # As free-threaded: Poetry 2.4.3 installs the cp314t wheels.
     env:
-      POETRY_VERSION: "2.4.3"
       RUNS: "30"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.14t"
       - run: pipx install "poetry==${POETRY_VERSION}"
@@ -311,7 +303,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       # immudb needs files at start (a certificate, a signing key), which a
@@ -347,12 +339,12 @@ jobs:
             -keyout server.key -out server.crt 2>/dev/null
           chmod 644 server.key
           docker run -d --name redis -p 6379:6379 -p 6380:6380 -v "$PWD:/certs:ro" \
-            redis:8.8.3-alpine@sha256:0b2b77d3ea5078274795e3177cdbdada8b96316684a38911d528534ed679b5ec \
+            redis:8.10.2-alpine@sha256:9f8d2d789b9a1d1e3f283f979aa9cbf393373806472e1ccd460e2f9c869b833b \
             redis-server --port 6379 --tls-port 6380 \
             --tls-cert-file /certs/server.crt --tls-key-file /certs/server.key \
             --tls-ca-cert-file /certs/server.crt --tls-auth-clients no
           docker run -d --name valkey -p 6381:6379 \
-            valkey/valkey:9.1.2-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11
+            valkey/valkey:9.1.3-alpine@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b
           for _ in $(seq 1 30); do
             if docker exec redis redis-cli ping 2>/dev/null | grep -q PONG &&
               docker exec valkey valkey-cli ping 2>/dev/null | grep -q PONG; then
@@ -381,7 +373,7 @@ jobs:
           docker run -d --name rabbitmq -p 5672:5672 -p 5671:5671 -p 15672:15672 \
             -e RABBITMQ_DEFAULT_USER=domainkit -e RABBITMQ_DEFAULT_PASS=domainkit \
             -v "$PWD:/certs:ro" -v "$PWD/20-tls.conf:/etc/rabbitmq/conf.d/20-tls.conf:ro" \
-            rabbitmq:4.3.5-management-alpine@sha256:b3b8b7f95f5382a19f9ea33540e604f30aad081d37ad9aba72255135765373a1
+            rabbitmq:4.3.6-management-alpine@sha256:3505b6096cdbc083bcc363e74366f575ecd0c1a55be4dadcbc60fa08e34647e1
           # Wait on the log, not "docker exec rabbitmq-diagnostics": an early
           # exec runs as root and writes the Erlang cookie the server (another
           # user) must create, so RabbitMQ fails to start.
@@ -420,14 +412,14 @@ jobs:
       # Kept when the suite fails too: which tests failed, and the log (with
       # the stacks pytest-timeout prints for a hung test).
       - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-results-integration
           path: |
             junit.xml
             pytest.log
           retention-days: 14
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-integration
           path: .coverage.integration
@@ -464,7 +456,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       - run: pipx install "poetry==${POETRY_VERSION}"
@@ -511,7 +503,7 @@ jobs:
           ref: ${{ github.base_ref }}
           path: base
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13.16"
       - run: pipx install "poetry==${POETRY_VERSION}"
@@ -530,7 +522,7 @@ jobs:
           poetry run python -m benchmarks.load --strict --json load.json
           --rungs fastapi,template,me,read,write
       - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: benchmark-ladder
           path: |
@@ -549,12 +541,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       - run: pipx install "poetry==${POETRY_VERSION}"
       - run: poetry sync --all-extras --with dev
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: coverage-*
           merge-multiple: true
@@ -576,7 +568,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       # The tools that run while dist/ is written are the ones reviewed:
@@ -608,7 +600,7 @@ jobs:
       # Uploaded as built, before anything else is installed or run here: what
       # the smoke tests below install could otherwise change the files the
       # attest job signs (audit A7-1).
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist
           path: dist/
@@ -662,7 +654,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       - run: pipx install "poetry==${POETRY_VERSION}"
@@ -671,6 +663,11 @@ jobs:
       # immudb's SDK only verifies signatures with ecdsa, which the advisory
       # says is unaffected, and no fix is planned. See SECURITY.md.
       - run: poetry run pip-audit --progress-spinner off --ignore-vuln PYSEC-2026-1325
+      # The build job's tools (build-tools.txt), pinned with their hashes:
+      # Renovate cannot update that file, so an advisory shows here.
+      - run: >-
+          poetry run pip-audit --progress-spinner off --disable-pip
+          --require-hashes -r .github/requirements/build-tools.txt
       - name: Scan the whole history for secrets
         run: >-
           docker run --rm -v "$PWD:/repo"
@@ -688,17 +685,17 @@ jobs:
     timeout-minutes: 10
     env:
       # renovate: datasource=pypi depName=cyclonedx-bom
-      CYCLONEDX_BOM_VERSION: "7.5.0"
+      CYCLONEDX_BOM_VERSION: "7.6.0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       - run: pipx install "poetry==${POETRY_VERSION}"
       - run: pipx install "cyclonedx-bom==${CYCLONEDX_BOM_VERSION}"
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dist
           path: dist/
@@ -718,7 +715,7 @@ jobs:
           cyclonedx-py environment --pyproject sbom-pyproject.toml \
             --mc-type library --of JSON \
             -o sbom.cdx.json .venv
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sbom
           path: sbom.cdx.json
@@ -743,11 +740,11 @@ jobs:
       id-token: write # A Sigstore certificate naming this workflow run.
       attestations: write # Keeps the attestations with the repository.
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dist
           path: dist/
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: sbom
           path: sbom/
@@ -784,7 +781,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       - run: pipx install "semgrep==${SEMGREP_VERSION}"
@@ -809,7 +806,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       - run: pipx install "poetry==${POETRY_VERSION}"
@@ -817,7 +814,7 @@ jobs:
       - run: poetry run mkdocs build --strict --site-dir site
         env:
           NO_MKDOCS_2_WARNING: "1"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: docs-site
           path: site/
@@ -853,7 +850,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.15"
       - run: pipx install "poetry==${POETRY_VERSION}"
@@ -903,7 +900,7 @@ jobs:
           .newest/bin/python -m pip_audit --progress-spinner off
           --ignore-vuln PYSEC-2026-1325
       - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-results-newest
           path: junit.xml
@@ -924,7 +921,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       - run: pipx install "poetry==${POETRY_VERSION}"
@@ -950,7 +947,7 @@ jobs:
           .oldest/bin/python -m pip_audit --progress-spinner off
           --ignore-vuln PYSEC-2026-1325
       - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-results-oldest
           path: junit.xml
@@ -986,7 +983,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 2
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       - run: pipx install "poetry==${POETRY_VERSION}"
@@ -1054,7 +1051,7 @@ jobs:
             poetry run python .github/scripts/mutation_summary.py changed --lived-fails $MUTANTS >> "$GITHUB_STEP_SUMMARY"
           fi
       - if: ${{ !cancelled() && steps.changed.outputs.mutants != '' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mutmut-results-changed
           path: |
@@ -1065,7 +1062,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
       - if: steps.plan.outputs.shards != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mutation-changed-plan
           path: |
@@ -1093,12 +1090,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       - run: pipx install "poetry==${POETRY_VERSION}"
       - run: poetry sync --all-extras --with dev
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: mutation-changed-plan
       - name: Run the shard's mutants
@@ -1117,7 +1114,7 @@ jobs:
           fi
           exit "$status"
       - if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mutation-changed-shard-${{ matrix.shard }}
           path: mutants/**/*.meta
@@ -1137,16 +1134,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       - run: pipx install "poetry==${POETRY_VERSION}"
       - run: poetry sync --only dev --no-root
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: mutmut-results-changed
       # Each shard's files in a directory of its own, below mutants/.
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: mutation-changed-shard-*
           path: mutants/shards
@@ -1156,7 +1153,7 @@ jobs:
           set -f
           poetry run python .github/scripts/mutation_summary.py changed --lived-fails $(cat changed-mutants.txt) >> "$GITHUB_STEP_SUMMARY"
       - if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mutmut-results-changed-summary
           path: |
@@ -1357,7 +1354,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
       - run: pipx install "poetry==${POETRY_VERSION}"
@@ -1388,7 +1385,7 @@ jobs:
           set -f
           poetry run python .github/scripts/mutation_summary.py "$SHARD" $MUTANTS >> "$GITHUB_STEP_SUMMARY"
       - if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mutmut-results-${{ matrix.shard.name }}
           path: |
