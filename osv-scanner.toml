@@ -1,0 +1,7 @@
+# Advisories OpenSSF Scorecard's Vulnerabilities check (osv-scanner, which
+# reads this file beside poetry.lock) leaves out: the ones CI's pip-audit
+# ignores, each explained in SECURITY.md (test_ci.py checks they agree).
+
+[[IgnoredVulns]]
+id = "PYSEC-2026-1325"
+reason = "CVE-2024-23342, a timing attack on ecdsa signing: immudb's SDK uses ecdsa only to verify the server's signatures, which the advisory states is unaffected; no fix is planned upstream (SECURITY.md)."

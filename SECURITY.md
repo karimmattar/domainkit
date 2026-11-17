@@ -2,9 +2,11 @@
 
 ## Reporting a vulnerability
 
-Do not open a public issue. Report it privately through GitHub: **Security
-→ Report a vulnerability** on this repository. Include what you found, how to
-reproduce it, and the impact you expect.
+Do not open a public issue. Report it privately through GitHub's private
+vulnerability reporting, at
+<https://github.com/karimmattar/domainkit/security/advisories/new> (a GitHub
+account is needed). Include what you found, how to reproduce it, and the
+impact you expect.
 
 The maintainers aim to:
 
@@ -56,7 +58,7 @@ boundary by boundary, and what is left to a project.
 
 | Advisory | Package | Why it does not apply |
 | --- | --- | --- |
-| PYSEC-2026-1325 (CVE-2024-23342) | `ecdsa`, through the `immudb` extra | A timing attack on signing, key generation, and ECDH. immudb's SDK uses `ecdsa` only to verify the server's state signatures with its public key, which the advisory states is unaffected. No fix is planned upstream. CI's pip-audit ignores this one advisory. |
+| PYSEC-2026-1325 (CVE-2024-23342) | `ecdsa`, through the `immudb` extra | A timing attack on signing, key generation, and ECDH. immudb's SDK uses `ecdsa` only to verify the server's state signatures with its public key, which the advisory states is unaffected. No fix is planned upstream. CI's pip-audit ignores this one advisory, and `osv-scanner.toml` does for OpenSSF Scorecard's scan. |
 
 ## How this repository stays secure
 
