@@ -35,9 +35,12 @@ and a status.
   ([Changes of the admin API](docs/contrib/approvals.md#changes-of-the-admin-api))
   (user reports A20, A21).
 - `AdminChange.last_check`: the admin API's own check that only the
-  change makes (a password the user had before), which a check that
-  spends something to let the change go on awaits first; approvals' hold
-  does, once it finds an approved request (user report A19).
+  change makes (a password the user had before), run once, when the
+  change will surely be made; approvals' hold runs it under the approved
+  request's lock, before spending it (user report A19).
+- `ObjectGrant.expires_at`: when a grant on an object ends, which
+  `domainkit.contrib.objectpermissions` gives; not compared (user report
+  A21).
 
 ### Changed
 
@@ -80,8 +83,8 @@ and a status.
   passed the second person's check. `SetGroups` holds each group added
   by id with the permissions it grants and its grants on single objects
   (`groups`, `HeldGroup`); a group renamed, made again, or granted other
-  permissions or objects since makes another request, which shows what
-  it grants. A request of 2.6 approved and not yet made is approved
+  permissions or objects since (or a grant renewed to another date)
+  makes another request, which shows what it grants. A request of 2.6 approved and not yet made is approved
   again ([upgrading.md](docs/upgrading.md#26-to-27), ADR 0172) (user
   report A21).
 - `auth.set_staff` holds making a deactivated staff member active again
@@ -96,7 +99,9 @@ and a status.
   the change is about to be made, and a reuse costs a try. One
   confirmation tested guess after guess against the history at no rate.
   Now nothing is compared while a check refuses the change or its
-  approval waits, so every password gets the same answer; once compared,
+  approval waits, and, where an approval is spent, only by the call that
+  claims it, under its lock, so calls made at once on one approval are
+  one guess; every other password gets the same answer. Once compared,
   a reuse is refused, spends the change's authorization
   (`AUTH.ADMIN_ACTION`), and counts against the staff member's guesses
   at that user's passwords (`AUTH.LOGIN_RATE`, `ACCOUNT_LOGIN_RATE`;

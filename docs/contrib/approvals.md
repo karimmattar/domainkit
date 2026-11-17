@@ -622,10 +622,12 @@ PATCH /admin/auth/users/6f1c... {"is_staff": true}                       200: th
 - **A password the user had before is refused once the request is
   approved, and spends no approval** (since 2.7). The user's password
   history (`AUTH.PASSWORD_HISTORY`) is compared when the change is about
-  to be made: the hold finds the approved request, has the admin API
-  compare the password (`AdminChange.last_check`), and spends the
-  approval only if it is not refused. While the request waits, nothing
-  is compared ([Each change, authorized as one act](../auth/routes.md#each-change-authorized-as-one-act)).
+  to be made: under the approved request's lock, the one call that
+  claims it has the admin API compare the password
+  (`AdminChange.last_check`), and spends the approval only if it is not
+  refused. While the request waits, nothing is compared, and a call that
+  loses the claim to another made at once answers `approval_pending`,
+  whatever its password ([Each change, authorized as one act](../auth/routes.md#each-change-authorized-as-one-act)).
 - **Once approved, the same call by the same staff member makes the
   change, once.** The guards run by their maker
   ([Run by its maker](#run-by-its-maker)): the worker runs nothing, an
@@ -723,6 +725,14 @@ hold's outcome registers with a higher order. At a change's twin
 asked (`AdminChange.asking`). A check of your own that calls a guard
 `by_maker`, as the hold does, should return while `asking`: at a twin it
 would submit a request.
+
+**A check ordered after the hold sees an approval spent.** The hold
+spends the staff member's approval as it lets the change go on; a check
+of a higher order that then refuses leaves it spent, and the staff
+member asks again. Refuse in a check of the default order, before the
+hold. Never refuse a password change after it: a password the user had
+before is refused by the hold, keeping the approval, and any other
+password by your check, spending it, so the two answers tell them apart.
 
 ### Grants made elsewhere
 

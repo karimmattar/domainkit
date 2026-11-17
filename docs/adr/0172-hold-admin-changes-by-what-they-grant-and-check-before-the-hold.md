@@ -168,10 +168,26 @@ tells.
 | --- | --- |
 | After every check, at the change (2.6) | An approval is spent first, then the change is refused (A19). |
 | Before the checks, with the validators (the first form of this record) | An oracle: while a held change waited, or a project's check refused, each guess was answered, and only a hit cost anything (found in review). |
-| **When the change is about to be made: after the checks; where a hold applies, once it finds the approved request and before it spends it (`AdminChange.last_check`, run once)** | A field more on `AdminChange`, and one read of the requests before the spend. |
+| When the change is about to be made, the hold first looking for an approved request, then comparing, then spending (the second form) | A race: calls sent at once on one approval each found it, each compared, and one spent it; one approval answered as many guesses as calls (found in review). |
+| **When the change is about to be made: after the checks; where a hold applies, under the approved request's lock, by the call that claims it, before it is marked executed (`AdminChange.last_check`, run once)** | A field more on `AdminChange`. The comparison reads only, so it waits on no write under the lock; the authorization is spent after the lock is let go. |
 
 While a check refuses the change or its approval waits, nothing is
-compared: every password gets the same answer. A reuse then spends the
+compared: every password gets the same answer. A call that loses the
+claim compares nothing, and answers `approval_pending`.
+
+`last_check` is awaited by approvals' hold, or by the admin API after
+the checks. A check of the project's that awaited it before the hold
+would answer a reuse (`422`) where another password gets
+`approval_pending`: the docs require that such a check run after every
+check that may refuse, and only once the change is sure. A code guard
+would need each hook's order, and still could not tell which later
+check may refuse. A check ordered after the hold sees the approval
+spent: it should not refuse a password change, or its refusal and the
+hold's answer a reuse differently.
+
+A grant on an object is bound with when it ends
+(`ObjectGrant.expires_at`, not compared): a grant renewed to a later
+date is another. Roles come as their permissions' grants. A reuse then spends the
 change's authorization in a transaction of its own, committed before
 the refusal (one confirmation, one guess), and leaves the approval for a
 password that will do. It counts against a key of the staff member and

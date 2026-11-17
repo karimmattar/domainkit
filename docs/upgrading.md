@@ -88,8 +88,11 @@ project that relied on 2.6's behaviour changes.
   password changes of that user answer `429 rate_limited` for a while,
   a new password too. Nothing else a staff member does newly answers
   `429`, and the user's own wrong passwords never count here.
-- **`AdminChange` has `last_check`.** A check of yours that spends
-  something to let a change go on should await it first.
+- **`AdminChange` has `last_check`.** The admin API's comparison of a
+  password with the history; approvals' hold runs it. Await it from a
+  check of yours only once the change will surely be made, after every
+  check that may refuse it. A check ordered after approvals' hold (above
+  100) sees the approval spent: refuse password changes before it.
 - **A check added to an admin route with `select_routes` runs after the
   admin API's rules.** It no longer sees requests the rules refuse
   (anonymous, not staff, without the model permission or the

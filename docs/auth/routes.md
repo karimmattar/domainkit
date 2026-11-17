@@ -486,10 +486,15 @@ what.
   each an `AddedGroup` (its id, name, permissions, and grants on objects
   as read), and its `last_check`: the admin API's own check that only
   the change makes (a password the user had before), which runs once,
-  when the change is about to be made. A check of yours that lets the
-  change go on by spending something (approvals' hold spends an
-  approval) awaits it first, so a change it refuses spends nothing;
-  otherwise the admin API runs it after every check. Raise
+  when the change is about to be made. Approvals' hold runs it under the
+  approved request's lock, before spending the approval, so a change it
+  refuses spends nothing; otherwise the admin API runs it after every
+  check. Await it from a check of yours only once the change will surely
+  be made: after every check that may still refuse it (an order above
+  100 where approvals hold the change) and under whatever makes it sure.
+  Awaited earlier, a refusal that follows it (`approval_pending`, say)
+  answers a password the user had before differently from another.
+  Raise
   `PermissionDenied` to refuse it
   ("nobody edits their own account here", "making staff needs another
   permission"). `admin.may_grant` and `admin.may_hold`, the ceilings
@@ -631,9 +636,10 @@ PUT  /admin/auth/users/6f1c.../groups {"groups": ["auditors"]}
   each time and spending nothing (user report A17). The history is
   compared only when the change is about to be made: after the
   `on_admin_change` checks, and, where approvals hold setting a
-  password, once the approved request is found and before it is spent.
-  While a check refuses the change or its request waits, nothing is
-  compared, and every password gets the same answer. A password among
+  password, under the approved request's lock, by the one call that
+  claims it, before it is spent. While a check refuses the change or its
+  request waits, nothing is compared, and every password gets the same
+  answer; so does a call that loses the claim to one made at once. A password among
   the user's last ones is then refused (`422 invalid_password`), spends
   the authorization, and leaves the approval unspent: one confirmation
   is one guess, and a password that will do makes the change.
