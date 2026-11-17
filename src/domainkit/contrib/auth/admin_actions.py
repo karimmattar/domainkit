@@ -11,22 +11,35 @@ commit. The admin API imports this module only while the setting is on.
 
 The act's arguments are the change (``AdminAct``): its kind, the user or
 group, and what it sets, adds, and takes away, sorted; never a password.
-What staff are shown is built here, from the act and the stored user or
-group: which one, and what changes.
+Each group a change adds is bound by its id and what it grants, and each
+it takes away by its id (since 2.8, user report A17). What staff are
+shown is built here, from the act and the stored user or group: which
+one, and what changes.
 """
 
 from collections.abc import Iterable, Mapping
-from typing import Final, Literal, cast
+from typing import Any, Final, Literal, cast
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+)
 
 from domainkit.i18n import gettext, gettext_noop, pgettext
 from domainkit.utils.decimals import jsonable
 
+from ._shown import FIELDS as FIELDS
+from ._shown import field_label as field_label
+from ._shown import grants_digest, group_item, named_first, named_permissions
 from .actions import Action, Shown, spent_in_code
 from .exceptions import GroupNotFound, UserNotFound
 from .gates import (
+    AddedGroup,
     AdminChange,
     AdminKind,
     GroupChange,
@@ -50,13 +63,6 @@ FLAGS: Final = {
     "is_active": gettext_noop("Active"),
 }
 """The flags a change sets that grant or take access, and their labels: shown first."""
-FIELDS: Final = {
-    "email": gettext_noop("Email"),
-    "mobile_number": gettext_noop("Mobile number"),
-    "first_name": gettext_noop("First name"),
-    "last_name": gettext_noop("Last name"),
-}
-"""The labels of the built-in user's fields; another is named after its field."""
 FLAG_STATES: Final = {True: "yes", False: "no"}
 """What a flag set is shown as: in the context ``flag``."""
 GROUP_KINDS: Final = frozenset(
@@ -105,10 +111,46 @@ USERNAME: Final = gettext_noop("Username")
 NEW_NAME: Final = gettext_noop("New name")
 REASON: Final = gettext_noop("Reason")
 ADDS: Final = gettext_noop("Adds")
+GRANTS: Final = gettext_noop("Grants")
+"""The label of the keys ``NAMED_PERMISSIONS`` names among those the groups
+a change adds grant (since 2.8)."""
 TAKES_AWAY: Final = gettext_noop("Takes away")
 PASSWORD: Final = gettext_noop("Password")
 PASSWORD_STATES: Final = {True: "set", False: "none"}
 """Whether a user is created with a password: in the context ``password``."""
+
+
+class ActGroup(BaseModel):
+    """A group a change adds a user to, as its act binds it (since 2.8).
+
+    Its id, its name, the keys of the permissions it grants, sorted, and
+    its grants on single objects: how many, and their digest (SHA-256 of
+    them, sorted; empty for none), as approvals' ``HeldGroup``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: UUID
+    name: str
+    permissions: tuple[str, ...]
+    object_grants: int = 0
+    object_grants_digest: str = ""
+
+    @classmethod
+    def of(cls, group: AddedGroup) -> "ActGroup":
+        """``group`` as the admin API read it, bound."""
+        count, digest = grants_digest(group.object_grants)
+        return cls(
+            id=group.id,
+            name=group.name,
+            permissions=tuple(sorted(group.permissions)),
+            object_grants=count,
+            object_grants_digest=digest,
+        )
+
+
+BOUND_GROUPS: Final = ("groups", "taken")
+"""The fields an act of 2.7 did not have: left out of its arguments when empty."""
 
 
 class AdminAct(BaseModel):
@@ -123,6 +165,14 @@ class AdminAct(BaseModel):
     ``added`` and ``removed`` the groups or permissions, sorted; and
     ``password`` whether it leaves a usable password (``create`` and
     ``password``), never the password.
+
+    Since 2.8, a change of a user's groups binds each group it adds,
+    sorted by name, by id and what it grants (``groups``, ``ActGroup``),
+    and the ids of those it takes away, in the order of ``removed``
+    (``taken``): a group renamed, made again, or granted more since the
+    staff member confirmed it is another act (user report A17). Both are
+    left out of the act's arguments when empty, so the authorization of
+    any other change asked for under 2.7 still binds it.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -135,6 +185,17 @@ class AdminAct(BaseModel):
     added: tuple[str, ...] = ()
     removed: tuple[str, ...] = ()
     password: bool | None = None
+    groups: tuple[ActGroup, ...] = ()
+    taken: tuple[UUID, ...] = ()
+
+    @model_serializer(mode="wrap")
+    def _as_bound(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """The act's arguments: ``groups`` and ``taken`` only where they hold some."""
+        dumped: dict[str, Any] = handler(self)
+        for name in BOUND_GROUPS:
+            if not dumped.get(name):
+                dumped.pop(name, None)
+        return dumped
 
     @classmethod
     def of(
@@ -149,17 +210,29 @@ class AdminAct(BaseModel):
         """The act of ``change`` to ``user`` (None for one being created).
 
         ``values`` adds what the change sets that ``change.values`` leaves
-        out: whether a user created is active.
+        out: whether a user created is active. A change of groups binds
+        each group it adds as the admin API read it (``change.groups``),
+        and the id of each of the user's groups it takes away.
         """
         given = {**change.values, **(values or {})}
+        removed = tuple(sorted(change.removed))
+        taken: tuple[UUID, ...] = ()
+        if change.kind == "groups" and user is not None:
+            ids = {group.name: group.id for group in user.groups}
+            taken = tuple(ids[each] for each in removed if each in ids)
         return cls(
             kind=change.kind,
             user_id=None if user is None else user.id,
             name=name,
             values={key: jsonable(value) for key, value in given.items()},
             added=tuple(sorted(change.added)),
-            removed=tuple(sorted(change.removed)),
+            removed=removed,
             password=password,
+            groups=tuple(
+                ActGroup.of(group)
+                for group in sorted(change.groups, key=lambda group: group.name)
+            ),
+            taken=taken,
         )
 
     @classmethod
@@ -206,15 +279,18 @@ async def show(act: AdminAct) -> Shown:
     "Display name"). Laid out on a screen (``laid_out``): with
     ``AUTH.AUTHORIZATIONS.WHOLE`` on, what the change sets, adds, or takes
     away that does not fit whole is refused; off, it is cut and counted,
-    the first lines kept for what comes first. What staff typed is
-    ``Typed`` (since 2.8): the reason, a group's new name, and each text a
-    change sets on a user but the fields that identify them; such a text
-    sent as it is stored (a form saved whole) changes nothing: it is not
-    typed, and with ``TYPED_LINKS`` refused not shown. Then the
-    ``on_admin_screen`` checks of a change to a user run, or the
-    ``on_admin_group_screen`` checks of a change to a stored group (since
-    2.7): approvals refuses there a change it would hold that its
-    approver's screen could not show whole.
+    the first lines kept for what comes first. Each group a change adds
+    shows as approvals shows it, in a few words: "readers (…9abc) 3 perms",
+    and the keys ``AUTH.AUTHORIZATIONS.NAMED_PERMISSIONS`` names among
+    what they grant show by name first ("Grants"); in a list of keys, those
+    it names come first (since 2.8). What staff typed is ``Typed`` (since
+    2.8): the reason, a group's new name, and each text a change sets on a
+    user but the fields that identify them; such a text sent as it is
+    stored (a form saved whole) changes nothing: it is not typed, and with
+    ``TYPED_LINKS`` refused not shown. Then the ``on_admin_screen`` checks
+    of a change to a user run, or the ``on_admin_group_screen`` checks of a
+    change to a stored group (since 2.7): approvals refuses there a change
+    it would hold that its approver's screen could not show whole.
 
     Raises:
         UserNotFound: The user is gone.
@@ -247,8 +323,7 @@ async def show(act: AdminAct) -> Shown:
     )
     if act.kind == "impersonate":
         details.append((gettext(REASON), _typed(values.pop("reason", ""))))
-    if act.added:
-        details.append((gettext(ADDS), act.added))
+    details.extend(_added(act))
     if act.removed:
         details.append((gettext(TAKES_AWAY), act.removed))
     if act.kind == "create" and act.password is not None:
@@ -285,6 +360,33 @@ async def show(act: AdminAct) -> Shown:
     return shown
 
 
+def _added(act: AdminAct) -> list[tuple[str, Value]]:
+    """What ``act`` adds: the groups in a few words, after the keys named; or keys.
+
+    A change of groups of 2.7's shape, which bound no group, shows the
+    names alone. Keys come sorted, those ``NAMED_PERMISSIONS`` names first.
+    """
+    if act.groups:
+        named = named_permissions()
+        keys = {key for group in act.groups for key in group.permissions}
+        items = [
+            group_item(
+                group.name, group.id, len(group.permissions), group.object_grants
+            )
+            for group in act.groups
+        ]
+        granted = sorted(keys & named)
+        return [
+            *([(gettext(GRANTS), granted)] if granted else []),
+            (gettext(ADDS), items),
+        ]
+    if not act.added:
+        return []
+    if act.kind == "groups":
+        return [(gettext(ADDS), act.added)]
+    return [(gettext(ADDS), named_first(act.added))]
+
+
 def _change_of(act: AdminAct) -> AdminChange:
     """The ``AdminChange`` ``act`` binds, as the admin API's checks see it."""
     fields = frozenset(act.values) if act.kind in ("create", "update") else frozenset()
@@ -312,19 +414,6 @@ def _identifiers() -> frozenset[str]:
 def _typed(value: JsonValue) -> JsonValue:
     """``value`` marked ``Typed`` if it is text: staff wrote it."""
     return Typed(value) if isinstance(value, str) else value
-
-
-def field_label(name: str) -> str:
-    """How a screen names the user's field ``name``: "Email", "Display name".
-
-    The built-in user's fields have labels in the request's language;
-    another is its name, its underscores spaces, its first letter a
-    capital, as Django names a field without a ``verbose_name``.
-    """
-    if name in FIELDS:
-        return gettext(FIELDS[name])
-    spaced = name.replace("_", " ").strip()
-    return spaced[:1].upper() + spaced[1:] if spaced else name
 
 
 def _flag(value: JsonValue) -> JsonValue:

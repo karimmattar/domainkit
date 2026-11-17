@@ -28,6 +28,7 @@ On this page you find:
 | `AUTH["AUTHORIZATIONS"]["WHOLE"]`: the framework's acts shown whole on a phone's screen, or refused (new in 2.7) | [auth.md](../auth.md#settings), [actions.md](../auth/actions.md#what-a-screen-shows) |
 | `AUTH["AUTHORIZATIONS"]["TYPED_LINKS"]`: text a person typed for an act, holding a link, an email address, or a number to call, refused on a phone's screen (new in 2.8) | [auth.md](../auth.md#settings), [actions.md](../auth/actions.md#text-a-person-typed) |
 | `AUTH["AUTHORIZATIONS"]["HELD_TTL"]` (an act held for approval keeps its authorization) and `["ACTIONS"]` (each act its own `TTL` and `METHODS`), new in 2.7 | [auth.md](../auth.md#settings) |
+| `AUTH["AUTHORIZATIONS"]["NAMED_PERMISSIONS"]` (keys a screen names wherever it would count them) and `AUTH["STAFF_REUSES_COUNT_AS_PASSWORD_CHECKS"]` (staff reuses of a user's old passwords counted with the user's own), new in 2.8 | [auth.md](../auth.md#settings) |
 | `AUTH["NAME_FIELDS"]`: the fields the admin API's `GET /users/names` names a user by, among those `GET /users` shows (new in 2.8) | [auth.md](../auth.md#settings), [routes.md](../auth/routes.md#the-admin-api) |
 | `DEVICES`'s keys, `DEVICES["PUSH_TOKEN_CHECK"]` (push tokens checked with their service when registered) among them | [devices.md](../auth/devices.md#settings) |
 | `CIBA`'s keys, `CIBA["PUSH_TEXTS"]` (each kind of request's push text) among them | [ciba.md](../auth/ciba.md#settings) |

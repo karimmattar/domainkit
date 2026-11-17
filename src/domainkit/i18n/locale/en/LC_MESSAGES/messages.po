@@ -1408,6 +1408,13 @@ msgstr ""
 msgid "Also holds"
 msgstr ""
 
+msgid "Grants"
+msgstr ""
+
+msgctxt "value"
+msgid "(none)"
+msgstr ""
+
 msgctxt "held group"
 msgid "{name} ({id}) {grants}"
 msgstr ""

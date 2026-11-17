@@ -602,12 +602,12 @@ APPROVALS = {
 
 | Action (constant) | Held when the admin API | The request's arguments | Policy |
 | --- | --- | --- | --- |
-| `auth.set_staff` (`SET_STAFF`) | makes a user staff: `PATCH /users/{id}` with `"is_staff": true`, for a user who is not; without `auth.reactivate`, also `"is_active": true` for a staff member who is inactive | `{"user_id"}` (`SetStaff`) | `auth.staff` |
+| `auth.set_staff` (`SET_STAFF`) | makes a user staff: `PATCH /users/{id}` with `"is_staff": true`, for a user who is not; without `auth.reactivate`, also `"is_active": true` for a staff member who is inactive | `{"user_id"}`, and since 2.8 `"values"`: what else the call sets (`SetStaff`) | `auth.staff` |
 | `auth.set_groups` (`SET_GROUPS`) | adds a user to a group: `PUT /users/{id}/groups` | `{"user_id", "added", "removed", "groups"}`: names, and each group added by id with its permissions (`SetGroups`, `HeldGroup`) | `auth.groups` |
 | `auth.set_permissions` (`SET_PERMISSIONS`) | grants a user a permission: `PUT /users/{id}/permissions` | `{"user_id", "added", "removed"}`, permission keys (`SetPermissions`) | `auth.permissions` |
 | `auth.set_password` (`SET_PASSWORD`) | sets a password, or makes it unusable: `POST /users/{id}/password` | `{"user_id"}` (`SetPassword`) | `auth.password` |
 | `auth.impersonate` (`IMPERSONATE`) | acts as a user: `POST /users/{id}/impersonate` | `{"user_id", "reason"}` (`Impersonate`) | `auth.impersonation` |
-| `auth.reactivate` (`REACTIVATE`, since 2.7) | makes a user who holds access active again: `PATCH /users/{id}` with `"is_active": true` | `{"user_id", "is_staff", "is_superuser", "groups", "permissions", "object_grants", "object_grants_digest"}`: what they come back with (`Reactivate`) | `auth.reactivation` |
+| `auth.reactivate` (`REACTIVATE`, since 2.7) | makes a user who holds access active again: `PATCH /users/{id}` with `"is_active": true` | `{"user_id", "is_staff", "is_superuser", "groups", "permissions", "object_grants", "object_grants_digest"}`: what they come back with, and since 2.8 `"values"`: what else the call sets (`Reactivate`) | `auth.reactivation` |
 | `auth.set_group_permissions` (`SET_GROUP_PERMISSIONS`, since 2.7) | grants a group a permission: `PUT /groups/{id}/permissions` | `{"group_id", "name", "added", "removed"}`, permission keys (`SetGroupPermissions`) | `auth.group_permissions` |
 
 The staff member's client goes round once per change:
@@ -656,6 +656,25 @@ PATCH /admin/auth/users/6f1c... {"is_staff": true}                       200: th
   since is another command: the call submits a request of its own,
   which shows what that group grants, and the approved one is never
   spent.
+- **What else the call sets is held with the grant** (since 2.8, [ADR
+  0179](../adr/0179-bind-the-admin-acts-groups-by-id-and-keep-a-held-confirmation-to-its-request.md)).
+  `auth.set_staff` and `auth.reactivate` hold, in `values`, every field
+  and flag the `PATCH` sets beside the grant: `{"mobile_number":
+  "+447700900123"}`, `{"is_superuser": false}`. The approver sees each
+  by its label ("Mobile number: +447700900123"), and the approval binds
+  them: the call made again with another number submits a request of
+  its own. Before, the request held the grant alone, and an approval of
+  Bob's return was spent by a call that also gave Bob another address,
+  which no approver saw (user report A17). A request of 2.7, which holds
+  none, is found and spent as before by a call that sets nothing else.
+- **A value another user has is refused before the hold** (since 2.8):
+  an address that identifies users, a number, a username (`409`). Before,
+  the commit refused it after the hold had spent the approval. A value
+  the user holds already is not checked again: a form sent whole keeps an
+  address two users shared before it identified users. One taken in the
+  moment between that check and the commit is still refused by the
+  commit, and the approval, spent by the hold by then, stays spent: ask
+  for another.
 - **A user who holds access comes back with an approval**
   (`auth.reactivate`, since 2.7). Making a user active again gives back
   everything they hold, so `"is_active": true` waits when the user is
@@ -718,7 +737,23 @@ PATCH /admin/auth/users/6f1c... {"is_staff": true}                       200: th
   name held, if it is gone) and the end of its id, then the keys it adds
   and takes away. A name too long for its line is cut beside the id,
   never refused; with `WHOLE`, what is refused is a grant too large to
-  show, never a name. A user who comes back in more groups than a screen
+  show, never a name. Since 2.8 `auth.set_staff` shows what else the
+  call sets, by label, and `auth.reactivate` after what the user comes
+  back with.
+- **A key that matters is named, not counted** (since 2.8). A count
+  ("readers (…9abc) 3 perms", "Also holds: 3 permissions") does not say
+  which keys; auth's `AUTHORIZATIONS.NAMED_PERMISSIONS` lists the keys
+  a screen names wherever it would count them, by default
+  `TENANCY.ALL_TENANTS_PERMISSION` where it is set. `auth.set_groups`
+  and `auth.reactivate` show those among what the groups, or the user,
+  grant on a line of their own, "Grants: companies.administer_company",
+  before the groups; `auth.set_group_permissions` and
+  `auth.set_permissions` list them first among the keys added, so a list
+  cut and counted keeps them. Keys are named where they are granted
+  directly or through a group; a grant on a single object, a role's
+  among them, is counted as one ("+ 1 object grant"), as the request
+  holds it (how many, and a digest), whatever its key. The line counts as any other: with `WHOLE`
+  a grant that no longer fits is refused, and made in smaller steps. A user who comes back in more groups than a screen
   shows is refused with `WHOLE`: take some groups away (that waits for
   no one), make them active again, then add the groups back, each step
   held and shown whole.
@@ -743,7 +778,13 @@ PATCH /admin/auth/users/6f1c... {"is_staff": true}                       200: th
   expiry, so the staff member confirms the change once. Rejected,
   withdrawn, or expired, the request ends the hold, and the
   authorization with it
-  ([Held for approval](../auth/actions.md#held-for-approval)).
+  ([Held for approval](../auth/actions.md#held-for-approval)). Kept for
+  one request, it serves that one alone (since 2.8): a call whose
+  command changed since (a group renamed, a user put in a group) is
+  refused (`403 action_not_authorized`) where it would submit or wait
+  on another request, and never spends one; a new confirmation, showing
+  the change as it is now, does. An approved request whose time is up is
+  passed over, never refused for.
 
 The admin API asks through auth's `on_admin_change` hook, and, for a
 group's changes, `on_admin_group_change` (since 2.7), which approvals
@@ -783,7 +824,28 @@ command that grants a permission; a backend of your own, or a tenant's
 roles (`TENANCY.MEMBER_PERMISSIONS`), that give a user keys. Guard each
 such path with a guard of its own ([Guarding a use case](#guarding-a-use-case)),
 `by_maker` where the person's own call should make the change once it is
-approved, as the admin API's holds are. A guard that a setting turns on
+approved, as the admin API's holds are. A grant that names groups holds
+them as `auth.set_groups` does with `held_groups(names)` (since 2.8):
+each group by id, with the keys it grants and its grants on objects
+(`HeldGroup`), sorted by name. Read again when the grant is made, a
+group renamed, made again, or granted more since reads otherwise:
+compare the two, and refuse.
+
+```python
+from domainkit.contrib.approvals import HeldGroup, held_groups
+
+
+class InviteStaff(Command):
+    email: str
+    groups: tuple[HeldGroup, ...]
+
+
+invite = InviteStaff(email=email, groups=await held_groups(names))
+...
+if await held_groups(group.name for group in invite.groups) != invite.groups:
+    raise InvitationChanged()  # Ask for a new invitation.
+```
+ A guard that a setting turns on
 must be registered whenever its service can be called: a service
 decorated `requires_approval` with no guard refuses every call.
 

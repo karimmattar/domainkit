@@ -11,6 +11,7 @@ long past its expiry (ADR 0174). The framework's acts took
 project's, its own.
 """
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 from uuid import UUID, uuid4
@@ -32,12 +33,14 @@ from domainkit.contrib.approvals.services import (
 )
 from domainkit.contrib.auth.actions import (
     ActionAuthorization,
+    ActionNotAuthorized,
     Kept,
     Shown,
     _Accepted,
     _kept,
     action_for,
     hold_authorizations,
+    refuse_held_elsewhere,
 )
 from domainkit.contrib.auth.apps import action_problems
 from domainkit.contrib.auth.settings import AuthorizationsSettings
@@ -351,3 +354,53 @@ def test_without_auth_a_held_call_keeps_no_authorization(installed: None) -> Non
     from domainkit.contrib.approvals.services import _keep_authorizations
 
     _keep_authorizations(uuid4(), datetime(2027, 1, 5, tzinfo=UTC))  # Nothing kept.
+
+
+def test_a_held_authorization_refuses_only_what_it_is_not_kept_for() -> None:
+    """``refuse_held_elsewhere``: kept for one request, it refuses any other.
+
+    Outside a request nothing is refused; an authorization held for
+    nothing, untaken, or spent refuses nothing; one held for the request
+    named passes, and one held for another refuses, the trail told at the
+    end of the request (since 2.8, user report A17).
+    """
+    soon = datetime(2027, 1, 5, tzinfo=UTC)
+    first, other = "approvals.request:1", "approvals.request:2"
+    stored = ActionAuthorization(
+        id=uuid4(),
+        user_id=uuid4(),
+        login="login",
+        purpose="auth.admin_change",
+        subject="auth.user:new",
+        digest="0" * 64,
+        shown=Shown("Create a user"),
+        created_at=soon,
+        expires_at=soon,
+        held_for=first,
+    )
+    refuse_held_elsewhere(other)  # No request: nothing to refuse.
+    kept = Kept()
+    held = _Accepted(stored, "code", "POST /", taken=True)
+    kept.accepted = {
+        "free": _Accepted(replace(stored, held_for=None), "code", "POST /", taken=True),
+        "untaken": _Accepted(stored, "code", "POST /"),
+        "spent": _Accepted(stored, "code", "POST /", taken=True, consumed=True),
+    }
+    token = _kept.set(kept)
+    try:
+        refuse_held_elsewhere(other)
+        kept.accepted["held"] = held
+        refuse_held_elsewhere(first)
+        with pytest.raises(ActionNotAuthorized):
+            refuse_held_elsewhere(None)
+    finally:
+        _kept.reset(token)
+
+    assert held.unheard == "held_elsewhere"
+
+
+def test_without_auth_a_held_call_is_refused_for_nothing(installed: None) -> None:
+    """Approvals asks auth about the call's authorization only where it is installed."""
+    from domainkit.contrib.approvals.services import _kept_for
+
+    _kept_for(None)  # Nothing refused.
