@@ -22,6 +22,7 @@ from domainkit.clock import FrozenClock
 from domainkit.conf import override_settings
 from domainkit.contrib.approvals import ApprovalsUnitOfWork, Policy, guard
 from domainkit.contrib.approvals.builtin import show_about_user
+from domainkit.contrib.auth.admin_actions import ADMIN_CHANGE, AdminAct
 from domainkit.contrib.auth.screens import Typed
 from domainkit.ddd import Command
 from domainkit.http import get_asgi_application
@@ -35,6 +36,7 @@ from domainkit_tests.test_admin_actions import (
     end_of,
     held_requests,
     problem,
+    row,
     stored,
 )
 from domainkit_tests.test_admin_actions import frozen as frozen  # The fixture.
@@ -331,7 +333,7 @@ def test_a_cut_reason_or_name_is_checked_as_the_phone_shows_it(
     root = Staff(client, frozen, "root", superuser=True)
     target = create_user("target")
     domain = "Approved; details at our partner evil.co".rjust(63, "x") + "rporate"
-    number = "For any question please call 555 0100 123".rjust(63, "x") + "abc"
+    number = "For any question please ring 555 0100 123".rjust(63, "x") + "abc"
     address = "Write to ann@example.com".rjust(70, "x")
     link = "See https://evil.example/x".rjust(70, "x")
     impersonate = f"/users/{target}/impersonate/authorization"
@@ -351,21 +353,42 @@ def test_a_cut_reason_or_name_is_checked_as_the_phone_shows_it(
         problem(response, 422, "link_not_shown")
 
 
-def test_a_form_saved_whole_sends_a_stored_name_unchanged(
+def test_a_form_saved_whole_leaves_a_field_it_does_not_change_off_the_screen(
     client: TestClient, frozen: FrozenClock
 ) -> None:
-    """Only what the change sets anew is typed: a name stored before is shown, kept."""
+    """A text sent as it is stored changes nothing: not shown, nor checked.
+
+    So a stored link never reaches the phone through a change that only
+    sends it again, and a change that sets one beside it is refused. The
+    act binds every field sent, as in 2.7, and an address sent unchanged,
+    an identifier, still shows (review of ADR 0180).
+    """
     root = Staff(client, frozen, "root", superuser=True)
     stored_name = "call +1 555 0100 123"
-    target = create_user("target", first_name=stored_name)
+    target = create_user(
+        "target", first_name=stored_name, last_name="Smith", email="t@example.com"
+    )
     patch = f"/users/{target}/authorization/patch"
+    user_line = ("User", f"target ({end_of(target)})")
 
     with override_settings(AUTH=REFUSED):
+        alone = root.ask(patch, {"fields": {"first_name": stored_name}})
         saved = root.ask(
             patch, {"fields": {"first_name": stored_name, "last_name": "Jones"}}
         )
-        changed = root.ask(patch, {"fields": {"first_name": "call +1 555 0100 124"}})
+        beside = root.ask(
+            patch,
+            {"fields": {"first_name": stored_name, "last_name": "visit evil.example"}},
+        )
+        changed = root.ask(
+            patch, {"fields": {"first_name": "www.evil", "last_name": "Smith"}}
+        )
+        address = root.ask(patch, {"fields": {"email": "t@example.com"}})
 
-    assert ("First name", stored_name) in pairs(saved)
-    assert ("Last name", "Jones") in pairs(saved)
+    assert pairs(alone) == [user_line]
+    assert pairs(saved) == [user_line, ("Last name", "Jones")]
+    problem(beside, 422, "link_not_shown")
     problem(changed, 422, "link_not_shown")
+    assert pairs(address) == [user_line, ("Email", "t@example.com")]
+    bound = AdminAct(kind="update", user_id=target, values={"first_name": stored_name})
+    assert row(alone.json()["id"])["digest"] == ADMIN_CHANGE.digest_of(bound)
