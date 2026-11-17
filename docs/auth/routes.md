@@ -654,7 +654,11 @@ PUT  /admin/auth/users/6f1c.../groups {"groups": ["auditors"]}
   password, under the approved request's lock, by the one call that
   claims it, before it is spent. While a check refuses the change or its
   request waits, nothing is compared, and every password gets the same
-  answer; so does a call that loses the claim to one made at once. A
+  answer; so does a call that loses the claim to one made at once. With
+  `ADMIN_ACTION`, a call that sets a password with the history on spends
+  its authorization first, before any check, so calls sent at once with
+  one confirmation make one comparison; one that waits for approval
+  spends it too, and the next try is confirmed again. A
   password among the user's last ones is then refused (`422
   invalid_password`), and leaves the approval unspent; a password that
   will do makes the change.
