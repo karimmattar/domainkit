@@ -20,7 +20,11 @@ domain layer), ``controllers.py`` (application), ``models.py``
   service is what an adapter does; and the checks and storing of uploads
   (``domainkit.http.uploads``), which a file gateway runs on what its
   route hands it, typed as ``Upload`` rather than Starlette's
-  ``UploadFile`` (ADR 0177).
+  ``UploadFile`` (ADR 0177); and the problems a route raises
+  (``domainkit.http.problems``: ``APIError``, ``FieldError``), so a file
+  gateway refuses a file with the code a route would (ADR 0182), and
+  only the names its ``__all__`` lists. The rest of
+  ``domainkit.http.errors``, which builds responses, stays out.
 - Another domain may be used only through its ``application`` layer or its
   ``domain.events`` (bounded contexts stay decoupled).
 
@@ -35,6 +39,8 @@ import ast
 import sys
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from functools import cache
+from importlib import import_module
 from importlib.util import find_spec
 from pathlib import Path
 from types import MappingProxyType
@@ -91,12 +97,24 @@ FORBIDDEN_LIBRARIES: Final = {
 """Libraries each layer must not import."""
 
 ALLOWED_MODULES: Final = {
-    "infrastructure": ("domainkit.http.client", "domainkit.http.uploads")
+    "infrastructure": (
+        "domainkit.http.client",
+        "domainkit.http.uploads",
+        "domainkit.http.problems",
+    )
 }
 """Modules a layer may import although a library it must not use holds them.
 
 An entry lifts only a library entry less specific than itself: a project
 that forbids ``domainkit.http.client`` by name forbids it.
+"""
+
+_PUBLIC_ONLY: Final = ("domainkit.http.problems",)
+"""Allowed modules a layer may import only the names of their ``__all__`` from.
+
+``from domainkit.http.problems import HTTPException`` would pass otherwise:
+the rules read names, and a module holds every name it imports. The 2.7
+modules (``client``, ``uploads``) are not held to it yet (ADR 0182).
 """
 
 FORBIDDEN_LAYERS: Final = {
@@ -318,7 +336,17 @@ def _layer_rule(
     exception = _closest(imported, rules.allowed_modules.get(layer, ()))
     if library is not None and (exception is None or len(exception) <= len(library)):
         return f"the {layer} layer must not use {imported.partition('.')[0]}"
+    if library is not None and exception in _PUBLIC_ONLY and imported != exception:
+        name = imported.removeprefix(f"{exception}.").partition(".")[0]
+        if name not in _public_names(exception):
+            return f"the {layer} layer may import only the __all__ of {exception}"
     return None
+
+
+@cache
+def _public_names(module: str) -> frozenset[str]:
+    """The names ``module``, one of domainkit's own, lists in its ``__all__``."""
+    return frozenset(import_module(module).__all__)
 
 
 def _cross_domain_rule(

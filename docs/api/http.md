@@ -173,6 +173,13 @@ Pure-ASGI middleware enforcing the HTTP security baseline.
 - `SecurityHeadersMiddleware`: Add security headers unless the endpoint already set them.
 - `body_limit`: Give a route a body limit of its own: `size` bytes, above or below the global.
 
+## `domainkit.http.problems`
+
+The problems a route or an adapter raises: a coded HTTP error, and its fields.
+
+- `APIError`: An HTTP error outside the domain (a bad cursor, an oversized body).
+- `FieldError`: One invalid part of a request; the submitted value is left out.
+
 ## `domainkit.http.ratelimit`
 
 Request rate limiting (`RATE_LIMIT = "300/minute"`).

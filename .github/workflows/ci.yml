@@ -1223,7 +1223,8 @@ jobs:
           - name: http-1
             mutants: >-
               domainkit.http.application.* domainkit.http.blocking.*
-              domainkit.http.errors.* domainkit.http.filters.* domainkit.http.guard.*
+              domainkit.http.errors.* domainkit.http.problems.* domainkit.http.filters.*
+              domainkit.http.guard.*
               domainkit.http.live_events.* domainkit.http.live_fanout.*
               domainkit.http.locale.*
               domainkit.http.metrics.* domainkit.http.openapi.* domainkit.http.tracing.*
