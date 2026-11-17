@@ -169,6 +169,26 @@ and a status.
   ([Withdrawing a request](docs/auth/ciba.md#withdrawing-a-request),
   ADR 0174) (user report A17).
 
+- `placeholders(document)` (`domainkit.documents`) lists the
+  placeholders of a Word document, each once in the order written, and
+  the braces that make none, as `fill_docx` reads them: the same parts
+  and grammar, within `ArchiveLimits` (`Placeholders`)
+  ([Listing the placeholders](docs/documents.md#listing-the-placeholders),
+  ADR 0176) (user report U2).
+
+- `fill_docx` takes `allow_missing` and `allow_malformed`: a draft leaves
+  a placeholder without a value, or braces that make none, as written,
+  for a preview of what is left to fill or fix. The defaults stay strict
+  ([Drafts](docs/documents.md#drafts),
+  ADR 0176) (user report U5).
+
+- `clean_html` keeps less when asked: `styles=False`, or a set of the
+  properties it keeps; `images=False`; and `classes`, the class names
+  kept by tag, for an editor that aligns by class. A style property
+  beyond its own list is refused, never kept
+  ([A narrower allowlist](docs/documents.md#a-narrower-allowlist),
+  ADR 0176) (user report U2).
+
 ### Changed
 
 - The `kafka` extra accepts aiokafka up to 0.15 (`>=0.12.0,<0.16.0`),
@@ -210,6 +230,22 @@ and a status.
   a rule taken as an endpoint's parameter runs
   ([Rules on the framework's routes](docs/auth/routes.md#rules-on-the-frameworks-routes))
   (user report A17).
+
+- `renderer()` with no `DOCUMENTS["RENDERER"]` raises
+  `RendererNotConfigured`, an `ImproperlyConfigured` as before and a
+  `RendererUnavailable`: a request that needs a renderer where none is
+  set is answered 503 `renderer_unavailable`, not 500. It is still
+  logged as an error and sent to `ERROR_REPORTERS`, as the 500 was, once
+  a process (and once in a process forked from it), at the first call:
+  a missing setting is a deployment's mistake
+  ([The renderer](docs/documents.md#the-renderer), ADR 0176)
+  (user report U5).
+
+- `fill_docx` reads a document's parts in a stable order, whatever order
+  its content types list them in: the body, the headers, the footers,
+  the footnotes, then the endnotes, each kind by part name. So
+  `PlaceholderError.malformed` lists the braces in that order, as
+  `placeholders` does (ADR 0176) (user report U2).
 
 ### Security
 
@@ -255,6 +291,36 @@ and a status.
   With `AUTH.ADMIN_ACTION`, such a call spends its authorization before
   anything is checked, so calls sent at once on one confirmation make one
   comparison and spend no approval they cannot use (user report A17).
+
+- `overlay_pdf` and `page_sizes` (`domainkit.documents`) decode
+  `max_decoded` bytes at most, in all, 32 MiB by default: the object
+  streams of each PDF, and the content of each page laid over and of its
+  overlay. Each is decoded before it is used, under pypdf's limits on
+  deflate, LZW, run-length, and Brotli lowered to what is left, for the
+  call only (pypdf keeps them per context), so a PDF that inflates past
+  the budget is refused when it runs out, not decoded whole: a 170 KB PDF
+  became 168 MB in one preview. pypdf bounds no other filter, and decodes
+  LZW, run-length, ASCIIHex, and ASCII85 in Python, at up to 94 MiB of
+  memory and 0.6 seconds a MiB they read: a stream's filters are read
+  first, and it is refused unread unless its filters are those a page's
+  content uses, one of those four at most, first, with no predictor
+  (deflate then ASCII85 took a 31 KB PDF to 2.8 GB); and the streams
+  decoded in Python store `max_decoded / 32` bytes in all, with LZW
+  `max_decoded / 512` (64 small ones took 17 seconds a call, LZW clear
+  codes 11 seconds a MiB). The cross-reference sections are counted where
+  pypdf reads them, 32 at most (500 took pypdf 47 seconds); their streams
+  list 65,536 entries at most, or one for each 512 bytes of
+  `max_decoded`, each decoded to 8 bytes an entry, with `FlateDecode`
+  only. A damaged file whose table pypdf would rebuild, decoding every
+  object stream unchecked, is refused, as are an object stream held in
+  another (31 KB took 2.9 GB), an object held in a stream the budget did
+  not decode, a file that needs more than 32 searches for missing
+  objects (20,000 took 406 seconds), and a stream that cannot be
+  decoded. A page laid over is written back
+  deflated. A PDF that decodes past 32 MiB, which 2.6 laid over, is
+  refused: raise `max_decoded` for it
+  ([What a PDF may decode](docs/documents.md#what-a-pdf-may-decode),
+  ADR 0176) (user report U6).
 
 ## [2.6.0] - 2026-11-17
 

@@ -239,7 +239,7 @@ unique constraint may name its own code
 | `reference_reused` | 409 | `ReferenceReused` (contrib.accounting.exceptions): A source and reference that name an entry or a hold made otherwise. |
 | `referenced` | 409 | http.errors: a foreign key refused the change. |
 | `refresh_not_supported` | 400 | contrib.auth.authentication: Tokens are not refreshed here; log in again. |
-| `renderer_unavailable` | 503 | `RendererUnavailable` (documents): The renderer could not render now: unreachable, failing, or refusing the login. |
+| `renderer_unavailable` | 503 | `RendererUnavailable` (documents): The renderer could not render now: unreachable, failing, or refusing the login; `RendererNotConfigured`: no renderer is set. |
 | `request_not_pending` | 409 | `RequestNotPending` (contrib.approvals.exceptions): The request was approved, rejected, cancelled, or has expired. |
 | `request_tampered` | 409 | `RequestTampered` (contrib.approvals.exceptions): The request was changed outside the application: its seal does not hold. |
 | `request_timeout` | 408 | http.middleware: The request body took too long to arrive. |

@@ -131,6 +131,52 @@ relied on 2.6's behaviour changes, and what to run.
   admin API's rules.** It no longer sees requests the rules refuse
   (anonymous, not staff, without the model permission or the
   authorization); rules you put in front of it for that can go.
+- **A PDF that decodes past 32 MiB is not laid over** (security).
+  `overlay_pdf` and `page_sizes` decode `max_decoded` bytes at most, in
+  all: the object streams of each PDF, and the content of each page laid
+  over and of its overlay. 2.6 decoded them whole, held only by pypdf's
+  limit of 75 MB on each stream, so a PDF of 170 KB could take hundreds
+  of megabytes in the worker. Past the budget, the call raises
+  `DocumentError`. For drawings or maps of many megabytes a page, pass a
+  larger `max_decoded`, for that kind of document only
+  ([What a PDF may decode](documents.md#what-a-pdf-may-decode)). A page
+  laid over is now written back deflated: the PDF looks the same, and is
+  smaller.
+- **Some PDFs 2.6 read are refused unread** (security), by
+  `overlay_pdf` and `page_sizes`, where a stream they decode has an
+  image's filter, `/Crypt`, or one they do not know; an LZW, run-length,
+  ASCIIHex, or ASCII85 stage after another filter, or two of them; such
+  stages first on streams of more than `max_decoded / 32` bytes in all
+  (1 MiB), or with LZW `max_decoded / 512` (64 KiB); or a predictor. An
+  object stream that cannot be decoded is refused even when nothing uses
+  it; the cross-reference streams list 65,536 entries at most (one for
+  each 512 bytes of `max_decoded` where that is more); a file chains 32
+  cross-reference sections at most, one for the file and one for each
+  save added to it (two in a hybrid file); a damaged file, whose table
+  pypdf would rebuild, an object stream held in another, a
+  cross-reference stream decoded otherwise than with `FlateDecode`, and
+  a file that names more than 32 objects its table lacks are refused. Few generators write any of
+  these on a page's content (PDFs of the early 1990s used
+  `[/ASCII85Decode /LZWDecode]`, now refused), and ReportLab's
+  `[/ASCII85Decode /FlateDecode]` is read as before.
+- **A request that needs a renderer where none is set is answered 503.**
+  `renderer()` without `DOCUMENTS["RENDERER"]` raises
+  `RendererNotConfigured`, which is the `ImproperlyConfigured` it raised
+  in 2.6 and a `RendererUnavailable`: the HTTP layer answers it
+  `503 renderer_unavailable`, where 2.6 answered 500. It is still logged
+  as an error and sent to `ERROR_REPORTERS`, the first time a process
+  asks for a renderer (a forked process too), and no more. Code that catches
+  `ImproperlyConfigured` still catches it, but an exception handler of
+  the project's own for `ImproperlyConfigured` no longer sees it, since
+  `UpstreamError` comes first in its classes (the handler for the
+  nearest class answers). Code that catches `RendererUnavailable`, to
+  answer Gotenberg being down, now catches a missing setting too.
+- **`PlaceholderError.malformed` lists the braces in another order.**
+  `fill_docx` reads the body, then the headers, footers, footnotes, and
+  endnotes, each kind by part name, where 2.6 read the parts in the order
+  the document's content types listed them. A test that compares the
+  whole tuple may need its order changed; `missing` and `unused` were
+  sorted and stay so.
 
 ### Make and apply auth's migration for bound and held authorizations
 

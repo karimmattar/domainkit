@@ -14,10 +14,18 @@ line break in Word, a tab a tab.
 The text of the body, its tables, and its text boxes is filled, and of
 the headers, footers, footnotes, and endnotes; a placeholder lives in one
 paragraph. The policy is strict, so a contract never goes out with
-``{{name}}`` in it: a placeholder without a value, a value no placeholder
-takes (unless ``allow_unused``), and braces that do not make a placeholder
-(``{{ client name }}``, a lone ``}}``) are all refused at once with a
-``PlaceholderError``. ``{{`` and ``}}`` have no other use.
+``{{name}}`` in it: a placeholder without a value (unless
+``allow_missing``), a value no placeholder takes (unless
+``allow_unused``), and braces that do not make a placeholder
+(``{{ client name }}``, a lone ``}}``; unless ``allow_malformed``) are
+all refused at once with a ``PlaceholderError``. ``{{`` and ``}}`` have
+no other use. ``allow_missing`` and ``allow_malformed`` make a draft:
+what they let through is left as written, for a preview to show what is
+left to fill or fix.
+
+``placeholders`` lists a document's placeholders, and the braces that
+make none, as ``fill_docx`` reads them: the same parts, paragraphs, and
+grammar, within the same ``ArchiveLimits``.
 
 The archive is read within ``ArchiveLimits``, so a zip bomb costs no
 more than they allow: its files are stored or deflated, plain relative
@@ -58,18 +66,17 @@ OVERRIDE: Final = (
 WORDML: Final = "application/vnd.openxmlformats-officedocument.wordprocessingml"
 MAIN: Final = f"{WORDML}.document.main+xml"
 """The content type of a Word document's body (.docx)."""
-FILLED: Final = frozenset(
-    {
-        MAIN,
-        f"{WORDML}.header+xml",
-        f"{WORDML}.footer+xml",
-        f"{WORDML}.footnotes+xml",
-        f"{WORDML}.endnotes+xml",
-    }
+FILLED: Final = (
+    MAIN,
+    f"{WORDML}.header+xml",
+    f"{WORDML}.footer+xml",
+    f"{WORDML}.footnotes+xml",
+    f"{WORDML}.endnotes+xml",
 )
-"""The parts whose text is filled."""
+"""The parts whose text is filled, in the order they are read."""
 PLACEHOLDER: Final = re.compile(r"\{\{\s*([^\W\d]\w*(?:\.[^\W\d]\w*)*)\s*\}\}")
 BRACES: Final = re.compile(r"\{\{|\}\}")
+NUMBERS: Final = re.compile(r"([0-9]+)")
 DECLARATION: Final = re.compile(rb"<!(?:DOCTYPE|ENTITY)", re.IGNORECASE)
 """What declares a DTD or an entity: refused before the XML is parsed."""
 END: Final = b"PK\x05\x06"
@@ -94,6 +101,20 @@ SHOWN: Final = 40
 GRACE: Final = 100 * 1024
 """Bytes a part may inflate to before its ratio counts (Apache POI's grace)."""
 MiB: Final = 1024 * 1024
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Placeholders:
+    """What a Word document holds to fill, as ``fill_docx`` reads it."""
+
+    names: tuple[str, ...]
+    """Each placeholder's name, once, in the order written: the body first,
+    then the headers, footers, footnotes, and endnotes, each kind by part
+    name (``header2`` before ``header10``)."""
+    malformed: tuple[str, ...]
+    """Text of braces that make no placeholder, in that order, as
+    ``PlaceholderError.malformed`` quotes it: ``fill_docx`` refuses it unless
+    ``allow_malformed``."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -123,9 +144,17 @@ def fill_docx(
     values: Mapping[str, str],
     *,
     allow_unused: bool = False,
+    allow_missing: bool = False,
+    allow_malformed: bool = False,
     limits: ArchiveLimits | None = None,
 ) -> bytes:
     """``document`` (a .docx) with each ``{{ name }}`` replaced by ``values[name]``.
+
+    Strict unless told: ``allow_unused`` lets a value no placeholder takes
+    through; ``allow_missing`` leaves a placeholder without a value as it
+    is written; ``allow_malformed`` leaves braces that make no placeholder
+    as they are written. The last two make a draft, for a preview: never
+    send one (``placeholders`` lists what is left).
 
     The work is CPU-bound: in async code, run it in a thread
     (``await asyncio.to_thread(fill_docx, document, values)``).
@@ -136,16 +165,13 @@ def fill_docx(
         DocumentError: The document is not a .docx, is past ``limits``,
             or holds a DTD; a value holds a character XML cannot.
         PlaceholderError: Placeholders and values do not agree (every
-            problem listed).
+            problem not allowed listed).
     """
-    try:
-        from lxml import etree
-    except ImportError as exc:
-        raise missing("lxml") from exc
+    etree = _etree()
     given = _checked(values)
     files = _read(document, limits or ArchiveLimits())
     parts = {info.filename: data for info, data in files}
-    found: set[str] = set()
+    found: dict[str, None] = {}  # Ordered, as written.
     malformed: list[str] = []
     changed: dict[str, bytes] = {}
     for name in _filled_parts(etree, parts):
@@ -157,11 +183,50 @@ def fill_docx(
                 encoding="UTF-8",
                 standalone=root.getroottree().docinfo.standalone,
             )
-    valueless = found - given.keys()
-    unused = set() if allow_unused else given.keys() - found
+    valueless = set() if allow_missing else found.keys() - given.keys()
+    unused = set() if allow_unused else given.keys() - found.keys()
+    if allow_malformed:
+        malformed = []
     if valueless or unused or malformed:
         raise PlaceholderError(missing=valueless, unused=unused, malformed=malformed)
     return _written(files, changed)
+
+
+def placeholders(
+    document: bytes, *, limits: ArchiveLimits | None = None
+) -> Placeholders:
+    """The placeholders of ``document`` (a .docx), and the braces that make none.
+
+    Read as ``fill_docx`` reads them, within ``limits``: what it lists is
+    what ``fill_docx`` asks a value for, or refuses. CPU-bound, as
+    ``fill_docx`` is.
+
+    Raises:
+        ImportError: ``domainkit[documents]`` is not installed.
+        DocumentError: The document is not a .docx, is past ``limits``,
+            or holds a DTD.
+    """
+    etree = _etree()
+    files = _read(document, limits or ArchiveLimits())
+    parts = {info.filename: data for info, data in files}
+    found: dict[str, None] = {}
+    malformed: list[str] = []
+    for name in _filled_parts(etree, parts):
+        _fill(etree, _parse(etree, parts[name], name), {}, found, malformed)
+    return Placeholders(names=tuple(found), malformed=tuple(malformed))
+
+
+def _etree() -> Any:  # noqa: ANN401 - lxml has no types.
+    """The ``etree`` of lxml, imported when first needed.
+
+    Raises:
+        ImportError: ``domainkit[documents]`` is not installed.
+    """
+    try:
+        from lxml import etree
+    except ImportError as exc:
+        raise missing("lxml") from exc
+    return etree
 
 
 def _checked(values: Mapping[str, str]) -> dict[str, str]:
@@ -314,6 +379,10 @@ def _plain(name: str) -> bool:
 def _filled_parts(etree: Any, parts: Mapping[str, bytes]) -> list[str]:  # noqa: ANN401 - lxml has no types.
     """The names of the parts whose text is filled, from ``[Content_Types].xml``.
 
+    In a stable order, not the content types', which is the writer's: the
+    body, the headers, the footers, the footnotes, then the endnotes, each
+    kind by name, numbers as numbers (``header2`` before ``header10``).
+
     Raises:
         DocumentError: The archive is no .docx: it has no content types, or
             its body is a template's or holds macros.
@@ -333,10 +402,20 @@ def _filled_parts(etree: Any, parts: Mapping[str, bytes]) -> list[str]:  # noqa:
             "The document is not a Word document (.docx): save it as one, not "
             "as a template or with macros."
         )
+    filled = [(kind, name) for name, kind in typed.items() if kind in FILLED]
     return [
         by_lower[name]
-        for name, kind in typed.items()
-        if kind in FILLED and name in by_lower
+        for kind, name in sorted(filled, key=_read_before)
+        if name in by_lower
+    ]
+
+
+def _read_before(part: tuple[str, str]) -> tuple[int, list[str | int]]:
+    """Where a filled part of ``(kind, name)`` is read: by kind, then by name."""
+    kind, name = part
+    pieces = NUMBERS.split(name)
+    return FILLED.index(kind), [
+        int(piece) if index % 2 else piece for index, piece in enumerate(pieces)
     ]
 
 
@@ -395,13 +474,13 @@ def _fill(
     etree: Any,  # noqa: ANN401 - lxml has no types.
     root: Any,  # noqa: ANN401 - lxml has no types.
     values: Mapping[str, str],
-    found: set[str],
+    found: dict[str, None],
     malformed: list[str],
 ) -> bool:
     """Fill each paragraph under ``root``; whether any text changed.
 
-    Adds the names of the placeholders met to ``found``, and the text of
-    braces that make no placeholder to ``malformed``.
+    Adds the names of the placeholders met to ``found``, in order, and the
+    text of braces that make no placeholder to ``malformed``.
     """
     changed = False
     for texts in _paragraphs(etree, root):
@@ -411,7 +490,7 @@ def _fill(
         matches = list(PLACEHOLDER.finditer(joined))
         if stray := _stray(joined, matches):
             malformed.append(stray)
-        found.update(match[1] for match in matches)
+        found.update(dict.fromkeys(match[1] for match in matches))
         known = [match for match in matches if match[1] in values]
         if known:
             _replace(texts, known, values)

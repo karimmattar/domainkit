@@ -4,7 +4,10 @@ Nothing here imports the ``documents`` extra: each function imports its
 package when it is called, and ``missing`` says how to install it.
 """
 
+import logging
+import os
 import re
+import threading
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar, Final, Protocol, runtime_checkable
@@ -14,6 +17,8 @@ from domainkit.exceptions import DomainkitError, ImproperlyConfigured, UpstreamE
 
 if TYPE_CHECKING:
     from domainkit.conf.global_settings import RendererConfig
+
+logger = logging.getLogger(__name__)
 
 LENGTH: Final = re.compile(
     r"(?:[0-9]{1,4}(?:\.[0-9]{1,4})?|\.[0-9]{1,4})(?:mm|cm|in|pt|px|pc)?"
@@ -100,6 +105,24 @@ class RendererUnavailable(UpstreamError):
     detail: ClassVar[str] = "Documents cannot be rendered now; try again later."
 
 
+class RendererNotConfigured(RendererUnavailable, ImproperlyConfigured):
+    """No renderer is set: ``DOCUMENTS["RENDERER"]`` is None.
+
+    A renderer may be left unset where documents are not rendered (a
+    developer's machine, a service that only fills them): a request that
+    needs one is answered 503 ``renderer_unavailable``, as when Gotenberg
+    is down. Where one should be set, it is a deployment's mistake:
+    ``renderer()`` logs it as an error and sends it to ``ERROR_REPORTERS``,
+    the first time a process asks for one (a process forked from it, the
+    first time it does), and raises it every time. Nothing is reported
+    before that first call. It is an ``ImproperlyConfigured`` too, as 2.6
+    raised.
+    """
+
+    code: ClassVar[str] = "renderer_unavailable"
+    """The parent's: every error class names its own (``test_problem_codes``)."""
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class PageOptions:
     """How a browser prints HTML; None leaves the renderer's default.
@@ -181,11 +204,39 @@ class Renderer(Protocol):
 _made: dict[str, tuple["RendererConfig", Renderer]] = {}
 
 
+class _Told:
+    """What this process reported once; a process forked from it starts over."""
+
+    def __init__(self) -> None:
+        """Nothing reported yet."""
+        self._reset()
+
+    def _reset(self) -> None:
+        """Forget what was reported, and the lock, which a fork may have held."""
+        self.lock = threading.Lock()
+        self.told: set[str] = set()
+
+    def first(self, what: str) -> bool:
+        """Whether ``what`` is told for the first time in this process."""
+        with self.lock:
+            first = what not in self.told
+            self.told.add(what)
+        return first
+
+
+_told: Final = _Told()
+
+if hasattr(os, "register_at_fork"):  # pragma: no branch - POSIX has it.
+    os.register_at_fork(after_in_child=_told._reset)
+
+
 def renderer() -> Renderer:
     """The ``DOCUMENTS["RENDERER"]`` Gotenberg server, made once per configuration.
 
     Raises:
-        ImproperlyConfigured: ``DOCUMENTS["RENDERER"]`` is not set.
+        RendererNotConfigured: ``DOCUMENTS["RENDERER"]`` is not set (503
+            ``renderer_unavailable`` in a request; an ``ImproperlyConfigured``),
+            logged as an error and sent to ``ERROR_REPORTERS`` once a process.
         ImportError: ``domainkit[httpclient]``, which calls Gotenberg, is
             not installed.
     """
@@ -193,10 +244,29 @@ def renderer() -> Renderer:
 
     config = settings.DOCUMENTS.RENDERER
     if config is None:
-        raise ImproperlyConfigured(
+        from domainkit.context import current_request
+        from domainkit.reporting import report_error
+
+        unset = RendererNotConfigured(
             'No renderer is set: DOCUMENTS = {"RENDERER": {"URL": ...}} names '
             "the Gotenberg server (docs/documents.md)."
         )
+        if _told.first("unset"):
+            # A 503 is never reported, and a missing setting must be seen:
+            # once a process, however many callers catch it or try again.
+            logger.error("A document was to be rendered, and no renderer is set.")
+            request = current_request()
+            context = (
+                {}
+                if request is None
+                else {
+                    "request_id": request.request_id,
+                    "method": request.method,
+                    "path": request.path,
+                }
+            )
+            report_error(unset, **context)
+        raise unset
     held = _made.get("renderer")
     if held is not None and held[0] == config:
         return held[1]

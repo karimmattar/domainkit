@@ -12,21 +12,25 @@ On this page you learn how to:
 
 - configure the renderer, a Gotenberg server, and harden it;
 - turn HTML and Word documents into PDFs;
-- fill the placeholders of a Word document;
+- list and fill the placeholders of a Word document, or fill a draft;
 - lay rendered text over the pages of a PDF;
-- clean rich text that a person wrote before it is rendered;
+- clean rich text that a person wrote before it is rendered, or keep
+  less of it;
 - write documents in Arabic.
 
-`fill_docx`, `overlay_pdf`, `page_sizes`, and `clean_html` need the
-`documents` extra (pypdf, lxml, and nh3); the renderer needs the
-`httpclient` extra. Each says which extra it needs when it is missing:
+`fill_docx`, `placeholders`, `overlay_pdf`, `page_sizes`, and
+`clean_html` need the `documents` extra (pypdf, lxml, and nh3); the
+renderer needs the `httpclient` extra. Each says which extra it needs
+when it is missing:
 
 ```bash
 pip install "domainkit[documents,httpclient]"
 ```
 
 The decisions are in
-[ADR 0168](adr/0168-render-documents-through-a-port-with-gotenberg-and-fill-them-locally.md).
+[ADR 0168](adr/0168-render-documents-through-a-port-with-gotenberg-and-fill-them-locally.md)
+and
+[ADR 0176](adr/0176-bound-what-a-pdf-decodes-list-placeholders-fill-drafts-and-clean-less.md).
 
 ## A first example
 
@@ -84,6 +88,18 @@ methods:
   `xlsm`, ...) are refused, but `doc`, `xls`, and `ppt` may hold macros
   too: what keeps them from running is Gotenberg's
   `--libreoffice-enable-macros`, off by default. Leave it off.
+
+`DOCUMENTS["RENDERER"]` may be left unset where documents are rendered
+only sometimes: for previews, or on a developer's machine. `renderer()`
+then raises `RendererNotConfigured`; a request that lets it go is
+answered `503 renderer_unavailable`, as when Gotenberg is down. Where a
+renderer should be set, that is a deployment's mistake, so it is logged
+as an error and sent to `ERROR_REPORTERS` all the same, though a 503 is
+otherwise never reported: once a process, the first time one is asked
+for, however many callers catch it or try again, and once again in a
+process forked from it. Nothing is reported before that first call. It
+is an `ImproperlyConfigured` too. *New in 2.7*: 2.6 raised a plain
+`ImproperlyConfigured`, a 500.
 
 ```python
 from domainkit.documents import PageOptions, renderer
@@ -244,6 +260,47 @@ names are the same once case and Unicode forms are set aside.
 `fill_docx` works on the CPU: in a request, run it in a thread with
 `asyncio.to_thread`, as the first example does.
 
+### Drafts
+
+*New in 2.7.* A preview of a draft shows what is left to fill or to
+fix where it is. `allow_missing=True` leaves a placeholder without a
+value as it is written, `{{ tenant }}`; `allow_malformed=True` leaves
+braces that make no placeholder as they are written, `{{ tenant name }}`.
+Each allows its own kind only: what the other refuses is still refused.
+
+```python
+draft = await asyncio.to_thread(
+    fill_docx, template, known, allow_missing=True, allow_malformed=True
+)
+preview = await renderer().office_to_pdf(draft, filename="draft.docx")
+```
+
+Nothing marks the result as a draft. Keep it from being sent or signed:
+fill the document that goes out with the defaults, which refuse both.
+
+### Listing the placeholders
+
+*New in 2.7.* `placeholders(document)` says what a template asks for,
+before anything is filled, so a form can show its fields:
+
+```python
+from domainkit.documents import placeholders
+
+found = await asyncio.to_thread(placeholders, template)
+found.names  # ("tenant", "monthly_rent", "tenant.address")
+found.malformed  # ("{{ tenant name }}",)
+```
+
+`names` holds each placeholder once, in the order written: the body
+first, then the headers, footers, footnotes, and endnotes, each kind by
+part name (`header2` before `header10`), whatever order the document's
+content types list them in. `malformed`
+holds the text of braces that make no placeholder, as
+`PlaceholderError.malformed` quotes it. It reads the document as
+`fill_docx` does, the same parts, paragraphs, and grammar, within the
+same `ArchiveLimits` (`limits=`), so `fill_docx` asks a value for each
+of `names`, and refuses each of `malformed`, and nothing else.
+
 ## Laying text over a PDF
 
 A person uploads a contract as a PDF, and the service writes names and
@@ -300,6 +357,111 @@ For some pages only, pass a mapping of page indexes to one-page PDFs:
 unreadable PDF is refused. Lay text over a PDF before it is signed: any
 change breaks a signature.
 
+### What a PDF may decode
+
+A PDF keeps a page's drawing, and most of its objects, deflated. A page
+of 8 KB may inflate to 8 MB, so a file of 170 KB can hold hundreds of
+megabytes once it is read. pypdf bounds each stream it decodes (75 MB by
+default), not what they come to together. So `overlay_pdf` and
+`page_sizes` take `max_decoded`, the bytes they decode in all: 32 MiB by
+default. *New in 2.7.*
+
+- `page_sizes` counts the PDF's object streams, where it keeps its
+  objects compressed.
+- `overlay_pdf` counts the object streams of the document and of the
+  overlays, and the content of each page it lays over, and of its
+  overlay.
+
+Each stream is decoded before it is used, under pypdf's limits lowered
+to what is left, so a stream that deflate, LZW, run-length, or Brotli
+would inflate past the budget stops there and is refused with a
+`DocumentError`, not decoded whole. pypdf bounds what those filters
+decode to, and no other. So a stream's filters are read first, and it is
+refused, never decoded, unless:
+
+- each filter is `FlateDecode`, `LZWDecode`, `RunLengthDecode`,
+  `ASCIIHexDecode`, `ASCII85Decode`, or `BrotliDecode` (or a short name
+  pypdf reads, such as `/A85`). An image's filter (`DCTDecode`,
+  `JPXDecode`, `CCITTFaxDecode`, `JBIG2Decode`) or `/Crypt` has no place
+  in a page's content or a PDF's objects.
+- `LZWDecode`, `RunLengthDecode`, `ASCIIHexDecode`, or `ASCII85Decode`
+  comes first, if at all, and only one of them. pypdf decodes these in
+  Python: ASCII85's `z` costs it 94 MiB of memory for each MiB it reads,
+  and LZW 0.6 seconds, or 11 of nothing but clear codes. First, they
+  read the stream as it is stored, so
+  `[/ASCII85Decode /FlateDecode]`, as ReportLab writes, is decoded; after
+  deflate, they would read what deflate inflated, so
+  `[/FlateDecode /ASCII85Decode]` is refused: a test PDF of 31 KB took
+  2.8 GB that way.
+- the streams decoded so store `max_decoded / 32` bytes in all, as the
+  call counts them, and those decoded with LZW `max_decoded / 512`: 1
+  MiB and 64 KiB by default, which pypdf decodes in about a second and
+  100 MiB at worst. A file of 64 such streams, each under the bound, is
+  refused once they pass it, in a fraction of a second, where each call
+  took 17 seconds.
+- no filter has a predictor (`/DecodeParms` with `/Predictor`). A
+  predictor is for images and cross-reference streams; pypdf runs it in
+  Python, at up to 0.3 seconds a megabyte.
+
+A stream that cannot be decoded is refused too, even an object stream
+nothing uses: skipped, it could cost what it decoded before it failed,
+again for each such stream. A page's content is written back deflated:
+the result is about the size of the document, not of what it decoded.
+
+```python
+laid = await asyncio.to_thread(
+    overlay_pdf, drawing, overlay, max_decoded=128 * 1024 * 1024
+)
+```
+
+The default holds a contract of hundreds of pages. Raise it for drawings
+or maps of many megabytes a page, and keep it as low as your documents
+allow: while the call runs, memory peaks at about three times what it
+decodes (a page that decodes to 31 MiB peaks at 97 MiB, as Python's
+`tracemalloc` counts it).
+
+pypdf's limits are lowered for the call only. pypdf keeps them in a
+context variable, so other threads, and the code around the call, keep
+their own, and a limit lower than `max_decoded` that your code set with
+`pypdf.apply_configuration` still holds.
+
+Bounded otherwise:
+
+- **The cross-reference sections**, which pypdf reads as it opens a
+  file: one for the file and one for each save added to it, two in a
+  hybrid file (a form filled or signed in Acrobat). pypdf follows any
+  number, and took 47 seconds over 500 with predictors. They are counted
+  where pypdf reads them, so no way of writing `/Prev` hides one, and a
+  file that chains more than 32 is refused before pypdf reads the next.
+  Their streams list 65,536 entries in all, or one for each 512 bytes of
+  `max_decoded` where that is more, and each decodes to 8 bytes an entry
+  at most (512 KiB by default); a predictor on each runs in Python.
+  Thirty-two of them, each as large and slow as allowed, took 3.8
+  seconds.
+- **A damaged file**, whose table pypdf would rebuild by reading the
+  whole file, decoding every object stream with whatever filters it has:
+  1000 of them took 65 seconds. It is refused instead.
+- **Object streams pypdf would decode on its own.** No object stream is
+  decoded but within the budget: an object stream held in another, which
+  PDF does not allow (pypdf decoded the other unchecked: 31 KB took 2.9
+  GB), and an object held in one the budget did not decode, are refused.
+  A cross-reference stream, which pypdf decodes as it opens the file,
+  is decoded with `FlateDecode` only.
+- **Searches for missing objects.** pypdf searches the whole file for
+  each object its table lacks or misplaces, 20 ms for 5 MB: 20,000 took
+  it 406 seconds. A file that needs more than 32 searches is refused.
+- **Parsing the overlay.** pypdf reads the overlay's drawing into
+  operators to move it onto the page, at far more than its bytes: 2 MiB
+  of drawing operators took 8 seconds and 200 MiB, without a profiler.
+  Its bytes count, its parsing does not, since the overlay is the
+  renderer's output from your own HTML, a page of text a few kilobytes
+  long. Never pass a PDF a person sent as the overlay.
+
+A PDF a person uploads is checked before it is stored
+([Uploads](uploads.md)); `max_decoded` bounds what is laid over later
+all the same, whether it was stored before, or converted from a Word
+document.
+
 ## Rich text from people
 
 A person writes a contract's terms in an editor. Before the text goes
@@ -332,6 +494,34 @@ That keeps out what most often lays text over text, not all of it. Text
 made tiny or the colour of the page, and large text (a big font, wide
 spacing) in a box your template made narrow, which runs over its
 neighbour, are not stopped: show a preview of what is signed.
+
+### A narrower allowlist
+
+*New in 2.7.* An editor that needs less keeps less. An editor that
+aligns text by class, as Quill does (`ql-align-right`), needs no
+`style`, and without one, text cannot be made tiny or the page's colour:
+
+```python
+terms = clean_html(
+    contract.terms,
+    styles=False,
+    images=False,
+    classes={"*": {"ql-align-right", "ql-align-center", "ql-direction-rtl"}},
+)
+```
+
+- `styles=False` keeps no `style`. A set keeps those properties only,
+  `styles={"text-align", "direction"}`, each with the same checks of its
+  value. A property `clean_html` does not keep is refused with a
+  `ValueError`: the set narrows the list, never widens it.
+- `images=False` keeps no image.
+- `classes` maps a tag, or `*` for every tag kept, to the class names
+  kept on it; any other class is dropped. A tag that is not kept, or a
+  name that is not a plain CSS identifier, is a `ValueError`.
+
+A class loads and runs nothing: it means what your template's style
+sheet says. List only the classes whose rules move no text over other
+text, such as alignment and direction.
 
 ### Why cleaning is not enough
 
@@ -369,11 +559,11 @@ document, rendered by Gotenberg:
 | What you see | Why | What to do |
 | --- | --- | --- |
 | `PlaceholderError` | Placeholders and values disagree; `missing`, `unused`, and `malformed` list each problem. | Fix the template or the values. For a template a user uploaded, answer 422 with the lists. |
-| `DocumentError` | A document cannot be read (not a `.docx`, past `ArchiveLimits`, a DTD, an encrypted PDF), or overlays do not fit their pages. The base of `PlaceholderError` and `RenderingRefused`; also a `ValueError`. | Read its message. |
+| `DocumentError` | A document cannot be read (not a `.docx`, past `ArchiveLimits`, a DTD, an encrypted PDF, a PDF that decodes past `max_decoded` or with filters it does not decode), or overlays do not fit their pages. The base of `PlaceholderError` and `RenderingRefused`; also a `ValueError`. | Read its message. |
 | `RenderingRefused` | Gotenberg refused the input: 400 (a form or a document it cannot read), 409 (a resource did not load), 413 (past its body limit). `status` and `trace` say which. | Fix the document; sending it again changes nothing. |
 | 503 `renderer_unavailable` (`RendererUnavailable`) | Gotenberg could not be reached, failed once the retries were spent, refused the login, or answered something other than a PDF. | Try again later; check Gotenberg and its login. |
 | 503 `upstream_unavailable`, 504 `upstream_timeout`, 502 `upstream_response_too_large` | The client's own: the circuit is open, `TIMEOUT` passed, or the PDF is past `MAX_RESPONSE_BYTES`. | See [outgoing calls](reference/http.md). |
-| `ImproperlyConfigured` | `renderer()` with no `DOCUMENTS["RENDERER"]`. | Set it. |
+| 503 `renderer_unavailable` (`RendererNotConfigured`) | `renderer()` with no `DOCUMENTS["RENDERER"]`; also an `ImproperlyConfigured`. It is logged as an error and sent to `ERROR_REPORTERS`, once a process. | Set it, or leave it unset where nothing is rendered. |
 | `ImportError` | The `documents` extra is not installed. | `pip install "domainkit[documents]"`. |
 
 ## Testing
@@ -417,6 +607,8 @@ small documents built in the test.
   gives the size as shown.
 - **Calling `fill_docx` on the event loop.** A large document holds every
   request meanwhile; use `asyncio.to_thread`.
+- **Raising `max_decoded` for every document.** Raise it where a kind of
+  document needs it, not for files people upload.
 
 ## See also
 
