@@ -119,8 +119,10 @@ Where `If-Match` is required:
 - **Fail closed where a step is forgotten** (found in review). Asking
   with `if_match` is refused (`ImproperlyConfigured`) unless the unit
   of work it lends holds an expectation of those versions that a load
-  checked (`UnitOfWork.expectations`); a `ResourceRouter`'s twin marks
-  its own as checked, having checked the aggregate itself. The act is
+  checked (read with a function of `domainkit.ddd.uow`, not an
+  attribute, which a project's unit of work could already have: found
+  in review); a `ResourceRouter`'s twin marks its own as checked, having
+  checked the aggregate itself. The act is
   refused, before it spends or reads anything, unless its unit of work
   is held to the versions its authorization holds. Either is the
   route's mistake, not the client's: a `500` names it, and the
@@ -181,7 +183,7 @@ Where `If-Match` is required:
   `Action.digest_of(..., versions)`, `if_match` in
   `ActionStepUp.ask_authorization`, approvals' `ask_authorization`, and
   the `AsksAuthorization` protocol's description, `asked_versions`,
-  `UnitOfWork.expectations`, `authorize_act(..., if_match=...)`.
+  `authorize_act(..., if_match=...)`.
   Nothing is renamed or removed: a minor release (2.8).
 
 ## References

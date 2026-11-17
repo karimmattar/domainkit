@@ -415,7 +415,8 @@ POST /documents/42/approve
   is held to it too: what they load through it at another version is
   `412`, before anything is stored.
 - **One tag.** A page reads one version, so a twin takes one tag: a
-  list of several, even of one version, is `422`. A tag that names no
+  list of several, even of one version, however many, or several
+  `If-Match` lines, which are one list, is `422`. A tag that names no
   version, or a malformed value, matches nothing (`412`). Tags are
   compared by the version they carry, weak or strong
   ([resources.md](../resources.md#versions-and-conditional-requests)).
@@ -511,6 +512,8 @@ async def ask_to_approve(
 
 - `asked_versions(if_match)` reads the header as a twin does: none for
   no value, an empty one, or `*`; `422` for several tags.
+  `request_action_authorization` takes several `If-Match` lines of the
+  request as one list, so they are `422` too.
 - `binds` (or `show`) loads the record through `uow`, so its version is
   checked there. **A twin whose `show` and `binds` checked nothing is
   refused** (`ImproperlyConfigured`, `500`), before anything is stored:

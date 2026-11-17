@@ -21,8 +21,7 @@ and a status.
   it lends checked the version; `Action.digest_of(..., versions)`
   computes the digest; a rule's `ask_authorization(..., if_match=...)`
   is given the twin's header; `asked_versions` reads it as a twin does;
-  `UnitOfWork.expectations` lists what `expect` holds; and
-  `authorize_act(..., if_match=...)` sends it to a twin in tests
+  and `authorize_act(..., if_match=...)` sends it to a twin in tests
   ([The version the page read](docs/auth/actions.md#the-version-the-page-read),
   ADR 0178) (user report A25).
 
