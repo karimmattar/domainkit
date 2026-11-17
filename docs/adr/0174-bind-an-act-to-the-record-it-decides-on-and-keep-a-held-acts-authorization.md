@@ -1,6 +1,6 @@
 # 0174. Bind an act to the record it decides on, and keep a held act's authorization
 
-- Status: Accepted
+- Status: Accepted; amended by [0178](0178-bind-an-act-to-the-version-its-page-read.md)
 - Date: 2026-11-17
 - Amends: [0144](0144-authorize-one-act-not-a-window-of-time.md), [0163](0163-authorize-admin-changes-and-requests-steps-as-acts.md), [0164](0164-let-the-asker-withdraw-a-phone-request-count-sessions-per-user-and-word-each-kind.md)
 
