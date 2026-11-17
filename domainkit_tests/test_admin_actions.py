@@ -945,14 +945,14 @@ PASSWORDS_HELD: Final = Shape(
 def test_nothing_is_compared_while_a_password_waits_for_approval(
     migrated: Migrated, frozen: FrozenClock
 ) -> None:
-    """Every password answers ``approval_pending`` while the change waits.
+    """Every password gets the same answer while the change waits.
 
-    The history is compared when the change is about to be made: once
-    the approval is found, before it is spent. A comparison before the
-    hold answered guess after guess on one authorization, misses free,
-    while the change waited (found in review of user report A17). Once
-    approved, a reused password is refused, spends the authorization, and
-    leaves the approval for a password that will do.
+    The call spends its authorization before anything is compared, so a
+    confirmation sent again answers ``action_not_authorized``, whatever
+    its password: one confirmation, one comparison. While the change
+    waits, nothing is compared (found in review of user report A17). Once
+    approved, a reused password is refused, spending its authorization and
+    leaving the approval for a password that will do.
     """
     with migrated(PASSWORDS_HELD), TestClient(get_asgi_application()) as client:
         ann = Staff(client, frozen, "ann")
@@ -962,37 +962,121 @@ def test_nothing_is_compared_while_a_password_waits_for_approval(
         authorization = ann.authorized(
             f"{path}/authorization", {"password": "x-Guess-0000"}
         )
-        guesses = [f"x-Guess-{each:04d}" for each in range(5)] + [NEW_PASSWORD]
-        answers = {
+        waiting = ann.call("POST", path, {"password": "x-Guess-0000"}, authorization)
+        guesses = [f"x-Guess-{each:04d}" for each in range(1, 5)] + [NEW_PASSWORD]
+        again = {
             (answer.status_code, answer.json()["code"])
             for answer in (
                 ann.call("POST", path, {"password": guess}, authorization)
                 for guess in guesses
             )
         }
-        unspent = row(authorization)["consumed_at"]
-        request_id = (
-            ann.call("POST", path, {"password": NEW_PASSWORD}, authorization)
-        ).json()["approval_request_id"]
+        request_id = waiting.json()["approval_request_id"]
         shown = client.get(f"/approvals/requests/{request_id}", headers=root.headers)
         approved = client.post(
             f"/approvals/requests/{request_id}/approve",
             json={"fingerprint": shown.json()["fingerprint"]},
             headers=root.headers,
         )
-        reused = ann.call("POST", path, {"password": NEW_PASSWORD}, authorization)
-        spent = row(authorization)["consumed_at"]
+        reusing = ann.authorized(f"{path}/authorization", {"password": NEW_PASSWORD})
+        reused = ann.call("POST", path, {"password": NEW_PASSWORD}, reusing)
+        spent = row(reusing)["consumed_at"]
         still = client.get(f"/approvals/requests/{request_id}", headers=ann.headers)
         fresh = ann.authorized(f"{path}/authorization", {"password": "Fresh-pass-42"})
         made = ann.call("POST", path, {"password": "Fresh-pass-42"}, fresh)
 
-    assert answers == {(403, "approval_pending")}
-    assert unspent is None
+    problem(waiting, 403, "approval_pending")
+    assert again == {(403, "action_not_authorized")}
     assert approved.status_code == 200, approved.json()
     problem(reused, 422, "invalid_password")
     assert spent is not None
     assert still.json()["status"] == "approved"
     assert made.status_code == 204
+
+
+def test_calls_at_once_on_one_confirmation_and_one_approval_compare_once(
+    migrated: Migrated, frozen: FrozenClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One authorization, one approval, eight calls at once: one comparison.
+
+    The call that spends the authorization is the only one that may
+    compare, and the only one that may spend the approval; the others are
+    refused before anything is compared (``action_not_authorized``),
+    whatever their passwords. Before, a hit spent the authorization only
+    once the approval was let go: the next call compared, and spent the
+    approval for a change it then could not make (found in review of user
+    report A17).
+    """
+    import asyncio
+
+    import httpx2
+
+    from domainkit.contrib.auth.repositories import PasswordHistoryStore
+
+    compared: list[str] = []
+    original = PasswordHistoryStore.refuse_reuse
+
+    async def counted(
+        self: PasswordHistoryStore, user_id: UUID, password: str, *, priority: bool
+    ) -> None:
+        compared.append(password)
+        await original(self, user_id, password, priority=priority)
+
+    auth = {**PASSWORDS_HELD.settings["AUTH"], "LOGIN_RATE": "100/minute"}
+    with (
+        migrated(PASSWORDS_HELD),
+        TestClient(get_asgi_application()) as client,
+        override_settings(AUTH=auth),
+    ):
+        ann = Staff(client, frozen, "ann")
+        root = Staff(client, frozen, "root", superuser=True)
+        target = create_user("target", password=NEW_PASSWORD)
+        path = f"/users/{target}/password"
+        first = ann.authorized(f"{path}/authorization", {"password": "Fresh-pass-1"})
+        waiting = ann.call("POST", path, {"password": "Fresh-pass-1"}, first)
+        request_id = waiting.json()["approval_request_id"]
+        shown = client.get(f"/approvals/requests/{request_id}", headers=root.headers)
+        client.post(
+            f"/approvals/requests/{request_id}/approve",
+            json={"fingerprint": shown.json()["fingerprint"]},
+            headers=root.headers,
+        )
+        authorization = ann.authorized(
+            f"{path}/authorization", {"password": "Any-pass-123"}
+        )
+        headers = {**ann.headers, "Action-Authorization": authorization}
+        guesses = [f"Guess-pass-{each:02d}" for each in range(6)] + [NEW_PASSWORD] * 2
+
+        async def at_once() -> list[Any]:
+            transport = httpx2.ASGITransport(app=client.app)
+            async with httpx2.AsyncClient(
+                transport=transport, base_url="http://testserver"
+            ) as http:
+                return list(
+                    await asyncio.gather(
+                        *(
+                            http.post(
+                                ADMIN + path, json={"password": guess}, headers=headers
+                            )
+                            for guess in guesses
+                        )
+                    )
+                )
+
+        monkeypatch.setattr(PasswordHistoryStore, "refuse_reuse", counted)
+        answers = run_async(at_once())
+        status = client.get(f"/approvals/requests/{request_id}", headers=ann.headers)
+
+    codes = [
+        each.status_code if each.status_code == 204 else each.json()["code"]
+        for each in answers
+    ]
+    made = [code for code in codes if code in (204, "invalid_password")]
+    assert len(made) == 1, codes
+    assert codes.count("action_not_authorized") == len(guesses) - 1, codes
+    assert len(compared) == 1, (compared, codes)
+    expected = "executed" if made == [204] else "approved"
+    assert status.json()["status"] == expected, codes
 
 
 def test_the_act_digest_is_the_change_sorted_never_a_password() -> None:

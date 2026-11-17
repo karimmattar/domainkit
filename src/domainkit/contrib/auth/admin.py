@@ -810,14 +810,21 @@ async def set_password(
     here logs in only to be changed (PCI DSS v4.0 8.3.5). With
     ``AUTH.PASSWORD_HISTORY``, a password among the user's last ones is
     refused (``422 invalid_password``); too many of them from one staff
-    member for one user answer ``429 rate_limited`` for a while.
+    member for one user answer ``429 rate_limited`` for a while. With it
+    and ``AUTH.ADMIN_ACTION``, each call spends its authorization, whatever
+    its answer (one that waits for approval too): confirm each one.
     """
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
         change = await _setting_password(actor, user, body)
         reuse = _Reuse(request, uow, actor, user, body.password)
         await reuse.count()
+        claimed = reuse.counted is not None and _asked()
         try:
+            if claimed:  # One confirmation, one comparison, whatever comes of it.
+                act = _password_act(user, body)
+                await spend_authorization(uow, _admin_change_action(), act)
+                await uow.commit()
             await _admin_change(
                 actor,
                 user,
@@ -825,13 +832,8 @@ async def set_password(
                 uow,
                 lambda: _password_act(user, body),
                 last=reuse.compare,
+                claimed=claimed,
             )
-        except InvalidPassword:
-            if reuse.found and _asked():  # One confirmation, one guess.
-                act = _password_act(user, body)
-                await spend_authorization(uow, _admin_change_action(), act)
-                await uow.commit()
-            raise
         finally:
             await reuse.settle()
         await uow.users.set_password(
@@ -891,10 +893,13 @@ class _Reuse:
     A reuse is a guess at the user's old passwords. It counts against the
     staff member's guesses at this user's (``AUTH.LOGIN_RATE`` and
     ``ACCOUNT_LOGIN_RATE``, apart from the user's own counts of wrong
-    passwords: neither holds the other back), and spends the change's
-    authorization, so one confirmation is one guess. The count is taken
-    before anything is checked, so a full one refuses every password
-    alike, and given back unless the password was found.
+    passwords: neither holds the other back). The count is taken before
+    anything is checked, so a full one refuses every password alike, and
+    given back unless the password was found. With ``AUTH.ADMIN_ACTION``
+    on, the route spends the change's authorization before the checks
+    (``claimed``): calls sent at once with one confirmation make one
+    comparison, the others are refused before anything is compared, and
+    an approval is spent only by the call that holds it.
     """
 
     def __init__(
@@ -1567,6 +1572,7 @@ async def _admin_change(
     act: Callable[[], "AdminAct"],
     *,
     last: Callable[[], Awaitable[None]] | None = None,
+    claimed: bool = False,
 ) -> None:
     """Run the domains' ``on_admin_change`` checks; any may refuse ``change``.
 
@@ -1578,7 +1584,9 @@ async def _admin_change(
     change makes (a password reused): the checks see it as
     ``change.last_check``, and it runs once, when the change is about to be
     made, by approvals' hold as it spends an approval, or else after every
-    check passed.
+    check passed. ``claimed``: the request's authorization was spent already
+    (a password compared with the history claims it first), so it is
+    neither checked nor spent again.
 
     Raises:
         ActionNotAuthorized: With ``ADMIN_ACTION``, the authorization is of
@@ -1590,7 +1598,7 @@ async def _admin_change(
         for hook in on_admin_change:
             await hook.call(actor, user, seen)
 
-    await _authorized_change(uow, act, checks, last)
+    await _authorized_change(uow, act, checks, last, claimed=claimed)
 
 
 async def _admin_group_change(
@@ -1619,13 +1627,16 @@ async def _authorized_change(
     act: Callable[[], "AdminAct"],
     checks: Callable[["_Once | None"], Awaitable[None]],
     last: Callable[[], Awaitable[None]] | None = None,
+    *,
+    claimed: bool = False,
 ) -> None:
     """The authorization of ``act()`` checked, ``checks``, ``last``, then spent.
 
     ``last`` runs once: by a check, or after them. Only with
-    ``AUTH.ADMIN_ACTION`` on is the act built, checked, and spent.
+    ``AUTH.ADMIN_ACTION`` on is the act built, checked, and spent, unless
+    it was ``claimed`` already.
     """
-    made = act() if _asked() else None
+    made = act() if _asked() and not claimed else None
     if made is not None:
         await check_authorization(_admin_change_action(), made)
     once = None if last is None else _Once(last)
