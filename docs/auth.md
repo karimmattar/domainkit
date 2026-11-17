@@ -194,6 +194,15 @@ print(config.TOKEN_TTL, config.JWT.ACCESS_TOKEN_TTL)
 | --- | --- | --- |
 | `TTL` | 5 minutes | How long an action authorization works, from when it is asked for, its confirmation and its use included (30 minutes at most). An `Action(ttl=...)` sets its own. |
 | `METHODS` | `["otp"]` | What confirming one must prove, unless its `Action(methods=...)` names others: `otp` (a code of the authenticator app, which a bound device's key and a passkey stand for), `pwd` (the password too), or `phone` (a bound device's own screen: the phone's approval, or the app's own act; neither a code nor a passkey proves it). It must hold `otp` or `phone`, each method once. |
+| `HELD_TTL` | `None` | How long past its expiry a confirmed authorization is kept while its act waits for approval (approvals' `approval_pending`), and at most until the request expires: the maker's call, once approved, spends it without a second confirmation. 7 days at most; `None` keeps the 2.6 behaviour, an authorization that expires with its `TTL` (*new in 2.7*, [Held for approval](auth/actions.md#held-for-approval)). |
+| `ACTIONS` | `{}` | Per act, by purpose (`auth.admin_change`, `approvals.approve`, a project's own), its own `TTL` and `METHODS` (below), in place of its `Action`'s and of the two keys above. A purpose no registered action has is refused by `check` (`auth.E112`) (*new in 2.7*, [Each act its own methods](auth/actions.md#each-act-its-own-methods-and-lifetime)). |
+
+Each `ACTIONS` entry, under its act's purpose:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `TTL` | `None` | How long this act's authorizations work, in place of `Action(ttl=...)` and `AUTHORIZATIONS.TTL`; 30 minutes at most. `None` keeps those. |
+| `METHODS` | `None` | What confirming this act must prove, in place of `Action(methods=...)` and `AUTHORIZATIONS.METHODS`: `otp`, `pwd`, `phone`, holding `otp` or `phone`, each once. `None` keeps those. |
 
 | `AUTH["CLIENT_CERT"]` key | Default | Meaning |
 | --- | --- | --- |

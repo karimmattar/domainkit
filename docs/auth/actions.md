@@ -112,8 +112,9 @@ action_not_authorized`: the authorization was spent.
 | `subject` | `command -> "<type>:<id>"`: what the act is on, an internal id of at most 200 characters (letters, digits, and `_ . : / -`), kept for the trail. |
 | `show` | `command -> Shown`, a coroutine or a plain function: what the user is shown, from the command and the stored state, in the request's language. `(command, uow) -> Shown` reads in the unit of work the act runs in (*new in 2.5*, [below](#a-use-case-as-the-act)). |
 | `ignore` | Fields of the command that change on every call (a time, a fresh id), left out of the digest. |
-| `ttl` | How long its authorizations work, in place of `AUTH.AUTHORIZATIONS.TTL`: more than 0, 30 minutes at most. |
-| `methods` | What confirming must prove, in place of `AUTH.AUTHORIZATIONS.METHODS`: `otp`, `pwd`, and `phone`, holding `otp` or `phone`. |
+| `ttl` | How long its authorizations work, in place of `AUTH.AUTHORIZATIONS.TTL`: more than 0, 30 minutes at most. `AUTHORIZATIONS.ACTIONS` may name another for the act ([below](#each-act-its-own-methods-and-lifetime)). |
+| `methods` | What confirming must prove, in place of `AUTH.AUTHORIZATIONS.METHODS`: `otp`, `pwd`, and `phone`, holding `otp` or `phone`. `AUTHORIZATIONS.ACTIONS` may name others for the act. |
+| `binds` | `(command, uow) -> value`, a coroutine or a plain function: what the act decides on, read from the stored record in the act's unit of work (an aggregate's `version`, the fields it decides on). The authorization holds while it reads the same (*new in 2.7*, [below](#the-record-it-decides-on)). |
 
 `Shown(title, details)` is what a screen shows: a title of at most 64
 printable characters, and at most six labels and values of at most 64
@@ -195,6 +196,63 @@ phone_memberships.use_case(controllers.end_membership, method="DELETE")
 - **A `show` of the command alone**, or with parameters of its own
   (`language="en"`), is called as before, and opens what it reads
   itself.
+
+## The record it decides on
+
+*New in 2.7* ([ADR 0174](../adr/0174-bind-an-act-to-the-record-it-decides-on-and-keep-a-held-acts-authorization.md)).
+The digest covers the command: the ids it names, never what is stored
+under them. An approval confirmed for a document as it read when the
+screen showed it would decide on whatever is stored when the act lands:
+another file uploaded meanwhile, a text rewritten and sent again. An
+action's `binds` reads what the act decides on, and the authorization
+holds only while it reads the same:
+
+```python
+async def bound_document(command, uow: DocumentsUnitOfWork) -> int:
+    document = await uow.documents.get(DocumentId(command.document_id))
+    return document.version
+
+
+APPROVE_DOCUMENT = Action(
+    "documents.approve",
+    command=approve_document,
+    subject=lambda command: f"documents.document:{command.document_id}",
+    show=show_document,
+    binds=bound_document,
+)
+```
+
+- **Read where `show` reads, then again where the act runs.** Asking
+  reads it in the act's unit of work, the one `show(command, uow)` is
+  lent, first: what is bound is what the screen was built from. The act
+  reads it again when its service opens its unit of work (`async with
+  uow`), before the service reads anything, in the same transaction as
+  the decision; a service that commits without opening it reads it as
+  it commits. `spend_authorization(uow, ...)` reads it in `uow`, open:
+  call it before the act changes what it binds.
+- **The digest covers it.** The row keeps the SHA-256 of the value, as
+  canonical JSON, and the act's digest is of the command and that: the
+  phone signs the record as it was shown, and the trail's digest names
+  it. A value the row was changed to fails the code.
+- **Another value refuses the act**: `409 action_record_changed`, and
+  the authorization is voided (the trail: `record_changed`). Ask again:
+  the screen shows the record as it is now. On another database than
+  auth's, the authorization was spent just before the act, as for any
+  act there.
+- **What to bind.** An aggregate's `version`, which every stored change
+  raises, binds every field at once. A record without one binds the
+  fields the act decides on (`{"sha256": file.sha256, "number":
+  file.number}`), or a digest of them; any value pydantic writes as JSON.
+  Bind what the user was shown, and what the act reads to decide.
+- **Races.** The act's repository hands the service the aggregate
+  `binds` loaded in that transaction. An act that writes it is held to
+  its version as it saves; one that decides on a record it does not
+  write reads it for update in `binds` (`get_for_update`), which locks
+  it until the act commits.
+- **Mistakes refused**: a `binds` that is not callable
+  (`ImproperlyConfigured` when declared), that answers what JSON cannot
+  hold, or that commits; asking without the act's unit of work
+  (`unit_of_work=`); a service that takes none, or never opens it.
 
 ## The route asks: `StepUp(for_=...)`
 
@@ -412,7 +470,10 @@ async def end_membership_now(command: EndMembership) -> None:
   links to the phone's request and to a passkey's challenge.
 - **The digest**: `domainkit.ddd.fingerprint(purpose, arguments)`, the
   SHA-256 of `{"action": <the purpose>, "arguments": ...}` as canonical
-  JSON: the function approvals computes its fingerprints with.
+  JSON: the function approvals computes its fingerprints with. For an
+  action that `binds`, the SHA-256 of `{"action", "arguments", "binds"}`,
+  where `binds` is the SHA-256 of what it read, which the row keeps
+  (`bound`).
 - **The code**: an HMAC-SHA256, under a key derived from `SECRET_KEY` for
   `auth.authorization` (its fallbacks verify), of a JSON array of
   `domainkit.authorization.v1`, the id, the user, the login's digest, the
@@ -424,7 +485,38 @@ async def end_membership_now(command: EndMembership) -> None:
 - **The login**: only the login that asked spends it, sees it, and
   confirms it with a code. Another login of the same user cannot.
 - **Expiry**: `AUTH.AUTHORIZATIONS.TTL` (5 minutes, 30 at most), from
-  asking to spending.
+  asking to spending; an act's own entry in `AUTHORIZATIONS.ACTIONS`,
+  or its `ttl`, takes its place. An act held for approval may be kept
+  longer ([below](#held-for-approval)).
+
+## Held for approval
+
+*New in 2.7.* A change [approvals](../contrib/approvals.md) holds for a
+second person (`403 approval_pending`, a guard `by_maker` such as
+`ADMIN_APPROVALS`'s) is made, once approved, by its maker's same call. Its
+authorization was confirmed and checked, and nothing spent it, but it
+expired with its `TTL`, five minutes, long before the approver came, so
+the maker confirmed the change a second time.
+
+With `AUTH.AUTHORIZATIONS.HELD_TTL` set (`timedelta(days=1)`, a week at
+most), approvals keeps it instead: until the request expires, and at most
+`HELD_TTL` past its own expiry. The maker's call, once approved, spends it
+as any act does, once.
+
+- **Only what an act took, and did not spend**: the authorization the
+  held call carried, checked against that change. The row keeps when it
+  is held until (`held_until`); its code still covers its own expiry, and
+  the hold counts only within `HELD_TTL` of it, so a lowered setting
+  shortens the holds made before.
+- **Confirming is as short as ever.** `TTL` still bounds the time from
+  asking to confirming, as OWASP's transaction authorization asks; only
+  a confirmed authorization of an act that waits is kept.
+- **`None`, the default**, keeps 2.6's behaviour: the maker confirms
+  again, once approved, with a new authorization.
+- Code that holds an act of its own for approval says so with
+  `hold_authorizations(until)`, from `domainkit.contrib.auth.actions`,
+  in the request of the held call: it is written as the response
+  starts.
 
 ## The trail, privacy, and the purge
 
@@ -434,7 +526,7 @@ async def end_membership_now(command: EndMembership) -> None:
   digest, the methods, and the device. The digest lets an auditor match an
   act to its authorization.
 - Refusals are `auth.authorization`, with `invalid_authorization`,
-  `invalid_code`, `changed`, `used`, or `unspent`.
+  `invalid_code`, `changed`, `record_changed`, `used`, or `unspent`.
 - Neither the arguments nor what was shown reach the trail: either may be
   personal data.
 - Authorizations past their expiry are purged hourly and by
@@ -484,13 +576,43 @@ phone confirms each act as it confirms any other.
 
 The admin API spends its act in its own code, with the change's
 transaction, after the `on_admin_change` checks, and checks that it binds
-the change before them. Approvals spends each in its services, as
+the change before them. A change held for approval keeps its
+authorization for the maker's call once approved, with `HELD_TTL` set
+([above](#held-for-approval)). Approvals spends each in its services, as
 `approve_request` does ([Submitting, rejecting, and cancelling with an
 authorization](../contrib/approvals.md#submitting-rejecting-and-cancelling-with-an-authorization)).
 The project's own code takes those steps without one, through the
 functions the services run, `record_submission`, `record_approval`,
 `record_rejection`, and `record_cancellation` (since 2.6,
 [From the project's own code](../contrib/approvals.md#from-the-projects-own-code)).
+
+### Each act its own methods and lifetime
+
+*New in 2.7.* The framework's acts are declared without `methods` or
+`ttl`, so they take `AUTH.AUTHORIZATIONS.METHODS` and `TTL`: the same as
+every act of the project. `METHODS` defaults to `["otp"]`, which a passkey
+proves too; a project whose back office must confirm on the phone had to
+ask the phone of every act. `AUTHORIZATIONS.ACTIONS` names, per act by
+its purpose, its own `METHODS` and `TTL`, in place of the action's and of
+the two settings:
+
+```python
+AUTH = {
+    "ADMIN_ACTION": True,
+    "AUTHORIZATIONS": {
+        "ACTIONS": {
+            "auth.admin_change": {"METHODS": ["phone"]},
+            "approvals.approve": {"METHODS": ["phone"], "TTL": timedelta(minutes=10)},
+        },
+    },
+}
+```
+
+It takes any registered act, a project's own too, where one deployment
+asks more than another. `check` refuses a purpose no registered action
+has (`auth.E112`): a name mistyped, or an act whose setting is off,
+would hold for nothing. Methods that no installed way to confirm proves
+are `auth.E108`, as for an action's own.
 
 ## For other apps: confirming another way
 
@@ -516,6 +638,8 @@ An app that confirms its own way (the phone of
 | --- | --- | --- |
 | `AUTHORIZATIONS.TTL` | 5 minutes | How long an authorization works, from asking to spending; 30 minutes at most. |
 | `AUTHORIZATIONS.METHODS` | `["otp"]` | What confirming one proves, unless its action names others: `otp`, `pwd`, `phone`. |
+| `AUTHORIZATIONS.HELD_TTL` | `None` | How long past its expiry an authorization is kept while its act waits for approval; a week at most. |
+| `AUTHORIZATIONS.ACTIONS` | `{}` | Per act, by purpose, its own `TTL` and `METHODS`. |
 | `MFA.RATE` | `"10/hour"` | Wrong codes per user, confirmations included. |
 | `LOGIN_RATE` | `"10/minute"` | Wrong passwords, where the act asks `pwd`. |
 
@@ -532,6 +656,7 @@ An app that confirms its own way (the phone of
 | `409 authorization_confirmed`, `409 authorization_expired` | Confirming twice, or one ended; confirming too late. |
 | `409 authorization_needs_other_factors` | A code or a passkey where the act asks the phone; the phone asked for an act that asks the password. |
 | `409 authorization_changed` | The phone, or another app (the app's own act), confirms a digest other than the act's. |
+| `409 action_record_changed` | The action `binds` the record, and it reads otherwise than when the authorization was asked for; the authorization is voided. |
 | `404 authorization_not_found` | Another user's or another login's authorization. |
 | `401 invalid_code`, `400 password_required`, `400 wrong_password`, `429` | As for a step-up. |
 | `500 authorization_unspent` | Under `DEBUG` and in tests: a rule accepted one, and no service spent it. |
@@ -544,6 +669,7 @@ An app that confirms its own way (the phone of
 | `auth.E109` | A route that asks `StepUp(for_=...)` for a purpose no registered action has. |
 | `auth.E110` | A route whose action nothing spends: no service decorated `requires_authorization`, and no code that said so with `spent_in_code(action)`. |
 | `auth.E111` | `StepUp(for_=...)` on a WebSocket or an event stream. |
+| `auth.E112` | `AUTH.AUTHORIZATIONS.ACTIONS` naming a purpose no registered action has. |
 
 ## Testing
 

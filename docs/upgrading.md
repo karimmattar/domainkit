@@ -36,6 +36,21 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.6 to 2.7
+
+### Make and apply auth's migration for bound and held authorizations
+
+The action authorizations table (`domainkit_authorizations`) gains two
+nullable columns: `bound`, the SHA-256 of what an act's `binds` read of
+its record, and `held_until`, how long an authorization of an act held
+for approval is kept (ADR 0174). Run `python manage.py makemigrations`,
+review the revision, then `migrate` it before the new code serves: 2.7
+reads and writes both. Authorizations asked before bind no record and
+are held by nothing; an act that adds `binds` refuses those once, `409
+action_record_changed`, and the client asks again. Nothing changes until
+a project declares `binds`, or sets `AUTH.AUTHORIZATIONS.HELD_TTL` or
+`ACTIONS`.
+
 ## 2.5 to 2.6
 
 2.6 follows up 2.5. No table changes. Each item of this list says what a

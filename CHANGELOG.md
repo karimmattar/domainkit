@@ -9,6 +9,38 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `Action(binds=...)` binds an act to the record it decides on:
+  `binds(command, uow)` reads it (an aggregate's `version`, the fields
+  the act decides on) in the act's unit of work, where `show` reads when
+  the authorization is asked for, and again when the act's service opens
+  its unit of work. The digest the phone signs covers what it read; the
+  act refuses a record that reads otherwise, `409 action_record_changed`
+  (`ActionRecordChanged`), and voids the authorization. An approval
+  confirmed for one file or one submission no longer decides on another
+  stored under the same id. The authorizations table gains a nullable
+  `bound` column: run `makemigrations` and `migrate`
+  ([upgrading.md](docs/upgrading.md#26-to-27),
+  [The record it decides on](docs/auth/actions.md#the-record-it-decides-on),
+  ADR 0174) (user report A24).
+- `AUTH.AUTHORIZATIONS.HELD_TTL` (off by default, 7 days at most) keeps a
+  confirmed authorization while its act waits for approval
+  (`approval_pending`, a guard `by_maker` such as `ADMIN_APPROVALS`'s),
+  until the request expires: the maker's call once approved spends it,
+  without a second confirmation. `hold_authorizations(until)` keeps the
+  request's for code that holds an act of its own. The authorizations
+  table gains a nullable `held_until` column
+  ([Held for approval](docs/auth/actions.md#held-for-approval), ADR 0174)
+  (user report A17).
+- `AUTH.AUTHORIZATIONS.ACTIONS` gives each act, by its purpose, its own
+  `METHODS` and `TTL`: the framework's (`auth.admin_change`,
+  `approvals.approve`, ...), which took the settings every act takes,
+  and the project's. `check` refuses a purpose no registered action has
+  (`auth.E112`)
+  ([Each act its own methods and lifetime](docs/auth/actions.md#each-act-its-own-methods-and-lifetime),
+  ADR 0174) (user report A17).
+
 ### Changed
 
 - The `kafka` extra accepts aiokafka up to 0.15 (`>=0.12.0,<0.16.0`),

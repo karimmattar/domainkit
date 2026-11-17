@@ -460,6 +460,12 @@ authorizations = Table(
     # What confirms it: the phone's sign-in request, or a passkey's challenge.
     Column("sign_in_request_id", Uuid),
     Column("passkey_challenge", String(64)),
+    # SHA-256 of what the act's ``binds`` read of its record when it was
+    # asked; the digest covers it (ADR 0174).
+    Column("bound", String(64)),
+    # While its act waits for approval: kept past ``expires_at`` until then,
+    # within ``AUTHORIZATIONS.HELD_TTL`` of it (ADR 0174).
+    Column("held_until", UTCDateTime),
     Index("ix_domainkit_authorizations_user_id", "user_id"),
     Index("ix_domainkit_authorizations_login", "login"),
     Index("ix_domainkit_authorizations_expires_at", "expires_at"),

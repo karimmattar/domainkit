@@ -37,6 +37,7 @@ import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import fields, replace
+from datetime import datetime
 from typing import Any, Final
 from uuid import UUID
 
@@ -328,6 +329,11 @@ async def run_by_maker(guard: Guard, command: object) -> Running:
     call refused after that needs a new approval. A request that fails a
     check fails, and the next is tried.
 
+    Waiting, the act's authorization the caller confirmed for this call,
+    if auth's action authorizations took one, is kept for the call made
+    again once approved, until the request expires, within
+    ``AUTH.AUTHORIZATIONS.HELD_TTL`` (ADR 0174).
+
     Raises:
         ApprovalRequired: No one is acting.
         MakerNotAllowed: The caller may no longer make the command.
@@ -358,9 +364,23 @@ async def run_by_maker(guard: Guard, command: object) -> Running:
     )
     if waiting is None:
         waiting = await _submit(guard, command, maker, ApprovalsUnitOfWork())
+    _keep_authorizations(waiting.expires_at)
     raise ApprovalPending(
         "This command needs approval: it was submitted for approval.", waiting.id
     )
+
+
+def _keep_authorizations(until: datetime) -> None:
+    """Keep the action authorization of the maker's held call until ``until``.
+
+    With ``domainkit.contrib.auth`` installed, its ``hold_authorizations``:
+    the call made again once approved spends it, within
+    ``AUTH.AUTHORIZATIONS.HELD_TTL`` (ADR 0174). Without, there is none.
+    """
+    if registry.is_installed(AUTH):
+        from domainkit.contrib.auth.actions import hold_authorizations
+
+        hold_authorizations(until)
 
 
 async def _spend(

@@ -1208,6 +1208,9 @@ msgstr "لا يمكن طلب تفويض ببيانات الاعتماد هذه: 
 msgid "This act is not authorized: ask for an authorization of it, confirm it, then try again."
 msgstr "هذا الإجراء غير مُصرَّح به: اطلب تفويضًا له، وأكّده، ثم أعد المحاولة."
 
+msgid "What this act decides on changed since you were shown it: ask for a new authorization."
+msgstr "تغيّر ما يقرّر فيه هذا الإجراء منذ أن عُرض عليك: اطلب تفويضًا جديدًا."
+
 msgid "This act is not the one you were shown."
 msgstr "هذا الإجراء ليس الذي عُرض عليك."
 

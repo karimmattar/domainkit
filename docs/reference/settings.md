@@ -25,6 +25,7 @@ On this page you find:
 | Each optional app's settings (`AUTH`, `MESSAGING`, `AUDIT`, ...) | the app's own page ([contrib.md](../contrib.md)) |
 | `AUTH`'s keys, `AUTH["BREACHED_PASSWORDS"]` (new passwords checked against data breaches) among them | [auth.md](../auth.md#settings) |
 | `AUTH["ADMIN_ACTION"]`, and `APPROVALS["SUBMIT_ACTION"]`, `["REJECT_ACTION"]`, and `["CANCEL_ACTION"]`: the admin API's changes and a request's steps, each authorized as one act | [auth.md](../auth.md#settings), [approvals.md](../contrib/approvals.md#settings) |
+| `AUTH["AUTHORIZATIONS"]["HELD_TTL"]` (an act held for approval keeps its authorization) and `["ACTIONS"]` (each act its own `TTL` and `METHODS`), new in 2.7 | [auth.md](../auth.md#settings) |
 | `DEVICES`'s keys, `DEVICES["PUSH_TOKEN_CHECK"]` (push tokens checked with their service when registered) among them | [devices.md](../auth/devices.md#settings) |
 | `CIBA`'s keys, `CIBA["PUSH_TEXTS"]` (each kind of request's push text) among them | [ciba.md](../auth/ciba.md#settings) |
 

@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any, Final
 from uuid import UUID
 
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import and_, delete, insert, not_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..tables import authorizations
@@ -140,6 +140,11 @@ class ActionAuthorization:
     """The phone's sign-in request that confirms it (``domainkit.contrib.ciba``)."""
     passkey_challenge: str | None = dataclasses.field(default=None, repr=False)
     """The passkey's challenge made for it (``domainkit.contrib.devices``)."""
+    bound: str | None = dataclasses.field(default=None, repr=False)
+    """The SHA-256 of what its action's ``binds`` read of the record the act
+    decides on, when it was asked; the digest covers it (ADR 0174)."""
+    held_until: datetime | None = None
+    """Kept past ``expires_at`` until then, while its act waits for approval."""
 
     @property
     def methods(self) -> frozenset[str]:
@@ -249,16 +254,41 @@ class AuthorizationStore:
         return changed_rows(result) == 1
 
     async def consume(self, authorization_id: UUID, when: datetime) -> bool:
-        """Spend it at ``when``, if it is confirmed, unspent, and live: once."""
+        """Spend it at ``when``, if it is confirmed, unspent, and live: once.
+
+        Live: before its expiry, or before the time it is held until.
+        """
         result = await self.session.execute(
             update(authorizations)
             .where(
                 authorizations.c.id == authorization_id,
                 authorizations.c.confirmed_at.is_not(None),
                 authorizations.c.consumed_at.is_(None),
-                authorizations.c.expires_at > when,
+                self._live(when),
             )
             .values(consumed_at=when)
+        )
+        return changed_rows(result) == 1
+
+    async def hold(
+        self, authorization_id: UUID, until: datetime, when: datetime
+    ) -> bool:
+        """Keep it until ``until`` while its act waits for approval, if it is live.
+
+        Confirmed, unspent, and live at ``when``; a later ``until`` than the
+        one it holds only.
+        """
+        columns = authorizations.c
+        result = await self.session.execute(
+            update(authorizations)
+            .where(
+                columns.id == authorization_id,
+                columns.confirmed_at.is_not(None),
+                columns.consumed_at.is_(None),
+                self._live(when),
+                or_(columns.held_until.is_(None), columns.held_until < until),
+            )
+            .values(held_until=until)
         )
         return changed_rows(result) == 1
 
@@ -307,13 +337,20 @@ class AuthorizationStore:
         return [_loaded(dict(row._mapping)) for row in rows]
 
     async def clear_expired(self, now: datetime | None = None) -> int:
-        """Delete authorizations that no longer work; how many."""
+        """Delete authorizations that no longer work, held ones once over; how many."""
         result = await self.session.execute(
-            delete(authorizations).where(
-                authorizations.c.expires_at <= (now or utc_now())
-            )
+            delete(authorizations).where(not_(self._live(now or utc_now())))
         )
         return changed_rows(result)
+
+    @staticmethod
+    def _live(when: datetime) -> Any:  # noqa: ANN401 - a SQL condition.
+        """Before its expiry, or before the time it is held until, at ``when``."""
+        columns = authorizations.c
+        return or_(
+            columns.expires_at > when,
+            and_(columns.held_until.is_not(None), columns.held_until > when),
+        )
 
     @staticmethod
     def _waiting(when: datetime) -> tuple[Any, ...]:
