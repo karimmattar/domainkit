@@ -38,6 +38,47 @@ and a status.
   (`auth.grant_superuser` and those `ADMIN_APPROVALS` names) show the user
   by name and id, read when shown and never stored with the request, and
   an impersonation's "Stated reason" (user report A23).
+- A hook takes an order: `on_x(function, order=...)` runs it before
+  (below 0) or after (above 0) the hooks registered without one,
+  whatever their domains; those of one order keep `INSTALLED_DOMAINS`
+  order ([extension-points.md](docs/reference/extension-points.md#lifecycle-readiness-and-checks),
+  ADR 0172) (user report A19).
+- `on_admin_group_change` (`domainkit.contrib.auth.gates`): the admin
+  API's group routes and their twins call it with the staff member, the
+  group, and a `GroupChange` (`group_create`, `group_rename`,
+  `group_permissions`, `group_delete`; the name given, the permissions
+  added and taken away), so a project can refuse a group's change as it
+  refuses a user's ([the admin API](docs/auth/routes.md#staff-hand-out-only-what-they-have))
+  (user report A19).
+- `APPROVALS.ADMIN_APPROVALS` holds two more changes: `auth.reactivate`,
+  making a user who holds access active again (staff, a superuser, a
+  member of a group, or granted a permission, directly or on an object),
+  whose request holds what they come back with, and
+  `auth.set_group_permissions`, granting a group a permission, which the
+  group's members do not decide. Hold the latter with `auth.set_groups`:
+  `check` warns where it is held alone (`approvals.W001`, in staging and
+  production). Grants made outside the admin API need guards of the
+  project's own, as the page now says
+  ([Changes of the admin API](docs/contrib/approvals.md#changes-of-the-admin-api))
+  (user reports A20, A21).
+- `AdminChange.last_check`: the admin API's own check that only the
+  change makes (a password the user had before), run once, when the
+  change will surely be made; approvals' hold runs it under the approved
+  request's lock, before spending it (user report A19).
+- What approving `auth.set_groups`, `auth.reactivate`, and
+  `auth.set_group_permissions` shows says what each grants in words:
+  each group added by name, the end of its id, and how many permissions
+  and grants on objects it holds, as many on a line as fit; a user's
+  return with its flags, groups, and counts; a group by its name now. A name too long is cut beside the
+  id, never refused under `WHOLE`. `on_admin_group_screen`
+  (`domainkit.contrib.auth.gates`) lets approvals refuse, at a group's
+  twin, a held grant its approver could not see whole (user reports A21,
+  A23).
+- `ObjectGrant.expires_at`: when a grant on an object ends, which
+  `domainkit.contrib.objectpermissions` gives; not compared.
+  `ObjectGrant.lasting` keeps a grant held twice once, with its latest
+  end, whatever the order, as `object_grants` now does (user report
+  A21).
 
 - `TENANCY.ALL_TENANTS_PERMISSION` names a permission key that reaches
   every tenant: staff who hold it everywhere change, and act as, through
@@ -148,6 +189,27 @@ and a status.
   before it counts what does not fit. An item that holds a comma is
   quoted, and a backslash is doubled ([upgrading.md](docs/upgrading.md#26-to-27))
   (user report A22).
+- The admin API's twins run the `on_admin_change` checks (a group's
+  twins, the `on_admin_group_change` checks) with `AdminChange.asking`
+  true, so a change the project refuses is refused before the staff
+  member confirms it; approvals' hold submits and spends nothing there.
+  A check that writes should write nothing while `asking`
+  ([upgrading.md](docs/upgrading.md#26-to-27)) (user report A17).
+
+### Fixed
+
+- Approvals' hold of an admin change runs after the project's
+  `on_admin_change` checks (`HOLD_ORDER`, 100), whatever the domains'
+  order, and compares a password with the user's history
+  (`AUTH.PASSWORD_HISTORY`) once it finds the approved request, before
+  spending it: a change refused there no longer spends the staff
+  member's approval (user report A19).
+- The admin API declares each route's staff rule among its route
+  dependencies, so a check a project adds with `select_routes` runs after
+  the admin API's rules, not for anyone before them; the page says where
+  a rule taken as an endpoint's parameter runs
+  ([Rules on the framework's routes](docs/auth/routes.md#rules-on-the-frameworks-routes))
+  (user report A17).
 
 ### Security
 
@@ -160,6 +222,39 @@ and a status.
   show alike. With
   `AUTH["AUTHORIZATIONS"]["WHOLE"]` on, such a request is refused rather
   than counted (ADR 0173) (user report A23).
+- An approved `auth.set_groups` request grants the groups it held, not
+  their names. It held the names alone, and the call made once it was
+  approved joined whatever group had the name then: a powerful group
+  renamed to the approved name, or a group deleted and made again,
+  passed the second person's check. `SetGroups` holds each group added
+  by id with the permissions it grants and its grants on single objects
+  (`groups`, `HeldGroup`); a group renamed, made again, or granted other
+  permissions or objects since (or a grant renewed to another date)
+  makes another request, which shows what it grants. A request of 2.6 approved and not yet made is approved
+  again ([upgrading.md](docs/upgrading.md#26-to-27), ADR 0172) (user
+  report A21).
+- `auth.set_staff` holds making a deactivated staff member active again
+  where `auth.reactivate` is not held: `{"is_active": true}` gave staff
+  back with no approval. With both held, a call that makes a user staff
+  and active again is refused (`403 approval_required`) (user report A21).
+- A deactivated superuser made active again through the admin API is a
+  superuser made: with `APPROVALS.SUPERUSER_APPROVALS`, it is refused
+  (`403 approval_required`), and it passed with no approval (user report
+  A21).
+- The admin API compares a password with the user's history only when
+  the change is about to be made, and a reuse costs a try. One
+  confirmation tested guess after guess against the history at no rate.
+  Now nothing is compared while a check refuses the change or its
+  approval waits, and, where an approval is spent, only by the call that
+  claims it, under its lock, so calls made at once on one approval are
+  one guess; every other password gets the same answer. Once compared,
+  a reuse is refused, spends the change's authorization
+  (`AUTH.ADMIN_ACTION`), and counts against the staff member's guesses
+  at that user's passwords (`AUTH.LOGIN_RATE`, `ACCOUNT_LOGIN_RATE`;
+  `429 rate_limited` past them), apart from the user's own login counts.
+  With `AUTH.ADMIN_ACTION`, such a call spends its authorization before
+  anything is checked, so calls sent at once on one confirmation make one
+  comparison and spend no approval they cannot use (user report A17).
 
 ## [2.6.0] - 2026-11-17
 

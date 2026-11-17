@@ -1395,6 +1395,38 @@ msgstr ""
 msgid "Making staff needs approval: create the user, then make them staff."
 msgstr ""
 
+msgid "Make the user staff and active again in two changes: each waits for its own approval."
+msgstr ""
+
+msgid "Too many of this user's old passwords were sent; try again later."
+msgstr ""
+
+#. domainkit.contrib.approvals: what a held change of the admin API shows
+msgid "Groups"
+msgstr ""
+
+msgid "Also holds"
+msgstr ""
+
+msgctxt "held group"
+msgid "{name} ({id}) {grants}"
+msgstr ""
+
+msgid "{count} perm"
+msgid_plural "{count} perms"
+msgstr[0] ""
+msgstr[1] ""
+
+msgid "{count} permission"
+msgid_plural "{count} permissions"
+msgstr[0] ""
+msgstr[1] ""
+
+msgid "{count} object grant"
+msgid_plural "{count} object grants"
+msgstr[0] ""
+msgstr[1] ""
+
 msgid "Requests are made and decided in one's own name only."
 msgstr ""
 

@@ -731,7 +731,13 @@ The admin API spends its act in its own code, with the change's
 transaction, after the `on_admin_change` checks, and checks that it binds
 the change before them. A change held for approval keeps its
 authorization for the maker's call once approved, with `HELD_TTL` set
-([above](#held-for-approval)). Approvals spends each in its services, as
+([above](#held-for-approval)). Setting a password, with the history on,
+is the exception: it spends its authorization first, before any check
+(since 2.7), whatever `HELD_TTL` says. The act binds only that a
+password is set, so each confirmation is one guess at the user's
+history, and a call that waits for approval spends its confirmation
+too: confirm again to try again
+([Each change, authorized as one act](routes.md#each-change-authorized-as-one-act)). Approvals spends each in its services, as
 `approve_request` does ([Submitting, rejecting, and cancelling with an
 authorization](../contrib/approvals.md#submitting-rejecting-and-cancelling-with-an-authorization)).
 The project's own code takes those steps without one, through the

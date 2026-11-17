@@ -30,12 +30,16 @@ never the user it promotes.
 ``ADMIN_APPROVALS`` holds changes of auth's admin API for approval: making
 staff (``SET_STAFF``), adding groups (``SET_GROUPS``) or permissions
 (``SET_PERMISSIONS``), setting a password (``SET_PASSWORD``),
-impersonating (``IMPERSONATE``). The admin API asks before each change
-(``on_admin_change``); for one the setting names, the change is submitted
-as the staff member's request and refused (``approval_pending``), and the
-same call, made again by them once the request is approved, makes it,
-once (a guard ``by_maker``). The approvers are superusers (or the holders
-of ``ADMIN_APPROVERS``), never the user the change is about.
+impersonating (``IMPERSONATE``); since 2.7, making a user who holds access
+active again (``REACTIVATE``), and granting a group permissions
+(``SET_GROUP_PERMISSIONS``). The admin API asks before each change
+(``on_admin_change``, ``on_admin_group_change``), after the project's
+checks (``HOLD_ORDER``); for one the setting names, the change is
+submitted as the staff member's request and refused
+(``approval_pending``), and the same call, made again by them once the
+request is approved, makes it, once (a guard ``by_maker``). The
+approvers are superusers (or the holders of ``ADMIN_APPROVERS``), never
+the user the change is about, nor a member of the group granted.
 
 What a person deciding a request about a user is shown names the user,
 read when shown, with the end of their id (``show_about_user``): "User:
@@ -43,10 +47,12 @@ alice@example.com (…123456789abc)", then the groups or permissions it
 adds and takes away, each list over as many lines as it takes, and an
 impersonation's stated reason (ADR 0173). With ``APPROVE_ACTION`` on, the
 admin API's twin refuses a change held here that the approver's screen
-could not show whole (``check_admin_screen``).
+could not show whole (``check_admin_screen``, ``check_group_screen``).
 """
 
-from collections.abc import Mapping
+import dataclasses
+import hashlib
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID
 
@@ -54,8 +60,9 @@ from pydantic import TypeAdapter
 
 from domainkit.apps import registry
 from domainkit.context import current_request
-from domainkit.ddd import Command, PermissionDenied
-from domainkit.i18n import gettext, gettext_noop
+from domainkit.ddd import Command, PermissionDenied, ValueObject
+from domainkit.exceptions import ImproperlyConfigured
+from domainkit.i18n import gettext, gettext_noop, ngettext, pgettext
 
 from .exceptions import ApprovalRequired, MakerNotAllowed
 from .guards import (
@@ -66,6 +73,7 @@ from .guards import (
     Show,
     Threshold,
     check,
+    checked_when_spent,
     current_run,
     guards,
     on_guard,
@@ -82,8 +90,9 @@ if TYPE_CHECKING:
         PostEntry,
         ReverseEntry,
     )
-    from domainkit.contrib.auth import AbstractBaseUser, AuthUnitOfWork
-    from domainkit.contrib.auth.gates import AdminChange
+    from domainkit.contrib.auth import AbstractBaseUser, AuthUnitOfWork, Group
+    from domainkit.contrib.auth.backends import ObjectGrant
+    from domainkit.contrib.auth.gates import AdminChange, GroupChange
 
 POST_ENTRY: Final = "accounting.post_entry"
 """The guarded action of postings over their currency's threshold."""
@@ -103,6 +112,15 @@ SET_PASSWORD: Final = "auth.set_password"  # noqa: S105 - an action, not a secre
 """The guarded action of setting a user's password in the admin API."""
 IMPERSONATE: Final = "auth.impersonate"
 """The guarded action of acting as a user in the admin API."""
+REACTIVATE: Final = "auth.reactivate"
+"""The guarded action of making a user who holds access active again (since 2.7)."""
+SET_GROUP_PERMISSIONS: Final = "auth.set_group_permissions"
+"""The guarded action of granting a group permissions in the admin API (since 2.7)."""
+HOLD_ORDER: Final = 100
+"""The ``order`` approvals' checks of admin changes register with (since 2.7).
+
+After the checks registered without one, so a change a project refuses
+spends no approval (user report A19)."""
 USER: Final = gettext_noop("User")
 """The label of the user a request is about, shown by name and id."""
 SHOWN_LABELS: Final = {
@@ -114,6 +132,19 @@ SHOWN_LABELS: Final = {
 
 An impersonation's reason is the "Stated reason": a rejection's or a
 cancellation's own "Reason" shows beside it."""
+GROUP: Final = gettext_noop("Group")
+"""The label of the group a grant to a group is on, shown by name and id."""
+GROUPS: Final = gettext_noop("Groups")
+"""The label of the groups a user made active again comes back in."""
+SUPERUSER: Final = gettext_noop("Superuser")
+STAFF: Final = gettext_noop("Staff")
+ALSO_HOLDS: Final = gettext_noop("Also holds")
+"""The label of how many permissions of their own, and grants on objects, a
+user made active again comes back with."""
+SHOWN_ID: Final = 4
+"""How many of a group's id's last characters its item shows: a check for the
+person beside the name, short enough that two groups share a line; the
+request binds the whole id."""
 
 
 @requires_approval(POST_ENTRY)
@@ -361,6 +392,166 @@ async def show_about_user(command: Any) -> list[tuple[str, object]]:  # noqa: AN
     return shown
 
 
+async def show_set_groups(command: "SetGroups") -> list[tuple[str, object]]:
+    """What adding a user to groups shows: the user, then each group in words.
+
+    The user by name and id, as ``show_about_user`` shows one. Each group
+    added ("Adds", as many on a line as fit, over as many lines as it
+    takes) by its name, read now (the name held, if it is gone), the end
+    of its id, and what it grants: "readers (…9abc) 3 perms + 2 object
+    grants". A name too long for its line is cut, never refused: the
+    request binds the id. Then the names of the groups it takes away
+    ("Takes away").
+    """
+    shown = [await _user_line(command.user_id)]
+    names = await _group_names(group.id for group in command.groups)
+    items = [
+        _held_group(names.get(group.id, group.name), group) for group in command.groups
+    ]
+    if not command.groups:  # A request of 2.6, which held names alone.
+        items = [_item(name) for name in command.added]
+    if items:
+        shown.append((gettext(SHOWN_LABELS["added"]), items))
+    if command.removed:
+        removed = [_item(name) for name in command.removed]
+        shown.append((gettext(SHOWN_LABELS["removed"]), removed))
+    return shown
+
+
+async def show_reactivation(command: "Reactivate") -> list[tuple[str, object]]:
+    """What making a user active again shows: the user, and what they come back with.
+
+    The user by name and id; "Superuser" and "Staff" where they come back
+    as such; their groups by name, read now ("Groups"); and how many
+    permissions of their own and grants on objects they hold ("Also
+    holds"). A name too long for its line is cut, never refused.
+    """
+    shown: list[tuple[str, object]] = [await _user_line(command.user_id)]
+    yes = pgettext("flag", "yes")
+    if command.is_superuser:
+        shown.append((gettext(SUPERUSER), yes))
+    if command.is_staff:
+        shown.append((gettext(STAFF), yes))
+    if command.groups:
+        names = await _group_names(group.id for group in command.groups)
+        groups = [_item(names.get(group.id, group.name)) for group in command.groups]
+        shown.append((gettext(GROUPS), groups))
+    held = _counts(len(command.permissions), command.object_grants)
+    if held:
+        shown.append((gettext(ALSO_HOLDS), held))
+    return shown
+
+
+async def show_group_permissions(
+    command: "SetGroupPermissions",
+) -> list[tuple[str, object]]:
+    """What granting a group permissions shows: the group, then the keys.
+
+    The group by its name, read now (the name held, if it is gone), and the
+    end of its id; then the permissions it adds and takes away, each list
+    over as many lines as it takes ("Adds", "Takes away"). A name too long
+    is cut beside the id, never refused.
+    """
+    from domainkit.contrib.auth.screens import named
+
+    names = await _group_names([command.group_id])
+    name = names.get(command.group_id, command.name)
+    shown: list[tuple[str, object]] = [(gettext(GROUP), named(name, command.group_id))]
+    if command.added:
+        shown.append((gettext(SHOWN_LABELS["added"]), list(command.added)))
+    if command.removed:
+        shown.append((gettext(SHOWN_LABELS["removed"]), list(command.removed)))
+    return shown
+
+
+async def _user_line(user_id: UUID) -> tuple[str, object]:
+    """The user a request is about, by name, read now, and id."""
+    from domainkit.contrib.auth import AuthUnitOfWork, UserId
+    from domainkit.contrib.auth.screens import named
+
+    async with AuthUnitOfWork() as uow:
+        user = await uow.users.find(UserId(user_id))
+    return gettext(USER), named("" if user is None else user.get_username(), user_id)
+
+
+async def _group_names(ids: Iterable[UUID]) -> dict[UUID, str]:
+    """The names of the groups ``ids`` names, as stored now; those gone are left out."""
+    from domainkit.contrib.auth import AuthUnitOfWork, GroupId
+
+    found: dict[UUID, str] = {}
+    async with AuthUnitOfWork() as uow:
+        for each in ids:
+            group = await uow.groups.find(GroupId(each))
+            if group is not None:
+                found[each] = group.name
+    return found
+
+
+def _held_group(name: str, group: "HeldGroup") -> str:
+    """A group added, in a few words: its name, the end of its id, what it grants.
+
+    "readers (…9abc) 3 perms", and "+ 2 object grants" where it holds any:
+    short, so that a screen puts two or more on a line.
+    """
+    ident = str(group.id)
+    ident = "…" + ident[-SHOWN_ID:] if len(ident) > SHOWN_ID else ident
+    count = len(group.permissions)
+    grants = ngettext("{count} perm", "{count} perms", count).format(count=count)
+    if group.object_grants:
+        more = ngettext(
+            "{count} object grant", "{count} object grants", group.object_grants
+        )
+        grants += " + " + more.format(count=group.object_grants)
+    line = pgettext("held group", "{name} ({id}) {grants}")
+    return _fitting(lambda text: line.format(name=text, id=ident, grants=grants), name)
+
+
+def _counts(permissions: int, grants: int) -> str:
+    """How many permissions, and grants on objects, those there are ("" for none)."""
+    parts: list[str] = []
+    if permissions:
+        many = ngettext("{count} permission", "{count} permissions", permissions)
+        parts.append(many.format(count=permissions))
+    if grants:
+        many = ngettext("{count} object grant", "{count} object grants", grants)
+        parts.append(many.format(count=grants))
+    return "; ".join(parts)
+
+
+def _item(name: str) -> str:
+    """``name``, cut where need be, so that a list shows it on one line."""
+    return _fitting(lambda text: text, name)
+
+
+def _fitting(make: Callable[[str], str], name: str) -> str:
+    """``make(name)``, the name cut and ended with ``…`` where a line needs it.
+
+    Measured as a screen lays a list's item out (quoted, escaped), so what
+    a request grants is never refused for the length of a name.
+    """
+    from domainkit.contrib.auth.screens import TooMuchToShow, laid_out
+
+    def fits(text: str) -> bool:
+        try:
+            laid_out([("·", [text])], whole=True)
+        except TooMuchToShow:
+            return False
+        return True
+
+    whole = make(name)
+    if fits(whole):
+        return whole
+    low, high, best = 0, len(name) - 1, make("…")
+    while low <= high:
+        middle = (low + high) // 2
+        candidate = make(name[:middle] + "…")
+        if fits(candidate):
+            best, low = candidate, middle + 1
+        else:
+            high = middle - 1
+    return best
+
+
 def _promoted(command: GrantSuperuser) -> list[str]:
     """The user a grant promotes: they do not decide it."""
     return [str(command.user_id)]
@@ -426,21 +617,45 @@ def refuse_if_guarded(action: str) -> None:
 
 
 class SetStaff(Command):
-    """Make a user staff, in the admin API (``PATCH /users/{id}``)."""
+    """Make a user staff, in the admin API (``PATCH /users/{id}``).
+
+    Where ``auth.reactivate`` is not held, it is also making a staff member
+    active again: their return gives staff back (since 2.7).
+    """
 
     user_id: UUID
+
+
+class HeldGroup(ValueObject):
+    """A group a ``SetGroups`` adds, as it was when the change was asked.
+
+    Its id, its name, the keys of the permissions it grants, sorted, and
+    its grants on single objects: how many, and their digest (SHA-256 of
+    them, sorted; empty for none). Since 2.7, user report A21.
+    """
+
+    id: UUID
+    name: str
+    permissions: tuple[str, ...]
+    object_grants: int = 0
+    object_grants_digest: str = ""
 
 
 class SetGroups(Command):
     """Add a user to groups, and take them out of others, in the admin API.
 
     ``added`` and ``removed`` are what ``PUT /users/{id}/groups`` changes,
-    by name, sorted: the change itself, not the list sent.
+    by name, sorted: the change itself, not the list sent. ``groups``
+    holds each group added, by name, as ``HeldGroup`` (since 2.7): its id
+    and the permissions it grants. An approval grants the groups it
+    held: a group renamed, made again, or granted other permissions since
+    makes another command, which waits for an approval of its own.
     """
 
     user_id: UUID
     added: tuple[str, ...]
     removed: tuple[str, ...] = ()
+    groups: tuple[HeldGroup, ...] = ()
 
 
 class SetPermissions(Command):
@@ -472,12 +687,49 @@ class Impersonate(Command):
     reason: str
 
 
+class Reactivate(Command):
+    """Make a user who holds access active again, in the admin API (since 2.7).
+
+    ``PATCH /users/{id}`` with ``"is_active": true``, for an inactive user
+    who is staff or a superuser, belongs to a group, or holds a
+    permission, directly or on an object: they get it all back. It holds
+    what they come back with, as the change leaves it: the flags, each
+    group (``HeldGroup``), their own permissions, sorted, and their grants
+    on single objects (how many, and their digest). Anything granted since
+    makes another command, which waits for its own approval.
+    """
+
+    user_id: UUID
+    is_staff: bool
+    is_superuser: bool
+    groups: tuple[HeldGroup, ...]
+    permissions: tuple[str, ...]
+    object_grants: int
+    object_grants_digest: str
+
+
+class SetGroupPermissions(Command):
+    """Grant a group permissions, and take others away, in the admin API.
+
+    ``added`` and ``removed`` are what ``PUT /groups/{id}/permissions``
+    changes, by key, sorted; ``name`` is the group's. Every member gains
+    what it adds, so none of them decides it (since 2.7).
+    """
+
+    group_id: UUID
+    name: str
+    added: tuple[str, ...]
+    removed: tuple[str, ...] = ()
+
+
 ADMIN_COMMANDS: Final[Mapping[str, type[Command]]] = {
     SET_STAFF: SetStaff,
     SET_GROUPS: SetGroups,
     SET_PERMISSIONS: SetPermissions,
     SET_PASSWORD: SetPassword,
     IMPERSONATE: Impersonate,
+    REACTIVATE: Reactivate,
+    SET_GROUP_PERMISSIONS: SetGroupPermissions,
 }
 """The command of each admin action ``ADMIN_APPROVALS`` may name."""
 ADMIN_POLICIES: Final[Mapping[str, str]] = {
@@ -486,6 +738,8 @@ ADMIN_POLICIES: Final[Mapping[str, str]] = {
     SET_PERMISSIONS: "auth.permissions",
     SET_PASSWORD: "auth.password",
     IMPERSONATE: "auth.impersonation",
+    REACTIVATE: "auth.reactivation",
+    SET_GROUP_PERMISSIONS: "auth.group_permissions",
 }
 """The policy each admin action's requests wait under."""
 
@@ -509,13 +763,26 @@ ADMIN_SERVICES: Final[Mapping[str, Service]] = {
     action: _admin_service(action) for action in ADMIN_COMMANDS
 }
 """Each admin action's decorated service."""
-ADMIN_SHOWS: Final[Mapping[str, Show]] = dict.fromkeys(ADMIN_COMMANDS, show_about_user)
+ADMIN_SHOWS: Final[Mapping[str, Show]] = {
+    **dict.fromkeys(ADMIN_COMMANDS, show_about_user),
+    SET_GROUPS: show_set_groups,
+    REACTIVATE: show_reactivation,
+    SET_GROUP_PERMISSIONS: show_group_permissions,
+}
 """What each admin action's request shows; a hold of a group gives its own."""
 
 
 def _about_user(command: Any) -> list[str]:  # noqa: ANN401 - an admin command.
     """The user an admin change is about: they do not decide it."""
     return [str(command.user_id)]
+
+
+async def _members(command: SetGroupPermissions) -> list[str]:
+    """The members of the group granted, as stored now: they do not decide it."""
+    from domainkit.contrib.auth import AuthUnitOfWork
+
+    async with AuthUnitOfWork() as uow:
+        return [str(each) for each in await uow.groups.member_ids(command.group_id)]
 
 
 def guard_admin_changes(config: ApprovalsSettings) -> None:
@@ -541,7 +808,7 @@ def guard_admin_changes(config: ApprovalsSettings) -> None:
                 ADMIN_SERVICES[action],
                 AuthUnitOfWork,
                 (Policy(ADMIN_POLICIES[action], approvals=approvals, **approvers),),
-                parties=_about_user,
+                parties=_members if action == SET_GROUP_PERMISSIONS else _about_user,
                 http=False,
                 by_maker=True,
                 show=ADMIN_SHOWS[action],
@@ -572,14 +839,17 @@ async def check_admin_change(
 ) -> None:
     """Hold a change of the admin API for approval, if a guard holds it.
 
-    Auth's ``on_admin_change`` calls it before each change. A change that
+    Auth's ``on_admin_change`` calls it before each change, after the
+    checks registered without an order (``HOLD_ORDER``). A change that
     ``ADMIN_APPROVALS`` names runs the guard's service: the staff member's
     approved request of exactly this change is spent and the change goes
     on, or else the change is submitted, or found waiting, and refused.
+    At the change's twin (``change.asking``) nothing is submitted or spent.
 
     Raises:
         ApprovalRequired: A user is created staff while making staff is
-            guarded: create them, then make them staff.
+            guarded: create them, then make them staff; or a change both
+            makes a user staff and active again while both are guarded.
         PermissionDenied: Staff act as someone else (an impersonation).
         ApprovalPending: The change waits for its approvals.
     """
@@ -587,14 +857,83 @@ async def check_admin_change(
         if change.values.get("is_staff") is True:
             refuse_staff_creation()  # The admin API asked it already.
         return
-    held = None if target is None else _admin_command(target, change)
-    if held is None or held[0] not in guards():
+    held = None if target is None else await _admin_command(target, change)
+    if held is not None:
+        await _hold(actor, *held, asking=change.asking, last=change.last_check)
+
+
+async def check_group_change(
+    actor: Any,  # noqa: ANN401 - the staff member, a user.
+    group: "Group | None",
+    change: "GroupChange",
+) -> None:
+    """Hold granting a group permissions for approval, if a guard holds it.
+
+    Auth's ``on_admin_group_change`` calls it before each change of a
+    group, as ``check_admin_change`` is called for a user's. Only a change
+    that grants (``auth.set_group_permissions``) is held: what only takes
+    away, a new group (it has no members), a name, and a deletion are not.
+    """
+    command = None if group is None else _group_command(group, change)
+    if command is not None:
+        await _hold(actor, SET_GROUP_PERMISSIONS, command, asking=change.asking)
+
+
+def _group_command(group: "Group", change: "GroupChange") -> SetGroupPermissions | None:
+    """The held command of ``change`` to ``group``, if a guard holds it."""
+    if (
+        change.kind != "group_permissions"
+        or not change.added
+        or SET_GROUP_PERMISSIONS not in guards()
+    ):
+        return None
+    return SetGroupPermissions(
+        group_id=group.id,
+        name=group.name,
+        added=tuple(sorted(change.added)),
+        removed=tuple(sorted(change.removed)),
+    )
+
+
+async def _hold(
+    actor: Any,  # noqa: ANN401 - the staff member, a user.
+    action: str,
+    command: Command,
+    *,
+    asking: bool,
+    last: Callable[[], Awaitable[None]] | None = None,
+) -> None:
+    """Spend the staff member's approved request of ``command``, or submit it.
+
+    At a twin (``asking``) nothing is submitted or spent: the change is
+    only asked for. ``last`` is the admin API's last check of the change
+    (``AdminChange.last_check``): run under the approved request's lock,
+    by the one call that claims it, before it is spent, so a change it
+    refuses spends no approval; never while the change waits, nor by a
+    call that loses the claim.
+
+    Raises:
+        PermissionDenied: Staff act as someone else (an impersonation).
+        ApprovalPending: The change waits for its approvals.
+        Exception: Whatever ``last`` raises.
+    """
+    if asking:
         return
-    action, command = held
     context = current_request()
     if context is None or context.actor != str(actor.id):
         raise PermissionDenied("Requests are made and decided in one's own name only.")
-    await ADMIN_SERVICES[action](command, None)
+    if last is None:
+        await ADMIN_SERVICES[action](command, None)
+        return
+    with checked_when_spent(last):
+        await ADMIN_SERVICES[action](command, None)
+
+
+TWO_HOLDS: Final = (
+    "Make the user staff and active again in two changes: each waits for its "
+    "own approval."
+)
+"""Why a change held twice over is refused (``auth.set_staff``, ``auth.reactivate``)."""
 
 
 async def check_admin_screen(target: "AbstractBaseUser", change: "AdminChange") -> None:
@@ -609,36 +948,228 @@ async def check_admin_screen(target: "AbstractBaseUser", change: "AdminChange") 
         TooMuchToShow: With ``AUTH.AUTHORIZATIONS.WHOLE`` on, approving it
             could not be shown whole (auth's, 422).
     """
-    held = _admin_command(target, change)
-    if held is None or held[0] not in guards():
+    held = await _admin_command(target, await _with_groups(change))
+    if held is None:
         return
     from .authorizing import check_approvable
 
     await check_approvable(guards()[held[0]], held[1])
 
 
-def _admin_command(target: "AbstractBaseUser", change: "AdminChange") -> Any:  # noqa: ANN401 - (action, command) or None.
-    """The guarded action and command of ``change`` to ``target``, if it has one.
+async def check_group_screen(group: "Group", change: "GroupChange") -> None:
+    """Refuse, at a group change's twin, a held change no approver could see whole.
 
-    Making staff (not unmaking), adding groups or permissions (a change that
-    only takes away is not held), setting a password, impersonating.
+    Auth's ``on_admin_group_screen`` calls it as ``check_admin_screen`` is
+    called for a user's change: granting a group permissions that
+    ``ADMIN_APPROVALS`` holds is refused (``TooMuchToShow``) where approving
+    it could not be shown whole. It reads, and writes nothing.
+
+    Raises:
+        TooMuchToShow: With ``AUTH.AUTHORIZATIONS.WHOLE`` on, approving it
+            could not be shown whole (auth's, 422).
     """
-    user_id = target.id
+    command = _group_command(group, change)
+    if command is None:
+        return
+    from .authorizing import check_approvable
+
+    await check_approvable(guards()[SET_GROUP_PERMISSIONS], command)
+
+
+async def _with_groups(change: "AdminChange") -> "AdminChange":
+    """``change`` holding the groups it adds, read now where it names them only.
+
+    A twin's screen rebuilds the change from the act, which names groups.
+    """
+    if change.kind != "groups" or not change.added or change.groups:
+        return change
+    from domainkit.contrib.auth import AuthUnitOfWork
+    from domainkit.contrib.auth.backends import object_grants
+    from domainkit.contrib.auth.gates import AddedGroup
+
+    async with AuthUnitOfWork() as uow:
+        found = await uow.groups.get_many_by_name(sorted(change.added))
+    groups = tuple(
+        [
+            AddedGroup(
+                group.id,
+                group.name,
+                frozenset(group.permission_keys()),
+                await object_grants(group),
+            )
+            for group in found
+        ]
+    )
+    return dataclasses.replace(change, groups=groups)
+
+
+async def _admin_command(
+    target: "AbstractBaseUser", change: "AdminChange"
+) -> tuple[str, Command] | None:
+    """The guarded action and command of ``change`` to ``target``, if one holds it.
+
+    Making staff (not unmaking), making a user who holds access active
+    again, adding groups or permissions (a change that only takes away is
+    not held), setting a password, impersonating.
+
+    Raises:
+        ApprovalRequired: The change both makes the user staff and active
+            again while both are held: two approvals, never one for both.
+        ImproperlyConfigured: A change of groups held does not name each
+            group it adds (``AdminChange.groups``).
+    """
+    held = guards()
     if change.kind == "update":
-        making = change.values.get("is_staff") is True
-        if making and not getattr(target, "is_staff", False):
-            return SET_STAFF, SetStaff(user_id=user_id)
+        return await _updated(target, change, held)
+    action = USER_ACTIONS.get(change.kind)
+    granting = change.kind not in ("groups", "permissions") or bool(change.added)
+    if action is None or action not in held or not granting:
         return None
-    if change.kind in ("groups", "permissions") and change.added:
-        added, removed = tuple(sorted(change.added)), tuple(sorted(change.removed))
-        if change.kind == "groups":
-            return SET_GROUPS, SetGroups(user_id=user_id, added=added, removed=removed)
-        return SET_PERMISSIONS, SetPermissions(
-            user_id=user_id, added=added, removed=removed
+    user_id = target.id
+    added, removed = tuple(sorted(change.added)), tuple(sorted(change.removed))
+    if action == SET_GROUPS:
+        groups = _held_groups(change)
+        return action, SetGroups(
+            user_id=user_id, added=added, removed=removed, groups=groups
         )
-    if change.kind == "password":
-        return SET_PASSWORD, SetPassword(user_id=user_id)
-    if change.kind == "impersonate":
-        reason = str(change.values.get("reason", ""))
-        return IMPERSONATE, Impersonate(user_id=user_id, reason=reason)
+    if action == SET_PERMISSIONS:
+        return action, SetPermissions(user_id=user_id, added=added, removed=removed)
+    if action == SET_PASSWORD:
+        return action, SetPassword(user_id=user_id)
+    reason = str(change.values.get("reason", ""))
+    return action, Impersonate(user_id=user_id, reason=reason)
+
+
+USER_ACTIONS: Final[Mapping[str, str]] = {
+    "groups": SET_GROUPS,
+    "permissions": SET_PERMISSIONS,
+    "password": SET_PASSWORD,
+    "impersonate": IMPERSONATE,
+}
+"""The guarded action of each kind of change to a user but ``update``."""
+
+
+async def _updated(
+    target: "AbstractBaseUser", change: "AdminChange", held: Mapping[str, Guard]
+) -> tuple[str, Command] | None:
+    """The guarded action of a ``PATCH /users/{id}``, if one holds it.
+
+    Making the user active again is ``REACTIVATE``'s while they will hold
+    access; else, where only making staff is held, ``SET_STAFF`` covers a
+    staff member made active again, as it covers making staff (user report
+    A21).
+
+    Raises:
+        ApprovalRequired: The change makes the user staff and active again
+            while both are held.
+    """
+    values = change.values
+    staff = getattr(target, "is_staff", False) is True
+    making = values.get("is_staff") is True and not staff
+    reactivating = values.get("is_active") is True and not target.is_active
+    returning = (
+        await _returning(target, change)
+        if reactivating and REACTIVATE in held
+        else None
+    )
+    if returning is not None:
+        if making and SET_STAFF in held:
+            raise ApprovalRequired(TWO_HOLDS)
+        return REACTIVATE, returning
+    staff_after = values.get("is_staff", staff) is True
+    if SET_STAFF in held and (making or (reactivating and staff_after)):
+        return SET_STAFF, SetStaff(user_id=target.id)
     return None
+
+
+async def _returning(
+    target: "AbstractBaseUser", change: "AdminChange"
+) -> Reactivate | None:
+    """What ``target`` comes back with once ``change`` is made; None: no access.
+
+    Staff or a superuser (as the change leaves them), a member of a group,
+    or granted a permission, directly or on an object (every backend's
+    ``object_grants``). What a backend grants only an active user, such as
+    a member's keys in a tenant, is not known here: guard it yourself.
+    """
+    from domainkit.contrib.auth.backends import object_grants
+
+    values = change.values
+    flags = {
+        flag: values.get(flag, getattr(target, flag, False)) is True
+        for flag in ("is_staff", "is_superuser")
+    }
+    groups = tuple(
+        [
+            await _held(group)
+            for group in sorted(target.groups, key=lambda group: group.name)
+        ]
+    )
+    permissions = tuple(sorted(each.key for each in target.user_permissions))
+    count, digest = _grants_digest(await object_grants(target))
+    if not (any(flags.values()) or groups or permissions or count):
+        return None
+    return Reactivate(
+        user_id=target.id,
+        **flags,
+        groups=groups,
+        permissions=permissions,
+        object_grants=count,
+        object_grants_digest=digest,
+    )
+
+
+async def _held(group: "Group") -> HeldGroup:
+    """``group`` as a command holds it: its id, name, permissions, and grants."""
+    from domainkit.contrib.auth.backends import object_grants
+
+    count, digest = _grants_digest(await object_grants(group))
+    keys = tuple(sorted(group.permission_keys()))
+    return HeldGroup(group.id, group.name, keys, count, digest)
+
+
+def _grants_digest(grants: "Iterable[ObjectGrant]") -> tuple[int, str]:
+    """How many ``grants`` there are, and the SHA-256 of them, sorted ("" for none).
+
+    Each with when it ends. A grant on an object made since, or renewed to
+    another date, changes the digest: the command holding it is another
+    one. Roles come as the grants of their permissions, one by one.
+    """
+    lines = sorted(
+        "\t".join(
+            (
+                grant.permission,
+                grant.content_type,
+                str(grant.object_id),
+                "" if grant.expires_at is None else grant.expires_at.isoformat(),
+            )
+        )
+        for grant in grants
+    )
+    if not lines:
+        return 0, ""
+    return len(lines), hashlib.sha256("\n".join(lines).encode()).hexdigest()
+
+
+def _held_groups(change: "AdminChange") -> tuple[HeldGroup, ...]:
+    """Each group ``change`` adds, by id, with its permissions, sorted by name.
+
+    Raises:
+        ImproperlyConfigured: The change does not hold each group it adds
+            (``AdminChange.groups``): it could not be bound.
+    """
+    found = tuple(
+        HeldGroup(
+            group.id,
+            group.name,
+            tuple(sorted(group.permissions)),
+            *_grants_digest(group.object_grants),
+        )
+        for group in sorted(change.groups, key=lambda group: group.name)
+    )
+    if {group.name for group in found} != set(change.added):
+        raise ImproperlyConfigured(
+            "A change of groups names the groups it adds in AdminChange.groups, "
+            "so their approval binds them."
+        )
+    return found

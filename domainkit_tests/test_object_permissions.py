@@ -87,6 +87,8 @@ BACKENDS: Final = [
 MANAGE: Final = ("objectpermissions.add_objectpermission",)
 CHANGE: Final = "shop.change_product"
 VIEW: Final = "shop.view_product"
+BARE: Final = Request({"type": "http"})
+"""A request for the admin API's endpoints called directly: it is not read."""
 
 
 class Products(SqlAlchemyRepository[Product, ProductId]):
@@ -832,7 +834,7 @@ def test_staff_change_what_holds_object_grants_only_holding_them(
     lacking = "of its grants on single objects"
 
     with pytest.raises(PermissionDenied, match=lacking) as refused:
-        run(admin.set_password(owner.id, password, helper))
+        run(admin.set_password(owner.id, password, BARE, helper))
     with pytest.raises(PermissionDenied, match="change groups whose"):
         run(admin.rename_group(keepers, rename, helper))
     with pytest.raises(PermissionDenied) as joining:
@@ -851,10 +853,10 @@ def test_staff_change_what_holds_object_grants_only_holding_them(
     # The same grant on the object, the permission on the model, or a superuser.
     run(grant_permission(root, VIEW, vault, user=peer.id))
     peer = reload("peer")
-    run(admin.set_password(owner.id, password, peer))
+    run(admin.set_password(owner.id, password, BARE, peer))
     run(admin.rename_group(keepers, rename, peer))
-    run(admin.set_password(owner.id, password, modeller))
-    run(admin.set_password(owner.id, password, root))
+    run(admin.set_password(owner.id, password, BARE, modeller))
+    run(admin.set_password(owner.id, password, BARE, root))
     joined = run(
         admin.set_user_groups(peer.id, admin.GroupsIn(groups=["keepers"]), peer)
     )

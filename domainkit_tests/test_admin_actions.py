@@ -43,7 +43,7 @@ from domainkit.contrib.auth.admin_actions import AdminAct, field_label, show
 from domainkit.contrib.auth.apps import action_problems
 from domainkit.contrib.auth.tables import authorizations
 from domainkit.db import connections
-from domainkit.ddd import Command, fingerprint
+from domainkit.ddd import Command, PermissionDenied, fingerprint
 from domainkit.http import get_asgi_application
 from domainkit.http.access import Require
 from domainkit.http.routers import select_routes
@@ -62,7 +62,7 @@ from domainkit_tests.conftest import (
 )
 from domainkit_tests.support.auth import audited, create_user, grant
 from domainkit_tests.test_approvals import APPROVALS, AUDIT, FAST, MESSAGING
-from domainkit_tests.test_auth_admin import join, make_group, token_for
+from domainkit_tests.test_auth_admin import NEW_PASSWORD, join, make_group, token_for
 from domainkit_tests.test_auth_stepup import enrol, now_code
 
 ROUTES: Final = "domainkit_tests.sample_admin_action_routes"
@@ -846,6 +846,237 @@ def test_a_held_change_is_checked_before_it_waits_and_spent_once_approved(
     assert made.status_code == 200, made.json()
     assert made.json()["is_staff"] is True
     assert row(authorization)["consumed_at"] is not None
+
+
+def test_the_twin_runs_the_projects_checks_and_holds_nothing(
+    client: TestClient, frozen: FrozenClock
+) -> None:
+    """A check that refuses the change refuses its twin, before the confirmation.
+
+    Before 2.7 the twins ran no ``on_admin_change`` check: the phone
+    confirmed a change the project then refused (user report A17). The
+    checks see ``asking``: approvals' hold submits nothing at a twin, and
+    the change held is submitted when it is made. A group's twin runs the
+    ``on_admin_group_change`` checks the same way.
+    """
+    from domainkit.contrib.auth.gates import (
+        AdminChange,
+        GroupChange,
+        on_admin_change,
+        on_admin_group_change,
+    )
+
+    ann = Staff(client, frozen, "ann")
+    target = create_user("target")
+    group = make_group("clerks")
+    seen: list[bool] = []
+
+    async def not_yourself(actor: Any, user: Any, change: AdminChange) -> None:  # noqa: ANN401
+        seen.append(change.asking)
+        if user is not None and user.id == actor.id:
+            raise PermissionDenied("Nobody changes their own account here.")
+
+    async def no_admins(actor: Any, group: Any, change: GroupChange) -> None:  # noqa: ANN401
+        seen.append(change.asking)
+        if change.name == "admins":
+            raise PermissionDenied("No group is called admins here.")
+
+    on_admin_change(not_yourself, domain="alpha")
+    on_admin_group_change(no_admins, domain="alpha")
+    own = ann.ask(
+        f"/users/{ann.id}/authorization/patch", {"fields": {"last_name": "A"}}
+    )
+    renamed = ann.ask(f"/groups/{group}/authorization/patch", {"name": "admins"})
+    making = ann.ask(f"/users/{target}/authorization/patch", {"is_staff": True})
+    held = held_requests()
+    authorization = ann.confirm(making.json()["id"])
+    waiting = ann.call("PATCH", f"/users/{target}", {"is_staff": True}, authorization)
+
+    problem(own, 403, "permission_denied")
+    assert own.json()["detail"] == "Nobody changes their own account here."
+    problem(renamed, 403, "permission_denied")
+    assert making.status_code == 201, making.json()
+    assert held == 0
+    problem(waiting, 403, "approval_pending")
+    assert seen == [True, True, True, False]
+
+
+def test_a_reused_password_spends_its_authorization(
+    client: TestClient, frozen: FrozenClock
+) -> None:
+    """One confirmation, one guess at the user's old passwords.
+
+    The authorization binds only that a password is set. Before 2.7 a
+    reused one was refused and spent nothing, so one confirmation tested
+    password after password against the user's history (user report A17).
+    """
+    ann = Staff(client, frozen, "ann")
+    target = create_user("target", password=NEW_PASSWORD)
+    path = f"/users/{target}/password"
+    history = {**ACTS.settings["AUTH"], "PASSWORD_HISTORY": 2}
+
+    with override_settings(AUTH=history):
+        authorization = ann.authorized(
+            f"{path}/authorization", {"password": NEW_PASSWORD}
+        )
+        reused = ann.call("POST", path, {"password": NEW_PASSWORD}, authorization)
+        again = ann.call("POST", path, {"password": "Other-pass-42"}, authorization)
+
+    problem(reused, 422, "invalid_password")
+    assert row(authorization)["consumed_at"] is not None
+    problem(again, 403, "action_not_authorized")
+
+
+PASSWORDS_HELD: Final = Shape(
+    "admin_acts_passwords_held",
+    "approvals",
+    {
+        **ACTS.settings,
+        "AUTH": {**ACTS.settings["AUTH"], "PASSWORD_HISTORY": 3},
+        "APPROVALS": {
+            **ACTS.settings["APPROVALS"],
+            "ADMIN_APPROVALS": {"auth.set_password": 1},
+        },
+    },
+)
+"""Each change an act; setting a password waits for a superuser's approval."""
+
+
+def test_nothing_is_compared_while_a_password_waits_for_approval(
+    migrated: Migrated, frozen: FrozenClock
+) -> None:
+    """Every password gets the same answer while the change waits.
+
+    The call spends its authorization before anything is compared, so a
+    confirmation sent again answers ``action_not_authorized``, whatever
+    its password: one confirmation, one comparison. While the change
+    waits, nothing is compared (found in review of user report A17). Once
+    approved, a reused password is refused, spending its authorization and
+    leaving the approval for a password that will do.
+    """
+    with migrated(PASSWORDS_HELD), TestClient(get_asgi_application()) as client:
+        ann = Staff(client, frozen, "ann")
+        root = Staff(client, frozen, "root", superuser=True)
+        target = create_user("target", password=NEW_PASSWORD)
+        path = f"/users/{target}/password"
+        authorization = ann.authorized(
+            f"{path}/authorization", {"password": "x-Guess-0000"}
+        )
+        waiting = ann.call("POST", path, {"password": "x-Guess-0000"}, authorization)
+        guesses = [f"x-Guess-{each:04d}" for each in range(1, 5)] + [NEW_PASSWORD]
+        again = {
+            (answer.status_code, answer.json()["code"])
+            for answer in (
+                ann.call("POST", path, {"password": guess}, authorization)
+                for guess in guesses
+            )
+        }
+        request_id = waiting.json()["approval_request_id"]
+        shown = client.get(f"/approvals/requests/{request_id}", headers=root.headers)
+        approved = client.post(
+            f"/approvals/requests/{request_id}/approve",
+            json={"fingerprint": shown.json()["fingerprint"]},
+            headers=root.headers,
+        )
+        reusing = ann.authorized(f"{path}/authorization", {"password": NEW_PASSWORD})
+        reused = ann.call("POST", path, {"password": NEW_PASSWORD}, reusing)
+        spent = row(reusing)["consumed_at"]
+        still = client.get(f"/approvals/requests/{request_id}", headers=ann.headers)
+        fresh = ann.authorized(f"{path}/authorization", {"password": "Fresh-pass-42"})
+        made = ann.call("POST", path, {"password": "Fresh-pass-42"}, fresh)
+
+    problem(waiting, 403, "approval_pending")
+    assert again == {(403, "action_not_authorized")}
+    assert approved.status_code == 200, approved.json()
+    problem(reused, 422, "invalid_password")
+    assert spent is not None
+    assert still.json()["status"] == "approved"
+    assert made.status_code == 204
+
+
+def test_calls_at_once_on_one_confirmation_and_one_approval_compare_once(
+    migrated: Migrated, frozen: FrozenClock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One authorization, one approval, eight calls at once: one comparison.
+
+    The call that spends the authorization is the only one that may
+    compare, and the only one that may spend the approval; the others are
+    refused before anything is compared (``action_not_authorized``),
+    whatever their passwords. Before, a hit spent the authorization only
+    once the approval was let go: the next call compared, and spent the
+    approval for a change it then could not make (found in review of user
+    report A17).
+    """
+    import asyncio
+
+    import httpx2
+
+    from domainkit.contrib.auth.repositories import PasswordHistoryStore
+
+    compared: list[str] = []
+    original = PasswordHistoryStore.refuse_reuse
+
+    async def counted(
+        self: PasswordHistoryStore, user_id: UUID, password: str, *, priority: bool
+    ) -> None:
+        compared.append(password)
+        await original(self, user_id, password, priority=priority)
+
+    auth = {**PASSWORDS_HELD.settings["AUTH"], "LOGIN_RATE": "100/minute"}
+    with (
+        migrated(PASSWORDS_HELD),
+        TestClient(get_asgi_application()) as client,
+        override_settings(AUTH=auth),
+    ):
+        ann = Staff(client, frozen, "ann")
+        root = Staff(client, frozen, "root", superuser=True)
+        target = create_user("target", password=NEW_PASSWORD)
+        path = f"/users/{target}/password"
+        first = ann.authorized(f"{path}/authorization", {"password": "Fresh-pass-1"})
+        waiting = ann.call("POST", path, {"password": "Fresh-pass-1"}, first)
+        request_id = waiting.json()["approval_request_id"]
+        shown = client.get(f"/approvals/requests/{request_id}", headers=root.headers)
+        client.post(
+            f"/approvals/requests/{request_id}/approve",
+            json={"fingerprint": shown.json()["fingerprint"]},
+            headers=root.headers,
+        )
+        authorization = ann.authorized(
+            f"{path}/authorization", {"password": "Any-pass-123"}
+        )
+        headers = {**ann.headers, "Action-Authorization": authorization}
+        guesses = [f"Guess-pass-{each:02d}" for each in range(6)] + [NEW_PASSWORD] * 2
+
+        async def at_once() -> list[Any]:
+            transport = httpx2.ASGITransport(app=client.app)
+            async with httpx2.AsyncClient(
+                transport=transport, base_url="http://testserver"
+            ) as http:
+                return list(
+                    await asyncio.gather(
+                        *(
+                            http.post(
+                                ADMIN + path, json={"password": guess}, headers=headers
+                            )
+                            for guess in guesses
+                        )
+                    )
+                )
+
+        monkeypatch.setattr(PasswordHistoryStore, "refuse_reuse", counted)
+        answers = run_async(at_once())
+        status = client.get(f"/approvals/requests/{request_id}", headers=ann.headers)
+
+    codes = [
+        each.status_code if each.status_code == 204 else each.json()["code"]
+        for each in answers
+    ]
+    made = [code for code in codes if code in (204, "invalid_password")]
+    assert len(made) == 1, codes
+    assert codes.count("action_not_authorized") == len(guesses) - 1, codes
+    assert len(compared) == 1, (compared, codes)
+    expected = "executed" if made == [204] else "approved"
+    assert status.json()["status"] == expected, codes
 
 
 def test_the_act_digest_is_the_change_sorted_never_a_password() -> None:

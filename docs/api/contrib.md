@@ -139,10 +139,13 @@ Maker-checker: commands that run only once other people approve them.
 
 - `CAPTURE_HOLD`: The guarded action of a hold's capture over its currency's threshold.
 - `GRANT_SUPERUSER`: The guarded action of making a user a superuser.
+- `HOLD_ORDER`: The `order` approvals' checks of admin changes register with (since 2.7).
 - `IMPERSONATE`: The guarded action of acting as a user in the admin API.
 - `POST_ENTRY`: The guarded action of postings over their currency's threshold.
+- `REACTIVATE`: The guarded action of making a user who holds access active again (since 2.7).
 - `REVERSE_ENTRY`: The guarded action of a reversal over its currency's threshold.
 - `SET_GROUPS`: The guarded action of adding a user to groups in the admin API.
+- `SET_GROUP_PERMISSIONS`: The guarded action of granting a group permissions in the admin API (since 2.7).
 - `SET_PASSWORD`: The guarded action of setting a user's password in the admin API.
 - `SET_PERMISSIONS`: The guarded action of granting a user permissions in the admin API.
 - `SET_STAFF`: The guarded action of making a user staff in the admin API.
@@ -160,6 +163,7 @@ Maker-checker: commands that run only once other people approve them.
 - `FingerprintMismatch`: What was approved is not what the request holds.
 - `GrantSuperuser`: Make a user a superuser: they hold every permission.
 - `Guard`: A guarded use case: its command, its service, and its policies.
+- `HeldGroup`: A group a `SetGroups` adds, as it was when the change was asked.
 - `Impersonate`: Act as a user, for `reason`, in the admin API.
 - `InterestedParty`: Whoever the command is about may not approve or reject it.
 - `InvalidArguments`: A command's arguments do not make the command, or are too large.
@@ -168,6 +172,7 @@ Maker-checker: commands that run only once other people approve them.
 - `NotTheMaker`: Only whoever submitted a request may cancel it.
 - `Policy`: Who approves a command, how many of them, and for how long it waits.
 - `PolicyRemoved`: The request's guard or policy no longer exists: it is neither decided nor run.
+- `Reactivate`: Make a user who holds access active again, in the admin API (since 2.7).
 - `RejectRequest`: Reject a request, as `approver`, for `reason`.
 - `RequestApproved`: A request has its approvals; its command is queued to run.
 - `RequestCancelled`: The maker withdrew a request.
@@ -181,6 +186,7 @@ Maker-checker: commands that run only once other people approve them.
 - `RequestStatus`: Where a request is: waiting, decided, or run.
 - `RequestSubmitted`: A maker submitted a command for approval.
 - `RequestTampered`: The request was changed outside the application: its seal does not hold.
+- `SetGroupPermissions`: Grant a group permissions, and take others away, in the admin API.
 - `SetGroups`: Add a user to groups, and take them out of others, in the admin API.
 - `SetPassword`: Set a user's password, or make it unusable, in the admin API.
 - `SetPermissions`: Grant a user permissions, and take others away, in the admin API.
