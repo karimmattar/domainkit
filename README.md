@@ -223,7 +223,7 @@ says how to set up, which checks a change must pass, and how to write it
 up. In short:
 
 ```text
-make install        # Python 3.13, Poetry 2.2: every extra, dev and docs groups, hooks
+make install        # Python 3.13, Poetry 2.4: every extra, dev and docs groups, hooks
 make check          # lint, strict types, deptry, the tests, the docs site
 make integration    # the tests against the servers of compose.yaml, as CI runs them
 make                # every command

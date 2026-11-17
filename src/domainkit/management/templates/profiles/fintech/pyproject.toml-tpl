@@ -9,7 +9,7 @@ dev = [
     "domainkit[testing]",                   # pytest and httpx2, for the fixtures
     # Formats what the generators write; this is the range domainkit's own
     # templates are checked with.
-    "ruff>=0.16.8,<0.17",
+    "ruff>=0.17.3,<0.18",
     # Audits what CI installs against the advisories; the range domainkit's
     # own CI audits with.
     "pip-audit>=2.9.0,<3",
