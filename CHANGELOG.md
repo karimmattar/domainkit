@@ -63,6 +63,29 @@ and a status.
   check raised it. It read "Set the DOMAINKIT_SETTINGS_MODULE
   environment variable.", as if the application had no settings, and
   nothing was logged (follow-up of 2.5.0).
+- A process forked while domainkit's logging thread wrote to a buffered
+  stream (standard output on a pipe, a file) no longer hangs. The child
+  inherited the stream's lock held, by a thread it does not have, and
+  waited forever at its first write; its own logging thread's lines were
+  lost with `reentrant call` errors. `gunicorn --preload`,
+  `multiprocessing`'s `fork` start method, and a project's own
+  `os.fork` could all hit it. A fork now takes `logging`'s lock first,
+  as Python's own hook does, waiting while it holds nothing, so a
+  `dictConfig` under way finishes first. Then it waits for the writes in
+  progress through the handlers behind a `BackgroundHandler`: it takes
+  each handler's lock, which `logging` holds while the handler writes,
+  and the logging thread starts no other record until the fork is done.
+  These waits end `FLUSH_TIMEOUT` after the fork has `logging`'s lock; a
+  write still going on then, on a stream that stays blocked, is left to
+  it. Meanwhile other threads that need `logging`'s lock wait for the
+  fork. The fork takes domainkit's own lock last, as `dictConfig` does: a
+  fork while another thread configured logging could wait for it in a
+  circle. The fork takes a handler's lock only if it is a thread's
+  lock, which the child renews, one a handler makes itself included; a
+  lock shared between processes (a `multiprocessing` one) is not taken,
+  and keeps them apart as before
+  ([runtime.md](docs/runtime.md#writing-logs-off-the-loop))
+  (follow-up of 2.5.0).
 
 ## [2.5.0] - 2026-11-16
 

@@ -1,6 +1,6 @@
 # 0051. Write logs and error reports from threads, dropping what does not fit
 
-- Status: Accepted; amended 2026-10-21 and 2026-10-26 (at the end)
+- Status: Accepted; amended 2026-10-21, 2026-10-26 and 2026-11-17 (at the end)
 - Date: 2026-10-20
 
 ## Context
@@ -107,3 +107,70 @@ pays the formatting, on errors only: 59 µs before, 176 µs after, per
 record. A handler behind the queue that needs the exception object, not
 its text, no longer gets it; error trackers take exceptions from
 `ERROR_REPORTERS`, which this does not change.
+
+## Amendment (2026-11-17, 2.6): a fork waits for the writes in progress
+
+A process forked while the logging thread wrote to a buffered stream
+(standard output on a pipe, a file) inherited the stream's lock held, by
+a thread the child does not have. The child's first write from its main
+thread waited forever, and its own logging thread's lines were lost with
+`reentrant call` errors. 2.5.0 spared `manage.py serve` by spawning
+Granian's workers; `gunicorn --preload`, `multiprocessing`'s fork, and a
+project's own `os.fork` still hit it: in the test, children forked while
+the thread wrote hung (up to 19 of 20) or lost their lines.
+
+So a fork now waits for the writes in progress too, not only for a
+thread changing the list of handlers. `logging` has each handler write
+under its own lock. The hook before a fork asks every running logging
+thread to wait at its turnstile before its next record, takes the
+turnstiles, then each handler's lock (a thread's, below) as its write
+ends. The thread itself takes no lock per record, and passes the
+turnstile only while a fork asks: no call more per record than before.
+Without the turnstile, a thread took its handler's lock again for its
+next record before the fork woke. The waits end `FLUSH_TIMEOUT` after
+the fork has `logging`'s lock: a write still going on then is on a stuck
+stream, which the child could not write to either, and the fork goes on
+without it.
+
+The hook takes `logging`'s lock first, as `logging`'s own hook does,
+waiting while it holds nothing, and the lock of the handler list last.
+`dictConfig` takes `logging`'s lock, then ours as it makes handlers, and
+the old handlers' locks as it flushes them, waiting for their threads.
+A fork that took ours before `logging`'s deadlocked against it: a loop
+of forks against a loop of `dictConfig` calls did within seconds. A fork
+that held the threads while it waited for `logging`'s lock made a
+`dictConfig` that flushed a running handler wait `FLUSH_TIMEOUT`, and
+one that held a handler's lock while code on its own thread (a signal
+handler that logs, a collected handler's callback) waited for
+`logging`'s lock deadlocked against it. With `logging`'s lock first, a
+`dictConfig` under way finishes before the fork holds anything, and
+code on the forking thread takes the lock again. The price: other
+threads that need `logging`'s lock wait for the fork's wait for the
+writes, one write or `FLUSH_TIMEOUT` on a stuck stream, and a handler
+that takes `logging`'s lock in the middle of a write holds the fork
+`FLUSH_TIMEOUT` and is then left (it is not writing to a stream then).
+Such a handler deadlocks against `dictConfig` in plain `logging`. We
+weighed keeping the threads first and never waiting while holding a
+handler's lock (try each, let all go to wait for a busy one, retry, the
+collector off during the hook): retries, and a process-wide switch in a
+fork hook, to spare handlers that take `logging`'s lock while they
+write, which plain `logging` does not support either.
+
+In the child, the hook renews what the fork took. `logging` renews only
+the locks its own `createLock` made; a handler that makes its own kept
+it held by the child's only thread, and the child's logging thread
+waited for it at its first record. The fork takes only the locks it can
+renew, `threading`'s. A lock shared between processes (a
+`multiprocessing` one) taken at the fork was the child's too, its owner
+being the forking thread: the child took it again without waiting while
+the parent let it go, and both wrote at once. Such a lock is not waited
+for: a write in progress under it is the child's to wait for, as any
+other process's.
+
+Each thread keeps what its forks hold apart, noted as each lock is
+taken, and takes no lock twice. A signal handler may fork while its
+thread's fork runs its hooks, and each fork lets go of what it took;
+one that raises while the hook waits (Ctrl-C) leaves nothing held, and
+Python forks all the same. One that raises in the instant after a lock
+is taken and before it is noted, a few bytecodes after the wait, leaves
+that lock held.

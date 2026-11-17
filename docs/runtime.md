@@ -954,6 +954,23 @@ How the handler works:
   the flush gives up, the close does not wait again.
 - `queue_size=None` writes on the caller's thread, as plain handlers do.
   Use it for scripts that must see each line before they go on.
+- A fork (`gunicorn --preload`, `multiprocessing`'s `fork` start
+  method, `os.fork`) first takes `logging`'s own lock, as Python's hook
+  does, so a `dictConfig` under way finishes first. Then it waits for
+  the writes in progress: it takes the lock of each handler behind the
+  queue, which `logging` holds while the handler writes, and the thread
+  starts no other record until the fork is done. A child forked in the
+  middle of a write would find the stream's lock held, by a thread it
+  does not have, and wait forever at its first write. These waits end
+  `FLUSH_TIMEOUT` after the fork has `logging`'s lock; a write still
+  going on then is on a stream that stays blocked, which the child
+  could not write to either. Meanwhile, threads that need `logging`'s
+  lock (to configure logging, make a logger, or read a level not cached
+  yet) wait for the fork. The fork takes a handler's lock only if it
+  is a thread's lock, which the child renews; a lock shared between
+  processes (a `multiprocessing` one) is not taken, and keeps them
+  apart as before. The child starts with an empty queue, and its thread
+  at its first record.
 
 `flush_logs(timeout=5.0)` waits for the queue to drain, and returns
 whether it did. `aflush_logs(seconds=5.0)` does the same without holding
