@@ -25,6 +25,8 @@ On this page you find:
 | Each optional app's settings (`AUTH`, `MESSAGING`, `AUDIT`, ...) | the app's own page ([contrib.md](../contrib.md)) |
 | `AUTH`'s keys, `AUTH["BREACHED_PASSWORDS"]` (new passwords checked against data breaches) among them | [auth.md](../auth.md#settings) |
 | `AUTH["ADMIN_ACTION"]`, and `APPROVALS["SUBMIT_ACTION"]`, `["REJECT_ACTION"]`, and `["CANCEL_ACTION"]`: the admin API's changes and a request's steps, each authorized as one act | [auth.md](../auth.md#settings), [approvals.md](../contrib/approvals.md#settings) |
+| `AUTH["AUTHORIZATIONS"]["WHOLE"]`: the framework's acts shown whole on a phone's screen, or refused (new in 2.7) | [auth.md](../auth.md#settings), [actions.md](../auth/actions.md#what-a-screen-shows) |
+| `AUTH["AUTHORIZATIONS"]["HELD_TTL"]` (an act held for approval keeps its authorization) and `["ACTIONS"]` (each act its own `TTL` and `METHODS`), new in 2.7 | [auth.md](../auth.md#settings) |
 | `DEVICES`'s keys, `DEVICES["PUSH_TOKEN_CHECK"]` (push tokens checked with their service when registered) among them | [devices.md](../auth/devices.md#settings) |
 | `CIBA`'s keys, `CIBA["PUSH_TEXTS"]` (each kind of request's push text) among them | [ciba.md](../auth/ciba.md#settings) |
 
@@ -231,7 +233,9 @@ domains' own models keep those keys as secrets.
   infrastructure layer no web library but the outgoing HTTP client
   (`domainkit.http.client`), which adapters call other services with,
   and the uploads' checks and storing (`domainkit.http.uploads`), which
-  a file gateway runs on the bytes its route hands it (*New in 2.5*);
+  a file gateway runs on the bytes its route hands it (*New in 2.5*),
+  typed as `domainkit.http.uploads.Upload` rather than Starlette's
+  `UploadFile` (*New in 2.7*);
 - another domain is reached only through its `application` or
   `domain.events`.
 

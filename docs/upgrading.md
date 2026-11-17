@@ -38,9 +38,41 @@ never published), with each section below.
 
 ## 2.6 to 2.7
 
-2.7 answers the project's notes on 2.6. Each item of this list says what
-a project that relied on 2.6's behaviour changes.
+2.7 follows up 2.6. Each item of this list says what a project that
+relied on 2.6's behaviour changes, and what to run.
 
+- **The framework's acts word their screens for people.** The admin
+  API's act names flags and fields as a person reads them ("Staff: no",
+  "Email", "Display name"), and approvals' screens show a list's items,
+  over as many lines as it takes ("added", "added (2)"), where 2.6 showed
+  `is_staff: false` and a list as JSON cut at 64 characters. A user or a
+  group shows by name and the end of its id ("ann (…123456789abc)"), the
+  name cut past 48 characters; an empty list shows as nothing, where 2.6 wrote `[]`; an
+  approval's empty "Takes away" is left out; a backslash shows doubled.
+  The digest of each act is unchanged; a client or a test that matched
+  the old labels or values reads the new ones
+  ([What a screen shows](auth/actions.md#what-a-screen-shows)).
+- **To show acts whole, or refuse them**, set
+  `AUTH = {"AUTHORIZATIONS": {"WHOLE": True}}`. The admin API's twins,
+  and approvals' submit and approve twins, then answer `422
+  too_much_to_show` for a change their screen cannot show whole: a value
+  longer than 64 characters (a long impersonation reason), more than six
+  lines (a change padded with fields), a list longer than the screen.
+  With `APPROVE_ACTION` on, so is a held change of the admin API that
+  the approver's screen could not show whole, at its twin, and
+  submitting such a request. A user's or a group's name, however long,
+  never is.
+  Clients make those changes in smaller steps. A guard of the project's
+  whose arguments do not fit gives `guard(show=...)`; accounting's
+  postings have no `show` yet, and their lines do not fit.
+- **`check` names throttles counted per tenant unsaid.** A `Throttle` on
+  a route served as a tenant (a `PathTenant`'s, or any route under
+  `TenantMiddleware` but a tenants' collection) that says neither
+  `per_tenant=True` nor `per_tenant=False` is warned of
+  (`tenancy.W001`), so `check --deploy` fails until each says how it
+  counts. Nothing counts differently: `per_tenant=True` keeps each
+  tenant's count, as before, and `SILENCED_CHECKS` may name the warning
+  ([tenancy.md](tenancy.md#caches-limits-and-logs)).
 - **A PDF that decodes past 32 MiB is not laid over** (security).
   `overlay_pdf` and `page_sizes` decode `max_decoded` bytes at most, in
   all: the object streams of each PDF, and the content of each page laid
@@ -87,6 +119,22 @@ a project that relied on 2.6's behaviour changes.
   the document's content types listed them. A test that compares the
   whole tuple may need its order changed; `missing` and `unused` were
   sorted and stay so.
+
+### Make and apply auth's migration for bound and held authorizations
+
+The action authorizations table (`domainkit_authorizations`) gains three
+nullable columns: `bound`, the SHA-256 of what an act's `binds` read of
+its record, and `held_until` and `held_for`, how long and for which
+request an authorization of an act held for approval is kept (ADR 0174).
+Run `python manage.py makemigrations`, review the revision, then
+`migrate` it before the new code serves. Until then every use of the
+table fails: asking for an authorization, reading one (the rule of every
+act), and the hourly purge raise `OperationalError`, so acts answer
+`500`; `check` reports nothing of it. Authorizations asked before bind
+no record and are held by nothing; an act that adds `binds` refuses
+those once, `409 action_record_changed`, and the client asks again.
+Nothing else changes until a project declares `binds`, or sets
+`AUTH.AUTHORIZATIONS.HELD_TTL` or `ACTIONS`.
 
 ## 2.5 to 2.6
 

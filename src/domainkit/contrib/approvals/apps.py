@@ -57,6 +57,7 @@ class ApprovalsConfig(DomainConfig):
         """
         from .builtin import (
             check_admin_change,
+            check_admin_screen,
             guard_admin_changes,
             guard_entries,
             guard_superusers,
@@ -92,19 +93,26 @@ class ApprovalsConfig(DomainConfig):
                 f"APPROVALS.ADMIN_APPROVALS guards the admin API of {AUTH}: install it."
             )
         if registry.is_installed(AUTH):
+            from domainkit.contrib.auth.actions import on_held_act
             from domainkit.contrib.auth.gates import (
                 on_admin_change,
+                on_admin_screen,
                 on_create_staff,
                 on_make_superuser,
             )
 
+            from .services import held_request_waits
+
             on_make_superuser(refuse_ungoverned_superusers, domain=self.label)
+            on_held_act(held_request_waits, domain=self.label)
             if config.SUPERUSER_APPROVALS:
                 guard_superusers(config)
             if config.ADMIN_APPROVALS:
                 guard_admin_changes(config)
                 on_admin_change(check_admin_change, domain=self.label)
                 on_create_staff(refuse_staff_creation, domain=self.label)
+                if config.APPROVE_ACTION:  # The approver's screen, at the twin.
+                    on_admin_screen(check_admin_screen, domain=self.label)
 
     def application_problems(self, app: "FastAPI") -> list[str]:
         """``approvals.E001``: ``APPROVE_ACTION`` beside a step-up window.

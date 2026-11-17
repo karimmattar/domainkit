@@ -646,11 +646,18 @@ class Throttle:
     count for every tenant: a member of ten tenants then gets ``rate``,
     not ten times it, on routes that serve each tenant from its path, as
     for what costs the same whichever tenant asks (mails, messages)
-    (ADR 0170).
+    (ADR 0170). ``per_tenant=True`` says the count is each tenant's on
+    purpose; left unsaid, it is too, and ``check`` warns of such a
+    throttle on a route served as a tenant (``tenancy.W001``, ADR 0177).
 
     A throttle is not an access rule: the route still needs ``Require(...)``
     or ``Public``.
     """
+
+    rate: str = ""
+    """What it allows, as given: ``"10/minute"``."""
+    per_tenant_said: bool = False
+    """Whether ``per_tenant`` was given: how the count meets tenants is a choice."""
 
     def __init__(
         self,
@@ -659,11 +666,12 @@ class Throttle:
         key: ThrottleKey = "user",
         scope: str | None = None,
         backend: Backend | None = None,
-        per_tenant: bool = True,
+        per_tenant: bool | None = None,
     ) -> None:
         """Allow ``rate`` (``"10/minute"``) per caller, counted in ``backend``.
 
-        ``per_tenant=False`` counts the caller once across every tenant.
+        ``per_tenant=False`` counts the caller once across every tenant;
+        True, or None (unsaid), counts them per tenant.
         """
         self.limit, self.period = parse_rate(rate)
         if not callable(key) and key not in {"user", "address"}:
@@ -674,10 +682,12 @@ class Throttle:
             raise ValueError(
                 f"Throttle scope {scope!r} must be 1 to 128 letters, digits, or _.-"
             )
+        self.rate = rate
         self.key = key
         self.scope = scope
         self.backend = backend
-        self.per_tenant = per_tenant
+        self.per_tenant = per_tenant is not False
+        self.per_tenant_said = per_tenant is not None
 
     async def __call__(self, connection: HTTPConnection) -> None:
         """Count the request; refuse it over the rate.

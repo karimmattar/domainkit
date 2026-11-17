@@ -1198,6 +1198,9 @@ msgstr ""
 msgid "This act is not authorized: ask for an authorization of it, confirm it, then try again."
 msgstr ""
 
+msgid "What this act decides on changed since you were shown it: ask for a new authorization."
+msgstr ""
+
 msgid "This act is not the one you were shown."
 msgstr ""
 
@@ -1480,6 +1483,59 @@ msgid "{count} more value"
 msgid_plural "{count} more values"
 msgstr[0] ""
 msgstr[1] ""
+
+#. domainkit.contrib.auth: a screen's flags and fields, its numbered lines, and what does not fit
+msgid "Superuser"
+msgstr ""
+
+msgid "Staff"
+msgstr ""
+
+msgid "Active"
+msgstr ""
+
+#. A flag a change sets: "Staff: yes".
+msgctxt "flag"
+msgid "yes"
+msgstr ""
+
+msgctxt "flag"
+msgid "no"
+msgstr ""
+
+msgid "Email"
+msgstr ""
+
+msgid "Mobile number"
+msgstr ""
+
+msgid "First name"
+msgstr ""
+
+msgid "Last name"
+msgstr ""
+
+#. The label of a list's next line on a screen: "Adds (2)".
+msgctxt "continued"
+msgid "{label} ({number})"
+msgstr ""
+
+#. What an act is on: its name, cut to fit, and its id's end: "ann (…56789abc)".
+msgctxt "subject"
+msgid "{name} ({id})"
+msgstr ""
+
+#. Shown, in brackets, for a user whose name was erased, beside their id.
+msgctxt "subject"
+msgid "(erased)"
+msgstr ""
+
+#. An impersonation's reason, as its maker gave it, on an approver's screen.
+msgid "Stated reason"
+msgstr ""
+
+msgid "This act cannot be shown whole on one screen: make it in smaller steps."
+msgstr ""
 
 #. domainkit.contrib.approvals: what a screen shows of a decision
 msgid "Approve a request"

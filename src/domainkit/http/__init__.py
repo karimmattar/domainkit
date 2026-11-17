@@ -18,7 +18,7 @@ if TYPE_CHECKING:
         error_response,
         error_responses,
     )
-    from domainkit.http.filters import Filter, FilterSet, InvalidFilter
+    from domainkit.http.filters import EveryWord, Filter, FilterSet, InvalidFilter
     from domainkit.http.pagination import (
         CURSOR_PATTERN as CURSOR_PATTERN,
     )
@@ -38,6 +38,7 @@ __all__ = [
     "MAX_CURSOR_LENGTH",
     "APIError",
     "ErrorResponse",
+    "EveryWord",
     "FieldError",
     "Filter",
     "FilterSet",
@@ -70,7 +71,8 @@ __getattr__ = lazy_names(
             "domainkit.http.errors",
         ),
         **dict.fromkeys(
-            ["Filter", "FilterSet", "InvalidFilter"], "domainkit.http.filters"
+            ["EveryWord", "Filter", "FilterSet", "InvalidFilter"],
+            "domainkit.http.filters",
         ),
         **dict.fromkeys(
             [

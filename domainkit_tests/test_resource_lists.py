@@ -4,7 +4,9 @@ A project reported (D2) that a list could not show what another domain
 holds without a request per row: the admin API's user list took no ids,
 ``present`` is called per aggregate and cannot wait, and a ``FilterSet``
 searched only the aggregate's own fields, so a member could not be found
-by their user's name (ADR 0170).
+by their user's name (ADR 0170). Then (2.6) that a search of two common
+words asked per word could miss a row holding both, and that the user
+list answered each user whole to a page that shows a name (ADR 0177).
 """
 
 from collections.abc import Iterator, Mapping, Sequence
@@ -17,16 +19,17 @@ from fastapi.testclient import TestClient
 from pydantic import BaseModel
 from starlette.requests import HTTPConnection
 
+from domainkit.contrib.auth import get_user_model
 from domainkit.ddd import AggregateRoot, InMemoryRepository, MaxLength, UnitOfWork
 from domainkit.ddd.fields import UnknownField
-from domainkit.http import Filter, FilterSet
+from domainkit.http import EveryWord, Filter, FilterSet
 from domainkit.http.access import IsAuthenticated
 from domainkit.http.errors import install_exception_handlers
 from domainkit.http.filters import Finder
 from domainkit.resources import FieldPolicy, ResourceRouter
 from domainkit_tests.conftest import Api, UseAuth
 from domainkit_tests.gadgets import Gadget, InMemoryGadgets, make_gadget
-from domainkit_tests.support.auth import create_user
+from domainkit_tests.support.auth import create_user, grant
 from domainkit_tests.test_auth_admin import ADMIN, staff
 from domainkit_tests.test_resources import (
     Dearest,
@@ -457,3 +460,183 @@ def test_a_resource_refuses_to_search_through_a_field_it_hides(
             filters=MemberFilters,
             policy=FieldPolicy(visible={"user_id": "shop.view_member"}),
         )
+
+
+def test_the_admin_names_users_without_what_they_hold(api: Api) -> None:
+    """``GET /users/names``: id, username, full name, identifiers; no grants.
+
+    It takes ``search`` and ``id`` as ``GET /users`` does, answers in the
+    same order with the same cursors, and needs the same permission. The
+    identifiers are the fields of ``AUTH.IDENTIFIERS`` that ``/users``
+    shows among ``fields`` (user report D2).
+    """
+    client = api(IDENTIFIERS=("username", "email"))
+    headers = staff("admin", "auth.view_user")
+    ann = create_user("ann", email="ann@example.com", first_name="Ann", last_name="Lee")
+    bob = create_user("bob")
+    grant("bob", "auth.view_user")
+    url = f"{ADMIN}/users"
+
+    def answer(path: str, **params: Any) -> Any:  # noqa: ANN401 - a body.
+        found = client.get(path, params=params, headers=headers)
+        assert found.status_code == 200, found.text
+        return found.json()
+
+    named = answer(f"{url}/names", id=[str(bob), str(ann)])
+    whole = answer(url, id=[str(bob), str(ann)])
+    first = answer(f"{url}/names", limit=1)
+    after = answer(url, limit=1, cursor=first["next_cursor"])
+    refused = client.get(f"{url}/names", headers=staff("helper", "auth.change_user"))
+
+    assert named == {
+        "items": [
+            {
+                "id": str(ann),
+                "username": "ann",
+                "name": "Ann Lee",
+                "identifiers": {"email": "ann@example.com"},
+            },
+            {
+                "id": str(bob),
+                "username": "bob",
+                "name": None,
+                "identifiers": {"email": ""},
+            },
+        ],
+        "next_cursor": None,
+    }
+    assert [each["id"] for each in whole["items"]] == [str(ann), str(bob)]
+    assert whole["items"][1]["permissions"] == ["auth.view_user"]
+    assert answer(f"{url}/names", search="BO")["items"][0]["id"] == str(bob)
+    assert [each["username"] for each in first["items"]] == ["admin"]
+    assert [each["username"] for each in after["items"]] == ["ann"]
+    assert refused.status_code == 403
+
+
+def test_the_names_show_no_field_the_user_list_hides(
+    api: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A project that shows staff no names gets none from ``/users/names`` either.
+
+    ``EDITABLE_FIELDS`` without ``first_name`` and ``last_name`` hides them
+    from ``/users``' ``fields``; the names view gives no ``name`` then, and
+    its search, ``/users``' own, matches the username and the identifiers,
+    never a hidden name (review of user report D2).
+    """
+    client = api(IDENTIFIERS=("username", "email"))
+    headers = staff("admin", "auth.view_user")
+    ann = create_user(
+        "ann", email="ann@example.com", first_name="Ann", last_name="Secret"
+    )
+    model = get_user_model()
+    monkeypatch.setattr(model, "EDITABLE_FIELDS", frozenset({"email"}))
+    url = f"{ADMIN}/users"
+
+    def answer(path: str, **params: Any) -> Any:  # noqa: ANN401 - a body.
+        found = client.get(path, params=params, headers=headers)
+        assert found.status_code == 200, found.text
+        return found.json()
+
+    (whole,) = answer(url, id=str(ann))["items"]
+    (named,) = answer(f"{url}/names", id=str(ann))["items"]
+
+    assert {"first_name", "last_name"} & set(whole["fields"]) == set()
+    assert named == {
+        "id": str(ann),
+        "username": "ann",
+        "name": None,
+        "identifiers": {"email": "ann@example.com"},
+    }
+    assert answer(f"{url}/names", search="Secret")["items"] == []
+    assert answer(url, search="Secret")["items"] == []
+
+
+CROWD: Final = {
+    uuid4(): name
+    for name in (
+        "Ada Byron",
+        "Ada Smith",
+        "Bob Lovelace",
+        "Cy Lovelace",
+        "Ada Lovelace",
+    )
+}
+"""Another domain's users: three named Ada, three Lovelace, one both."""
+WORDS_ASKED: list[tuple[tuple[str, ...], int]] = []
+"""The words each finder of ``CROWD`` was asked, and its limit."""
+
+
+def crowd_named(words: tuple[str, ...], limit: int) -> list[UUID]:
+    """The users whose name holds every one of ``words``, at most ``limit``."""
+    WORDS_ASKED.append((words, limit))
+    return [
+        user_id
+        for user_id, name in CROWD.items()
+        if all(word.lower() in name.lower() for word in words)
+    ][:limit]
+
+
+def crowd_word(word: str, limit: int) -> list[UUID]:
+    """``crowd_named`` asked one word at a time, as a plain finder is."""
+    return crowd_named((word,), limit)
+
+
+async def test_every_word_finds_whom_common_words_name_together() -> None:
+    """``EveryWord``: asked with every word too, a bound cuts no match away.
+
+    "ada" and "lovelace" each name three users, past the bound of two:
+    asked per word, the two answers share no one, and Ada Lovelace's
+    membership is missed (user report D2). ``EveryWord`` asks with both
+    words too, where one alone reached the bound, and finds her. A search
+    whose words stay under the bound, and one word alone, are asked word
+    by word only, and a row still matches its role and a user apart.
+    """
+    rows = Memberships(
+        [
+            Membership(
+                id=MembershipId(uuid4()),
+                user_id=user_id,
+                role="owner" if name == "Ada Lovelace" else "viewer",
+            )
+            for user_id, name in CROWD.items()
+        ]
+    )
+
+    class PerWord(FilterSet):
+        model = Membership
+        search_fields = ("role",)
+        search_through: ClassVar[Mapping[str, Finder | EveryWord]] = {
+            "user_id": crowd_word
+        }
+        max_reference_matches = 2
+
+    class Together(PerWord):
+        search_through: ClassVar[Mapping[str, Finder | EveryWord]] = {
+            "user_id": EveryWord(crowd_named)
+        }
+
+    async def named(filters: type[FilterSet], search: str) -> list[str]:
+        WORDS_ASKED.clear()
+        found = await filters.through(search)
+        kept = await rows.filter(filters(search=search, _through=found).query())
+        return sorted(CROWD[each.user_id] for each in kept)
+
+    assert await named(PerWord, "ada lovelace") == []
+    assert await named(Together, "Ada LOVELACE ada") == ["Ada Lovelace"]
+    assert WORDS_ASKED == [(("Ada",), 2), (("LOVELACE",), 2), (("Ada", "LOVELACE"), 2)]
+    assert list(await Together.through("Ada LOVELACE ada")) == [
+        "ada",
+        "lovelace",
+        "ada lovelace",
+    ]
+    assert await named(Together, "ada bob") == []
+    assert WORDS_ASKED[-1] == (("ada", "bob"), 2)
+    assert await named(Together, "viewer byron") == ["Ada Byron"]
+    assert WORDS_ASKED == [(("viewer",), 2), (("byron",), 2)]
+    # Its limit: the words together name no user "owner ada", and the
+    # first answer for "ada" left Ada Lovelace out (docs/queries.md).
+    assert await named(Together, "owner ada") == []
+    assert await named(Together, "ada") == ["Ada Byron", "Ada Smith"]
+    assert WORDS_ASKED == [(("ada",), 2)]
+    with pytest.raises(TypeError, match="function of the words and a limit"):
+        EveryWord("crowd_named")  # type: ignore[arg-type]

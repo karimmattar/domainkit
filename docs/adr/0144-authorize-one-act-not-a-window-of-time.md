@@ -1,6 +1,6 @@
 # 0144. Authorize one act, not a window of time
 
-- Status: Accepted; amended 2026-11-16 (at the end); amended by [0162](0162-twins-name-their-method-and-skip-the-acts-own-dependencies.md), [0163](0163-authorize-admin-changes-and-requests-steps-as-acts.md) and [0164](0164-let-the-asker-withdraw-a-phone-request-count-sessions-per-user-and-word-each-kind.md)
+- Status: Accepted; amended 2026-11-16 (at the end); amended by [0162](0162-twins-name-their-method-and-skip-the-acts-own-dependencies.md), [0163](0163-authorize-admin-changes-and-requests-steps-as-acts.md), [0164](0164-let-the-asker-withdraw-a-phone-request-count-sessions-per-user-and-word-each-kind.md), [0173](0173-show-an-act-whole-or-refuse-it.md) and [0174](0174-bind-an-act-to-the-record-it-decides-on-and-keep-a-held-acts-authorization.md)
 - Date: 2026-11-15
 
 ## Context

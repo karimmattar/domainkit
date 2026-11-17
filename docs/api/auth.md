@@ -89,6 +89,7 @@ Authorize one act, with its arguments, once (ADR 0144).
 - `ActionAuthorized`: A user confirmed one act, with its arguments (`auth.actions`).
 - `ActionConfirmation`: A way to confirm action authorizations: what it proves, and who has it.
 - `ActionNotAuthorized`: No authorization holds for this act: ask for one, then try again (403).
+- `ActionRecordChanged`: What the act decides on changed since its authorization was asked for (409).
 - `AuthorizationChanged`: What the device was shown is not what the authorization holds (409).
 - `AuthorizationNeedsOtherFactors`: The act asks confirming it to prove what this way does not (409).
 - `AuthorizationNotFound`: No authorization of the user's, or of the login's, has that id (404).
@@ -98,10 +99,12 @@ Authorize one act, with its arguments, once (ADR 0144).
 - `action_for`: The registered action of `purpose`, if there is one.
 - `confirm_action_with`: Confirm the authorization, which `methods` proved; return `<id>.<code>`.
 - `confirmed_action_authorization`: `<id>.<code>` of the user's confirmed authorization, for the confirming app.
+- `hold_authorizations`: Keep the authorization of the request's act, which now waits for approval.
 - `link_action_authorization`: Link what will confirm the authorization: the phone's request, or a passkey's.
 - `linked_action_authorization`: The user's authorization the phone's request `sign_in_request_id` confirms.
 - `login_digest`: The login's digest: the SHA-256 of its scheme and token, as the phone keeps it.
 - `on_action_confirmation`: Register a way to confirm action authorizations (an `ActionConfirmation`).
+- `on_held_act`: Say whether what a held authorization's act waits on still waits.
 - `register_action`: Register an `Action` (`register_action(END_MEMBERSHIP)` in `ready()`).
 - `registered_actions`: Every registered action, by purpose.
 - `request_action_authorization`: Store an authorization of `command` for the request's user and login.
@@ -204,6 +207,7 @@ Login gates: checks every login passes before it is issued (ADR 0128).
 - `login_origin`: How the login `request` makes is made, for its gates; None: it makes none.
 - `manages_logins`: A route's dependency: the request may manage its user's logins.
 - `on_admin_change`: Register a check of every change the admin API makes to a user.
+- `on_admin_screen`: Register a check of what a change of the admin API to a user shows.
 - `on_create_staff`: Register a check of creating a user who is staff in the admin API.
 - `on_login_gate`: Register a gate every login passes (`on_login_gate(gate)` in `ready()`).
 - `on_make_superuser`: Register a check of making a superuser in the admin API.
@@ -283,6 +287,17 @@ Transactions authorized for one amount and one payee (PSD2's dynamic linking).
 - `request_authorization`: Store a transaction for `user_id` to confirm, for `AUTH.SCA.TTL`.
 - `router`: The routes: transactions authorized for one amount and one payee (PSD2's dynamic linking).
 - `sca_transaction`: The user's transaction `challenge_id`: its amount, payee, and state.
+
+## `domainkit.contrib.auth.screens`
+
+What an act shows, laid out on a phone's screen: whole, or refused (ADR 0173).
+
+- `LINES`: The most labelled lines a screen holds: 6.
+- `LINE_LENGTH`: The most characters (code points) a line, its label, or a title holds: 64.
+- `TooMuchToShow`: The act cannot be shown whole on one screen: make it in smaller steps (422).
+- `fitted`: `text` as a screen shows it: printable, at most `length` characters.
+- `laid_out`: `details` on a screen's lines: six labelled lines of 64 characters at most.
+- `named`: What an act is on, on one line: its name, cut to fit if need be, and its id.
 
 ## `domainkit.contrib.auth.signup`
 

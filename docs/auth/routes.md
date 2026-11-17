@@ -412,6 +412,7 @@ action: `view`, `add`, `change`, or `delete` on the user model
 | --- | --- | --- |
 | `GET /users` | `?limit=50&cursor=&search=&id=` | A page of users, by the first field of `AUTH.IDENTIFIERS` (by username without it). `search` matches part of the username, or of the email address or mobile number where `AUTH.IDENTIFIERS` names them, in any case; a mobile number also in any form that normalizes to it. An encrypted field matches only its whole value, with a blind index. `id`, repeated up to 200 times (since 2.5), keeps the users it names, so a page of rows that refer to users names them in one request; unknown ids are left out. |
 | `POST /users` | `{"username", "password", "is_active", "is_staff", "is_superuser", "fields"}` | `201` and the user. The password is validated; without one, it is unusable. |
+| `GET /users/names` | `?limit=50&cursor=&search=&id=` | The page `GET /users` answers, with each user's `id`, `username`, `name`, and `identifiers`: no groups, permissions, or other fields, for a page that names its rows' people (since 2.7). `name` joins `first_name` and `last_name` where `/users` shows both among `fields` (the model's `admin_fields()`), else it is null; `identifiers` are the fields of `AUTH.IDENTIFIERS` that `/users` shows. `search` matches the username and the identifiers, as on `/users`, never a name. The same order and cursors; `auth.view_user`. |
 | `GET /users/{id}` | | The user. |
 | `PATCH /users/{id}` | `{"is_active", "is_staff", "is_superuser", "fields"}` | The user; what you leave out stays. A new email or mobile number is set at once, unproved, and drops one the user held ([Changing an address or a number](users.md#changing-an-address-or-a-number)). |
 | `DELETE /users/{id}` | | `204`; the user's tokens, second factor (secret and recovery codes), and object permissions go too. |
@@ -474,7 +475,12 @@ what.
   impersonation; never a password). Raise `PermissionDenied` to refuse it
   ("nobody edits their own account here", "making staff needs another
   permission"). `admin.may_grant` and `admin.may_hold`, the ceilings
-  below, are public for your own routes.
+  below, are public for your own routes. With `AUTH.ADMIN_ACTION` on,
+  `on_admin_screen(check)` (since 2.7) is called in the change's twin
+  instead, with the user and the `AdminChange`, before an authorization
+  is stored: it reads, and raises to refuse the change there (approvals
+  refuses a change it would hold that its approver's screen could not
+  show whole).
 - **Each change can ask for an authorization of its own** (since 2.5,
   `AUTH.ADMIN_ACTION`), confirmed on the staff member's phone, with a
   code, or with a passkey
@@ -568,15 +574,23 @@ PUT  /admin/auth/users/6f1c.../groups {"groups": ["auditors"]}
   user, is refused (`403 action_not_authorized`), and voids it. A user
   created active and one created inactive are two acts.
 - **The screen says which user and what change**: "Change a user's
-  groups", then "User: alice@example.com" (the user's first identifier)
-  or the group's name, the flags that grant or take access
-  (`is_superuser`, `is_staff`, `is_active`), "Adds: auditors", "Takes
-  away: clerks", the reason of an impersonation, then the other fields
-  set, by name. The flags and the lists always show: a list too long for
-  a line shows its first items and how many more ("auditors, clerks and 4
-  more"). Six values at most; the last line counts the fields not shown.
-  The phone shows these words, read from the server's record
-  ([Confirming one act](ciba.md#confirming-one-act)).
+  groups", then "User: alice@example.com (…123456789abc)" (the user's
+  first identifier and, since 2.7, the end of their id; a name too long
+  is cut beside it, as the act binds the id) or the group's name and id,
+  the flags that grant or take access ("Superuser", "Staff", "Active":
+  yes or no), "Adds: auditors", "Takes away: clerks", the reason of an
+  impersonation, then the other fields set, by name ("Email", "Display
+  name"). A list
+  goes over as many lines as it takes ("Adds", "Adds (2)"). Six lines at
+  most: with `AUTH["AUTHORIZATIONS"]["WHOLE"]` on (since 2.7), a change
+  whose values or lists do not fit whole is refused at the twin (`422
+  too_much_to_show`), and staff make it in smaller steps; so is a change
+  approvals would hold that its approver's screen, a line longer, could
+  not show whole. A user's or a group's name never is. Off, what does not
+  fit is cut and counted, the flags first ("auditors, clerks and 4 more",
+  "2 more values"). The phone shows these words, read from the server's
+  record ([Confirming one act](ciba.md#confirming-one-act), [What a
+  screen shows](actions.md#what-a-screen-shows)).
 - **The twin checks what the change checks**: the staff member's bounds,
   the fields, a password's validators, impersonation's rules, a user or
   group that is not there, the last active superuser deleted or
@@ -594,7 +608,13 @@ PUT  /admin/auth/users/6f1c.../groups {"groups": ["auditors"]}
   username taken) spends nothing. A change held for approval (`403
   approval_pending`) spends nothing either: once the request is approved,
   the same call makes it with an authorization, the first one while it
-  lives (`AUTH.AUTHORIZATIONS.TTL`) or a new one.
+  lives (`AUTH.AUTHORIZATIONS.TTL`) or a new one. With
+  `AUTH.AUTHORIZATIONS.HELD_TTL` set (since 2.7), the first one is kept
+  while the request waits ([Held for approval](actions.md#held-for-approval)).
+- **Its own methods** (since 2.7): `AUTH.AUTHORIZATIONS.ACTIONS["auth.admin_change"]`
+  names what confirming a change must prove (`{"METHODS": ["phone"]}`)
+  and how long it lives, apart from the project's acts
+  ([Each act its own methods and lifetime](actions.md#each-act-its-own-methods-and-lifetime)).
 - **Staff acting as a user** cannot ask, and their changes are refused
   (`401 authorization_required`): the act is the staff member's own.
 
