@@ -173,11 +173,16 @@ How `upload_route` decides per request:
   type and its relationship's type say: a reader follows a header's
   relationship to `header2.png`, typed an image, and parses it, and a
   LibreOffice conversion fetched what such a header linked. One lxml
-  cannot read is passed over only if it broke before its first element,
-  as lxml's own events say, read 64 KiB at a time up to the error (a
-  pattern of the bytes took a `>` in quotes for a tag's end); one where
-  an element or a namespace began is refused, too deep or broken, as
-  LibreOffice reads 300 levels where lxml stops at 256. An embedded
+  cannot read is passed over only if, read again by lxml's pull parser
+  with no limit of its own (`huge_tree`), it stops within its first 64
+  characters with no element or namespace begun: binary data. A pattern
+  of the bytes took a `>` in quotes for a tag's end; an element begun
+  missed a comment of 10 MB before the root, which lxml stops at and
+  LibreOffice reads past; and the time of an error says nothing, as
+  lxml's push parser holds bytes until it can read them, and reports a
+  name too long where the name begins. Any other part is a document,
+  refused however lxml stopped: too deep (LibreOffice reads 300 levels,
+  lxml 256), too big before its root, or broken. An embedded
   font's scrambled first byte is `<` 1 time in 256, and 4 such fonts in
   100 begin an element, measured on 10,000: about 1 embedded font in
   6,600 is refused.

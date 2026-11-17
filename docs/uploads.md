@@ -719,10 +719,12 @@ A Word document with macros, sent as `contract.docx`:
   its content type, or its relationship's type: a reader follows a
   header's relationship to `word/header2.png`, typed an image, and parses
   it as the header it is. One lxml cannot read is passed over only if it
-  broke before its first element, by lxml's own events (binary data, a
-  font's, that starts with `<`); one where an element or a namespace
-  began is refused, too deep for lxml (256 levels) or broken, as a reader
-  may read further. Nothing that begins an element counts as binary: an
+  is binary data (a font's, that starts with `<`): lxml, asked again
+  with no limit of its own, stops within its first 64 characters, no
+  element or namespace begun. Any other is a document, refused however
+  lxml stopped (256 levels deep, a comment or an instruction of 10 MB
+  before its root, broken), as a reader may read further. Nothing that
+  begins an element counts as binary: an
   embedded font whose scrambled first byte is `<` (1 in 256) begins one
   about 4 times in 100, and is refused. An embedded workbook (a
   chart's data) is checked the same way. A template, or another kind of

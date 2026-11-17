@@ -10,12 +10,13 @@ from ``r:id`` alone (ADR 0175).
 """
 
 import codecs
+import functools
 import io
 import random
 import time
 import tracemalloc
 import zlib
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Final
 
 import pytest
@@ -755,6 +756,56 @@ def test_a_part_too_deep_for_lxml_is_refused(kind: str) -> None:
         )
         == COMPLEX
     )
+
+
+@functools.cache
+def letters(size: int) -> str:
+    """``size`` letters a deflate keeps near their size: past the ZIP's bounds."""
+    table = bytes(range(97, 123)) * 10
+    return random.Random(5).randbytes(size).translate(table[:256]).decode()  # noqa: S311
+
+
+def before_the_root(prologue: str) -> str:
+    """The header with a picture linked to a hyperlink, ``prologue`` before it."""
+    return prologue + header(blip('r:link="rId1"'))
+
+
+TOO_BIG: Final = 10_100_000
+"""Characters past lxml's limit on a comment or a processing instruction."""
+
+
+@pytest.mark.parametrize("kind", ["header", "image"])
+@pytest.mark.parametrize(
+    "prologue",
+    [
+        pytest.param(
+            lambda: f'<?xml version="1.0"?><!--{letters(TOO_BIG)}-->', id="a-comment"
+        ),
+        pytest.param(lambda: f"<!--{letters(TOO_BIG)}-->", id="a-comment-undeclared"),
+        pytest.param(
+            lambda: f'<?xml version="1.0"?><?x {letters(TOO_BIG)}?>',
+            id="an-instruction",
+        ),
+        pytest.param(lambda: f"<?{'a' * 60_000} x?>", id="an-instructions-name"),
+    ],
+)
+def test_what_lxml_stops_at_before_the_root_is_refused(
+    prologue: Callable[[], str], kind: str
+) -> None:
+    """A comment of 10 MB, an instruction of 10 MB, a name of 60 KB: lxml stops.
+
+    Before the root: no element begun, the part passed for binary data,
+    and LibreOffice read on and fetched the picture 14 times. A part that
+    goes past its first 64 characters is XML, and refused once lxml stops.
+    """
+    data = headed(
+        "header2.png",
+        before_the_root(prologue()),
+        (f"{R}hyperlink", "https://a.example/x.png", "External"),
+        kind=kind,
+    )
+
+    assert verdict(OfficeCheck("docx"), data) == COMPLEX
 
 
 @pytest.mark.parametrize(

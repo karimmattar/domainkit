@@ -394,6 +394,9 @@ MARKS: Final = {
     codecs.BOM_UTF16_BE: "utf-16-be",
 }
 """The byte order marks an XML part may start with, and their encodings."""
+BINARY_PREFIX: Final = 64
+"""The characters within which a part read as XML by its first bytes must stop,
+no element begun, to be binary data, not a document."""
 UNMARKED: Final = {"utf-16-le": "UTF-16LE", "utf-16-be": "UTF-16BE"}
 """lxml's names of the encodings ``_xml_encoding`` reads from a part's zero bytes."""
 XML_MARKS: Final = (
@@ -1642,24 +1645,28 @@ class _Package:
         except FileRefused as refused:
             if refused.code != UNREADABLE or _is_xml(name, self.types.get(name, "")):
                 raise
-            if self._opened(data):
+            if not self._binary(data):
                 # A document, which a reader may read further than lxml did
-                # (lxml stops 256 elements deep, LibreOffice does not).
+                # (lxml stops 256 elements deep, or at a comment of 10 MB;
+                # LibreOffice does not).
                 raise FileRefused(COMPLEX) from None
-            # XML by its first bytes alone, and stopped before its first
-            # element: an image or a font that starts as XML does.
+            # XML by its first bytes alone, stopped within them: an image or
+            # a font that starts as XML does.
         fields.close()
 
-    def _opened(self, data: bytes) -> bool:
-        """Whether an element, or a namespace, opened in ``data`` before it broke.
+    def _binary(self, data: bytes) -> bool:
+        """Whether ``data``, which lxml could not read, is binary data, not XML.
 
-        Read by lxml's own events, ``CHUNK`` bytes fed at a time, up to the
-        error that stopped it: a part that broke before its first element
-        is binary data that starts with ``<`` (a font's); one that broke
-        after is a document a reader may read further than lxml.
+        It is when lxml stops within its first ``BINARY_PREFIX`` characters
+        with no element and no namespace begun (a font's bytes, which start
+        with ``<``); any part that goes further is XML, and any failure past
+        that is a document's, which a reader may read further than lxml.
+        lxml is asked again with no limit of its own on a name, a comment,
+        a processing instruction or the depth (``huge_tree``): it reports
+        a name too long where the name begins, and LibreOffice reads past
+        each of them. ``CHUNK`` bytes are fed at a time; the elements are
+        never kept, as the first event decides.
         """
-        # Its encoding as _xml_encoding read it, where no mark tells lxml:
-        # UTF-16 with no byte order mark is read as a reader may read it.
         encoding = _xml_encoding(data)
         marked = data.startswith(tuple(MARKS)) or encoding == "utf-8"
         parser = self.etree.XMLPullParser(
@@ -1667,18 +1674,23 @@ class _Package:
             resolve_entities=False,
             no_network=True,
             load_dtd=False,
-            huge_tree=False,
+            huge_tree=True,
             encoding=None if marked else UNMARKED[encoding],
         )
         try:
             for at in range(0, len(data), CHUNK):
                 parser.feed(data[at : at + CHUNK])
                 if next(iter(parser.read_events()), None) is not None:
-                    return True
+                    return False
             parser.close()
-        except self.etree.XMLSyntaxError:
-            pass
-        return next(iter(parser.read_events()), None) is not None
+        except self.etree.XMLSyntaxError as stopped:
+            if next(iter(parser.read_events()), None) is not None:
+                return False
+            line, column = (int(each) for each in stopped.position)
+            lines = data[: 64 * BINARY_PREFIX].decode(encoding, "replace").split("\n")
+            at = sum(len(each) + 1 for each in lines[: line - 1]) + column - 1
+            return at < BINARY_PREFIX
+        return False
 
     def _xml(self, archive: zipfile.ZipFile, name: str) -> bytes | None:
         """The part ``name``, if it is XML, or may be read as XML; refused if bad.
@@ -1688,7 +1700,7 @@ class _Package:
         may be read as XML whatever its content type, as a reader follows a
         header's relationship to it: it is XML too when its bytes start as
         XML does, after any white space; one lxml stops reading is passed
-        over if it stopped before its first element (``_check_part``). It
+        over only if it is binary data (``_binary``, ``_check_part``). It
         is read whole, but never past its stated size; another part (an
         image) is opened all the same, and not read.
 
