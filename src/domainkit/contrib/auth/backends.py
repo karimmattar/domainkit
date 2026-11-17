@@ -96,6 +96,33 @@ class ObjectGrant:
         """``shop.change_product on shop.product 42``."""
         return f"{self.permission} on {self.content_type} {self.object_id}"
 
+    @staticmethod
+    def lasting(grants: Iterable["ObjectGrant"]) -> frozenset["ObjectGrant"]:
+        """Each grant once, with the latest end of its copies (since 2.7).
+
+        A grant held twice (directly and through a group, or from two
+        backends) ends as its last copy does; one that never ends
+        (``expires_at`` None) outlasts the rest. So the copy kept is the
+        same whatever the order the copies came in.
+        """
+        kept: dict[tuple[str, str, str], ObjectGrant] = {}
+        for grant in grants:
+            key = (grant.permission, grant.content_type, repr(grant.object_id))
+            held = kept.get(key)
+            if held is None or _ends_later(grant.expires_at, held.expires_at):
+                kept[key] = grant
+        return frozenset(kept.values())
+
+
+def _ends_later(one: datetime | None, other: datetime | None) -> bool:
+    """Whether a grant ending at ``one`` outlasts one ending at ``other``.
+
+    None never ends.
+    """
+    if other is None:
+        return False
+    return one is None or one > other
+
 
 class BaseBackend:
     """A backend that knows no one and grants nothing; override what you need."""
@@ -461,10 +488,10 @@ def backends_without_object_grants() -> list[str]:
 
 async def object_grants(holder: AbstractBaseUser | Group) -> frozenset[ObjectGrant]:
     """What every backend grants ``holder`` (a user or a group) on single objects."""
-    granted: set[ObjectGrant] = set()
+    granted: list[ObjectGrant] = []
     for backend in get_backends():
-        granted |= await backend.object_grants(holder)
-    return frozenset(granted)
+        granted.extend(await backend.object_grants(holder))
+    return ObjectGrant.lasting(granted)
 
 
 async def has_perm(user: AnyUser, perm: str, obj: object | None = None) -> bool:

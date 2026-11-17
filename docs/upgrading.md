@@ -106,7 +106,9 @@ project that relied on 2.6's behaviour changes.
   user's history when the change is about to be made (after your
   checks; with `auth.set_password` held, once the approval is found). A
   reuse is refused, spends the change's authorization with
-  `AUTH.ADMIN_ACTION` (confirm again to try another password), and
+  `AUTH.ADMIN_ACTION` (confirm again to try another password; with the
+  history on, every call spends its authorization before the checks, one
+  that waits for approval too: confirm each), and
   counts for that staff member and that user: past `AUTH.LOGIN_RATE`
   of them (or `ACCOUNT_LOGIN_RATE` over the day), that staff member's
   password changes of that user answer `429 rate_limited` for a while,

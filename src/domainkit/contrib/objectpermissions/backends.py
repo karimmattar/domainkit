@@ -64,17 +64,17 @@ class ObjectPermissionBackend(BaseBackend):
             whom = F("user_id") == holder.id
             if groups:
                 whom |= F("group_id").in_(groups)
-        found: set[ObjectGrant] = set()
+        found: list[ObjectGrant] = []
         current = whom & in_force(now())
         for database in router.hosting_targets():
             async with ObjectPermissionsUnitOfWork(database=database) as uow:
-                for grant in await uow.grants.filter(current):
-                    found.add(
-                        ObjectGrant(
-                            grant.permission,
-                            grant.content_type,
-                            grant.object_id,
-                            grant.expires_at,
-                        )
+                found.extend(
+                    ObjectGrant(
+                        grant.permission,
+                        grant.content_type,
+                        grant.object_id,
+                        grant.expires_at,
                     )
-        return frozenset(found)
+                    for grant in await uow.grants.filter(current)
+                )
+        return ObjectGrant.lasting(found)  # A grant held twice: its last end.

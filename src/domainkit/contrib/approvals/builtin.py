@@ -141,8 +141,10 @@ STAFF: Final = gettext_noop("Staff")
 ALSO_HOLDS: Final = gettext_noop("Also holds")
 """The label of how many permissions of their own, and grants on objects, a
 user made active again comes back with."""
-SHOWN_ID: Final = 12
-"""How many of a group's id's last characters a line shows, as ``named`` does."""
+SHOWN_ID: Final = 4
+"""How many of a group's id's last characters its item shows: a check for the
+person beside the name, short enough that two groups share a line; the
+request binds the whole id."""
 
 
 @requires_approval(POST_ENTRY)
@@ -394,11 +396,12 @@ async def show_set_groups(command: "SetGroups") -> list[tuple[str, object]]:
     """What adding a user to groups shows: the user, then each group in words.
 
     The user by name and id, as ``show_about_user`` shows one. Each group
-    added ("Adds", over as many lines as it takes) by its name, read now
-    (the name held, if it is gone), the end of its id, and what it grants:
-    "readers (…123456789abc): 3 permissions; 2 object grants". A name too
-    long for its line is cut, never refused: the request binds the id.
-    Then the names of the groups it takes away ("Takes away").
+    added ("Adds", as many on a line as fit, over as many lines as it
+    takes) by its name, read now (the name held, if it is gone), the end
+    of its id, and what it grants: "readers (…9abc) 3 perms + 2 object
+    grants". A name too long for its line is cut, never refused: the
+    request binds the id. Then the names of the groups it takes away
+    ("Takes away").
     """
     shown = [await _user_line(command.user_id)]
     names = await _group_names(group.id for group in command.groups)
@@ -485,21 +488,28 @@ async def _group_names(ids: Iterable[UUID]) -> dict[UUID, str]:
 
 
 def _held_group(name: str, group: "HeldGroup") -> str:
-    """A group added, in words, on one line: its name, the end of its id, its grants."""
+    """A group added, in a few words: its name, the end of its id, what it grants.
+
+    "readers (…9abc) 3 perms", and "+ 2 object grants" where it holds any:
+    short, so that a screen puts two or more on a line.
+    """
     ident = str(group.id)
     ident = "…" + ident[-SHOWN_ID:] if len(ident) > SHOWN_ID else ident
-    grants = _counts(len(group.permissions), group.object_grants, plain=True)
-    line = pgettext("held group", "{name} ({id}): {grants}")
+    count = len(group.permissions)
+    grants = ngettext("{count} perm", "{count} perms", count).format(count=count)
+    if group.object_grants:
+        more = ngettext(
+            "{count} object grant", "{count} object grants", group.object_grants
+        )
+        grants += " + " + more.format(count=group.object_grants)
+    line = pgettext("held group", "{name} ({id}) {grants}")
     return _fitting(lambda text: line.format(name=text, id=ident, grants=grants), name)
 
 
-def _counts(permissions: int, grants: int, *, plain: bool = False) -> str:
-    """How many permissions, and grants on objects if any ("" for none of either).
-
-    ``plain``: the permissions are counted even when there are none.
-    """
+def _counts(permissions: int, grants: int) -> str:
+    """How many permissions, and grants on objects, those there are ("" for none)."""
     parts: list[str] = []
-    if permissions or plain:
+    if permissions:
         many = ngettext("{count} permission", "{count} permissions", permissions)
         parts.append(many.format(count=permissions))
     if grants:

@@ -66,14 +66,16 @@ and a status.
 - What approving `auth.set_groups`, `auth.reactivate`, and
   `auth.set_group_permissions` shows says what each grants in words:
   each group added by name, the end of its id, and how many permissions
-  and grants on objects it holds; a user's return with its flags, groups,
-  and counts; a group by its name now. A name too long is cut beside the
+  and grants on objects it holds, as many on a line as fit; a user's
+  return with its flags, groups, and counts; a group by its name now. A name too long is cut beside the
   id, never refused under `WHOLE`. `on_admin_group_screen`
   (`domainkit.contrib.auth.gates`) lets approvals refuse, at a group's
   twin, a held grant its approver could not see whole (user reports A21,
   A23).
 - `ObjectGrant.expires_at`: when a grant on an object ends, which
-  `domainkit.contrib.objectpermissions` gives; not compared (user report
+  `domainkit.contrib.objectpermissions` gives; not compared.
+  `ObjectGrant.lasting` keeps a grant held twice once, with its latest
+  end, whatever the order, as `object_grants` now does (user report
   A21).
 
 ### Changed
@@ -155,8 +157,10 @@ and a status.
   a reuse is refused, spends the change's authorization
   (`AUTH.ADMIN_ACTION`), and counts against the staff member's guesses
   at that user's passwords (`AUTH.LOGIN_RATE`, `ACCOUNT_LOGIN_RATE`;
-  `429 rate_limited` past them), apart from the user's own login counts
-  (user report A17).
+  `429 rate_limited` past them), apart from the user's own login counts.
+  With `AUTH.ADMIN_ACTION`, such a call spends its authorization before
+  anything is checked, so calls sent at once on one confirmation make one
+  comparison and spend no approval they cannot use (user report A17).
 
 ## [2.6.0] - 2026-11-17
 

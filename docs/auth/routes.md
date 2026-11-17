@@ -654,10 +654,18 @@ PUT  /admin/auth/users/6f1c.../groups {"groups": ["auditors"]}
   password, under the approved request's lock, by the one call that
   claims it, before it is spent. While a check refuses the change or its
   request waits, nothing is compared, and every password gets the same
-  answer; so does a call that loses the claim to one made at once. A password among
-  the user's last ones is then refused (`422 invalid_password`), spends
-  the authorization, and leaves the approval unspent: one confirmation
-  is one guess, and a password that will do makes the change.
+  answer; so does a call that loses the claim to one made at once. A
+  password among the user's last ones is then refused (`422
+  invalid_password`), and leaves the approval unspent; a password that
+  will do makes the change.
+- **Where the history may be compared, the call spends its authorization
+  first** (`AUTH.PASSWORD_HISTORY` on, a password given): before the
+  checks, in a transaction of its own, whatever comes of the call, a
+  change that waits for approval included. One confirmation is one
+  comparison: calls sent at once with one confirmation are refused but
+  one (`403 action_not_authorized`), before anything is compared, and
+  only the call that holds the confirmation may spend an approval.
+  Confirm each call.
 - **Reuses are counted for the staff member and the user together**
   (since 2.7): `AUTH.LOGIN_RATE`, and `ACCOUNT_LOGIN_RATE` over the day,
   of reuses refused; past them, that staff member's password changes of
@@ -672,7 +680,8 @@ PUT  /admin/auth/users/6f1c.../groups {"groups": ["auditors"]}
   username taken) spends nothing. A change held for approval (`403
   approval_pending`) spends nothing either: once the request is approved,
   the same call makes it with an authorization, the first one while it
-  lives (`AUTH.AUTHORIZATIONS.TTL`) or a new one.
+  lives (`AUTH.AUTHORIZATIONS.TTL`) or a new one. A password compared
+  with the history is the exception above: it spends first.
 - **Staff acting as a user** cannot ask, and their changes are refused
   (`401 authorization_required`): the act is the staff member's own.
 

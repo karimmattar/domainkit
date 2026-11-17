@@ -169,11 +169,26 @@ tells.
 | After every check, at the change (2.6) | An approval is spent first, then the change is refused (A19). |
 | Before the checks, with the validators (the first form of this record) | An oracle: while a held change waited, or a project's check refused, each guess was answered, and only a hit cost anything (found in review). |
 | When the change is about to be made, the hold first looking for an approved request, then comparing, then spending (the second form) | A race: calls sent at once on one approval each found it, each compared, and one spent it; one approval answered as many guesses as calls (found in review). |
-| **When the change is about to be made: after the checks; where a hold applies, under the approved request's lock, by the call that claims it, before it is marked executed (`AdminChange.last_check`, run once)** | A field more on `AdminChange`. The comparison reads only, so it waits on no write under the lock; the authorization is spent after the lock is let go. |
+| **When the change is about to be made: after the checks; where a hold applies, under the approved request's lock, by the call that claims it, before it is marked executed (`AdminChange.last_check`, run once)** | A field more on `AdminChange`. The comparison reads only, so it waits on no write under the lock. |
 
 While a check refuses the change or its approval waits, nothing is
 compared: every password gets the same answer. A call that loses the
 claim compares nothing, and answers `approval_pending`.
+
+**The authorization of a password compared.** With `AUTH.ADMIN_ACTION`,
+calls sent at once carry one confirmation.
+
+| Option | What it costs |
+| --- | --- |
+| Spent with the change, or after a reuse is refused (the third form) | A hit spent it once the approval's lock was let go: the next call compared under it, spent the approval, and then could not spend the authorization: the approval was gone and nothing changed (found in review). |
+| Spent under the approval's lock, with the approval | On SQLite the lock is the database's write lock: the authorization's write, on auth's connection, would wait on it for good. |
+| **Spent first, before the checks, in a transaction of its own, wherever the history may be compared** | A call that then waits for approval, or that a check refuses, has spent its confirmation: one confirmation, one try, whatever its answer. |
+
+So the call that holds the confirmation is the only one that compares,
+and the only one that may spend an approval; the others answer
+`action_not_authorized` before anything is compared, whatever their
+passwords. The approval is marked executed only by a call that goes on
+to make the change.
 
 `last_check` is awaited by approvals' hold, or by the admin API after
 the checks. A check of the project's that awaited it before the hold
@@ -185,19 +200,41 @@ check may refuse. A check ordered after the hold sees the approval
 spent: it should not refuse a password change, or its refusal and the
 hold's answer a reuse differently.
 
+A reuse counts against a key of the staff member and the user
+together, at `AUTH.LOGIN_RATE` and `ACCOUNT_LOGIN_RATE`, taken before
+anything is checked and given back unless the password was found: the
+user's own counts of wrong passwords (`password_throttle`, which the
+first form used) are apart, so a hijacked session's wrong checks never
+hold back a staff reset, and a staff member's reuses never refuse the
+user's login. Past the rate, that staff member's password changes of
+that user wait (`429`), a new password too: a hit answered past the
+rate would still be an answer.
+
 A grant on an object is bound with when it ends
 (`ObjectGrant.expires_at`, not compared): a grant renewed to a later
-date is another. Roles come as their permissions' grants. A reuse then spends the
-change's authorization in a transaction of its own, committed before
-the refusal (one confirmation, one guess), and leaves the approval for a
-password that will do. It counts against a key of the staff member and
-the user together, at `AUTH.LOGIN_RATE` and `ACCOUNT_LOGIN_RATE`, given
-back when the password will do: the user's own counts of wrong
-passwords (`password_throttle`, which the first form used) are apart,
-so a hijacked session's wrong checks never hold back a staff reset, and
-a staff member's reuses never refuse the user's login. Past the rate,
-that staff member's password changes of that user wait (`429`), a new
-password too: a hit answered past the rate would still be an answer.
+date is another. Roles come as their permissions' grants. A grant held
+twice (directly and through a group, or from two backends) is kept
+once, with its latest end (`ObjectGrant.lasting`, in `object_grants`),
+so its digest does not depend on the order its copies came in.
+
+**What the approver reads.** ADR 0173 gave a guard a `show`. The holds
+of this record show what they grant in words, never their arguments as
+JSON: `auth.set_groups` the user, then each group added in a few words,
+as many on a line as fit ("readers (…9abc) 3 perms + 2 object grants":
+its name read now, the end of its id, and what it grants); `auth.reactivate`
+the user, the flags they come back with, their groups by name, and how
+many permissions and grants on objects they hold; `auth.set_group_permissions`
+the group by its name now (the name held, if it is gone), and the keys.
+A group's item shows four characters of its id, where a user's or a
+group's own line shows twelve (`named`): long enough to tell two groups
+apart at a glance, short enough that two share a line, so a request of
+six groups shows them all. A name too long for its line is cut, measured
+as the screen lays it out: with `WHOLE`, what is refused is a grant too
+large to show, never a name. A user who comes back in more groups than
+a screen shows comes back in steps: some groups taken away, the return,
+then the groups added again, each held. `on_admin_group_screen` lets
+approvals refuse, at a stored group's twin, a held grant its approver
+could not see whole, as `on_admin_screen` does for a user's change.
 
 ## Decision
 
@@ -216,7 +253,10 @@ password too: a hit answered past the rate would still be an answer.
   `dependencies`.
 - A reused password is compared when the change is about to be made
   (`last_check`), refused, counted for the staff member and the user,
-  and spends the authorization, not the approval.
+  and leaves the approval; with `ADMIN_ACTION`, the call spends its
+  authorization before anything is checked.
+- The holds show what they grant in words (`Guard.show`), and
+  `on_admin_group_screen` checks a group's twin.
 - `Reactivate` holds what the user comes back with; a superuser's return
   asks `on_make_superuser`; `approvals.W001` warns of
   `auth.set_group_permissions` held without `auth.set_groups`.
@@ -243,7 +283,8 @@ password too: a hit answered past the rate would still be an answer.
   them one after another; the lifespan and `/ready` run each domain's
   hooks apart, and there it sorts a domain's own.
 - New names: `HookPoint`'s `order=`; `AddedGroup`, `GroupChange`,
-  `on_admin_group_change` (`auth.gates`); `AdminChange.groups`,
+  `on_admin_group_change`, `on_admin_group_screen` (`auth.gates`);
+  `ObjectGrant.expires_at` and `ObjectGrant.lasting`; `AdminChange.groups`,
   `.asking`, and `.last_check`; `approvals.W001`; `REACTIVATE`,
   `SET_GROUP_PERMISSIONS`, `HOLD_ORDER`,
   `HeldGroup`, `Reactivate`, `SetGroupPermissions` (approvals);

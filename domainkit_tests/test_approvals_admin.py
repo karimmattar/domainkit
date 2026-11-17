@@ -1325,6 +1325,11 @@ WHOLE_AUTH: Final = {**ACTS.settings["AUTH"], "AUTHORIZATIONS": {"WHOLE": True}}
 """``AUTH`` of ``HELD_SCREENS`` with ``AUTHORIZATIONS.WHOLE`` on."""
 
 
+def end4(value: object) -> str:
+    """What a group's item shows of its id: ``…`` and its last 4 characters."""
+    return "…" + str(value)[-4:]
+
+
 def screen_of(action: str, command: Any, *, whole: bool) -> list[tuple[str, str]]:  # noqa: ANN401 - a command.
     """What approving ``command`` shows: its action, then its guard's ``show``."""
     guard = guards()[action]
@@ -1399,12 +1404,9 @@ def test_each_hold_shows_what_it_grants_in_words(migrated: Migrated) -> None:
     ]
     assert groups_screen[2][0] == "Adds"
     assert long_line.startswith("ggg")
-    assert long_line.endswith(f"… ({end_of(long)}): 2 permissions")
+    assert long_line.endswith(f"… ({end4(long)}) 2 perms")
     assert len(long_line) == 64
-    assert groups_screen[3] == (
-        "Adds (2)",
-        f"readers ({end_of(readers)}): 0 permissions",
-    )
+    assert groups_screen[3] == ("Adds (2)", f"readers ({end4(readers)}) 0 perms")
     assert return_screen == [
         ("Action", REACTIVATE),
         ("User", f"bob ({end_of(bob)})"),
@@ -1491,3 +1493,111 @@ def test_a_renamed_group_shows_its_name_now_when_approved(
         ("Group", f"auditors ({end_of(group)})"),
         ("Adds", "auth.view_user"),
     ]
+
+
+def test_a_user_in_many_groups_comes_back_in_steps_with_whole_on(
+    migrated: Migrated, frozen: FrozenClock
+) -> None:
+    """Too many groups for one screen: take some away, come back, add them again.
+
+    With ``WHOLE`` on, the return of a staff member in twelve groups would
+    not fit the approver's screen, and is refused at its twin. Taking six
+    groups away waits for no one; the return then fits, and so does adding
+    the six back, a held change of its own (review of user report A21).
+    """
+    with (
+        migrated(HELD_SCREENS),
+        TestClient(get_asgi_application()) as client,
+        override_settings(AUTH=WHOLE_AUTH),
+    ):
+        root = Staff(client, frozen, "root", superuser=True)
+        names = [f"finance_team_{each:02d}" for each in range(12)]
+        for name in names:
+            make_group(name)
+        user = deactivated("user", is_staff=True)
+        join("user", *names)
+        back = {"is_active": True}
+
+        refused = root.ask(f"/users/{user}/authorization/patch", back)
+        kept = {"groups": names[:6]}
+        authorization = root.authorized(f"/users/{user}/groups/authorization", kept)
+        taken = root.call("PUT", f"/users/{user}/groups", kept, authorization)
+        returning = root.ask(f"/users/{user}/authorization/patch", back)
+        adding = root.ask(f"/users/{user}/groups/authorization", {"groups": names})
+
+    problem(refused, 422, "too_much_to_show")
+    assert taken.status_code == 200, taken.json()
+    assert returning.status_code == 201, returning.json()
+    assert adding.status_code == 201, adding.json()
+
+
+EARLY: Final = datetime(2027, 1, 1, tzinfo=UTC)
+LATE: Final = datetime(2028, 1, 1, tzinfo=UTC)
+VAULT: Final = ("accounting.view_entry", "accounting.entry", 7)
+
+
+class EarlyBackend(BaseBackend):
+    """Grants every group the vault until early 2027."""
+
+    async def object_grants(
+        self, holder: AbstractBaseUser | Group
+    ) -> frozenset[ObjectGrant]:
+        """The vault, ending early."""
+        return frozenset({ObjectGrant(*VAULT, EARLY)})
+
+
+class LateBackend(BaseBackend):
+    """Grants every group the vault until 2028; with ``never``, for good."""
+
+    never: bool = False
+
+    async def object_grants(
+        self, holder: AbstractBaseUser | Group
+    ) -> frozenset[ObjectGrant]:
+        """The vault, ending late, or never."""
+        return frozenset({ObjectGrant(*VAULT, None if self.never else LATE)})
+
+
+class NeverBackend(LateBackend):
+    """Grants every group the vault for good."""
+
+    never = True
+
+
+def test_a_grant_held_twice_ends_as_its_last_copy_in_any_order(
+    client: TestClient,
+) -> None:
+    """The same grant from two places keeps its latest end, whichever came first.
+
+    A set keeps one copy of a grant (its end is not compared), so which end
+    a digest bound depended on the order the copies came in (found in
+    review of user report A21). Never ending outlasts any date.
+    """
+    from domainkit.contrib.approvals.builtin import _grants_digest
+    from domainkit.contrib.auth.backends import object_grants
+
+    group_id = make_group("readers")
+    model = "domainkit.contrib.auth.backends.ModelBackend"
+
+    async def held(*backends: str) -> frozenset[ObjectGrant]:
+        async with AuthUnitOfWork() as uow:
+            group = await uow.groups.get(group_id)  # type: ignore[arg-type]
+        with override_settings(
+            AUTH={**APPROVALS_ADMIN.settings["AUTH"], "BACKENDS": [model, *backends]}
+        ):
+            return await object_grants(group)
+
+    early, late, never = (
+        f"{__name__}.{each}" for each in ("EarlyBackend", "LateBackend", "NeverBackend")
+    )
+    one = run_async(held(early, late))
+    other = run_async(held(late, early))
+    forever = run_async(held(never, early))
+
+    assert [grant.expires_at for grant in one] == [LATE]
+    assert [grant.expires_at for grant in other] == [LATE]
+    assert _grants_digest(one) == _grants_digest(other)
+    assert [grant.expires_at for grant in forever] == [None]
+    assert _grants_digest(forever) != _grants_digest(one)
+    lasting = ObjectGrant.lasting([ObjectGrant(*VAULT), ObjectGrant(*VAULT, EARLY)])
+    assert [grant.expires_at for grant in lasting] == [None]

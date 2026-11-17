@@ -1406,8 +1406,13 @@ msgid "Also holds"
 msgstr ""
 
 msgctxt "held group"
-msgid "{name} ({id}): {grants}"
+msgid "{name} ({id}) {grants}"
 msgstr ""
+
+msgid "{count} perm"
+msgid_plural "{count} perms"
+msgstr[0] ""
+msgstr[1] ""
 
 msgid "{count} permission"
 msgid_plural "{count} permissions"
