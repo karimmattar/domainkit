@@ -98,11 +98,11 @@ MAX_AUTHORIZATION_TTL: Final = timedelta(minutes=30)
 MAX_HELD_TTL: Final = timedelta(days=7)
 """The longest an act held for approval keeps its authorization (``HELD_TTL``)."""
 ACTION_PURPOSE: Final = r"^[a-z][a-z0-9_.:-]*$"
+"""An act's purpose, as ``AUTHORIZATIONS.ACTIONS`` names it (``auth.access``)."""
 MAX_NAMED_PERMISSIONS: Final = 20
 """The most permission keys ``AUTHORIZATIONS.NAMED_PERMISSIONS`` names."""
 NamedPermission = Annotated[str, Field(pattern=r"^\w+\.\w+$", max_length=64)]
 """A permission key a screen names: ``<domain>.<codename>``, on one line."""
-"""An act's purpose, as ``AUTHORIZATIONS.ACTIONS`` names it (``auth.access``)."""
 
 
 class PasswordValidatorConfig(BaseModel):

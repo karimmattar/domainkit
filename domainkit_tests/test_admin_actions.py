@@ -827,6 +827,33 @@ def test_a_change_refused_after_its_checks_spends_nothing(
     problem(asked, 409, "username_taken")
 
 
+def test_a_change_refused_by_its_commit_spends_nothing(
+    client: TestClient, frozen: FrozenClock
+) -> None:
+    """A group name taken after the twin is refused by the change's commit.
+
+    The authorization is spent in the change's own transaction, after the
+    checks: the commit refused, it holds still, and the same call makes
+    the group once the name is free again.
+    """
+    root = Staff(client, frozen, "root", superuser=True)
+    body = {"name": "auditors"}
+
+    authorization = root.authorized("/groups/authorization", body)
+    taken = make_group("auditors")
+    refused = root.call("POST", "/groups", body, authorization)
+    unspent = row(authorization)["consumed_at"]
+    gone = root.authorized(f"/groups/{taken}/authorization/delete")
+    deleted = root.call("DELETE", f"/groups/{taken}", None, gone)
+    made = root.call("POST", "/groups", body, authorization)
+
+    problem(refused, 409, "group_name_taken")
+    assert unspent is None
+    assert deleted.status_code == 204
+    assert made.status_code == 201, made.json()
+    assert row(authorization)["consumed_at"] is not None
+
+
 def test_a_held_change_is_checked_before_it_waits_and_spent_once_approved(
     client: TestClient, frozen: FrozenClock
 ) -> None:

@@ -46,16 +46,20 @@ from domainkit.contrib.approvals import (
 from domainkit.contrib.approvals.tables import requests
 from domainkit.contrib.auth import AuthUnitOfWork, UnknownGroup, User
 from domainkit.contrib.auth.admin_actions import ActGroup, AdminAct, show
+from domainkit.contrib.auth.backends import ObjectGrant
+from domainkit.contrib.auth.gates import AdminChange, on_admin_change
 from domainkit.contrib.auth.integration import named_first, named_permissions
 from domainkit.contrib.auth.screens import TooMuchToShow
 from domainkit.contrib.auth.settings import AuthorizationsSettings
 from domainkit.http import get_asgi_application
+from domainkit.i18n import override
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import Migrated, Shape, UseAuth
 from domainkit_tests.support.auth import audited, create_user
 from domainkit_tests.test_admin_actions import ACTS, ADMIN, Staff, problem, row
 from domainkit_tests.test_admin_actions import frozen as frozen  # The fixture.
 from domainkit_tests.test_approvals_admin import (
+    GROUP_GRANTS,
     comes_back,
     deactivated,
     end4,
@@ -318,11 +322,13 @@ def test_a_kept_confirmation_serves_the_request_it_was_kept_for_alone(
         assert late.status_code == 403, late.json()
     again = ann.authorized(f"{path}/authorization/patch", body)
     second = pending(ann.call("PATCH", path, body, again))
+    waits_on_another = ann.call("PATCH", path, body, authorization)
     approve(root, second)
     late = ann.call("PATCH", path, body, authorization)
     made = ann.call("PATCH", path, body, again)
 
     problem(refused, 403, "action_not_authorized")
+    problem(waits_on_another, 403, "action_not_authorized")
     assert "held_elsewhere" in [
         each["details"]["reason"] for each in audited("auth.authorization")
     ]
@@ -395,6 +401,182 @@ def test_calls_at_once_after_the_change_moved_on_submit_nothing(
     assert others == []
     problem(late, 403, "action_not_authorized")
     assert status_of(root, first) == "approved"
+    assert user_of(bob).is_active is False
+
+
+def test_a_kept_confirmation_never_adds_a_group_made_again_or_given_a_grant(
+    client: TestClient, frozen: FrozenClock
+) -> None:
+    """Approved for readers: deleted and made again, or granted an object since.
+
+    Each is another act (``403 action_not_authorized``, voided): the
+    approval is never spent and nothing is submitted.
+    """
+    auth = {
+        **HELD.settings["AUTH"],
+        "BACKENDS": [
+            "domainkit.contrib.auth.backends.ModelBackend",
+            "domainkit_tests.test_approvals_admin.GroupGrantsBackend",
+        ],
+    }
+    GROUP_GRANTS.clear()
+    try:
+        with override_settings(AUTH=auth):
+            ann = Staff(client, frozen, "ann", *WRITES)
+            root = Staff(client, frozen, "root", superuser=True)
+            bob = create_user("bob")
+            readers = make_group("readers", *READS)
+            make_group("clerks", *READS)
+            path = f"/users/{bob}/groups"
+            body, clerks = {"groups": ["readers"]}, {"groups": ["clerks"]}
+            made_again = ann.authorized(f"{path}/authorization", body)
+            first = pending(ann.call("PUT", path, body, made_again))
+            approve(root, first)
+            gone = root.authorized(f"/groups/{readers}/authorization/delete")
+            deleted = root.call("DELETE", f"/groups/{readers}", None, gone)
+            make_group("readers", *READS)
+            again = ann.call("PUT", path, body, made_again)
+            granted = ann.authorized(f"{path}/authorization", clerks)
+            second = pending(ann.call("PUT", path, clerks, granted))
+            approve(root, second)
+            GROUP_GRANTS["clerks"] = frozenset(
+                {ObjectGrant("auth.view_user", "auth.user", 7)}
+            )
+            widened = ann.call("PUT", path, clerks, granted)
+    finally:
+        GROUP_GRANTS.clear()
+
+    assert deleted.status_code == 204
+    problem(again, 403, "action_not_authorized")
+    problem(widened, 403, "action_not_authorized")
+    assert row(made_again)["consumed_at"] is not None
+    assert row(granted)["consumed_at"] is not None
+    assert {each["id"] for each in stored_requests()} == {UUID(first), UUID(second)}
+    assert groups_of(bob) == set()
+
+
+def test_calls_at_once_after_a_rename_are_all_refused(
+    client: TestClient, frozen: FrozenClock
+) -> None:
+    """Approved for readers, admins takes the name: six calls at once, none adds."""
+    ann = Staff(client, frozen, "ann", *WRITES)
+    root = Staff(client, frozen, "root", superuser=True)
+    bob = create_user("bob")
+    readers = make_group("readers", *READS)
+    admins = make_group("admins", *WRITES)
+    path = f"/users/{bob}/groups"
+    body = {"groups": ["readers"]}
+    authorization = ann.authorized(f"{path}/authorization", body)
+    first = pending(ann.call("PUT", path, body, authorization))
+    approve(root, first)
+    rename(root, readers, "old")
+    rename(root, admins, "readers")
+
+    answers = at_once(ann, "PUT", path, body, authorization)
+
+    assert {code_of(each) for each in answers} == {"action_not_authorized"}
+    assert [each["id"] for each in stored_requests()] == [UUID(first)]
+    assert status_of(root, first) == "approved"
+    assert groups_of(bob) == set()
+
+
+def test_calls_at_once_on_a_pending_return_that_moved_on_submit_nothing(
+    client: TestClient, frozen: FrozenClock
+) -> None:
+    """Bob's return waits; Bob is put in admins: six calls at once submit nothing."""
+    ann = Staff(client, frozen, "ann", *WRITES)
+    bob = deactivated("bob")
+    make_group("readers", *READS)
+    make_group("admins", *WRITES)
+    join("bob", "readers")
+    path = f"/users/{bob}"
+    body = {"is_active": True}
+    authorization = ann.authorized(f"{path}/authorization/patch", body)
+    first = pending(ann.call("PATCH", path, body, authorization))
+    join("bob", "admins")
+
+    answers = at_once(ann, "PATCH", path, body, authorization)
+
+    assert {code_of(each) for each in answers} == {"action_not_authorized"}
+    assert [each["id"] for each in stored_requests()] == [UUID(first)]
+    assert row(authorization)["consumed_at"] is None  # It serves the first still.
+    assert user_of(bob).is_active is False
+
+
+def test_a_retry_after_an_approval_lapsed_unrun_is_made(
+    client: TestClient, frozen: FrozenClock
+) -> None:
+    """An approved request that lapsed unrun is passed over, never refused for.
+
+    Approved requests never expire in the table: they lapse. Its retry,
+    on a new confirmation kept for the new request, once approved, makes
+    the change, and the later ones too. On the first form of 2.8 it was
+    refused (``held_elsewhere``) for the lapsed one, found first (found in
+    review).
+    """
+    ann = Staff(client, frozen, "ann")
+    root = Staff(client, frozen, "root", superuser=True)
+    bob = create_user("bob")
+    carl = create_user("carl")
+    body = {"is_staff": True}
+
+    def held_change(user: UUID) -> Any:  # noqa: ANN401 - a response.
+        path = f"/users/{user}"
+        authorization = ann.authorized(f"{path}/authorization/patch", body)
+        request_id = pending(ann.call("PATCH", path, body, authorization))
+        approve(root, request_id)
+        return ann.call("PATCH", path, body, authorization)
+
+    first = ann.authorized(f"/users/{bob}/authorization/patch", body)
+    lapsed = pending(ann.call("PATCH", f"/users/{bob}", body, first))
+    approve(root, lapsed)
+    frozen.tick(timedelta(days=3, minutes=10))  # EXPIRES_AFTER: it lapses unrun.
+    made = held_change(bob)
+    later = held_change(carl)
+
+    assert made.status_code == 200, made.json()
+    assert later.status_code == 200, later.json()
+    assert "held_elsewhere" not in [
+        each["details"]["reason"] for each in audited("auth.authorization")
+    ]
+    assert status_of(root, lapsed) == "approved"
+
+
+def test_a_number_taken_between_the_check_and_the_commit_spends_the_approval(
+    client: TestClient, frozen: FrozenClock
+) -> None:
+    """What is left: a number taken after the check is refused by the commit.
+
+    The approval is spent by then (approvals' hold, in its own
+    transaction), as the docs say; the act's authorization is not, and
+    Bob stays inactive. A lock taken for the check would not hold off an
+    insert that takes none, and on SQLite it is the database's write lock,
+    which approvals' hold then waits on.
+    """
+    ann = Staff(client, frozen, "ann", *WRITES)
+    root = Staff(client, frozen, "root", superuser=True)
+    bob = deactivated("bob")
+    make_group("readers", *READS)
+    join("bob", "readers")
+    path = f"/users/{bob}"
+    body = {"is_active": True, "fields": {"mobile_number": NUMBER}}
+    authorization = ann.authorized(f"{path}/authorization/patch", body)
+    request_id = pending(ann.call("PATCH", path, body, authorization))
+    approve(root, request_id)
+    armed = [True]
+
+    async def taker(actor: Any, target: Any, change: AdminChange) -> None:  # noqa: ANN401
+        if armed.pop() if armed else False:
+            async with AuthUnitOfWork() as uow:
+                await uow.users.create_user("carol", None, mobile_number=NUMBER)
+                await uow.commit()
+
+    on_admin_change(taker, domain="auth", order=200)  # After approvals' hold.
+    refused = ann.call("PATCH", path, body, authorization)
+
+    problem(refused, 409, "mobile_number_taken")
+    assert status_of(root, request_id) == "executed"
+    assert row(authorization)["consumed_at"] is None
     assert user_of(bob).is_active is False
 
 
@@ -603,7 +785,7 @@ def test_each_hold_names_the_keys_the_setting_names(client: TestClient) -> None:
 def test_the_holds_screens_name_what_they_take_away_and_older_shapes(
     client: TestClient,
 ) -> None:
-    """Grants on objects counted, what is taken away named, a 2.6 request by name.
+    """Grants on objects counted, what is taken away named, a field cleared in words.
 
     The words moved to auth (``group_item``, ``list_item``) and read as in
     2.7; no key is named while ``NAMED_PERMISSIONS`` names none.
@@ -615,7 +797,9 @@ def test_the_holds_screens_name_what_they_take_away_and_older_shapes(
         user_id=bob, added=("readers",), removed=("clerks",), groups=(held,)
     )
     older = SetGroups(user_id=bob, added=("readers",))
-    alone = comes_back(bob, is_superuser=True, values={"is_staff": "x"})
+    alone = comes_back(
+        bob, is_superuser=True, values={"is_staff": "x", "mobile_number": None}
+    )
     taking = SetGroupPermissions(
         group_id=readers, name="readers", added=(NAMED,), removed=("auth.add_user",)
     )
@@ -627,6 +811,8 @@ def test_the_holds_screens_name_what_they_take_away_and_older_shapes(
         screen_of(REACTIVATE, alone, whole=True),
         screen_of(SET_GROUP_PERMISSIONS, taking, whole=True),
     ]
+    with override("ar"):
+        cleared = screen_of(REACTIVATE, alone, whole=True)[-1]
     shown = run_async(show(act)).details
 
     assert screens[0][2:] == [
@@ -634,7 +820,12 @@ def test_the_holds_screens_name_what_they_take_away_and_older_shapes(
         ("Takes away", "clerks"),
     ]
     assert screens[1][2:] == [("Adds", "readers")]
-    assert screens[2][2:] == [("Superuser", "yes"), ("Staff", "x")]
+    assert screens[2][2:] == [
+        ("Superuser", "yes"),
+        ("Staff", "x"),
+        ("Mobile number", "(none)"),
+    ]
+    assert cleared[1] == "(لا شيء)"
     assert screens[3][2:] == [("Adds", NAMED), ("Takes away", "auth.add_user")]
     assert shown[1:] == (("Adds", "readers"),)
 

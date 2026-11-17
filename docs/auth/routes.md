@@ -632,9 +632,10 @@ PUT  /admin/auth/users/6f1c.../groups {"groups": ["auditors"]}
   impersonation, then the other fields set, by name ("Email", "Display
   name"). Since 2.8 a group added shows as approvals shows it, in a few
   words: "Adds: auditors (…9abc) 3 perms + 2 object grants", and the
-  keys `AUTH.AUTHORIZATIONS.NAMED_PERMISSIONS` names among what they
+  keys `AUTH.AUTHORIZATIONS.NAMED_PERMISSIONS` names among the keys they
   grant show by name before them ("Grants:
   companies.administer_company"); in a list of keys, those come first.
+  A grant on a single object is counted, whatever its key.
   A list
   goes over as many lines as it takes ("Adds", "Adds (2)"). Six lines at
   most: with `AUTH["AUTHORIZATIONS"]["WHOLE"]` on (since 2.7), a change
@@ -660,7 +661,8 @@ PUT  /admin/auth/users/6f1c.../groups {"groups": ["auditors"]}
   an address, or a number another user has (`409`), as the change does
   before its checks. What only the change finds is refused then, after
   the confirmation: a group name taken, one of those values taken in the
-  moment between, and a password the user had before
+  moment between (where approvals hold the change, the approval is spent
+  by then, and stays spent), and a password the user had before
   (`AUTH.PASSWORD_HISTORY`), which the twin does not compare, as it
   would answer that guess unconfirmed.
 - **A reused password spends the authorization** (since 2.7). The act

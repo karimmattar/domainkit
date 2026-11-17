@@ -830,8 +830,13 @@ async def _not_taken(
     and a value of any unique column of the user table (the mobile
     number). Run before the ``on_admin_change`` checks, and at the twin:
     a change refused for it never spends an approval, nor is confirmed
-    first (user report A17). One taken between this and the commit is
-    refused by the commit, as before.
+    first (user report A17). A value ``user`` holds already is not
+    checked, as ``refuse_taken_emails`` does not: a form sent whole keeps
+    an address two users shared before it identified users. One taken
+    between this and the commit is refused by the commit, as before, and
+    an approval spent by then stays spent: a lock here would not hold off
+    an insert that takes none, and on SQLite it is the database's write
+    lock, which approvals' hold, in a transaction of its own, waits on.
 
     Raises:
         UsernameTaken: Another user has the username.
@@ -844,7 +849,11 @@ async def _not_taken(
     others = table.c.id != (None if user is None else user.id)
     for name, value in sorted(values.items()):
         column = table.c.get(name)
-        if column is None or value is None or value == "":
+        if (
+            column is None
+            or value in (None, "")
+            or _holds_already(model, user, name, value)
+        ):
             continue
         if name == model.USERNAME_FIELD:
             if user is None and await uow.users.username_taken(str(value)):
@@ -864,6 +873,19 @@ async def _not_taken(
         ):
             taken = column.info.get("duplicate", DuplicateValue)
             raise taken(f"The {name} is already taken.", fields=(name,))
+
+
+def _holds_already(
+    model: type[AbstractBaseUser],
+    user: AbstractBaseUser | None,
+    name: str,
+    value: object,
+) -> bool:
+    """Whether ``user`` holds ``value`` in ``name`` already: an address in any case."""
+    stored = None if user is None else getattr(user, name, None)
+    if stored is None or name != model.EMAIL_FIELD:
+        return stored is not None and stored == value
+    return same_email(str(stored), str(value))
 
 
 def _returning_superuser(user: AbstractBaseUser, body: AdminUserPatch) -> bool:

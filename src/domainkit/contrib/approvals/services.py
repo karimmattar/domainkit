@@ -345,9 +345,11 @@ async def run_by_maker(guard: Guard, command: object) -> Running:
     if auth's action authorizations took one, is kept for the call made
     again once approved, until the request expires, within
     ``AUTH.AUTHORIZATIONS.HELD_TTL`` (ADR 0174). Kept for one request, it
-    serves that one alone (since 2.8, ADR 0179): a call whose command
-    changed since is refused before it spends, waits on, or submits
-    another, and asks for a new authorization.
+    serves that one alone (since 2.8, ADR 0179): an approved or pending
+    request it is not kept for is passed over, and a call that would wait
+    on, or submit, another is refused, and asks for a new authorization.
+    An approved request whose time is up is passed over too: it never
+    runs.
 
     Raises:
         ApprovalRequired: No one is acting.
@@ -363,23 +365,19 @@ async def run_by_maker(guard: Guard, command: object) -> Running:
     async with ApprovalsUnitOfWork() as uow:
         found = await uow.requests.made_by(maker, guard.action, digest)
     now = clock.now()
-    for request in found:
-        if request.status is RequestStatus.APPROVED:
-            _kept_for(request.id)
+    live = [request for request in found if not request.expired(now)]
+    for request in live:
+        if request.status is RequestStatus.APPROVED and _served(request.id):
             await _check_maker(guard, maker)
             spent = await _spend(guard, request.id, arguments)
             if spent is not None:
                 return Running(
                     spent.id, spent.action, command, spent.maker, spent.required
                 )
-    waiting = next(
-        (
-            request
-            for request in found
-            if request.status is RequestStatus.PENDING and not request.expired(now)
-        ),
-        None,
-    )
+    pending = [each for each in live if each.status is RequestStatus.PENDING]
+    waiting = next((each for each in pending if _served(each.id)), None)
+    if waiting is None and pending:
+        waiting = pending[0]
     _kept_for(None if waiting is None else waiting.id)
     if waiting is None:
         waiting = await _submit(guard, command, maker, ApprovalsUnitOfWork())
@@ -406,6 +404,19 @@ def _keep_authorizations(request_id: UUID, until: datetime) -> None:
         from domainkit.contrib.auth.actions import hold_authorizations
 
         hold_authorizations(until, held_for=f"{HELD_FOR}{request_id}")
+
+
+def _served(request_id: UUID) -> bool:
+    """Whether the call's act's authorization may serve the request ``request_id``.
+
+    With ``domainkit.contrib.auth`` installed: unless it is kept for another
+    request (auth's ``held_elsewhere``). Without auth, there is none.
+    """
+    if not registry.is_installed(AUTH):
+        return True
+    from domainkit.contrib.auth.actions import held_elsewhere
+
+    return not held_elsewhere(f"{HELD_FOR}{request_id}")
 
 
 def _kept_for(request_id: UUID | None) -> None:

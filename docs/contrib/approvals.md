@@ -669,7 +669,12 @@ PATCH /admin/auth/users/6f1c... {"is_staff": true}                       200: th
   none, is found and spent as before by a call that sets nothing else.
 - **A value another user has is refused before the hold** (since 2.8):
   an address that identifies users, a number, a username (`409`). Before,
-  the commit refused it after the hold had spent the approval.
+  the commit refused it after the hold had spent the approval. A value
+  the user holds already is not checked again: a form sent whole keeps an
+  address two users shared before it identified users. One taken in the
+  moment between that check and the commit is still refused by the
+  commit, and the approval, spent by the hold by then, stays spent: ask
+  for another.
 - **A user who holds access comes back with an approval**
   (`auth.reactivate`, since 2.7). Making a user active again gives back
   everything they hold, so `"is_active": true` waits when the user is
@@ -735,7 +740,7 @@ PATCH /admin/auth/users/6f1c... {"is_staff": true}                       200: th
   show, never a name. Since 2.8 `auth.set_staff` shows what else the
   call sets, by label, and `auth.reactivate` after what the user comes
   back with.
-- **A key that matters is named, never counted** (since 2.8). A count
+- **A key that matters is named, not counted** (since 2.8). A count
   ("readers (…9abc) 3 perms", "Also holds: 3 permissions") does not say
   which keys; auth's `AUTHORIZATIONS.NAMED_PERMISSIONS` lists the keys
   a screen names wherever it would count them, by default
@@ -744,7 +749,10 @@ PATCH /admin/auth/users/6f1c... {"is_staff": true}                       200: th
   grant on a line of their own, "Grants: companies.administer_company",
   before the groups; `auth.set_group_permissions` and
   `auth.set_permissions` list them first among the keys added, so a list
-  cut and counted keeps them. The line counts as any other: with `WHOLE`
+  cut and counted keeps them. Keys are named where they are granted
+  directly or through a group; a grant on a single object, a role's
+  among them, is counted as one ("+ 1 object grant"), as the request
+  holds it (how many, and a digest), whatever its key. The line counts as any other: with `WHOLE`
   a grant that no longer fits is refused, and made in smaller steps. A user who comes back in more groups than a screen
   shows is refused with `WHOLE`: take some groups away (that waits for
   no one), make them active again, then add the groups back, each step
@@ -773,9 +781,10 @@ PATCH /admin/auth/users/6f1c... {"is_staff": true}                       200: th
   ([Held for approval](../auth/actions.md#held-for-approval)). Kept for
   one request, it serves that one alone (since 2.8): a call whose
   command changed since (a group renamed, a user put in a group) is
-  refused (`403 action_not_authorized`) before it submits or spends
-  another request, and a new confirmation, showing the change as it is
-  now, does.
+  refused (`403 action_not_authorized`) where it would submit or wait
+  on another request, and never spends one; a new confirmation, showing
+  the change as it is now, does. An approved request whose time is up is
+  passed over, never refused for.
 
 The admin API asks through auth's `on_admin_change` hook, and, for a
 group's changes, `on_admin_group_change` (since 2.7), which approvals

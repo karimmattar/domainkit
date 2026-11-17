@@ -162,10 +162,6 @@ FLAG_LABELS: Final = {
     "is_active": ACTIVE,
 }
 """The labels of the flags a change sets beside its grant (since 2.8)."""
-SHOWN_ID: Final = 4
-"""How many of a group's id's last characters its item shows: a check for the
-person beside the name, short enough that two groups share a line; the
-request binds the whole id."""
 
 
 @requires_approval(POST_ENTRY)
@@ -533,7 +529,8 @@ def _values(values: Mapping[str, object]) -> list[tuple[str, object]]:
     """What a change sets beside its grant, each by its label (since 2.8).
 
     The flags first ("Active: no"), then the fields as the admin API's act
-    names them ("Email", "Display name"), each in its order.
+    names them ("Email", "Display name"), each in its order; a field
+    cleared shows as "(none)", in the request's language.
     """
     from domainkit.contrib.auth.integration import field_label
 
@@ -544,7 +541,7 @@ def _values(values: Mapping[str, object]) -> list[tuple[str, object]]:
         if (value := values.get(name, UNSHOWN)) is not UNSHOWN
     ]
     fields = [
-        (field_label(name), value)
+        (field_label(name), pgettext("value", "(none)") if value is None else value)
         for name, value in sorted(values.items())
         if name not in FLAG_LABELS
     ]

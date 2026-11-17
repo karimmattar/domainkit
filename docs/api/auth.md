@@ -99,6 +99,7 @@ Authorize one act, with its arguments, once (ADR 0144).
 - `action_for`: The registered action of `purpose`, if there is one.
 - `confirm_action_with`: Confirm the authorization, which `methods` proved; return `<id>.<code>`.
 - `confirmed_action_authorization`: `<id>.<code>` of the user's confirmed authorization, for the confirming app.
+- `held_elsewhere`: Whether the request's act took an authorization kept for another (since 2.8).
 - `hold_authorizations`: Keep the authorization of the request's act, which now waits for approval.
 - `link_action_authorization`: Link what will confirm the authorization: the phone's request, or a passkey's.
 - `linked_action_authorization`: The user's authorization the phone's request `sign_in_request_id` confirms.

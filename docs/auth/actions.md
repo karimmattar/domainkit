@@ -203,7 +203,8 @@ group added, "readers (…9abc) 3 perms"; what a user made active again
 holds), the keys `AUTH["AUTHORIZATIONS"]["NAMED_PERMISSIONS"]` names
 show by name on a line of their own, "Grants", and first in a list of
 keys (since 2.8); by default, `TENANCY.ALL_TENANTS_PERMISSION` where it
-is set. A change of the admin API that
+is set. Keys granted directly or through a group are named; a grant on a
+single object is counted, whatever its key. A change of the admin API that
 approvals would hold is refused at its twin when the approver's screen,
 a line longer, could not show it whole, and a request that its approvers
 could not be shown whole is refused when it is submitted, rather than
@@ -665,11 +666,11 @@ once the request is approved, spends it as any act does, once.
   0179](../adr/0179-bind-the-admin-acts-groups-by-id-and-keep-a-held-confirmation-to-its-request.md)).
   The call made again builds its command anew. Where that changed since
   (a user made active again who was put in a group meanwhile), it is
-  another request: approvals refuses the call (`403
-  action_not_authorized`, the trail's `held_elsewhere`) before it
-  submits, waits on, or spends any request but the one the authorization
-  is kept for, and a new confirmation, which shows the change as it is
-  now, submits it. In 2.7 the call submitted it, and once it was
+  another request: approvals passes over the requests it may not serve,
+  and refuses a call that would wait on, or submit, any request but the
+  one the authorization is kept for (`403 action_not_authorized`, the
+  trail's `held_elsewhere`); a new confirmation, which shows the change
+  as it is now, submits it. In 2.7 the call submitted it, and once it was
   approved, the authorization kept for the first request, which waited
   still, made it (user report A17). Nothing is written: the
   authorization still serves its own request.
@@ -685,10 +686,12 @@ once the request is approved, spends it as any act does, once.
   is written as the response starts), and registers an `on_held_act`
   hook, `async (held_for) -> bool | None`, that answers whether it still
   waits (None for another app's). A hold no hook answers for is over.
-  `held_for` holds 1 to 200 characters (`ValueError` otherwise). Before
-  the call spends, waits on, or submits what it holds, it calls
-  `refuse_held_elsewhere(held_for)` (None for one it is about to submit):
-  an authorization kept for something else is refused there (since 2.8).
+  `held_for` holds 1 to 200 characters (`ValueError` otherwise). Since
+  2.8 it passes over what `held_elsewhere(held_for)` says the call's
+  authorization may not serve, and before the call waits on, or submits,
+  what it holds, it calls `refuse_held_elsewhere(held_for)` (None for one
+  it is about to submit): an authorization kept for something else is
+  refused there.
 
 ## The trail, privacy, and the purge
 

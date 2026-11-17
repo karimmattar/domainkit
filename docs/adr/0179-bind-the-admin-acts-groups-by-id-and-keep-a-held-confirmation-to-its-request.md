@@ -79,7 +79,7 @@ on 2.7 (user report A17, rows 1, 4, 5 and 6) found four gaps.
 | --- | --- |
 | Void the authorization when its call submits another request (the first form of this record) | A race, found while building this change: calls sent at once on one approved request, one claiming it, the others finding it carried out and submitting a copy; the copies voided the authorization before the claiming call spent it, and the approval was spent for nothing. Asking whether the first request still waits narrows it to a state that changes between two calls sent at once, across two databases. |
 | Refuse it only when it would spend another request | The call still submits a request it can never make, and the maker learns it only once that is approved. |
-| **The holding app refuses the call before it spends, waits on, or submits any request but the one the authorization is kept for (`refuse_held_elsewhere`, `403 action_not_authorized`, the trail's `held_elsewhere`)** | One more call for an app that holds acts. Nothing is written, so no call made at once can lose its spend to it; the authorization still serves its own request. |
+| **The holding app passes over the requests the authorization may not serve (`held_elsewhere`), and refuses a call that would wait on, or submit, any request but the one it is kept for (`refuse_held_elsewhere`, `403 action_not_authorized`, the trail's `held_elsewhere`)** | Two calls for an app that holds acts. Nothing is written, so no call made at once can lose its spend to it; the authorization still serves its own request. Refusing at the first approved request found, as the first form of this decision did, refused a retry whose oldest approved request had lapsed unrun (found in review): approved requests lapse, they are never expired, so they are passed over. |
 
 ### Options: fields sent with a held grant
 
@@ -100,7 +100,11 @@ approver did not see is made, and nothing that waited before is refused.
 | **`AUTH.AUTHORIZATIONS.NAMED_PERMISSIONS`, the keys a screen names wherever it counts, by default `TENANCY.ALL_TENANTS_PERMISSION` where set; shown on a line of their own ("Grants") before the groups, and first in a list of keys** | A line more under `WHOLE`: a change that filled the screen is refused, and made in steps. Approvals reads it through `auth.integration`. |
 
 The line comes before the groups, so that a screen cut and counted keeps
-it; in a list, a named key first is never among those counted.
+it; in a list, a named key first is never among those counted. Keys are
+named where they are granted directly or through a group's keys. A grant
+on a single object (a role's among them) stays counted ("+ 1 object
+grant"): `HeldGroup` holds such grants as a count and a digest, not by
+key, and naming them would change what a request of 2.7 holds.
 
 ### Options: counting staff reuses
 
@@ -120,13 +124,21 @@ both.
   objects, which approvals' `HeldGroup` takes too.
 - `refuse_held_elsewhere(held_for)` (`auth.actions`): an authorization
   the act took that is kept for something else refuses the call.
-  Approvals' `run_by_maker` asks it before it spends or waits on a
-  request, and before it submits one.
+  Approvals' `run_by_maker` passes over the approved and pending
+  requests the authorization may not serve (`held_elsewhere`), and an
+  approved one whose time is up, then refuses only a call that would
+  wait on, or submit, a request other than the one it is kept for.
 - `SetStaff` and `Reactivate` hold `values`. `update_user` and
   `create_user`, and their twins, refuse a username, an address that
   identifies users, or a value of any unique column another user has,
-  before the `on_admin_change` checks (`_not_taken`); the commit still
-  refuses one taken in between.
+  before the `on_admin_change` checks (`_not_taken`), but a value the
+  user holds already, which is not checked again (`refuse_taken_emails`
+  does not check an unchanged address either). The commit still refuses
+  one taken in between, and where approvals hold the change, the
+  approval is spent by then and stays spent. Taking the address's lock
+  for the check would not close it: an insert of a number takes no lock,
+  and on SQLite the lock is the database's write lock, which approvals'
+  hold, in a transaction of its own, would then wait on.
 - `NAMED_PERMISSIONS` names keys on approvals' screens of
   `auth.set_groups`, `auth.reactivate`, `auth.set_group_permissions`,
   `auth.set_permissions`, and on the admin API's act.
@@ -150,7 +162,7 @@ both.
   `action_not_authorized`, where they submitted copies of the request.
 - New names: `AUTHORIZATIONS.NAMED_PERMISSIONS`,
   `STAFF_REUSES_COUNT_AS_PASSWORD_CHECKS`, `held_groups`,
-  `refuse_held_elsewhere`, and in `auth.integration` `group_item`,
+  `held_elsewhere`, `refuse_held_elsewhere`, and in `auth.integration` `group_item`,
   `list_item`, `field_label`, `named_permissions`, `named_first`,
   `grants_digest`; `SetStaff.values`, `Reactivate.values`. No table
   changes.

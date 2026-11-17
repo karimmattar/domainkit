@@ -2134,6 +2134,35 @@ def test_a_value_another_user_has_is_refused_before_the_checks(api: Api) -> None
     assert checked == ["update", "update"]
 
 
+def test_an_unchanged_address_shared_from_before_is_sent_again(api: Api) -> None:
+    """A form sent whole keeps the address Bob shares with Carol, in any case.
+
+    Their accounts were made before the address identified users; changing
+    Bob's first name re-sends his address, which is not checked again, as
+    at the commit (found in review of user report A17).
+    """
+    api()
+    headers = staff("admin", *ADMIN_PERMISSIONS)
+    create_user("carol", email="shared@example.com")
+    bob = create_user("bob", email="shared@example.com", mobile_number="+447700900123")
+    client = api(IDENTIFIERS=("username", "email"))
+
+    edited = client.patch(
+        f"{ADMIN}/users/{bob}",
+        json={
+            "fields": {
+                "email": "Shared@example.com",
+                "mobile_number": "+44 7700 900123",
+                "first_name": "Bob",
+            }
+        },
+        headers=headers,
+    )
+
+    assert edited.status_code == 200, edited.json()
+    assert edited.json()["fields"]["first_name"] == "Bob"
+
+
 def test_an_address_that_identifies_no_one_may_be_shared(api: Api) -> None:
     """Without ``email`` among ``AUTH.IDENTIFIERS``, staff set a shared address."""
     client = api()
