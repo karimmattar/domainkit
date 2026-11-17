@@ -64,6 +64,39 @@ relied on 2.7's behaviour changes, and what to run.
   without the field, the picture's outside source, or the mail merge's
   data source (in Word, Mailings, Start Mail Merge, Normal Word Document)
   ([Checking documents](uploads.md#checking-documents)).
+- **The admin API's act binds each group by id and grants** (security,
+  [ADR 0179](adr/0179-bind-the-admin-acts-groups-by-id-and-keep-a-held-confirmation-to-its-request.md)).
+  A change of a user's groups binds each group it adds as approvals'
+  `auth.set_groups` holds it, and each it takes away by id; its screen
+  shows each group added in a few words ("auditors (…9abc) 3 perms").
+  An authorization of such a change asked for under 2.7, and not yet
+  spent (one held for approval with `HELD_TTL` included), is refused
+  once (`403 action_not_authorized`): the staff member asks again. Every
+  other act's digest is unchanged. With `WHOLE` on, fewer groups fit one
+  change: add them in steps. A client or a test that matched "Adds:
+  auditors" reads the new words.
+- **A held authorization serves its own request alone.** With
+  `HELD_TTL` set, a call made again whose command changed since (a
+  group renamed, a user put in a group while their return waits) is
+  refused (`403 action_not_authorized`, the trail's `held_elsewhere`)
+  where it submitted a new request; confirm the change again.
+- **Making staff and a user's return hold what else the call sets.**
+  `auth.set_staff` and `auth.reactivate` requests hold `values`: the
+  fields and flags the `PATCH` sets beside the grant. A pending request
+  of 2.7 is still found and spent by the same call when it sets nothing
+  else; one sent with fields is submitted again, and approved again,
+  holding them.
+- **A username, an address, or a number another user has is refused
+  first**, before your `on_admin_change` checks and at the twin (`409`),
+  where the commit refused it after them. A check of yours that expected
+  to see such a change sees it no more.
+- **Named keys.** With `TENANCY.ALL_TENANTS_PERMISSION` set, approvals'
+  screens of `auth.set_groups` and `auth.reactivate`, and the admin
+  API's act of a change of groups, show that key by name ("Grants") on
+  a line of their own when the change grants it: under `WHOLE`, a
+  change that filled the screen is refused; make it in steps. Set
+  `AUTH = {"AUTHORIZATIONS": {"NAMED_PERMISSIONS": []}}` to name none,
+  or list the keys to name.
 - **A twin reads `If-Match`** ([ADR 0178](adr/0178-bind-an-act-to-the-version-its-page-read.md)).
   On a `ResourceRouter`'s act on one aggregate, a twin asked with
   `If-Match` answers `412 precondition_failed` when the aggregate is at

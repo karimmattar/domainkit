@@ -199,7 +199,13 @@ lines as it takes ("Adds", "Adds (2)"); flags and fields are named as a
 person reads them ("Superuser: yes", "Email", "Display name"); a user or
 a group shows by name and id. With `AUTH["AUTHORIZATIONS"]["WHOLE"]` on,
 what an act sets, adds, or takes away that does not fit whole is
-refused, never its subject's name. A change of the admin API that
+refused, never its subject's name. Where a screen would count keys (a
+group added, "readers (…9abc) 3 perms"; what a user made active again
+holds), the keys `AUTH["AUTHORIZATIONS"]["NAMED_PERMISSIONS"]` names
+show by name on a line of their own, "Grants", and first in a list of
+keys (since 2.8); by default, `TENANCY.ALL_TENANTS_PERMISSION` where it
+is set. Keys granted directly or through a group are named; a grant on a
+single object is counted, whatever its key. A change of the admin API that
 approvals would hold is refused at its twin when the approver's screen,
 a line longer, could not show it whole, and a request that its approvers
 could not be shown whole is refused when it is submitted, rather than
@@ -804,6 +810,18 @@ once the request is approved, spends it as any act does, once.
   a confirmed authorization of an act that waits is kept.
 - **`None`, the default**, keeps 2.6's behaviour: the maker confirms
   again, once approved, with a new authorization.
+- **It serves that request alone** (since 2.8, [ADR
+  0179](../adr/0179-bind-the-admin-acts-groups-by-id-and-keep-a-held-confirmation-to-its-request.md)).
+  The call made again builds its command anew. Where that changed since
+  (a user made active again who was put in a group meanwhile), it is
+  another request: approvals passes over the requests it may not serve,
+  and refuses a call that would wait on, or submit, any request but the
+  one the authorization is kept for (`403 action_not_authorized`, the
+  trail's `held_elsewhere`); a new confirmation, which shows the change
+  as it is now, submits it. In 2.7 the call submitted it, and once it was
+  approved, the authorization kept for the first request, which waited
+  still, made it (user report A17). Nothing is written: the
+  authorization still serves its own request.
 - **The request is asked at the rule.** Whether it still waits is read
   when the route's rule reads the authorization, before the act. A
   request rejected in that moment, before the maker's call reaches
@@ -816,7 +834,12 @@ once the request is approved, spends it as any act does, once.
   is written as the response starts), and registers an `on_held_act`
   hook, `async (held_for) -> bool | None`, that answers whether it still
   waits (None for another app's). A hold no hook answers for is over.
-  `held_for` holds 1 to 200 characters (`ValueError` otherwise).
+  `held_for` holds 1 to 200 characters (`ValueError` otherwise). Since
+  2.8 it passes over what `held_elsewhere(held_for)` says the call's
+  authorization may not serve, and before the call waits on, or submits,
+  what it holds, it calls `refuse_held_elsewhere(held_for)` (None for one
+  it is about to submit): an authorization kept for something else is
+  refused there.
 
 ## The trail, privacy, and the purge
 
@@ -826,7 +849,8 @@ once the request is approved, spends it as any act does, once.
   digest, the methods, and the device. The digest lets an auditor match an
   act to its authorization.
 - Refusals are `auth.authorization`, with `invalid_authorization`,
-  `invalid_code`, `changed`, `record_changed`, `used`, or `unspent`.
+  `invalid_code`, `changed`, `record_changed`, `used`, `unspent`, or
+  `held_elsewhere` (since 2.8).
 - Neither the arguments nor what was shown reach the trail: either may be
   personal data.
 - Authorizations past their expiry are purged hourly and by

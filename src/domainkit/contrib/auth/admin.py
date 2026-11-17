@@ -40,7 +40,7 @@ the change, and hold nothing.
 
 import dataclasses
 import functools
-from collections.abc import Awaitable, Callable, Iterable, Iterator
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Annotated, Any, Final, Self, cast
@@ -53,9 +53,10 @@ from pydantic import (
     Field,
     JsonValue,
 )
+from sqlalchemy import exists, func, select
 
 from domainkit.db.encrypted import EncryptedType
-from domainkit.ddd import PermissionDenied
+from domainkit.ddd import DuplicateValue, PermissionDenied
 from domainkit.ddd.query import And, F
 from domainkit.ddd.query import Selection as Listing
 from domainkit.http import PageRequest, Pagination, error_responses
@@ -67,7 +68,7 @@ from domainkit.resources.access import ModelLike
 from domainkit.tenancy import tenants_beyond
 from domainkit.utils.decimals import jsonable
 
-from ._http import daily_window, no_store
+from ._http import daily_window, no_store, password_limits
 from .access import IsAdminUser, IsSuperuser, StepUp, impersonated
 from .actions import (
     ActionAuthorizationOut,
@@ -86,10 +87,12 @@ from .backends import (
 )
 from .events import UserImpersonated, UserLoggedOut
 from .exceptions import (
+    EmailTaken,
     GroupNotFound,
     InvalidPassword,
     LastSuperuser,
     UnknownUserField,
+    UsernameTaken,
     UserNotFound,
 )
 from .gates import (
@@ -108,12 +111,14 @@ from .models import (
     AnyUser,
     Group,
     GroupId,
+    PasswordHash,
     Permission,
     UserId,
+    same_email,
 )
 from .repositories import GroupRepository, user_search
 from .settings import auth_settings, identifier_fields
-from .throttling import Attempt, attempt
+from .throttling import Attempt, Limit, attempt
 from .tokens import LoginMethod, LoginOrigin, logging_in
 from .uow import AuthUnitOfWork
 from .users import FieldValue, get_user_model, get_user_table, typed_fields
@@ -650,10 +655,13 @@ async def create_user(
     With ``AUTH.PASSWORD_CHANGE_ON_FIRST_USE``, the user changes it at the
     first login.
 
-    ``fields`` are tidied by the model's ``clean_field``, as on a change.
+    ``fields`` are tidied by the model's ``clean_field``, as on a change. A
+    username, an address, or a number another user has is refused before
+    the ``on_admin_change`` checks (since 2.8).
     """
     fields, flags, change = await _creating(actor, body)
     async with AuthUnitOfWork() as uow:
+        await _not_taken(uow, _new_values(body.username, fields, flags))
         await _admin_change(actor, None, change, uow, lambda: _created(body, change))
         user = await uow.users.create_user(
             body.username, body.password, **fields, **flags
@@ -681,7 +689,9 @@ async def ask_to_create_user(
 ) -> ActionAuthorizationOut:
     """Ask for an authorization of creating this user (``AUTH.ADMIN_ACTION``)."""
     _asking()
-    _, _, change = await _creating(actor, body)
+    fields, flags, change = await _creating(actor, body)
+    async with AuthUnitOfWork() as uow:
+        await _not_taken(uow, _new_values(body.username, fields, flags))
     await _asked_change(actor, None, change)
     return await _ask(request, response, _created(body, change))
 
@@ -746,11 +756,13 @@ async def update_user(
     """Change a user's status flags and fields.
 
     What it checks comes first, then the ``on_admin_change`` checks, then
-    the change.
+    the change. An address or a number another user has is refused among
+    the first (since 2.8): never after approvals' hold spent an approval.
     """
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
         fields, change = await _updating(actor, user, body)
+        await _not_taken(uow, _cleaned(user, fields), user)
         if _demoting(user, body):
             await _not_the_last_superuser(uow)  # Before the checks and a flush.
         await _admin_change(actor, user, change, uow, lambda: _user_act(user, change))
@@ -790,11 +802,114 @@ async def ask_to_update_user(
     _asking()
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
-        _, change = await _updating(actor, user, body)
+        fields, change = await _updating(actor, user, body)
+        await _not_taken(uow, _cleaned(user, fields), user)
         if _demoting(user, body):
             await _not_the_last_superuser(uow)
         await _asked_change(actor, user, change)
     return await _ask(request, response, _user_act(user, change))
+
+
+def _cleaned(user: AbstractBaseUser, fields: Mapping[str, object]) -> dict[str, object]:
+    """What a change stores of ``fields`` on ``user``: as its ``clean_field`` leaves it.
+
+    Raises:
+        InvalidEmail: An address is not one.
+        InvalidMobileNumber: A number is not one.
+    """
+    return {name: user.clean_field(name, value) for name, value in fields.items()}
+
+
+def _new_values(
+    username: str | None, fields: Mapping[str, object], flags: Mapping[str, bool]
+) -> dict[str, object]:
+    """What creating a user stores of ``username`` and ``fields``, cleaned.
+
+    As ``create_user`` makes the user, unsaved: the username normalized,
+    an address checked, a number in international form, then each field
+    as ``clean_field`` leaves it.
+
+    Raises:
+        InvalidUsername: The username is not one.
+        InvalidEmail: An address is not one.
+        InvalidMobileNumber: A number is not one.
+        IdentifierRequired: The user would have no identifier.
+    """
+    model = get_user_model()
+    name = None if username is None else model.normalize_username(username)
+    named = {**fields, model.USERNAME_FIELD: name}
+    made = model.create(password=PasswordHash.unusable(), **named, **flags)
+    return {each: made.clean_field(each, getattr(made, each)) for each in named}
+
+
+async def _not_taken(
+    uow: AuthUnitOfWork,
+    values: Mapping[str, object],
+    user: AbstractBaseUser | None = None,
+) -> None:
+    """Refuse a value another user has, among those no two users share (since 2.8).
+
+    The username (taken, or kept by an erasure), the email address where
+    it identifies users (in any case, as ``refuse_taken_emails`` compares),
+    and a value of any unique column of the user table (the mobile
+    number). Run before the ``on_admin_change`` checks, and at the twin:
+    a change refused for it never spends an approval, nor is confirmed
+    first (user report A17). A value ``user`` holds already is not
+    checked, as ``refuse_taken_emails`` does not: a form sent whole keeps
+    an address two users shared before it identified users. One taken
+    between this and the commit is refused by the commit, as before, and
+    an approval spent by then stays spent: a lock here would not hold off
+    an insert that takes none, and on SQLite it is the database's write
+    lock, which approvals' hold, in a transaction of its own, waits on.
+
+    Raises:
+        UsernameTaken: Another user has the username.
+        EmailTaken: Another user has the address.
+        DuplicateValue: Another user has the value of a unique column (its
+            ``info["duplicate"]``, such as ``MobileNumberTaken``).
+    """
+    model = get_user_model()
+    table = get_user_table()
+    others = table.c.id != (None if user is None else user.id)
+    for name, value in sorted(values.items()):
+        column = table.c.get(name)
+        if (
+            column is None
+            or value in (None, "")
+            or _holds_already(model, user, name, value)
+        ):
+            continue
+        if name == model.USERNAME_FIELD:
+            if user is None and await uow.users.username_taken(str(value)):
+                raise UsernameTaken(f"The {name} is already taken.", fields=(name,))
+        elif name == model.EMAIL_FIELD:
+            if name not in identifier_fields(model):
+                continue
+            found = await uow.session.scalars(
+                select(column).where(
+                    func.lower(column) == func.lower(str(value).strip()), others
+                )
+            )
+            if any(same_email(other, str(value)) for other in found):
+                raise EmailTaken("Another user has that email address.", fields=(name,))
+        elif column.unique and await uow.session.scalar(
+            select(exists().where(column == value, others))
+        ):
+            taken = column.info.get("duplicate", DuplicateValue)
+            raise taken(f"The {name} is already taken.", fields=(name,))
+
+
+def _holds_already(
+    model: type[AbstractBaseUser],
+    user: AbstractBaseUser | None,
+    name: str,
+    value: object,
+) -> bool:
+    """Whether ``user`` holds ``value`` in ``name`` already: an address in any case."""
+    stored = None if user is None else getattr(user, name, None)
+    if stored is None or name != model.EMAIL_FIELD:
+        return stored is not None and stored == value
+    return same_email(str(stored), str(value))
 
 
 def _returning_superuser(user: AbstractBaseUser, body: AdminUserPatch) -> bool:
@@ -990,7 +1105,10 @@ class _Reuse:
     A reuse is a guess at the user's old passwords. It counts against the
     staff member's guesses at this user's (``AUTH.LOGIN_RATE`` and
     ``ACCOUNT_LOGIN_RATE``, apart from the user's own counts of wrong
-    passwords: neither holds the other back). The count is taken before
+    passwords: neither holds the other back), and with
+    ``AUTH.STAFF_REUSES_COUNT_AS_PASSWORD_CHECKS`` against the user's own
+    counts too (``password_limits``, since 2.8): staff acting together
+    share them, and either holds the other back. The count is taken before
     anything is checked, so a full one refuses every password alike, and
     given back unless the password was found. With ``AUTH.ADMIN_ACTION``
     on, the route spends the change's authorization before the checks
@@ -1020,21 +1138,26 @@ class _Reuse:
     async def count(self) -> None:
         """Take a try from the staff member's count of the user's guesses.
 
-        Nothing without ``AUTH.PASSWORD_HISTORY``, or for no password.
+        Nothing without ``AUTH.PASSWORD_HISTORY``, or for no password. With
+        ``STAFF_REUSES_COUNT_AS_PASSWORD_CHECKS``, from the user's own
+        counts of wrong passwords too.
 
         Raises:
-            APIError: 429 ``rate_limited``: the count is full.
+            APIError: 429 ``rate_limited``: a count is full.
         """
         config = auth_settings()
         if self.password is None or not config.PASSWORD_HISTORY:
             return
         key = f"admin-password:staff:{self.actor.id}:user:{self.user.id}"
+        limits: list[Limit] = [
+            (key, config.LOGIN_RATE),
+            (f"{key}:daily", daily_window(config.ACCOUNT_LOGIN_RATE)),
+        ]
+        if config.STAFF_REUSES_COUNT_AS_PASSWORD_CHECKS:
+            limits += password_limits(self.user)
         self.counted = await attempt(
             self.request,
-            [
-                (key, config.LOGIN_RATE),
-                (f"{key}:daily", daily_window(config.ACCOUNT_LOGIN_RATE)),
-            ],
+            limits,
             action="auth.admin_change",
             detail=REUSES_THROTTLED,
         )

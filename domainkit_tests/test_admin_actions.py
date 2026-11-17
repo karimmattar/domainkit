@@ -113,6 +113,11 @@ def end_of(value: object) -> str:
     return "…" + str(value)[-12:]
 
 
+def group_item(name: str, group_id: object, perms: int = 0) -> str:
+    """What a screen shows of a group added: its name, its id's end, its keys."""
+    return f"{name} (…{str(group_id)[-4:]}) {perms} perm{'' if perms == 1 else 's'}"
+
+
 @pytest.fixture
 def frozen() -> Iterator[FrozenClock]:
     """One clock for codes and authorizations."""
@@ -287,8 +292,8 @@ def test_staff_ask_confirm_and_change_once(
     """
     ann = Staff(client, frozen, "ann")
     target = create_user("target")
-    make_group("auditors")
-    make_group("clerks")
+    auditors = make_group("auditors")
+    clerks = make_group("clerks")
     body = {"groups": ["clerks", "auditors"]}
     path = f"/users/{target}/groups"
 
@@ -304,7 +309,12 @@ def test_staff_ask_confirm_and_change_once(
         "title": "Change a user's groups",
         "details": [
             {"label": "User", "value": f"target ({end_of(target)})"},
-            {"label": "Adds", "value": "auditors, clerks"},
+            {
+                "label": "Adds",
+                "value": ", ".join(
+                    [group_item("auditors", auditors), group_item("clerks", clerks)]
+                ),
+            },
         ],
     }
     assert changed.status_code == 200, changed.json()
@@ -324,6 +334,16 @@ def test_staff_ask_confirm_and_change_once(
             "added": ["auditors", "clerks"],
             "removed": [],
             "password": None,
+            "groups": [
+                {
+                    "id": str(group_id),
+                    "name": name,
+                    "permissions": [],
+                    "object_grants": 0,
+                    "object_grants_digest": "",
+                }
+                for name, group_id in (("auditors", auditors), ("clerks", clerks))
+            ],
         },
     )
     assert len(audited("auth.action_authorization_used")) == 1
@@ -551,8 +571,7 @@ def test_flags_are_never_hidden_and_a_list_shows_whole_over_lines(
     root = Staff(client, frozen, "root", superuser=True)
     target = create_user("target", email="target@example.com")
     names = [f"aaa_harmless_{each}" for each in range(5)] + ["zz_admins"]
-    for name in names:
-        make_group(name)
+    items = [group_item(name, make_group(name)) for name in names]
     body = {
         "is_active": True,
         "is_staff": False,
@@ -568,11 +587,9 @@ def test_flags_are_never_hidden_and_a_list_shows_whole_over_lines(
     assert shown["Superuser"] == "yes"
     assert joining.status_code == 201, joining.json()
     assert joining.json()["shown"]["details"][1:] == [
-        {
-            "label": "Adds",
-            "value": "aaa_harmless_0, aaa_harmless_1, aaa_harmless_2, aaa_harmless_3",
-        },
-        {"label": "Adds (2)", "value": "aaa_harmless_4, zz_admins"},
+        {"label": "Adds", "value": ", ".join(items[:2])},
+        {"label": "Adds (2)", "value": ", ".join(items[2:4])},
+        {"label": "Adds (3)", "value": ", ".join(items[4:])},
     ]
 
 
@@ -589,8 +606,7 @@ def test_with_whole_on_the_twin_refuses_what_its_screen_cannot_show_whole(
     root = Staff(client, frozen, "root", superuser=True)
     target = create_user("target", email="target@example.com")
     names = [f"finance_reporting_readers_{each:02}" for each in range(12)]
-    for name in names:
-        make_group(name)
+    items = [group_item(name, make_group(name)) for name in names]
     padded = {
         "is_active": True,
         "is_staff": False,
@@ -613,7 +629,7 @@ def test_with_whole_on_the_twin_refuses_what_its_screen_cannot_show_whole(
         hidden = root.ask(f"/users/{target}/authorization/patch", padded)
         joining = root.ask(f"/users/{target}/groups/authorization", {"groups": names})
         refused = len(stored()) - before
-        fits = root.ask(f"/users/{target}/groups/authorization", {"groups": names[:10]})
+        fits = root.ask(f"/users/{target}/groups/authorization", {"groups": names[:5]})
 
     for response in (reason, hidden, joining):
         problem(response, 422, "too_much_to_show")
@@ -628,7 +644,7 @@ def test_with_whole_on_the_twin_refuses_what_its_screen_cannot_show_whole(
         "Adds (4)",
         "Adds (5)",
     ]
-    assert ", ".join(each["value"] for each in details[1:]) == ", ".join(names[:10])
+    assert [each["value"] for each in details[1:]] == items[:5]
 
 
 def test_creating_binds_whether_the_user_is_active(
@@ -794,18 +810,48 @@ def test_a_change_refused_after_its_checks_spends_nothing(
 ) -> None:
     """Spent with the change's commit: a refused change leaves it unspent.
 
-    A username taken is found by the change alone, after the spend, in its
-    transaction: the change is refused, and the authorization holds still.
+    A username taken since the twin asked is refused before the checks
+    (since 2.8; before, by the change's commit, after the spend): the
+    authorization holds still. The twin refuses one taken already.
     """
     root = Staff(client, frozen, "root", superuser=True)
-    create_user("made")
     body = {"username": "made"}
 
     authorization = root.authorized("/users/authorization", body)
+    create_user("made")
     refused = root.call("POST", "/users", body, authorization)
+    asked = root.ask("/users/authorization", body)
 
-    assert refused.status_code == 409, refused.json()
+    problem(refused, 409, "username_taken")
     assert row(authorization)["consumed_at"] is None
+    problem(asked, 409, "username_taken")
+
+
+def test_a_change_refused_by_its_commit_spends_nothing(
+    client: TestClient, frozen: FrozenClock
+) -> None:
+    """A group name taken after the twin is refused by the change's commit.
+
+    The authorization is spent in the change's own transaction, after the
+    checks: the commit refused, it holds still, and the same call makes
+    the group once the name is free again.
+    """
+    root = Staff(client, frozen, "root", superuser=True)
+    body = {"name": "auditors"}
+
+    authorization = root.authorized("/groups/authorization", body)
+    taken = make_group("auditors")
+    refused = root.call("POST", "/groups", body, authorization)
+    unspent = row(authorization)["consumed_at"]
+    gone = root.authorized(f"/groups/{taken}/authorization/delete")
+    deleted = root.call("DELETE", f"/groups/{taken}", None, gone)
+    made = root.call("POST", "/groups", body, authorization)
+
+    problem(refused, 409, "group_name_taken")
+    assert unspent is None
+    assert deleted.status_code == 204
+    assert made.status_code == 201, made.json()
+    assert row(authorization)["consumed_at"] is not None
 
 
 def test_a_held_change_is_checked_before_it_waits_and_spent_once_approved(

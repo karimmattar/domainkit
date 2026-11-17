@@ -182,13 +182,14 @@ statuses, and the amendments they name.
 | [0169](0169-granians-http-versions-failed-starts-fcm-dry-runs-write-once-probes-clamd-over-tls-and-dropped-files.md) | Granian's HTTP versions and failed starts, FCM's dry runs, write-once probes, clamd over TLS, and dropped files | Accepted |
 | [0170](0170-let-a-resources-items-be-tenants-count-members-keys-alone-and-let-lists-name-what-they-refer-to.md) | Let a resource's items be tenants, count members' keys alone, and let lists name what they refer to | Accepted; amended by [0177](0177-let-a-key-reach-every-tenant-name-a-domains-own-keys-and-search-every-word-at-once.md) |
 | [0171](0171-prove-a-number-given-at-signup-by-its-own-code.md) | Prove a number given at signup by its own code | Accepted |
-| [0172](0172-hold-admin-changes-by-what-they-grant-and-check-before-the-hold.md) | Hold admin changes by what they grant, and check before the hold | Accepted |
+| [0172](0172-hold-admin-changes-by-what-they-grant-and-check-before-the-hold.md) | Hold admin changes by what they grant, and check before the hold | Accepted; amended by [0179](0179-bind-the-admin-acts-groups-by-id-and-keep-a-held-confirmation-to-its-request.md) |
 | [0173](0173-show-an-act-whole-or-refuse-it.md) | Show an act whole, or refuse it | Accepted |
-| [0174](0174-bind-an-act-to-the-record-it-decides-on-and-keep-a-held-acts-authorization.md) | Bind an act to the record it decides on, and keep a held act's authorization | Accepted; amended by [0178](0178-bind-an-act-to-the-version-its-page-read.md) |
+| [0174](0174-bind-an-act-to-the-record-it-decides-on-and-keep-a-held-acts-authorization.md) | Bind an act to the record it decides on, and keep a held act's authorization | Accepted; amended by [0178](0178-bind-an-act-to-the-version-its-page-read.md) and [0179](0179-bind-the-admin-acts-groups-by-id-and-keep-a-held-confirmation-to-its-request.md) |
 | [0175](0175-bound-page-content-check-an-acts-upload-once-and-read-a-signed-body-last.md) | Bound a PDF's page content, check an act's upload once, and read a signed body last | Accepted; amended 2026-11-17 (at the end) |
 | [0176](0176-bound-what-a-pdf-decodes-list-placeholders-fill-drafts-and-clean-less.md) | Bound what a PDF decodes, list placeholders, fill drafts, and clean less | Accepted |
 | [0177](0177-let-a-key-reach-every-tenant-name-a-domains-own-keys-and-search-every-word-at-once.md) | Let a key reach every tenant, name a domain's own keys, and search every word at once | Accepted; amended by [0182](0182-let-a-gateway-raise-a-routes-problems-and-name-users-by-the-fields-a-project-chooses.md) |
 | [0178](0178-bind-an-act-to-the-version-its-page-read.md) | Bind an act to the version its page read | Accepted |
+| [0179](0179-bind-the-admin-acts-groups-by-id-and-keep-a-held-confirmation-to-its-request.md) | Bind the admin act's groups by id, and keep a held confirmation to its request | Accepted |
 | [0182](0182-let-a-gateway-raise-a-routes-problems-and-name-users-by-the-fields-a-project-chooses.md) | Let a gateway raise a route's problems, and name users by the fields a project chooses | Accepted |
 
 ### Decisions still without a record
