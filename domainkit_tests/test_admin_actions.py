@@ -39,7 +39,7 @@ from domainkit.contrib.auth.actions import (
     spent_in_code,
 )
 from domainkit.contrib.auth.admin import router as admin_router
-from domainkit.contrib.auth.admin_actions import AdminAct, fit, fitted, listed, show
+from domainkit.contrib.auth.admin_actions import AdminAct, field_label, show
 from domainkit.contrib.auth.apps import action_problems
 from domainkit.contrib.auth.tables import authorizations
 from domainkit.db import connections
@@ -47,6 +47,7 @@ from domainkit.ddd import Command, PermissionDenied, fingerprint
 from domainkit.http import get_asgi_application
 from domainkit.http.access import Require
 from domainkit.http.routers import select_routes
+from domainkit.i18n import override
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import (
     ALPHA,
@@ -105,6 +106,11 @@ STAFF: Final = (
     "approvals.view_approvalrequest",
 )
 type Headers = dict[str, str]
+
+
+def end_of(value: object) -> str:
+    """What a screen shows of an id: ``…`` and its last 12 characters."""
+    return "…" + str(value)[-12:]
 
 
 @pytest.fixture
@@ -192,6 +198,17 @@ def row(authorization: str) -> dict[str, Any]:
                 )
             )
             return dict(found.one()._mapping)
+
+    return run_async(read())
+
+
+def stored() -> list[UUID]:
+    """The ids of the authorizations stored."""
+
+    async def read() -> list[UUID]:
+        async with connections.engine().connect() as connection:
+            found = await connection.execute(select(authorizations.c.id))
+            return [each.id for each in found]
 
     return run_async(read())
 
@@ -286,7 +303,7 @@ def test_staff_ask_confirm_and_change_once(
     assert asked.json()["shown"] == {
         "title": "Change a user's groups",
         "details": [
-            {"label": "User", "value": "target"},
+            {"label": "User", "value": f"target ({end_of(target)})"},
             {"label": "Adds", "value": "auditors, clerks"},
         ],
     }
@@ -481,30 +498,32 @@ def test_the_screen_names_the_user_or_group_and_the_change(
         "/groups/authorization", {"name": "made", "permissions": ["auth.view_user"]}
     )
 
+    who = ("User", f"target ({end_of(target)})")
     assert unusable["title"] == "Make a user's password unusable"
-    assert pairs(unusable) == [("User", "target")]
+    assert pairs(unusable) == [who]
     assert reason["title"] == "Act as a user"
-    assert pairs(reason) == [("User", "target"), ("Reason", "Ticket\\n42")]
+    assert pairs(reason) == [who, ("Reason", "Ticket\\n42")]
     assert many["title"] == "Change a user"
     assert pairs(many) == [
-        ("User", "target"),
-        ("is_superuser", "false"),
-        ("is_staff", "false"),
-        ("is_active", "true"),
-        ("email", "ada@example.com"),
+        who,
+        ("Superuser", "no"),
+        ("Staff", "no"),
+        ("Active", "yes"),
+        ("Email", "ada@example.com"),
         ("…", "2 more values"),
     ]
     assert created["title"] == "Create a user"
     assert pairs(created) == [
         ("Username", "made"),
-        ("is_active", "true"),
+        ("Active", "yes"),
         ("Password", "set"),
     ]
+    group = ("Group", f"crew ({end_of(crew)})")
     assert renamed["title"] == "Rename a group"
-    assert pairs(renamed) == [("Group", "crew"), ("New name", "team")]
-    assert (deleted["title"], pairs(deleted)) == ("Delete a group", [("Group", "crew")])
+    assert pairs(renamed) == [group, ("New name", "team")]
+    assert (deleted["title"], pairs(deleted)) == ("Delete a group", [group])
     assert logged_out["title"] == "End a user's sessions"
-    assert pairs(left) == [("User", "target"), ("Takes away", "crew")]
+    assert pairs(left) == [who, ("Takes away", "crew")]
     assert granting["title"] == "Create a group"
     assert pairs(granting) == [("Group", "made"), ("Adds", "auth.view_user")]
 
@@ -519,15 +538,15 @@ def test_a_user_or_group_gone_is_not_shown(client: TestClient) -> None:
         run_async(show(AdminAct(kind="group_delete", group_id=nobody)))
 
 
-def test_flags_are_never_hidden_and_a_cut_list_says_how_many_more(
+def test_flags_are_never_hidden_and_a_list_shows_whole_over_lines(
     client: TestClient, frozen: FrozenClock
 ) -> None:
     """Making a superuser shows, whatever else changes; so does every group added.
 
-    The flags that grant or take access come first, before the fields,
-    which are counted past what fits; a list too long for a line shows its
-    first items and how many more, so the last one added is never dropped
-    unsaid.
+    The flags that grant or take access come first, by name ("Superuser"),
+    before the fields, which are counted past what fits; a list too long
+    for a line goes on to the next, labelled "Adds (2)", so the last group
+    added shows by name (user report A22).
     """
     root = Staff(client, frozen, "root", superuser=True)
     target = create_user("target", email="target@example.com")
@@ -546,26 +565,70 @@ def test_flags_are_never_hidden_and_a_cut_list_says_how_many_more(
 
     assert making.status_code == 201, making.json()
     shown = {each["label"]: each["value"] for each in making.json()["shown"]["details"]}
-    assert shown["is_superuser"] == "true"
+    assert shown["Superuser"] == "yes"
     assert joining.status_code == 201, joining.json()
-    assert joining.json()["shown"]["details"][1] == {
-        "label": "Adds",
-        "value": "aaa_harmless_0, aaa_harmless_1, aaa_harmless_2 and 3 more",
+    assert joining.json()["shown"]["details"][1:] == [
+        {
+            "label": "Adds",
+            "value": "aaa_harmless_0, aaa_harmless_1, aaa_harmless_2, aaa_harmless_3",
+        },
+        {"label": "Adds (2)", "value": "aaa_harmless_4, zz_admins"},
+    ]
+
+
+def test_with_whole_on_the_twin_refuses_what_its_screen_cannot_show_whole(
+    client: TestClient, frozen: FrozenClock
+) -> None:
+    """``AUTH.AUTHORIZATIONS.WHOLE``: nothing cut or counted, refused instead.
+
+    A reason too long for a line, a change padded with values so that the
+    one that matters falls off the screen, a list longer than the screen:
+    each is refused when asked (``422 too_much_to_show``), and nothing is
+    stored. What fits is shown whole (user report A22).
+    """
+    root = Staff(client, frozen, "root", superuser=True)
+    target = create_user("target", email="target@example.com")
+    names = [f"finance_reporting_readers_{each:02}" for each in range(12)]
+    for name in names:
+        make_group(name)
+    padded = {
+        "is_active": True,
+        "is_staff": False,
+        "is_superuser": False,
+        "fields": {
+            "email": "target@example.com",
+            "first_name": "T",
+            "last_name": "Arget",
+            "mobile_number": "+447700900123",
+        },
     }
 
+    with override_settings(
+        AUTH={**ACTS.settings["AUTH"], "AUTHORIZATIONS": {"WHOLE": True}}
+    ):
+        before = len(stored())
+        reason = root.ask(
+            f"/users/{target}/impersonate/authorization", {"reason": "r" * 65}
+        )
+        hidden = root.ask(f"/users/{target}/authorization/patch", padded)
+        joining = root.ask(f"/users/{target}/groups/authorization", {"groups": names})
+        refused = len(stored()) - before
+        fits = root.ask(f"/users/{target}/groups/authorization", {"groups": names[:10]})
 
-def test_a_list_is_cut_to_fit_with_its_count() -> None:
-    """All that fit, then how many more; one item too long alone is cut."""
-    long = "g" * 100
-
-    assert listed(("a", "b")) == "a, b"
-    assert listed((long,)) == "g" * 63 + "…"
-    cut = listed((long, "b", "c"))
-    assert cut.endswith("… and 2 more")
-    assert len(cut) == 64
-    assert listed(tuple(f"group_{each:02}" for each in range(9))) == (
-        "group_00, group_01, group_02, group_03, group_04 and 4 more"
-    )
+    for response in (reason, hidden, joining):
+        problem(response, 422, "too_much_to_show")
+    assert refused == 0
+    assert fits.status_code == 201, fits.json()
+    details = fits.json()["shown"]["details"]
+    assert [each["label"] for each in details] == [
+        "User",
+        "Adds",
+        "Adds (2)",
+        "Adds (3)",
+        "Adds (4)",
+        "Adds (5)",
+    ]
+    assert ", ".join(each["value"] for each in details[1:]) == ", ".join(names[:10])
 
 
 def test_creating_binds_whether_the_user_is_active(
@@ -579,10 +642,7 @@ def test_creating_binds_whether_the_user_is_active(
     authorization = root.confirm(asked.json()["id"])
     active = root.call("POST", "/users", {"username": "made"}, authorization)
 
-    assert asked.json()["shown"]["details"][1] == {
-        "label": "is_active",
-        "value": "false",
-    }
+    assert asked.json()["shown"]["details"][1] == {"label": "Active", "value": "no"}
     problem(active, 403, "action_not_authorized")
     assert root.call("GET", "/users", None).json()["items"][0]["username"] == "root"
 
@@ -646,22 +706,33 @@ def test_the_admin_api_loads_no_act_while_the_setting_is_off() -> None:
     assert found.stdout.strip() == "False", found.stderr
 
 
-def test_details_fit_a_screen() -> None:
-    """Printable, cut to 64 characters, six at most; a taken label is counted."""
-    long = "x" * 100
+def test_fields_are_labelled_by_name_as_a_person_reads_them(client: TestClient) -> None:
+    """The built-in user's fields have labels; another is its name, spaced.
 
-    assert fitted("a\nb") == "a\\nb"
-    assert fitted(long) == "x" * 63 + "…"
-    assert fit([("User", "ann")], [("User", "again"), ("b", "2")]) == [
-        ("User", "ann"),
-        ("b", "2"),
-        ("…", "1 more value"),
-    ]
-    assert len(fit([], [(f"k{each}", long) for each in range(9)])) == 6
-    shown = Shown("t", fit([("User", "ann")], [(f"k{each}", "v") for each in range(5)]))
+    A field whose label is taken shows by its name; a flag set to what is
+    not a boolean shows as JSON.
+    """
+    shown = run_async(
+        show(
+            AdminAct(
+                kind="group_create",
+                name="team",
+                values={"is_active": None, "group": "g", "display_name": "D"},
+            )
+        )
+    )
+
+    assert field_label("email") == "Email"
+    assert field_label("mobile_number") == "Mobile number"
+    assert field_label("display_name") == "Display name"
+    assert field_label("_") == "_"
+    with override("ar"):
+        assert field_label("first_name") == "الاسم الأول"
     assert shown.details == (
-        ("User", "ann"),
-        *((f"k{each}", "v") for each in range(5)),
+        ("Group", "team"),
+        ("Active", "null"),
+        ("Display name", "D"),
+        ("group", "g"),
     )
 
 

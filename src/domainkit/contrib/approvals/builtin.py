@@ -40,17 +40,29 @@ submitted as the staff member's request and refused
 request is approved, makes it, once (a guard ``by_maker``). The
 approvers are superusers (or the holders of ``ADMIN_APPROVERS``), never
 the user the change is about, nor a member of the group granted.
+
+What a person deciding a request about a user is shown names the user,
+read when shown, with the end of their id (``show_about_user``): "User:
+alice@example.com (…123456789abc)", then the groups or permissions it
+adds and takes away, each list over as many lines as it takes, and an
+impersonation's stated reason (ADR 0173). With ``APPROVE_ACTION`` on, the
+admin API's twin refuses a change held here that the approver's screen
+could not show whole (``check_admin_screen``, ``check_group_screen``).
 """
 
+import dataclasses
 import hashlib
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID
 
+from pydantic import TypeAdapter
+
 from domainkit.apps import registry
 from domainkit.context import current_request
 from domainkit.ddd import Command, PermissionDenied, ValueObject
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.i18n import gettext, gettext_noop
 
 from .exceptions import ApprovalRequired, MakerNotAllowed
 from .guards import (
@@ -58,6 +70,7 @@ from .guards import (
     Policy,
     Running,
     Service,
+    Show,
     Threshold,
     check,
     checked_when_spent,
@@ -108,6 +121,17 @@ HOLD_ORDER: Final = 100
 
 After the checks registered without one, so a change a project refuses
 spends no approval (user report A19)."""
+USER: Final = gettext_noop("User")
+"""The label of the user a request is about, shown by name and id."""
+SHOWN_LABELS: Final = {
+    "added": gettext_noop("Adds"),
+    "removed": gettext_noop("Takes away"),
+    "reason": gettext_noop("Stated reason"),
+}
+"""The labels of what a request about a user changes, as the admin API's own.
+
+An impersonation's reason is the "Stated reason": a rejection's or a
+cancellation's own "Reason" shows beside it."""
 
 
 @requires_approval(POST_ENTRY)
@@ -323,6 +347,38 @@ def _user_id(text: str) -> Any:  # noqa: ANN401 - a user's id, or None.
         return None
 
 
+async def show_about_user(command: Any) -> list[tuple[str, object]]:  # noqa: ANN401 - a command about a user.
+    """What a request about a user shows: the user by name and id, then what changes.
+
+    ``user_id`` is shown as the user's first identifier
+    (``get_username()``), read now and never stored with the request, cut
+    to fit beside the id, which the request binds: a user erased or gone
+    meanwhile shows as "(erased)". ``added`` and ``removed`` are lists
+    ("Adds", "Takes away"), left out when empty; ``reason`` is "Stated
+    reason"; any other field shows by its name. A command with no
+    ``user_id`` shows its fields alone.
+    """
+    from domainkit.contrib.auth import AuthUnitOfWork, UserId
+    from domainkit.contrib.auth.screens import named
+
+    shown: list[tuple[str, object]] = []
+    dumped = TypeAdapter(type(command)).dump_python(command, mode="json")
+    for name, value in dumped.items():
+        if name == "user_id":
+            async with AuthUnitOfWork() as uow:
+                user = await uow.users.find(UserId(command.user_id))
+            username = "" if user is None else user.get_username()
+            shown.append((gettext(USER), named(username, value)))
+        elif name in ("added", "removed"):
+            if value:
+                shown.append((gettext(SHOWN_LABELS[name]), value))
+        elif name in SHOWN_LABELS:
+            shown.append((gettext(SHOWN_LABELS[name]), value))
+        else:
+            shown.append((name, value))
+    return shown
+
+
 def _promoted(command: GrantSuperuser) -> list[str]:
     """The user a grant promotes: they do not decide it."""
     return [str(command.user_id)]
@@ -356,6 +412,7 @@ def guard_superusers(config: ApprovalsSettings) -> None:
             ),
             maker_rule=IsSuperuser(),
             parties=_promoted,
+            show=show_about_user,
         )
     )
 
@@ -533,6 +590,8 @@ ADMIN_SERVICES: Final[Mapping[str, Service]] = {
     action: _admin_service(action) for action in ADMIN_COMMANDS
 }
 """Each admin action's decorated service."""
+ADMIN_SHOWS: Final[Mapping[str, Show]] = dict.fromkeys(ADMIN_COMMANDS, show_about_user)
+"""What each admin action's request shows; a hold of a group gives its own."""
 
 
 def _about_user(command: Any) -> list[str]:  # noqa: ANN401 - an admin command.
@@ -574,6 +633,7 @@ def guard_admin_changes(config: ApprovalsSettings) -> None:
                 parties=_members if action == SET_GROUP_PERMISSIONS else _about_user,
                 http=False,
                 by_maker=True,
+                show=ADMIN_SHOWS[action],
             )
         )
 
@@ -636,20 +696,25 @@ async def check_group_change(
     that grants (``auth.set_group_permissions``) is held: what only takes
     away, a new group (it has no members), a name, and a deletion are not.
     """
+    command = None if group is None else _group_command(group, change)
+    if command is not None:
+        await _hold(actor, SET_GROUP_PERMISSIONS, command, asking=change.asking)
+
+
+def _group_command(group: "Group", change: "GroupChange") -> SetGroupPermissions | None:
+    """The held command of ``change`` to ``group``, if a guard holds it."""
     if (
         change.kind != "group_permissions"
         or not change.added
-        or group is None
         or SET_GROUP_PERMISSIONS not in guards()
     ):
-        return
-    command = SetGroupPermissions(
+        return None
+    return SetGroupPermissions(
         group_id=group.id,
         name=group.name,
         added=tuple(sorted(change.added)),
         removed=tuple(sorted(change.removed)),
     )
-    await _hold(actor, SET_GROUP_PERMISSIONS, command, asking=change.asking)
 
 
 async def _hold(
@@ -691,6 +756,53 @@ TWO_HOLDS: Final = (
     "own approval."
 )
 """Why a change held twice over is refused (``auth.set_staff``, ``auth.reactivate``)."""
+
+
+async def check_admin_screen(target: "AbstractBaseUser", change: "AdminChange") -> None:
+    """Refuse, at the admin API's twin, a held change no approver could see whole.
+
+    Auth's ``on_admin_screen`` calls it as the twin builds the staff
+    member's screen, before an authorization is stored: a change that
+    ``ADMIN_APPROVALS`` holds would be approved on the approver's screen,
+    a line longer (the action). It reads, and writes nothing.
+
+    Raises:
+        TooMuchToShow: With ``AUTH.AUTHORIZATIONS.WHOLE`` on, approving it
+            could not be shown whole (auth's, 422).
+    """
+    held = await _admin_command(target, await _with_groups(change))
+    if held is None:
+        return
+    from .authorizing import check_approvable
+
+    await check_approvable(guards()[held[0]], held[1])
+
+
+async def _with_groups(change: "AdminChange") -> "AdminChange":
+    """``change`` holding the groups it adds, read now where it names them only.
+
+    A twin's screen rebuilds the change from the act, which names groups.
+    """
+    if change.kind != "groups" or not change.added or change.groups:
+        return change
+    from domainkit.contrib.auth import AuthUnitOfWork
+    from domainkit.contrib.auth.backends import object_grants
+    from domainkit.contrib.auth.gates import AddedGroup
+
+    async with AuthUnitOfWork() as uow:
+        found = await uow.groups.get_many_by_name(sorted(change.added))
+    groups = tuple(
+        [
+            AddedGroup(
+                group.id,
+                group.name,
+                frozenset(group.permission_keys()),
+                await object_grants(group),
+            )
+            for group in found
+        ]
+    )
+    return dataclasses.replace(change, groups=groups)
 
 
 async def _admin_command(
