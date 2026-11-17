@@ -685,7 +685,7 @@ WHITE: Final = "".join(SHUFFLED.choice(" \t\r\n") for _ in range(70_000))
         ),
         pytest.param(
             headed("header2.png", header("<w:p/>").encode("utf-16-be")),
-            "ok",
+            COMPLEX,
             id="utf-16-unmarked",
         ),
         pytest.param(headed("header2.png", header("<w:p/>")), "ok", id="harmless"),
@@ -706,10 +706,57 @@ def test_a_part_a_relationship_names_is_read_as_the_reader_reads_it(
     A reader follows the relationship and parses the part as XML whatever
     its content type, and its relationship's (an image's, a font's): so is
     it checked, when its bytes start as XML does. One that does not start
-    so, or is not XML past its start, is no XML to any reader past that:
-    what came before is checked.
+    so is no XML to any reader; one lxml cannot read is passed over only
+    if none of its start tags declares a namespace: binary data, not a
+    document a reader may read further than lxml (UTF-16 with no mark).
     """
     assert verdict(OfficeCheck("docx"), data) == expected
+
+
+DEEP: Final = "<w:sdt>" * 300 + blip('r:link="rId1"') + "</w:sdt>" * 300
+"""A picture linked to a hyperlink's relationship, 300 elements deep: lxml stops
+at 256, and LibreOffice reads on and fetches it."""
+
+
+@pytest.mark.parametrize("kind", ["header", "image"])
+def test_a_part_too_deep_for_lxml_is_refused(kind: str) -> None:
+    """Once an element of a namespace opened, a part lxml stops reading is refused.
+
+    A reader may read further than lxml: a header 300 elements deep, named
+    ``header2.png`` and typed a header or an image, passed, and a
+    LibreOffice conversion fetched its picture 14 times.
+    """
+    data = headed(
+        "header2.png",
+        header(DEEP),
+        (f"{R}hyperlink", "https://a.example/x.png", "External"),
+        kind=kind,
+    )
+
+    assert verdict(OfficeCheck("docx"), data) == COMPLEX
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [
+        pytest.param(header("<w:p>a & b</w:p>").encode(), id="a-stray-ampersand"),
+        pytest.param(header("<w:p>&nope;</w:p>").encode(), id="an-entity-not-defined"),
+        pytest.param(
+            header('<w:p w:a="1" w:a="2"/>').encode(), id="an-attribute-twice"
+        ),
+        pytest.param(header("<w:p></w:r>").encode(), id="a-tag-that-does-not-match"),
+        pytest.param(
+            header("<w:p>QQ</w:p>").encode().replace(b"QQ", b"\xff\xfe"),
+            id="bytes-not-utf-8",
+        ),
+        pytest.param(header("<w:p>")[:-12].encode(), id="cut-short"),
+    ],
+)
+def test_a_part_broken_after_an_element_of_a_namespace_is_refused(
+    broken: bytes,
+) -> None:
+    """Whatever stopped lxml, once a document had begun: refused, not passed over."""
+    assert verdict(OfficeCheck("docx"), headed("header2.png", broken)) == COMPLEX
 
 
 def test_a_binary_part_that_starts_as_xml_is_not_refused() -> None:
@@ -732,3 +779,10 @@ def test_a_binary_part_that_starts_as_xml_is_not_refused() -> None:
     )
 
     assert verdict(OfficeCheck("docx"), data) == "ok"
+    blob = b"<" + bytes(range(256)) * 4
+    font_like = office(
+        main=document(),
+        main_relationships=[(f"{R}font", "fonts/f.odttf")],
+        parts={"word/fonts/f.odttf": blob},
+    )
+    assert verdict(OfficeCheck("docx"), font_like) == "ok"

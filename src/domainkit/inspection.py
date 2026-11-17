@@ -406,6 +406,8 @@ XML_MARKS: Final = (
 XML_BLANKS: Final = b" \t\r\n\x00"
 """What may come before an XML part's ``<``: white space, and the zero bytes of
 UTF-16 and UTF-32."""
+NAMESPACED: Final = re.compile(r"<[^\s<>/!?]+\s[^<>]*?\bxmlns(?::[^\s=<>]+)?\s*=")
+"""A start tag that declares a namespace, its own or its prefix's."""
 XML_EXTENSIONS: Final = frozenset({"xml", "rels", "vml"})
 """Parts XML by their name."""
 XML_TYPES: Final = frozenset({"application/xml", "text/xml"})
@@ -1627,12 +1629,12 @@ class _Package:
                 else:  # Whatever its type: a header may be called an image.
                     self.reached.add(target)
             return
+        data = self._xml(archive, name)
+        if data is None:
+            return
         fields = _Fields()
+        hyperlinks = self.hyperlinks.get(name, set())
         try:
-            data = self._xml(archive, name)
-            if data is None:
-                return
-            hyperlinks = self.hyperlinks.get(name, set())
             for element in self._elements(data):
                 fields.read(element)
                 _check_formula(element)
@@ -1640,9 +1642,12 @@ class _Package:
         except FileRefused as refused:
             if refused.code != UNREADABLE or _is_xml(name, self.types.get(name, "")):
                 raise
-            # A part XML by its bytes alone, and not XML past them (an image or
-            # a font that starts as XML does): no reader reads further, and
-            # what came before was checked.
+            if _declares_namespace(data):
+                # A document, which a reader may read further than lxml did
+                # (lxml stops 256 elements deep, LibreOffice does not).
+                raise FileRefused(COMPLEX) from None
+            # XML by its first bytes alone, and no element of a namespace in
+            # it: an image or a font that starts as XML does.
         fields.close()
 
     def _xml(self, archive: zipfile.ZipFile, name: str) -> bytes | None:
@@ -1652,10 +1657,10 @@ class _Package:
         start with. A part a relationship names (``reached``), of any type,
         may be read as XML whatever its content type, as a reader follows a
         header's relationship to it: it is XML too when its bytes start as
-        XML does, after any white space; one that is not XML past them is
-        passed over (``_check_part``). It is read whole, but never past its
-        stated size; another part (an image) is opened all the same, and not
-        read.
+        XML does, after any white space; one lxml stops reading is passed
+        over if no start tag of it declares a namespace (``_check_part``). It
+        is read whole, but never past its stated size; another part (an
+        image) is opened all the same, and not read.
 
         Raises:
             FileRefused: It declares a DTD or an entity, or is XML in an
@@ -1793,6 +1798,17 @@ def _starts_as_xml(part: IO[bytes], buffer: IO[bytes]) -> bool:
         if first:
             return first.startswith(b"<")
     return False
+
+
+def _declares_namespace(data: bytes) -> bool:
+    """Whether a start tag of the XML part ``data`` declares a namespace.
+
+    Where a document's elements of a namespace begin: a part lxml cannot
+    read that has one is a document a reader may read further; binary data
+    that starts with ``<`` (a font's) has none.
+    """
+    text = data.decode(_xml_encoding(data), "replace")
+    return NAMESPACED.search(text) is not None
 
 
 def _is_xml(name: str, content_type: str) -> bool:
