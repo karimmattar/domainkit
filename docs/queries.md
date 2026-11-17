@@ -691,13 +691,58 @@ the users `users_named("ann", 100)` returns, and the same for "smith".
   `FieldPolicy` may not hide the field searched through, as for any
   field a set filters.
 
+**Every word at once.** Asked word by word, each answer stops at the
+bound. "ada lovelace" against thousands of users named Ada, and as many
+named Lovelace, keeps 100 of each, which may share no one, and Ada
+Lovelace's rows are missed. `EveryWord` (in `domainkit.http`) asks the
+function with the words too, where the users live, as Django's admin
+matches every word of a search on the same row (since 2.7):
+
+```python
+from functools import reduce
+from operator import and_
+
+from domainkit.http import EveryWord
+
+
+async def users_named(words: tuple[str, ...], limit: int) -> list[UUID]:
+    every = reduce(and_, (F("username").icontains(word) for word in words))
+    async with AuthUnitOfWork() as uow:
+        found = await uow.users.filter(Selection(every, limit=limit))
+    return [user.id for user in found]
+
+
+class MemberFilters(FilterSet):
+    model = Membership
+    search_fields = ("role",)
+    search_through = {"user_id": EveryWord(users_named)}
+```
+
+- The function takes a tuple of words and a limit. It is asked with each
+  word alone, `("ada",)`, as a plain finder is, so a search that names a
+  role and a user ("owner smith") still matches word by word.
+- With two distinct words or more, it is asked once more with all of
+  them, `("ada", "lovelace")`, where one word alone named
+  `max_reference_matches` rows through it (some may have been left out).
+  A row whose field is among those ids matches the whole search. A
+  function may match the phrase instead of every word: the words come in
+  the order given, each once.
+- `FilterSet.through(search)` keeps that answer under the words joined by
+  spaces, in lowercase (`"ada lovelace"`).
+- Its limits: the second call gets every word, so a word meant
+  for the row's own field defeats it. "owner ada", where "ada" alone
+  names more users than the bound, finds Ada Lovelace's row only if the
+  first answer for "ada" kept her: no user is named "owner ada". And the
+  second answer is bound too: more than `max_reference_matches` users
+  named every word leave the rest out.
+
 | `FilterSet` class variable | Default | What it does |
 | --- | --- | --- |
 | `model` | (required) | The aggregate class. |
 | `ordering_fields` | `()` | Fields clients may order by, each ascending or descending. |
 | `default_ordering` | `()` | The ordering without `?ordering=` (`"-placed_at"`). The id ends every ordering. |
 | `search_fields` | `()` | Text fields that `?search=` looks in, in any case. |
-| `search_through` | `{}` | Fields that refer to other rows, each with a function of a word and a limit that returns the ids of the rows the word names. |
+| `search_through` | `{}` | Fields that refer to other rows, each with a function of a word and a limit that returns the ids of the rows the word names, or `EveryWord` of a function of the words and a limit. |
 | `max_reference_matches` | 100 | The most ids one word names through one field; at least 1. |
 | `max_conditions` | 10 | The most filters and search words one request may combine. |
 | `max_values` | 50 | The most values an `__in` filter may list. |
