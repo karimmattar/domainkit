@@ -107,7 +107,6 @@ import time
 import traceback
 import unicodedata
 import zipfile
-import zlib
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -123,7 +122,18 @@ if TYPE_CHECKING:
     from pypdf import PdfReader
     from pypdf.generic import IndirectObject
 
-__all__ = ["FileRefused", "NotOfType", "OfficeCheck", "PdfCheck", "run_checks"]
+__all__ = [
+    "DecodeBudget",
+    "FileRefused",
+    "NotOfType",
+    "OfficeCheck",
+    "PdfCheck",
+    "Tally",
+    "bounded_reader",
+    "decoded_in_python",
+    "filters_refused",
+    "run_checks",
+]
 
 type Kind = Literal["docx", "xlsx", "pptx"]
 """The Office documents checked: Word, Excel, PowerPoint."""
@@ -181,19 +191,6 @@ PDF_SKIPPED: Final = (
 say, even in strict mode: the start of its messages."""
 PDF_NODES: Final = 1_000_000
 """Objects, entries and items a PDF check reads at most."""
-PDF_INFLATE: Final = frozenset({"/FlateDecode", "/Fl"})
-"""The filter a page's content is inflated by as it is counted, a chunk at a time."""
-PDF_FILTERS: Final = 16
-"""The filters a stream may have, as pypdf's ``stream_filters_maximum_length``."""
-PDF_CONTENT_LIMITS: Final = (
-    "zlib_maximum_output_length",
-    "lzw_maximum_output_length",
-    "run_length_maximum_output_length",
-    "brotli_maximum_output_length",
-    "jbig2_maximum_output_length",
-)
-"""pypdf's limits on what one filter decodes to: a content stream's other filters
-are held to what is left of ``max_content``."""
 DEADLINE_EVERY: Final = 1024
 """Values read between two looks at the clock."""
 PDF_SPACE: Final = rb"[ \t\r\n\f\x00]"
@@ -545,25 +542,52 @@ class PdfCheck:
         pypdf = _documents_extra("pypdf")
         clock = _Clock(time.monotonic() + self.max_seconds, PDF_NODES)
         data = file.read()
+        objects = DecodeBudget(
+            pypdf,
+            self.max_decoded,
+            "The file's object streams decode",
+            refuse=_too_complex,
+            xref_entries=self.max_objects,
+            after_each=clock.check,
+        )
+        tally = Tally(what="The file")
+        objects.tallies.append(tally)
         with pypdf.apply_configuration(**PDF_LIMITS), _Skipped() as skipped:
             try:
-                reader = pypdf.PdfReader(
-                    io.BytesIO(data),
-                    strict=True,
-                    xref_stream_maximum_entries=self.max_objects,
-                )
+                with objects.limited(objects.xref_entries * XREF_ENTRY_BYTES):
+                    reader = bounded_reader(pypdf)(
+                        data,
+                        tally=tally,
+                        strict=True,
+                        xref_stream_maximum_entries=objects.xref_entries,
+                    )
+                objects.refuse_tallied()
                 skipped.check()
                 if reader.is_encrypted:
                     raise FileRefused(ENCRYPTED)
-                _Pdf(self, reader, data, clock).check()
+                _Pdf(self, reader, data, clock, objects).check()
+                objects.refuse_tallied()
                 skipped.check()
             except FileRefused:
                 raise
             except Exception as exc:  # pypdf raises anything on a malformed file.
+                objects.refuse_tallied()  # What stopped pypdf, if it was.
+                limit = pypdf.errors.LimitReachedError
+                if isinstance(exc, limit) or isinstance(exc.__cause__, limit):
+                    raise FileRefused(COMPLEX) from exc  # Past a bound it is read in.
                 short = isinstance(exc, MemoryError) or "allocate" in str(exc)
                 raise FileRefused(
                     TOO_MUCH if short else DAMAGED, code=UNREADABLE
                 ) from exc
+
+
+def _too_complex(reason: str) -> FileRefused:
+    """The refusal of a PDF the decoding policy stops, whatever ``reason`` says.
+
+    The reason is the policy's own, in English; the person is told the
+    file is too large or too complex to check, in their language.
+    """
+    return FileRefused(COMPLEX)
 
 
 class _Heard:
@@ -899,6 +923,19 @@ class DecodeBudget:
         if self.after_each is not None:
             self.after_each()
 
+    def count(self, decoded: int) -> None:
+        """Count ``decoded`` bytes again: a stream ``spend`` decoded, drawn once more.
+
+        Raises:
+            Exception: Made by ``refuse``: what is decoded passes ``max_decoded``.
+        """
+        self.left -= decoded
+        if self.left < 0:
+            raise self.refuse(
+                f"{self.what} to more than {self.max_decoded:,} bytes "
+                "(max_decoded), or past pypdf's limit on a stream."
+            )
+
     def check(self, stream: Any) -> None:  # noqa: ANN401 - pypdf's types.
         """Refuse ``stream`` before it is decoded: its filters, or what is left.
 
@@ -1212,20 +1249,27 @@ class _Pdf:
     """One PDF's check: what its tables declare, and every object written in it."""
 
     def __init__(
-        self, check: PdfCheck, reader: "PdfReader", data: bytes, clock: _Clock
+        self,
+        check: PdfCheck,
+        reader: "PdfReader",
+        data: bytes,
+        clock: _Clock,
+        objects: DecodeBudget,
     ) -> None:
         """Read the tables; resolve every object, pypdf's own reads included, here.
 
+        The object streams are decoded first, within ``objects`` (``max_decoded``
+        and the decoding policy): ``reader`` reads no object from one that
+        was not (``bounded_reader``).
+
         Raises:
-            FileRefused: The tables declare more than ``max_objects``.
+            FileRefused: The tables declare more than ``max_objects``, or an
+                object stream is refused, or decodes past ``max_decoded``.
         """
         self.check_of = check
         self.reader = reader
         self.data = data
         self.clock = clock
-        self.decoded = 0
-        self.content = 0
-        """What the pages' contents decoded to so far, in all."""
         self.declared: dict[tuple[int, int], int | None] = {}
         """Each object the tables declare in use: its offset, or None in a stream."""
         for generation, numbers in reader.xref.items():  # In use: free ones are not.
@@ -1233,12 +1277,11 @@ class _Pdf:
                 self.declared[number, generation] = offset
         for number in reader.xref_objStm:
             self.declared[number, 0] = None
-        self.streams = {stream for stream, _ in reader.xref_objStm.values()}
-        """The object streams the tables name."""
         if len(self.declared) > check.max_objects:
             raise FileRefused(COMPLEX)
         self._resolve = reader.get_object
         reader.get_object = self.resolve  # type: ignore[method-assign, assignment]
+        objects.spend_objects(reader)
 
     def resolve(self, reference: "int | IndirectObject") -> object:
         """The object ``reference`` names, as the tables say, and nowhere else.
@@ -1250,8 +1293,7 @@ class _Pdf:
 
         Raises:
             FileRefused: The tables do not declare it, or it is not at its
-                offset (``unreadable_file``); the decoded bytes, the budget,
-                or the time ran out.
+                offset (``unreadable_file``); or the time ran out.
         """
         from pypdf.generic import IndirectObject
 
@@ -1266,16 +1308,10 @@ class _Pdf:
             if found is None or (int(found[1]), int(found[2])) != key:
                 raise FileRefused(DAMAGED, code=UNREADABLE)
         self.clock.check()
-        resolved: Any = self._resolve(reference)
-        if key[1] == 0 and key[0] in self.streams and hasattr(resolved, "get_data"):
-            self.streams.discard(key[0])  # Decoded once, and kept by pypdf.
-            self.decoded += len(resolved.get_data())
-            if self.decoded > self.check_of.max_decoded:
-                raise FileRefused(COMPLEX)
-        return resolved
+        return self._resolve(reference)
 
     def check(self) -> None:
-        """Read the pages' count, then every value of every object.
+        """Read the pages' count, then every value of every object, then the pages.
 
         Raises:
             FileRefused: Something refused is found, or the file is too
@@ -1302,83 +1338,61 @@ class _Pdf:
         self._count_content()
 
     def _count_content(self) -> None:
-        """Decode each page's content, counting its bytes, within ``max_content``.
+        """Decode each page's content within ``max_content``, as the policy allows.
 
         What a reader decodes to draw the pages, and a program that lays
         something over them decodes and writes again: a stream a page names
-        twice, or two pages name, counts each time. A stream inflated by
-        ``/FlateDecode`` alone is counted a chunk at a time, and nothing
-        of it is kept; one with other filters is decoded by pypdf, each
-        filter held to what is left of the bound.
+        twice, or two pages name, counts each time. Each stream is decoded
+        once by ``DecodeBudget``, as ``overlay_pdf`` decodes it: its filters
+        checked first (``filters_refused``), what is left of the bound its
+        limit, the clock read after it; drawn again, it is counted again.
+        Each stream a page names is a value the check reads (``PDF_NODES``):
+        a page may name one stream thousands of times.
 
         Raises:
-            FileRefused: The pages' contents decode to more than
-                ``max_content``, or the time ran out.
-        """
-        from pypdf.generic import ArrayObject, StreamObject
-
-        for page in self.reader.pages:
-            contents = _resolved(dict.get(page, "/Contents"))
-            streams = (
-                [_resolved(each) for each in list.__iter__(contents)]
-                if isinstance(contents, ArrayObject)
-                else [contents]
-            )
-            for stream in streams:
-                if isinstance(stream, StreamObject):
-                    self.clock.check()
-                    self._decode(stream)
-
-    def _decode(self, stream: Any) -> None:  # noqa: ANN401 - a pypdf stream.
-        """Count what ``stream`` decodes to, within what is left of ``max_content``.
-
-        The clock is looked at once it is decoded, however it was.
-
-        Raises:
-            FileRefused: It decodes to more, or the time ran out.
+            FileRefused: A stream is refused, or the pages' contents decode
+                to more than ``max_content`` (``COMPLEX``), or the check
+                reads too many values, or the time ran out.
         """
         import pypdf
-        from pypdf.errors import LimitReachedError
-        from pypdf.filters import decode_stream_data
-        from pypdf.generic import NullObject
+        from pypdf.generic import ArrayObject, IndirectObject
 
-        left = self.check_of.max_content - self.content
-        filters = _resolved(dict.get(stream, "/Filter"))
-        named = list(filters) if isinstance(filters, list) else [filters]
-        size: int | None = None
-        if filters is None or isinstance(filters, NullObject):  # As written.
-            size = len(stream._data)
-        elif len(named) <= PDF_FILTERS and all(each in PDF_INFLATE for each in named):
-            with contextlib.suppress(zlib.error):  # Damaged: pypdf recovers it.
-                size = self._inflated(stream._data, len(named), left)
-        if size is None:  # Other filters, or damaged: as pypdf decodes it.
-            limits = dict.fromkeys(PDF_CONTENT_LIMITS, left + 1)
-            try:
-                with pypdf.apply_configuration(None, **limits):
-                    size = len(decode_stream_data(stream))
-            except LimitReachedError:
-                raise FileRefused(COMPLEX) from None
-        self.content += size
-        if self.content > self.check_of.max_content:
-            raise FileRefused(COMPLEX)
-        self.clock.check()  # pypdf's decoding looks at no clock.
-
-    def _inflated(self, data: bytes, times: int, left: int) -> int:
-        """The bytes ``data`` inflated ``times`` makes, counted, never held whole.
-
-        Raises:
-            FileRefused: More than ``left``, or the time ran out.
-            zlib.error: The data is not deflated.
-        """
-        chunks: Iterator[bytes] = iter((data,))
-        for _ in range(times):
-            chunks = _inflate(chunks, self.clock)
-        size = 0
-        for chunk in chunks:
-            size += len(chunk)
-            if size > left:
-                raise FileRefused(COMPLEX)
-        return size
+        check = self.check_of
+        content = DecodeBudget(
+            pypdf,
+            check.max_content,
+            "The file's pages decode",
+            refuse=_too_complex,
+            after_each=self.clock.check,
+        )
+        decoded: dict[tuple[int, int], int] = {}
+        """What each stream decoded to, by its reference, once it is."""
+        # One stream of content may take what is left of max_content, not
+        # PDF_STREAM_LIMIT: the budget lowers it to that, stream by stream.
+        limits = dict.fromkeys(DECODED, check.max_content)
+        with pypdf.apply_configuration(None, **limits):
+            for page in self.reader.pages:
+                self.clock.check()
+                named = dict.get(page, "/Contents")
+                contents = _resolved(named)
+                references = (
+                    list(list.__iter__(contents))
+                    if isinstance(contents, ArrayObject)
+                    else [named]
+                )
+                for reference in references:
+                    self.clock.tick()
+                    if not isinstance(reference, IndirectObject):
+                        continue  # A stream is written apart: this names none.
+                    key = (reference.idnum, reference.generation)
+                    if key in decoded:
+                        content.count(decoded[key])
+                        continue
+                    stream = reference.get_object()
+                    if hasattr(stream, "get_data"):
+                        left = content.left
+                        content.spend(stream)
+                        decoded[key] = left - content.left
 
     def _written(self) -> Iterator[object]:
         """Every object written in the file that the tables do not point at.
@@ -1404,30 +1418,6 @@ class _Pdf:
                 raise
             except Exception:  # noqa: BLE001, S112 - not an object, to pypdf or to us.
                 continue
-
-
-def _inflate(chunks: Iterator[bytes], clock: _Clock) -> Iterator[bytes]:
-    """``chunks`` inflated, ``CHUNK`` bytes at a time, to the end of the deflated data.
-
-    What follows that end is not read, as pypdf leaves it; data cut short
-    gives what it holds. The clock is looked at for each chunk taken.
-
-    Raises:
-        zlib.error: The data is not deflated.
-        FileRefused: The time ran out.
-    """
-    inflater = zlib.decompressobj()
-    for chunk in chunks:
-        clock.check()
-        pending = chunk
-        while not inflater.eof:
-            out = inflater.decompress(pending, CHUNK)
-            if not out:  # It took all it was given: it needs the next chunk.
-                break
-            yield out
-            pending = inflater.unconsumed_tail
-        if inflater.eof:
-            return
 
 
 def _inside(value: object) -> list[object]:

@@ -1441,7 +1441,7 @@ def test_object_streams_decode_to_a_bound_each_and_in_all(
     monkeypatch.setitem(
         inspection_module.PDF_LIMITS, "zlib_maximum_output_length", 1000
     )
-    assert verdict(PdfCheck(), streamed_pdf(2000)) == "unreadable_file"
+    assert verdict(PdfCheck(), streamed_pdf(2000)) == COMPLEX
 
 
 def test_a_pdf_check_is_bounded_in_objects_and_time(
@@ -1459,8 +1459,11 @@ def test_pypdf_may_name_an_object_by_its_number_alone() -> None:
 
     data = one_page()
     reader = pypdf.PdfReader(io.BytesIO(data), strict=True)
+    budget = inspection_module.DecodeBudget(
+        pypdf, 1000, "It decodes", refuse=inspection_module._too_complex
+    )
     check = inspection_module._Pdf(
-        PdfCheck(), reader, data, inspection_module._Clock(1e18)
+        PdfCheck(), reader, data, inspection_module._Clock(1e18), budget
     )
 
     assert check.resolve(1) == reader.trailer["/Root"]

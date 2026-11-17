@@ -10,7 +10,6 @@ from ``r:id`` alone (ADR 0175).
 """
 
 import codecs
-import gzip
 import io
 import random
 import time
@@ -21,7 +20,6 @@ from typing import Final
 
 import pytest
 
-from domainkit import inspection
 from domainkit.inspection import (
     ACTIONS,
     COMPLEX,
@@ -52,11 +50,12 @@ def verdict(check: PdfCheck | OfficeCheck, data: bytes) -> str:
     return "ok"
 
 
-def stream(data: bytes, filters: str = "/FlateDecode") -> str:
-    """A stream object's body: ``data`` as written, its ``filters`` named."""
+def stream(data: bytes, filters: str = "/FlateDecode", more: str = "") -> str:
+    """A stream object's body: ``data`` as written, its ``filters`` named, ``more``."""
     named = f" /Filter {filters}" if filters else ""
     return (
-        f"<< /Length {len(data)}{named} >>\nstream\n{data.decode('latin-1')}\nendstream"
+        f"<< /Length {len(data)}{named}{more} >>\nstream\n"
+        f"{data.decode('latin-1')}\nendstream"
     )
 
 
@@ -113,24 +112,24 @@ def test_twenty_pages_of_deflated_spaces_are_refused() -> None:
         ([0, 0, 0], [stream(spaces(1000))], 3000),
         ([[0, 1, 0]], [stream(spaces(1000)), stream(spaces(500))], 2500),
         ([0], [stream(b"q Q " * 250, "")], 1000),
-        ([0], [stream(b"q Q " * 250, "null")], 1000),
-        ([0], [stream(b"20" * 1000 + b">", "/ASCIIHexDecode")], 1000),
-        ([0], [stream(zlib.compress(spaces(1000)), "[/FlateDecode /Fl]")], 1000),
+        (
+            [0],
+            [stream(zlib.compress(spaces(1000)), "[/FlateDecode /FlateDecode]")],
+            1000,
+        ),
         ([0], [stream(spaces(1000), "[/FlateDecode]")], 1000),
         ([0], [stream(spaces(1000) + b"junk after the end")], 1000),
         ([0], [stream(spaces(1000)[:-4])], 1000),
-        ([0], [stream(gzip.compress(b" " * 1000, mtime=0))], 1000),
         (["null", "[null 1 0 R]", "/Name"], [], 0),
     ],
 )
 def test_each_pages_content_counts_each_time_it_is_drawn(
     pages: list[Sequence[int] | int | str], streams: list[str], counted: int
 ) -> None:
-    """A stream drawn twice counts twice; any filter; what is not content is not.
+    """A stream drawn twice counts twice; what is not content is not.
 
     Deflated twice; with bytes after its end, or cut short of its
-    checksum; gzip, which pypdf recovers; hex, which pypdf decodes; none
-    at all.
+    checksum; not encoded at all.
     """
     data = paged(pages, *streams)
 
@@ -149,51 +148,22 @@ def test_other_filters_are_held_to_what_is_left() -> None:
     assert verdict(PdfCheck(max_content=600_000), data) == COMPLEX
 
 
-def test_page_content_is_counted_never_held() -> None:
-    """32 MiB of content is inflated a chunk at a time: nothing near it is kept."""
-    data = paged([0], stream(spaces(32 * MIB)))
+def test_page_content_is_decoded_no_further_than_the_bound() -> None:
+    """64 MiB of content, 8 MiB allowed: pypdf stops at 8, and holds no more.
+
+    zlib's output buffer takes up to twice what it returns.
+    """
+    data = paged([0], stream(spaces(64 * MIB)))
     assert verdict(PdfCheck(), paged([0], stream(spaces(10)))) == "ok"  # Imports.
 
     tracemalloc.start()
     try:
-        assert verdict(PdfCheck(), data) == "ok"
+        assert verdict(PdfCheck(max_content=8 * MIB), data) == COMPLEX
         _, peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
 
-    assert peak < 4 * MIB
-
-
-def test_content_is_counted_within_the_checks_time(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The clock is looked at as the content inflates, a chunk at a time.
-
-    Deflated twice, the first inflation gives 4 MiB, which the second
-    reads 64 KiB at a time: the time runs out on the way.
-    """
-    stored = zlib.compress(b" " * 4 * MIB, 0)
-    data = paged([0], stream(zlib.compress(stored), "[/Fl /Fl]"))
-    looks = 0
-    counting = False
-    real = time.monotonic
-    count_content = inspection._Pdf._count_content
-
-    def counted(check: inspection._Pdf) -> None:
-        nonlocal counting
-        counting = True
-        count_content(check)
-
-    def late() -> float:
-        nonlocal looks
-        looks += counting
-        return real() + (100.0 if looks > 3 else 0.0)
-
-    monkeypatch.setattr(inspection._Pdf, "_count_content", counted)
-    monkeypatch.setattr(time, "monotonic", late)
-
-    assert verdict(PdfCheck(), data) == COMPLEX
-    assert looks > 3
+    assert peak < 3 * 8 * MIB
 
 
 def test_the_time_is_read_once_pypdf_has_decoded_a_stream(
@@ -230,6 +200,172 @@ def test_a_check_pickles_with_its_content_bound() -> None:
 
     check = PdfCheck(max_content=5)
     assert pickle.loads(pickle.dumps(check)) == check  # noqa: S301 - our own.
+
+
+# The policy overlay_pdf decodes with --------------------------------------------------
+
+
+def clear_codes(size: int) -> bytes:
+    """LZW of ``size`` bytes clearing its table at every code: it decodes to nothing."""
+    codes = size * 8 // 9 - 1
+    bits = "100000000" * codes + "100000001"  # Clear (256), then the end (257).
+    bits += "0" * (-len(bits) % 8)
+    return int(bits, 2).to_bytes(len(bits) // 8, "big")
+
+
+def empty_blocks(size: int) -> bytes:
+    """Data of ``size`` bytes of empty stored blocks, zlib: it inflates to nothing."""
+    blocks = b"\x00\x00\x00\xff\xff" * (size // 5)
+    return b"\x78\x01" + blocks + b"\x01\x00\x00\xff\xff" + (1).to_bytes(4, "big")
+
+
+def shared(pages: int, references: int) -> bytes:
+    """``pages`` pages, each naming one byte of content ``references`` times."""
+    named = " ".join(["4 0 R"] * references)
+    kids = " ".join(f"{5 + index} 0 R" for index in range(pages))
+    return pdf(
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        f"<< /Type /Pages /Kids [{kids}] /Count {pages} >>",
+        f"[{named}]",
+        stream(b" ", ""),
+        *(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 3 0 R >>"
+            for _ in range(pages)
+        ),
+    )
+
+
+PREDICTED: Final = " /DecodeParms << /Predictor 12 /Columns 249999 /Colors 16 >>"
+"""A predictor whose rows pypdf pads to 4 MB, from a byte."""
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        pytest.param(
+            paged([0] * 1000, stream(zlib.compress(b"\x00"), more=PREDICTED)),
+            id="predictor-padding",
+        ),
+        pytest.param(
+            paged(
+                [0],
+                stream(
+                    zlib.compress(b"z" * 4 * MIB + b"~>"),
+                    "[/FlateDecode /ASCII85Decode]",
+                ),
+            ),
+            id="ascii85-after-deflate",
+        ),
+        pytest.param(
+            paged(
+                [0],
+                stream(
+                    zlib.compress(b"00 " * MIB + b">"), "[/FlateDecode /ASCIIHexDecode]"
+                ),
+            ),
+            id="hex-after-deflate",
+        ),
+        pytest.param(
+            paged(
+                [0],
+                stream(
+                    zlib.compress(b"\xffA" * MIB + b"\x80"),
+                    "[/FlateDecode /RunLengthDecode]",
+                ),
+            ),
+            id="runs-after-deflate",
+        ),
+        pytest.param(
+            paged(
+                [0],
+                stream(zlib.compress(clear_codes(MIB)), "[/FlateDecode /LZWDecode]"),
+            ),
+            id="lzw-after-deflate",
+        ),
+        pytest.param(
+            paged([0], stream(b"z" * 3 * MIB + b"~>", "/ASCII85Decode")),
+            id="ascii85-past-pythons-share",
+        ),
+        pytest.param(
+            paged([0], stream(clear_codes(200 * 1024), "/LZWDecode")),
+            id="lzw-past-its-share",
+        ),
+        pytest.param(
+            paged(
+                [0],
+                stream(
+                    zlib.compress(empty_blocks(70 * MIB)), "[/FlateDecode /FlateDecode]"
+                ),
+            ),
+            id="empty-blocks-deflated",
+        ),
+        pytest.param(
+            paged([[0] * 1100], stream(spaces(64 * 1024))), id="one-stream-1100-times"
+        ),
+        pytest.param(shared(1000, 49_000), id="a-byte-49000-times-a-page"),
+        pytest.param(paged([0], stream(b"x", "/DCTDecode")), id="an-images-filter"),
+        pytest.param(paged([0], stream(b"x", "/Crypt")), id="crypt"),
+        pytest.param(paged([0], stream(b"q Q", "null")), id="a-null-filter"),
+    ],
+)
+def test_page_content_is_decoded_as_overlay_pdf_decodes_it(data: bytes) -> None:
+    """One policy: what overlay_pdf would refuse to decode, the check refuses.
+
+    A predictor (pypdf pads each row: 292 KB made 3.8 GB); a filter pypdf
+    runs in Python after deflate (60 KB of ASCII85 made 5.7 GB); more
+    stored for Python's filters than their share; an image's filter;
+    content a page names more often than the check reads values. Each is
+    refused in well under the check's time.
+    """
+    started = time.perf_counter()
+
+    assert verdict(PdfCheck(), data) == COMPLEX
+    assert time.perf_counter() - started < 5
+
+
+def test_what_the_policy_allows_passes() -> None:
+    """Python's filters first and within their share; 1000 names of one stream."""
+    assert (
+        verdict(PdfCheck(), paged([0], stream(b"z" * MIB + b"~>", "/ASCII85Decode")))
+        == "ok"
+    )
+    assert (
+        verdict(PdfCheck(), paged([0], stream(clear_codes(60 * 1024), "/LZWDecode")))
+        == "ok"
+    )
+    assert verdict(PdfCheck(), paged([[0] * 1000], stream(spaces(64 * 1024)))) == "ok"
+    assert verdict(PdfCheck(), shared(10, 1000)) == "ok"
+
+
+def test_the_readers_bounds_hold_for_the_check_too() -> None:
+    """As for overlay_pdf: sections, a rebuilt table, streams in streams, searches.
+
+    32 sections chained by ``/Prev``, however the link is written; an
+    object stream inside another, or an object from one not decoded; a
+    cross-reference stream decoded but by deflate; a table to rebuild.
+    """
+    from domainkit_tests.test_documents_pdf import chained, referring, streamed
+
+    bomb = (b"[/FlateDecode /ASCII85Decode]", zlib.compress(b"z" * MIB + b"~>"))
+    document = streamed(extras=((b"[/FlateDecode /ASCII85Decode]", b"not decoded"),))
+    damaged = document[: document.rindex(b"startxref")] + b"startxref\n0\n%%EOF\n"
+
+    assert verdict(PdfCheck(), chained(32)) == "ok"
+    assert verdict(PdfCheck(), streamed(10, used=True)) == "ok"
+    for refused in (
+        chained(33),
+        chained(33, streams=True),
+        chained(32, hybrid=True),
+        chained(33, link="/P#72ev {at}"),
+        chained(500, streams=True),
+        streamed(10, extras=(bomb,), nested=True),
+        streamed(stray=True, used=True),
+        streamed(xref_filter=b"/LZWDecode"),
+    ):
+        assert verdict(PdfCheck(), refused) == COMPLEX
+    assert verdict(PdfCheck(), damaged) == "unreadable_file"
+    assert verdict(PdfCheck(), referring(40)) == "unreadable_file"
+    assert verdict(PdfCheck(), streamed(entries=200_001)) == COMPLEX  # max_objects.
 
 
 # Office ------------------------------------------------------------------------------
