@@ -34,7 +34,7 @@ from domainkit_tests.test_admin_actions import (
     Staff,
     held_requests,
     problem,
-    row,
+    stored,
 )
 from domainkit_tests.test_admin_actions import frozen as frozen  # The fixture.
 from domainkit_tests.test_auth_admin import make_group
@@ -99,7 +99,7 @@ def fingerprint_of(person: Staff, request_id: str) -> str:
 def test_an_approver_sees_the_user_by_name_and_every_group_added(
     client: TestClient, frozen: FrozenClock
 ) -> None:
-    """The user by name ("User: target"), and each group, on as many lines as needed."""
+    """The user by name and id, and each group, on as many lines as needed."""
     root = Staff(client, frozen, "root", superuser=True)
     boss = Staff(client, frozen, "boss", superuser=True)
     target = create_user("target")
@@ -115,7 +115,7 @@ def test_an_approver_sees_the_user_by_name_and_every_group_added(
 
     assert pairs(asked) == [
         ("Action", "auth.set_groups"),
-        ("User", "target"),
+        ("User", f"target ({target})"),
         ("Adds", "aaa_harmless_0, aaa_harmless_1, aaa_harmless_2, aaa_harmless_3"),
         ("Adds (2)", "aaa_harmless_4, zz_admins"),
     ]
@@ -129,7 +129,7 @@ def test_an_approver_sees_the_user_by_name_and_every_group_added(
 def test_an_impersonation_shows_who_and_why(
     client: TestClient, frozen: FrozenClock
 ) -> None:
-    """The user by name, and the reason, under the admin API's own labels."""
+    """The user, and the reason stated; rejecting shows its own reason beside it."""
     root = Staff(client, frozen, "root", superuser=True)
     boss = Staff(client, frozen, "boss", superuser=True)
     target = create_user("target")
@@ -141,11 +141,18 @@ def test_an_impersonation_shows_who_and_why(
     request_id = waiting.json()["approval_request_id"]
     fingerprint = fingerprint_of(boss, request_id)
     asked = ask_to(boss, request_id, "approve", {"fingerprint": fingerprint})
+    rejecting = ask_to(boss, request_id, "reject", {"reason": "Not this one"})
 
     assert pairs(asked) == [
         ("Action", "auth.impersonate"),
-        ("User", "target"),
-        ("Reason", "Ticket 42"),
+        ("User", f"target ({target})"),
+        ("Stated reason", "Ticket 42"),
+    ]
+    assert pairs(rejecting) == [
+        ("Action", "auth.impersonate"),
+        ("Reason", "Not this one"),
+        ("User", f"target ({target})"),
+        ("Stated reason", "Ticket 42"),
     ]
 
 
@@ -198,27 +205,78 @@ def test_with_whole_on_a_grant_no_approver_could_see_whole_is_never_submitted(
 ) -> None:
     """The maker's screen holds the change; the approver's, a line longer, does not.
 
-    Ten groups take five lines: the maker's screen shows the user and
-    them, and its twin answers. The approver's would show the action too,
-    seven lines: the change is refused when it is submitted, no request is
-    stored, and the maker's authorization is not spent.
+    Ten groups take five lines: the maker's screen would show the user and
+    them. The approver's would show the action too, seven lines: the
+    maker's twin refuses the change before an authorization is stored.
+    Without the act (``ADMIN_ACTION`` off), the change is refused when it
+    is submitted. Either way no request is stored; eight groups wait.
     """
     root = Staff(client, frozen, "root", superuser=True)
     target = create_user("target")
     names = LONG_NAMES[:10]
     for name in names:
         make_group(name)
+    body = {"groups": list(names)}
 
     with override_settings(AUTH=WHOLE):
-        body = {"groups": list(names)}
-        authorization = root.authorized(f"/users/{target}/groups/authorization", body)
-        refused = root.call("PUT", f"/users/{target}/groups", body, authorization)
+        before = len(stored())
+        asked = root.ask(f"/users/{target}/groups/authorization", body)
+        unasked = len(stored()) - before
         fewer = held(root, str(target), names[:8])
+    with override_settings(AUTH={**WHOLE, "ADMIN_ACTION": False}):
+        submitted = root.call("PUT", f"/users/{target}/groups", body)
 
-    problem(refused, 422, "too_much_to_show")
-    assert row(authorization)["consumed_at"] is None
+    problem(asked, 422, "too_much_to_show")
+    assert unasked == 0
+    problem(submitted, 422, "too_much_to_show")
     problem(fewer, 403, "approval_pending")
     assert held_requests() == 1
+
+
+def test_with_whole_on_a_long_name_never_locks_a_user_or_a_group(
+    client: TestClient, frozen: FrozenClock
+) -> None:
+    """The name is cut beside the id, which the act binds: never too much to show.
+
+    A user whose username has 150 characters is deactivated, deleted,
+    logged out, given a password; a group whose name has 150 is renamed
+    and deleted; a held grant to that user is approved: each screen shows
+    the name cut and the id whole (review of ADR 0173).
+    """
+    root = Staff(client, frozen, "root", superuser=True)
+    boss = Staff(client, frozen, "boss", superuser=True)
+    long = "u" * 150
+    target = create_user(long)
+    group = make_group("g" * 150)
+    make_group("readers")
+    user_line = ("User", f"{'u' * 24}… ({target})")
+    group_line = ("Group", f"{'g' * 24}… ({group})")
+
+    with override_settings(AUTH=WHOLE):
+        asked = [
+            root.ask(path, body)
+            for path, body in (
+                (f"/users/{target}/authorization/patch", {"is_active": False}),
+                (f"/users/{target}/authorization/delete", None),
+                (f"/users/{target}/logout/authorization", None),
+                (f"/users/{target}/password/authorization", {"password": None}),
+            )
+        ]
+        renaming = root.ask(f"/groups/{group}/authorization/patch", {"name": "short"})
+        deleting = root.ask(f"/groups/{group}/authorization/delete")
+        request_id = held(root, str(target), ("readers",)).json()["approval_request_id"]
+        fingerprint = fingerprint_of(boss, request_id)
+        approving = ask_to(boss, request_id, "approve", {"fingerprint": fingerprint})
+
+    for response in asked:
+        assert pairs(response)[0] == user_line
+    assert pairs(renaming) == [group_line, ("New name", "short")]
+    assert pairs(deleting) == [group_line]
+    assert pairs(approving) == [
+        ("Action", "auth.set_groups"),
+        user_line,
+        ("Adds", "readers"),
+    ]
 
 
 @requires_approval("tests.screens")
@@ -279,4 +337,4 @@ def test_a_request_about_a_user_gone_shows_their_id_and_every_field(
 
     shown = run_async(show_about_user(Note(user_id=gone, removed=(), note="n")))
 
-    assert shown == [("User", str(gone)), ("note", "n")]
+    assert shown == [("User", f"erased ({gone})"), ("note", "n")]

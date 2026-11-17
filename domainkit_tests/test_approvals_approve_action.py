@@ -12,6 +12,7 @@ approving is as it was, and the twin answers ``404``.
 
 from collections.abc import Iterator
 from datetime import timedelta
+from decimal import Decimal
 from typing import Any, Final
 from uuid import UUID
 
@@ -33,11 +34,12 @@ from domainkit.contrib.approvals import (
     guard,
     requires_approval,
 )
-from domainkit.contrib.approvals.authorizing import MAX_TEXT, details_of, fitted
+from domainkit.contrib.approvals.authorizing import details_of
 from domainkit.contrib.approvals.tables import requests
 from domainkit.contrib.auth import StepUp
 from domainkit.contrib.auth.actions import AuthorizationRequired, action_for
-from domainkit.contrib.auth.screens import TooMuchToShow
+from domainkit.contrib.auth.screens import LINE_LENGTH as MAX_TEXT
+from domainkit.contrib.auth.screens import TooMuchToShow, fitted
 from domainkit.contrib.auth.tables import authorizations
 from domainkit.db import connections
 from domainkit.ddd import fingerprint
@@ -502,9 +504,10 @@ def test_details_are_printable_cut_to_fit_and_six_at_most() -> None:
 def test_a_list_argument_goes_over_lines_or_says_how_many_more() -> None:
     """A grant's keys, each shown, or counted; never cut unsaid (user report A23).
 
-    A list of strings goes over as many lines as it takes ("added (2)");
-    past the screen, its last line says how many more. With ``whole``, it
-    is refused instead. A list of objects stays compact JSON.
+    A list goes over as many lines as it takes ("added (2)"), item by
+    item, an object or a list as compact JSON; past the screen, its last
+    line says how many more. With ``whole``, it is refused instead. A
+    guard's ``show`` that gives a ``Decimal`` or a ``UUID`` shows its text.
     """
     keys = [f"accounts.permission_{each:02}" for each in range(30)]
 
@@ -531,7 +534,33 @@ def test_a_list_argument_goes_over_lines_or_says_how_many_more() -> None:
     assert (
         counted[-1][1] == "accounts.permission_06, accounts.permission_07 and 22 more"
     )
-    assert lines == [("Action", "tests.act"), ("lines", '[{"a":1}]')]
+    assert lines == [("Action", "tests.act"), ("lines", '{"a":1}')]
+    postings = details_of(
+        "accounting.post_entry",
+        {
+            "lines": [
+                {"account_id": str(UUID(int=each)), "side": "debit"}
+                for each in range(9)
+            ]
+        },
+    )
+    assert postings[1][1].startswith('{"account_id":"00000000-')
+    assert postings[-1][1].endswith(" and 4 more")
+    shown = details_of(
+        "tests.act", [("Amount", Decimal("2500.00")), ("Payee", UUID(int=7))]
+    )
+    assert shown[1:] == [("Amount", "2500.00"), ("Payee", str(UUID(int=7)))]
+    rejected = details_of(
+        "auth.impersonate",
+        [("User", "target"), ("Stated reason", "Ticket 42")],
+        reason="Not now",
+    )
+    assert rejected == [
+        ("Action", "auth.impersonate"),
+        ("Reason", "Not now"),
+        ("User", "target"),
+        ("Stated reason", "Ticket 42"),
+    ]
 
 
 def test_other_approve_rules_still_apply_beside_the_action(

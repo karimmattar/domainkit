@@ -23,7 +23,6 @@ Only imported with one of them on, and so with ``domainkit.contrib.auth``
 installed (``ApprovalsConfig.ready`` refuses it otherwise).
 """
 
-import json
 from collections.abc import Iterable, Mapping
 from typing import Any, Final
 
@@ -39,7 +38,7 @@ from domainkit.contrib.auth.actions import (
     request_action_authorization,
     requires_authorization,
 )
-from domainkit.contrib.auth.screens import laid_out
+from domainkit.contrib.auth.screens import fitted, laid_out
 from domainkit.i18n import gettext, gettext_noop, ngettext
 
 from .guards import Guard, guard_for, policy_of
@@ -80,10 +79,6 @@ ACTION_LABEL: Final = gettext_noop("Action")
 """The label of the request's action, the first value shown."""
 REASON_LABEL: Final = gettext_noop("Reason")
 """The label of the reason of a rejection or a cancellation, shown second."""
-MAX_TEXT: Final = 64
-"""The longest title, label, and value an act shows (auth's ``Shown``)."""
-CUT: Final = "…"
-"""What ends a text cut to ``MAX_TEXT``."""
 
 
 def subject_of(command: ApproveRequest | RejectRequest | CancelRequest) -> str:
@@ -196,56 +191,37 @@ def details_of(
     """The action, the reason if any, then the arguments by name, on a screen.
 
     Each value is a line: a string as itself, anything else as compact
-    JSON; a list of strings, numbers, or booleans goes over as many lines
-    as it takes ("added", "added (2)"), as ``laid_out`` lays it out. With
+    JSON; a list goes over as many lines as it takes ("added", "added
+    (2)"), item by item, each item a string as itself or compact JSON, as
+    ``laid_out`` lays it out. A value JSON has not (a ``Decimal``, a
+    ``UUID``, a date a guard's ``show`` gives) shows as its text. With
     ``whole``, what does not fit whole is refused (``TooMuchToShow``);
     otherwise a value is cut to 64 characters, a list's last line says how
     many more, and with more than fit, a last line how many arguments.
     """
     pairs = arguments.items() if isinstance(arguments, Mapping) else arguments
-    details: list[tuple[str, str | list[str]]] = [(gettext(ACTION_LABEL), action)]
+    details: list[tuple[str, object]] = [(gettext(ACTION_LABEL), action)]
     if reason:
         details.append((gettext(REASON_LABEL), reason))
-    details.extend((str(name), _value(value)) for name, value in pairs)
+    details.extend((str(name), _jsonable(value)) for name, value in pairs)
     return laid_out(details, whole=whole, more=_more_arguments)
 
 
-def _value(value: object) -> str | list[str]:
-    """``value`` as a screen shows it: a text, or a list's items."""
-    if isinstance(value, list | tuple) and not any(
-        isinstance(each, list | tuple | dict) for each in value
-    ):
-        return [_text(each) for each in value]
-    return _text(value)
+def _jsonable(value: object) -> object:
+    """``value`` as JSON: what JSON has as itself, anything else as its text."""
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, Mapping):
+        return {str(key): _jsonable(each) for key, each in value.items()}
+    if isinstance(value, list | tuple):
+        return [_jsonable(each) for each in value]
+    return str(value)
 
 
 def _more_arguments(hidden: int) -> str:
     """The last line's words: how many arguments are not shown."""
     more = ngettext("{count} more argument", "{count} more arguments", hidden)
     return more.format(count=hidden)
-
-
-def _text(value: object) -> str:
-    """``value`` as text: a string as itself, anything else as compact JSON."""
-    if isinstance(value, str):
-        return value
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-
-
-def fitted(text: str) -> str:
-    """``text`` as a screen shows it: printable, at most 64 characters.
-
-    A character that is not printable is shown escaped, as Python writes
-    it (a new line as a backslash and ``n``); a longer text is cut, and
-    ends with ``…``.
-    """
-    printable = "".join(
-        each if each.isprintable() else each.encode("unicode_escape").decode("ascii")
-        for each in text
-    )
-    if len(printable) <= MAX_TEXT:
-        return printable
-    return printable[: MAX_TEXT - len(CUT)] + CUT
 
 
 APPROVE: Final = Action(

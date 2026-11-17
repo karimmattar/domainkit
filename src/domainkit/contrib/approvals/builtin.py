@@ -38,9 +38,12 @@ once (a guard ``by_maker``). The approvers are superusers (or the holders
 of ``ADMIN_APPROVERS``), never the user the change is about.
 
 What a person deciding a request about a user is shown names the user,
-read when shown (``show_about_user``): "User: alice@example.com", then
-the groups or permissions it adds and takes away, each list whole over
-as many lines as it takes, and an impersonation's reason (ADR 0173).
+read when shown, with their id (``show_about_user``): "User:
+alice@example.com (6f1c…)", then the groups or permissions it adds and
+takes away, each list over as many lines as it takes, and an
+impersonation's stated reason (ADR 0173). With ``APPROVE_ACTION`` on, the
+admin API's twin refuses a change held here that the approver's screen
+could not show whole (``check_admin_screen``).
 """
 
 from collections.abc import Mapping
@@ -60,6 +63,7 @@ from .guards import (
     Policy,
     Running,
     Service,
+    Show,
     Threshold,
     check,
     current_run,
@@ -100,13 +104,16 @@ SET_PASSWORD: Final = "auth.set_password"  # noqa: S105 - an action, not a secre
 IMPERSONATE: Final = "auth.impersonate"
 """The guarded action of acting as a user in the admin API."""
 USER: Final = gettext_noop("User")
-"""The label of the user a request is about, shown by name."""
+"""The label of the user a request is about, shown by name and id."""
 SHOWN_LABELS: Final = {
     "added": gettext_noop("Adds"),
     "removed": gettext_noop("Takes away"),
-    "reason": gettext_noop("Reason"),
+    "reason": gettext_noop("Stated reason"),
 }
-"""The labels of what a request about a user changes, as the admin API's own."""
+"""The labels of what a request about a user changes, as the admin API's own.
+
+An impersonation's reason is the "Stated reason": a rejection's or a
+cancellation's own "Reason" shows beside it."""
 
 
 @requires_approval(POST_ENTRY)
@@ -323,15 +330,18 @@ def _user_id(text: str) -> Any:  # noqa: ANN401 - a user's id, or None.
 
 
 async def show_about_user(command: Any) -> list[tuple[str, object]]:  # noqa: ANN401 - a command about a user.
-    """What a request about a user shows: the user by name, then what changes.
+    """What a request about a user shows: the user by name and id, then what changes.
 
     ``user_id`` is shown as the user's first identifier
-    (``get_username()``), read now and never stored with the request: a
-    user erased meanwhile shows by id. ``added`` and ``removed`` are lists
-    ("Adds", "Takes away"), left out when empty; ``reason`` is "Reason";
-    any other field shows by its name.
+    (``get_username()``), read now and never stored with the request, cut
+    to fit beside the id, which the request binds: a user erased or gone
+    meanwhile shows as "erased". ``added`` and ``removed`` are lists
+    ("Adds", "Takes away"), left out when empty; ``reason`` is "Stated
+    reason"; any other field shows by its name. A command with no
+    ``user_id`` shows its fields alone.
     """
     from domainkit.contrib.auth import AuthUnitOfWork, UserId
+    from domainkit.contrib.auth.screens import named
 
     shown: list[tuple[str, object]] = []
     dumped = TypeAdapter(type(command)).dump_python(command, mode="json")
@@ -339,8 +349,8 @@ async def show_about_user(command: Any) -> list[tuple[str, object]]:  # noqa: AN
         if name == "user_id":
             async with AuthUnitOfWork() as uow:
                 user = await uow.users.find(UserId(command.user_id))
-            named = str(value) if user is None else user.get_username()
-            shown.append((gettext(USER), named))
+            username = "" if user is None else user.get_username()
+            shown.append((gettext(USER), named(username, value)))
         elif name in ("added", "removed"):
             if value:
                 shown.append((gettext(SHOWN_LABELS[name]), value))
@@ -499,6 +509,8 @@ ADMIN_SERVICES: Final[Mapping[str, Service]] = {
     action: _admin_service(action) for action in ADMIN_COMMANDS
 }
 """Each admin action's decorated service."""
+ADMIN_SHOWS: Final[Mapping[str, Show]] = dict.fromkeys(ADMIN_COMMANDS, show_about_user)
+"""What each admin action's request shows; a hold of a group gives its own."""
 
 
 def _about_user(command: Any) -> list[str]:  # noqa: ANN401 - an admin command.
@@ -532,7 +544,7 @@ def guard_admin_changes(config: ApprovalsSettings) -> None:
                 parties=_about_user,
                 http=False,
                 by_maker=True,
-                show=show_about_user,
+                show=ADMIN_SHOWS[action],
             )
         )
 
@@ -583,6 +595,26 @@ async def check_admin_change(
     if context is None or context.actor != str(actor.id):
         raise PermissionDenied("Requests are made and decided in one's own name only.")
     await ADMIN_SERVICES[action](command, None)
+
+
+async def check_admin_screen(target: "AbstractBaseUser", change: "AdminChange") -> None:
+    """Refuse, at the admin API's twin, a held change no approver could see whole.
+
+    Auth's ``on_admin_screen`` calls it as the twin builds the staff
+    member's screen, before an authorization is stored: a change that
+    ``ADMIN_APPROVALS`` holds would be approved on the approver's screen,
+    a line longer (the action). It reads, and writes nothing.
+
+    Raises:
+        TooMuchToShow: With ``AUTH.AUTHORIZATIONS.WHOLE`` on, approving it
+            could not be shown whole (auth's, 422).
+    """
+    held = _admin_command(target, change)
+    if held is None or held[0] not in guards():
+        return
+    from .authorizing import check_approvable
+
+    await check_approvable(guards()[held[0]], held[1])
 
 
 def _admin_command(target: "AbstractBaseUser", change: "AdminChange") -> Any:  # noqa: ANN401 - (action, command) or None.
