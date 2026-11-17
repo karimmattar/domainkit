@@ -111,10 +111,12 @@ def test_twenty_pages_of_deflated_spaces_are_refused() -> None:
         ([0, 0, 0], [stream(spaces(1000))], 3000),
         ([[0, 1, 0]], [stream(spaces(1000)), stream(spaces(500))], 2500),
         ([0], [stream(b"q Q " * 250, "")], 1000),
+        ([0], [stream(b"q Q " * 250, "null")], 1000),
         ([0], [stream(b"20" * 1000 + b">", "/ASCIIHexDecode")], 1000),
         ([0], [stream(zlib.compress(spaces(1000)), "[/FlateDecode /Fl]")], 1000),
         ([0], [stream(spaces(1000), "[/FlateDecode]")], 1000),
         ([0], [stream(spaces(1000) + b"junk after the end")], 1000),
+        ([0], [stream(spaces(1000)[:-4])], 1000),
         ([0], [stream(gzip.compress(b" " * 1000, mtime=0))], 1000),
         (["null", "[null 1 0 R]", "/Name"], [], 0),
     ],
@@ -124,8 +126,9 @@ def test_each_pages_content_counts_each_time_it_is_drawn(
 ) -> None:
     """A stream drawn twice counts twice; any filter; what is not content is not.
 
-    Deflated twice, or after its end; gzip, which pypdf recovers; hex,
-    which pypdf decodes; none at all.
+    Deflated twice; with bytes after its end, or cut short of its
+    checksum; gzip, which pypdf recovers; hex, which pypdf decodes; none
+    at all.
     """
     data = paged(pages, *streams)
 

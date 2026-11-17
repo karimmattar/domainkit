@@ -842,12 +842,13 @@ class _Pdf:
         import pypdf
         from pypdf.errors import LimitReachedError
         from pypdf.filters import decode_stream_data
+        from pypdf.generic import NullObject
 
         left = self.check_of.max_content - self.content
         filters = _resolved(dict.get(stream, "/Filter"))
         named = list(filters) if isinstance(filters, list) else [filters]
         size: int | None = None
-        if filters is None:
+        if filters is None or isinstance(filters, NullObject):  # As written.
             size = len(stream._data)
         elif len(named) <= PDF_FILTERS and all(each in PDF_INFLATE for each in named):
             with contextlib.suppress(zlib.error):  # Damaged: pypdf recovers it.
@@ -922,11 +923,10 @@ def _inflate(chunks: Iterator[bytes], clock: _Clock) -> Iterator[bytes]:
         pending = chunk
         while not inflater.eof:
             out = inflater.decompress(pending, CHUNK)
-            pending = inflater.unconsumed_tail
-            if out:
-                yield out
-            elif not pending:
+            if not out:  # It took all it was given: it needs the next chunk.
                 break
+            yield out
+            pending = inflater.unconsumed_tail
         if inflater.eof:
             return
 
