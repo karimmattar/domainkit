@@ -18,8 +18,9 @@ domain layer), ``controllers.py`` (application), ``models.py``
 - ``infrastructure``: no ``api`` code and no web libraries, but the
   outgoing HTTP client (``domainkit.http.client``): calling another
   service is what an adapter does; and the checks and storing of uploads
-  (``domainkit.http.uploads``), which a file gateway runs on the bytes
-  its route hands it.
+  (``domainkit.http.uploads``), which a file gateway runs on what its
+  route hands it, typed as ``Upload`` rather than Starlette's
+  ``UploadFile`` (ADR 0177).
 - Another domain may be used only through its ``application`` layer or its
   ``domain.events`` (bounded contexts stay decoupled).
 

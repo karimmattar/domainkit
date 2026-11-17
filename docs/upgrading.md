@@ -65,6 +65,14 @@ relied on 2.6's behaviour changes, and what to run.
   Clients make those changes in smaller steps. A guard of the project's
   whose arguments do not fit gives `guard(show=...)`; accounting's
   postings have no `show` yet, and their lines do not fit.
+- **`check` names throttles counted per tenant unsaid.** A `Throttle` on
+  a route served as a tenant (a `PathTenant`'s, or any route under
+  `TenantMiddleware` but a tenants' collection) that says neither
+  `per_tenant=True` nor `per_tenant=False` is warned of
+  (`tenancy.W001`), so `check --deploy` fails until each says how it
+  counts. Nothing counts differently: `per_tenant=True` keeps each
+  tenant's count, as before, and `SILENCED_CHECKS` may name the warning
+  ([tenancy.md](tenancy.md#caches-limits-and-logs)).
 
 ### Make and apply auth's migration for bound and held authorizations
 

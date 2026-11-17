@@ -233,7 +233,9 @@ domains' own models keep those keys as secrets.
   infrastructure layer no web library but the outgoing HTTP client
   (`domainkit.http.client`), which adapters call other services with,
   and the uploads' checks and storing (`domainkit.http.uploads`), which
-  a file gateway runs on the bytes its route hands it (*New in 2.5*);
+  a file gateway runs on the bytes its route hands it (*New in 2.5*),
+  typed as `domainkit.http.uploads.Upload` rather than Starlette's
+  `UploadFile` (*New in 2.7*);
 - another domain is reached only through its `application` or
   `domain.events`.
 

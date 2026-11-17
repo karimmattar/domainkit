@@ -39,6 +39,51 @@ and a status.
   by name and id, read when shown and never stored with the request, and
   an impersonation's "Stated reason" (user report A23).
 
+- `TENANCY.ALL_TENANTS_PERMISSION` names a permission key that reaches
+  every tenant: staff who hold it everywhere change, and act as, through
+  the admin API, members of companies they do not belong to who hold no
+  key there they lack everywhere; under `MEMBERSHIP` alone, every member.
+  Unset, as before, staff change only the members of tenants they belong
+  to, and a back office needed a superuser. ADR 0177 (user report D3).
+
+- `TENANCY.MEMBER_GRANTS`, a function of the user and a tenant id,
+  answers what a member's roles grant there whatever the tenant's state.
+  The admin API adds it to `MEMBER_PERMISSIONS`' answer, never in its
+  place, so staff who hold a suspended company's looking keys no longer
+  take over an owner who holds everything once it is reactivated.
+  ADR 0177 (user report D3).
+
+- `MemberActions(..., keys={"invite": "organizations.add_membership"})`
+  names the key of an action of the domain's own whole, where the
+  model's (`companies.invite_company`) names nothing; `ModelActions`
+  takes `keys` too. Under `keys`, a route of an action it does not name,
+  other than `view`, `add`, `change`, and `delete`, is refused when
+  declared. ADR 0177 (user report D3).
+
+- `check` names each `Throttle` on a route served as a tenant that says
+  neither `per_tenant=True` nor `per_tenant=False` (`tenancy.W001`, in
+  every environment): it counts per tenant, so moving routes under a
+  tenant multiplied a person's limit by their tenants, unseen.
+  `Throttle(per_tenant=None)`, the new default, counts as `True` did.
+  ADR 0177 (user report D3).
+
+- `EveryWord(finder)` (`domainkit.http`) asks a `search_through` finder
+  with every word of a search at once too, where a word alone reached
+  `max_reference_matches`: "ada lovelace" finds Ada Lovelace's rows
+  though each word names more users than the bound, which asked per word
+  missed. ADR 0177 (user report D2).
+
+- The admin API's `GET /users/names` answers the page `GET /users` does,
+  with each user's id, username, name, and identifiers only, not their
+  groups, permissions, or other fields, and nothing `/users` hides.
+  ADR 0177 (user report D2).
+
+- `domainkit.http.uploads.Upload`, the type `save_upload` and
+  `receive_upload` take, is public: a file gateway of the infrastructure
+  layer takes its route's file as it is without naming Starlette's
+  `UploadFile`, which the layer rules keep out. ADR 0177 (user report
+  D2).
+
 - `Action(binds=...)` binds an act to the record it decides on:
   `binds(command, uow)` reads it (an aggregate's `version`, the fields
   the act decides on) in the act's unit of work, where `show` reads when

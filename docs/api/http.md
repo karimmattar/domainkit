@@ -12,6 +12,7 @@ FastAPI integration: application factory, middleware, and error mapping.
 - `MAX_CURSOR_LENGTH`: Longest cursor accepted; use as `Query(max_length=MAX_CURSOR_LENGTH)`.
 - `APIError`: An HTTP error outside the domain (a bad cursor, an oversized body).
 - `ErrorResponse`: Body of every error response; also the schema documented in OpenAPI.
+- `EveryWord`: A `search_through` finder asked with every word of a search at once.
 - `FieldError`: One invalid part of a request; the submitted value is left out.
 - `Filter`: One filtered field of a `FilterSet` and the lookups it allows.
 - `FilterSet`: Declarative filters, ordering, and search for one aggregate's listing.
@@ -241,6 +242,7 @@ Receiving uploaded files, and serving stored ones, safely.
 - `ZIP`: Any zip file, Office documents included, by its first bytes only.
 - `FileType`: A type of file a route accepts, and how to recognize its first bytes.
 - `ReceivedUpload`: An upload received whole and checked, held in a temporary file.
+- `Upload`: What `save_upload` takes: a form's file, bytes, or a stream of bytes.
 - `UploadRefused`: An upload was empty (400), too large (413), not taken (415), or refused (422).
 - `receive_upload`: Receive `upload` whole and check it as `save_upload` does; store nothing.
 - `sanitize_filename`: A client's file name, safe to show and to put in `Content-Disposition`.

@@ -154,6 +154,11 @@ class _Members:
             if config.MEMBER_TENANTS is None
             else import_string(config.MEMBER_TENANTS)
         )
+        self.grants: MemberPermissions | None = (
+            None
+            if config.MEMBER_GRANTS is None
+            else import_string(config.MEMBER_GRANTS)
+        )
 
     @property
     def checked(self) -> bool:
@@ -188,6 +193,22 @@ class _Members:
             return frozenset() if await _ask(self.membership, user, tenant_id) else None
         return frozenset()
 
+    async def granted(self, user: object, tenant_id: str) -> frozenset[str] | None:
+        """What ``MEMBER_GRANTS`` says ``user``'s roles grant in ``tenant_id``.
+
+        Every key the roles grant whatever the tenant's state; None without
+        the setting, or for one it does not count a member. It only adds to
+        what ``admit`` answers: it never stands for a membership ``admit``
+        does not see.
+
+        Raises:
+            ImproperlyConfigured: It answered something other than
+                permission keys or None.
+        """
+        if self.grants is None:
+            return None
+        return _keys(await _ask(self.grants, user, tenant_id), "MEMBER_GRANTS")
+
 
 @functools.cache
 def _members(config: TenancyConfig) -> _Members:
@@ -220,8 +241,8 @@ async def _listed(hook: MemberTenants, user: object) -> frozenset[str]:
     return frozenset(listed)
 
 
-def _keys(answer: object) -> frozenset[str] | None:
-    """``MEMBER_PERMISSIONS``'s ``answer`` as keys; None for one who is not a member.
+def _keys(answer: object, setting: str = "MEMBER_PERMISSIONS") -> frozenset[str] | None:
+    """``setting``'s ``answer`` as keys; None for one who is not a member.
 
     Raises:
         ImproperlyConfigured: It is not keys nor None (one string, a bool).
@@ -230,7 +251,7 @@ def _keys(answer: object) -> frozenset[str] | None:
         return None
     if isinstance(answer, str | bytes) or not isinstance(answer, Iterable):
         raise ImproperlyConfigured(
-            "TENANCY.MEMBER_PERMISSIONS returns the permission keys a member "
+            f"TENANCY.{setting} returns the permission keys a member "
             "holds, or None for one who is not a member; it returned a "
             f"{type(answer).__name__}."
         )
@@ -292,6 +313,18 @@ async def tenants_beyond(
     credentials of one who holds more than they do (ADR 0150). None when
     ``MEMBER_PERMISSIONS`` is set without ``MEMBER_TENANTS``: no one can be
     ruled out as a member. Empty without memberships to count.
+
+    A tenant ``actor`` does not belong to is beyond them, unless ``held``
+    holds ``TENANCY.ALL_TENANTS_PERMISSION`` and every key the user holds
+    there: staff granted that key everywhere change the members of any
+    tenant who hold no more there than they hold everywhere, as an
+    administrator assigned to every unit does. What the user holds in a
+    tenant is what ``MEMBER_PERMISSIONS`` answers now, with the keys
+    ``MEMBER_GRANTS`` names whatever the tenant's state. Among the tenants
+    ``actor`` does not belong to, one where ``MEMBER_PERMISSIONS`` (or
+    ``MEMBERSHIP``) does not answer for the user, a suspended membership
+    say, is beyond them, whatever ``MEMBER_GRANTS`` answers: its keys only
+    add to a known membership, never stand for a missing one (ADR 0177).
     """
     from domainkit.conf import settings
 
@@ -306,12 +339,26 @@ async def tenants_beyond(
     if not theirs:
         return frozenset()
     mine = await _listed(listing, actor)
-    beyond = set(theirs - mine)
     everywhere = frozenset(held)
-    for tenant_id in sorted(theirs & mine):
-        keys = await admitting.admit(user, tenant_id, fresh=True)
-        own = await admitting.admit(actor, tenant_id, fresh=True)
-        if keys is not None and (own is None or not keys <= everywhere | own):
+    reach = config.ALL_TENANTS_PERMISSION
+    across = reach is not None and reach in everywhere
+    beyond: set[str] = set()
+    for tenant_id in sorted(theirs):
+        shared = tenant_id in mine
+        now = (
+            await admitting.admit(user, tenant_id, fresh=True)
+            if shared or across
+            else None
+        )
+        if now is None and not shared:
+            beyond.add(tenant_id)  # Not in it, and no ceiling to compare: refused.
+            continue
+        grants = await admitting.granted(user, tenant_id)
+        if now is None and grants is None:
+            continue  # Listed in a tenant they share, but no member of it: as in 2.6.
+        keys = (now or frozenset()) | (grants or frozenset())
+        own = await admitting.admit(actor, tenant_id, fresh=True) if shared else None
+        if not keys <= everywhere | (own or frozenset()) or (shared and own is None):
             beyond.add(tenant_id)
     return frozenset(beyond)
 
@@ -708,3 +755,53 @@ def _path_tenants(dependant: Dependant) -> list[PathTenant]:
     for each in dependant.dependencies:
         found.extend(_path_tenants(each))
     return found
+
+
+def unsaid_throttles(app: FastAPI) -> list[str]:
+    """``tenancy.W001``: throttles counted per tenant without saying so.
+
+    A ``Throttle`` counts per tenant while one is served (``scoped_key``),
+    unless it says ``per_tenant=False``: a caller who belongs to ten
+    tenants gets ten times its rate. A route is served as a tenant when it
+    takes one from its path (``PathTenant``), or, under
+    ``TenantMiddleware``, unless it is served as none (``serve_no_tenant``,
+    a tenants' collection). Each throttle there that leaves ``per_tenant``
+    unsaid is named, so moving routes under a tenant never multiplies a
+    person's limit unseen; ``per_tenant=True`` keeps the count each
+    tenant's, on purpose (ADR 0177).
+    """
+    from domainkit.http.ratelimit import Throttle  # It imports more than tenancy.
+
+    everywhere = any(
+        isinstance(each.cls, type) and issubclass(each.cls, TenantMiddleware)
+        for each in app.user_middleware
+    )
+    found: list[str] = []
+    for route, dependant in served_routes(app.routes):
+        if dependant is None:
+            continue
+        calls = list(_calls(dependant))
+        if not any(isinstance(call, PathTenant) for call in calls) and (
+            not everywhere or serve_no_tenant in calls
+        ):
+            continue
+        throttles = dict.fromkeys(
+            call
+            for call in calls
+            if isinstance(call, Throttle) and not call.per_tenant_said
+        )
+        found.extend(
+            f"{route} is served as a tenant, and its Throttle({each.rate!r}) "
+            "counts per tenant: a caller who belongs to ten tenants gets ten "
+            "times the rate. Say per_tenant=False to count each caller once, "
+            "or per_tenant=True to keep each tenant's count."
+            for each in throttles
+        )
+    return found
+
+
+def _calls(dependant: Dependant) -> Iterator[object]:
+    """What ``dependant`` and its dependencies call, at any depth."""
+    yield dependant.call
+    for each in dependant.dependencies:
+        yield from _calls(each)
