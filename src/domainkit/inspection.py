@@ -104,6 +104,7 @@ import base64
 import codecs
 import contextlib
 import io
+import itertools
 import json
 import logging
 import math
@@ -1593,6 +1594,9 @@ class _Package:
     reached: set[str] = field(default_factory=set)
     """The parts a relationship names, which a reader may parse as XML: a header,
     a footnote, whatever their content type, or their relationship's, says."""
+    work: int = 0
+    """What reading SVGs did since it last looked at the clock: values, matches,
+    escapes, and each KiB scanned."""
 
     def check(self, file: IO[bytes], kind: Kind, *, nested: bool) -> None:
         """Check the package ``file`` holds as a ``kind`` document.
@@ -1986,9 +1990,13 @@ class _Package:
         are dropped once read) names nothing else (``url()``, ``src()``),
         and imports nothing (``@import``, ``image()``, ``image-set()``).
 
+        Each value, match and escape read, and each KiB scanned, counts
+        towards a look at the clock (``_spend``): a few elements of large
+        values are not read past the deadline.
+
         Raises:
             FileRefused: It loads from elsewhere, or a ``data:`` URL holds
-                an SVG that does.
+                an SVG that does; or the time ran out.
         """
         for name, value in element.attrib.items():
             if str(name).rpartition("}")[2] in SVG_LINKS:
@@ -2003,7 +2011,8 @@ class _Package:
                     self._check_reference(value, depth)
         if element.text:
             self._check_css(element.text, depth)
-        for each in (*element, *element.itersiblings(preceding=True)):
+        for each in itertools.chain(element, element.itersiblings(preceding=True)):
+            self._spend()
             if each.tail:
                 self._check_css(each.tail, depth)
 
@@ -2020,13 +2029,14 @@ class _Package:
             FileRefused: It names anything else: a file, a share, a page,
                 another scheme; or a ``data:`` URL readers may read otherwise.
         """
+        self._spend(len(value))
         target = value.strip(" \t\r\n\f")
         if not target or target.startswith("#"):
             return
         scheme, colon, rest = target.partition(":")
         if not colon or scheme.lower() != "data":
             raise FileRefused(EXTERNAL)
-        for data in _data_urls(rest):
+        for data in _data_urls(rest, self._spend):
             self._check_svg_data(data, depth + 1)
 
     def _check_css(self, text: str, depth: int) -> None:
@@ -2039,15 +2049,29 @@ class _Package:
             FileRefused: It imports a style sheet, names an image as a
                 string, or names something else in ``url()`` or ``src()``.
         """
+        self._spend(len(text))
         if CSS_HINTS.search(text) is None:
             return
-        css = _css_unescaped(text) if "\\" in text or "/*" in text else text
+        css = (
+            _css_unescaped(text, self._spend) if "\\" in text or "/*" in text else text
+        )
         if CSS_IMPORT.search(css) or CSS_IMAGES.search(css):
             raise FileRefused(EXTERNAL)
         for found in CSS_URL.finditer(css):
             self._check_reference(
                 next(each for each in found.groups() if each is not None), depth
             )
+
+    def _spend(self, size: int = 0) -> None:
+        """Count a value read, and ``size`` characters scanned; now and then, the clock.
+
+        Raises:
+            FileRefused: The time ran out.
+        """
+        self.work += 1 + size // 1024
+        if self.work >= DEADLINE_EVERY:
+            self.work = 0
+            self.budget.clock.check()
 
     def _check_svg_data(self, data: bytes, depth: int) -> None:
         """Check the SVG a ``data:`` URL of an SVG holds, if it holds one.
@@ -2105,7 +2129,7 @@ def _gzip_start(data: bytes) -> int | None:
     return at if at <= len(data) else None
 
 
-def _data_urls(url: str) -> list[bytes]:
+def _data_urls(url: str, spend: Callable[[int], None]) -> list[bytes]:
     """What the ``data:`` URL ``url`` (past ``data:``) holds, as each reader reads it.
 
     A browser reads its media type and parameters to the first comma, and
@@ -2114,7 +2138,7 @@ def _data_urls(url: str) -> list[bytes]:
     the first comma is, and decodes base64 when what follows starts with
     ``base64``, from past the spaces and commas after it, leaving out what
     base64 does not write (``image/png;base64x,ICAg...`` decodes from the
-    ``x``). Each reading is returned once.
+    ``x``). Each reading is returned once; ``spend`` counts what is unquoted.
 
     Raises:
         FileRefused: Readers may read it otherwise: ``base64`` named but
@@ -2127,7 +2151,7 @@ def _data_urls(url: str) -> list[bytes]:
     if any("base64" in each for each in named[: -1 if encoded else None]):
         raise FileRefused(EXTERNAL)
     if not encoded:
-        found = [unquote_to_bytes(payload)] if comma else []
+        found = [_unquoted(payload, spend)] if comma else []
     elif BASE64_DATA.fullmatch(payload) is None:
         raise FileRefused(EXTERNAL)
     else:
@@ -2142,6 +2166,25 @@ def _data_urls(url: str) -> list[bytes]:
         if not encoded or letters != BASE64_OTHERS.sub("", payload)[: len(letters)]:
             found.append(_base64(letters))
     return found
+
+
+def _unquoted(text: str, spend: Callable[[int], None]) -> bytes:
+    """``text`` unquoted (``%3C`` is ``<``), ``CHUNK`` characters at a time.
+
+    ``unquote_to_bytes`` loops in Python over each ``%``: each chunk is
+    counted by ``spend``, ended before a ``%`` its last two characters cut.
+    """
+    out = io.BytesIO()
+    at = 0
+    while at < len(text):
+        end = min(at + CHUNK, len(text))
+        cut = text.rfind("%", max(at + 1, end - 2), end)
+        if cut != -1 and end < len(text):
+            end = cut
+        spend(end - at)
+        out.write(unquote_to_bytes(text[at:end]))
+        at = end
+    return out.getvalue()
 
 
 def _base64(letters: str) -> bytes:
@@ -2170,16 +2213,18 @@ def _holds_svg(data: bytes) -> bool:
         FileRefused: It is not XML in an encoding a package may use.
     """
     encoding = _xml_encoding(data)
-    if b"<svg" in data or "<svg".encode(encoding) in data:
-        return True
-    prefixed = ":svg".encode(encoding)
-    ends = tuple(each.encode(encoding) for each in " \t\r\n/>")
-    at = data.find(prefixed)
-    while at >= 0:
-        if data.startswith(ends, at + len(prefixed)):
-            return True
-        at = data.find(prefixed, at + 1)
-    return False
+    return (
+        b"<svg" in data
+        or "<svg".encode(encoding) in data
+        or _prefixed_svg(encoding).search(data) is not None
+    )
+
+
+@cache
+def _prefixed_svg(encoding: str) -> re.Pattern[bytes]:
+    """``:svg`` then a space or a tag's end, in ``encoding``: an element ``s:svg``."""
+    ends = b"|".join(re.escape(each.encode(encoding)) for each in " \t\r\n/>")
+    return re.compile(re.escape(":svg".encode(encoding)) + b"(?:" + ends + b")")
 
 
 def _check_stylesheets(data: bytes) -> None:
@@ -2197,10 +2242,14 @@ def _begins_as_xml(data: bytes) -> bool:
     return data.startswith(XML_MARKS) or XML_START.match(data) is not None
 
 
-def _css_unescaped(text: str) -> str:
-    """The CSS ``text`` with its comments left out and its escapes undone."""
+def _css_unescaped(text: str, spend: Callable[[], None]) -> str:
+    """The CSS ``text`` with its comments left out and its escapes undone.
+
+    ``spend`` counts each escape, undone in Python.
+    """
 
     def unescaped(found: re.Match[str]) -> str:
+        spend()
         if found[1] is None:
             return "" if found[2] in {"\r\n", "\r", "\n", "\f"} else found[2]
         point = int(found[1], 16)

@@ -11,6 +11,8 @@ to refuse (ADR 0175, amended).
 import base64
 import gzip
 import io
+import random
+import time
 import urllib.parse
 import zlib
 from typing import Final
@@ -48,10 +50,10 @@ PNG: Final = (
 """A PNG of one pixel, in base64."""
 
 
-def verdict(data: bytes, kind: str = "docx") -> str:
-    """What ``OfficeCheck(kind)`` says of ``data``: ``ok``, the refusal, or its code."""
+def verdict(data: bytes, kind: str = "docx", check: OfficeCheck | None = None) -> str:
+    """What ``check`` (``OfficeCheck(kind)`` if None) says of ``data``."""
     try:
-        OfficeCheck(kind)(io.BytesIO(data))  # type: ignore[arg-type]
+        (check or OfficeCheck(kind))(io.BytesIO(data))  # type: ignore[arg-type]
     except FileRefused as refused:
         return refused.message if refused.code == "unsafe_file" else refused.code
     except NotOfType:
@@ -534,6 +536,35 @@ def test_an_svg_inflating_past_the_budget_is_refused() -> None:
     bomb = gzip.compress(svg("<!--" + "x" * 5_000_000 + "-->").encode(), 9)
 
     assert verdict(pictured(bomb, name="media/a.svgz")) == COMPLEX
+
+
+def test_an_expensive_svg_is_refused_within_the_deadline() -> None:
+    """Each value, match and escape of an SVG counts towards a look at the clock.
+
+    Four elements, each a style of 100,000 ``url(data:,%3C...)``, 7.7 MB
+    deflating to 1.5 MB: the clock was read every 1,024 elements, and the
+    check ran three seconds past a deadline of 0.3.
+    """
+    numbers = random.Random(3)  # noqa: S311 - a style's bulk, not a secret.
+    rects = "".join(
+        '<rect style="'
+        + "".join(f"url(data:,%3C{numbers.randrange(10**6)})" for _ in range(100_000))
+        + '"/>'
+        for _ in range(4)
+    )
+    data = pictured(svg(rects))
+    started = time.monotonic()
+
+    assert verdict(data, check=OfficeCheck("docx", max_seconds=0.2)) == COMPLEX
+    assert time.monotonic() - started < 1.5
+
+
+def test_a_long_data_url_is_unquoted_whole() -> None:
+    """In chunks, never cut inside a ``%3C``: the SVG it holds is read as written."""
+    held = (" " * 21_800 + FETCHING).encode()
+    url = "data:," + "".join(f"%{each:02X}" for each in held)
+
+    assert verdict(pictured(svg(f'<image href="{url}"/>'))) == EXTERNAL
 
 
 def test_svgs_nested_too_deep_are_refused() -> None:
