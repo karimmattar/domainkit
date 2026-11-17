@@ -1396,6 +1396,16 @@ async def run_checks(
             _running -= 1
 
 
+def _child_path() -> list[str]:
+    """``sys.path`` for a check's process, as text.
+
+    A ``Path`` on ``sys.path``, which Python allows, made every checked
+    upload a 500; an entry that is no path at all, which the import system
+    skips, is left out.
+    """
+    return [os.fspath(each) for each in sys.path if isinstance(each, str | os.PathLike)]
+
+
 async def _in_a_process(
     checks: list[Callable[[IO[bytes]], None] | None],
     file: IO[bytes],
@@ -1406,8 +1416,7 @@ async def _in_a_process(
 
     The process has exited when this returns or raises, cancelled or not.
     """
-    path = [os.fspath(each) for each in sys.path if isinstance(each, str | os.PathLike)]
-    config = {"path": path, "memory": memory, "seconds": seconds}
+    config = {"path": _child_path(), "memory": memory, "seconds": seconds}
     request = pickle.dumps(checks)
     process = await asyncio.create_subprocess_exec(
         sys.executable,

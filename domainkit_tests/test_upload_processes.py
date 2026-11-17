@@ -288,12 +288,29 @@ async def test_a_path_on_sys_path_is_handed_as_text(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A ``Path`` on ``sys.path`` made every checked upload a 500."""
-    monkeypatch.setattr(sys, "path", [*sys.path, tmp_path, 7])
+    monkeypatch.setattr(sys, "path", [*sys.path, tmp_path])
 
     received = await receive_upload(b"x", types=[typed(hooks.chatty)], max_size=10)
     received.close()
 
     assert received.kind.inspect is hooks.chatty
+
+
+def test_what_is_no_path_on_sys_path_is_left_out(tmp_path: Path) -> None:
+    """The import system skips an entry that is no path; so does a check's process.
+
+    ``sys.path`` holds it only for the call. Coverage reads ``sys.path``
+    each time it meets a file it has not seen, and fails on such an entry:
+    an upload checked meanwhile, as this test did once, failed with it.
+    """
+    original = sys.path
+    sys.path = ["/first", tmp_path, 7]  # type: ignore[list-item]  # Python allows it.
+    try:
+        path = inspection._child_path()
+    finally:
+        sys.path = original
+
+    assert path == ["/first", str(tmp_path)]
 
 
 class Watched(io.BytesIO):
