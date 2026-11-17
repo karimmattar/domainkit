@@ -356,12 +356,13 @@ def test_a_cut_reason_or_name_is_checked_as_the_phone_shows_it(
 def test_a_form_saved_whole_leaves_a_field_it_does_not_change_off_the_screen(
     client: TestClient, frozen: FrozenClock
 ) -> None:
-    """A text sent as it is stored changes nothing: not shown, nor checked.
+    """A text sent as it is stored changes nothing: never checked, and not shown.
 
-    So a stored link never reaches the phone through a change that only
-    sends it again, and a change that sets one beside it is refused. The
-    act binds every field sent, as in 2.7, and an address sent unchanged,
-    an identifier, still shows (review of ADR 0180).
+    With ``TYPED_LINKS`` refused, a stored link never reaches the phone
+    through a change that only sends it again, and a change that sets one
+    beside it is refused. ``"shown"`` keeps 2.7's screen, every field
+    sent. The act binds every field sent, as in 2.7, and an address sent
+    unchanged, an identifier, still shows (review of ADR 0180).
     """
     root = Staff(client, frozen, "root", superuser=True)
     stored_name = "call +1 555 0100 123"
@@ -370,7 +371,9 @@ def test_a_form_saved_whole_leaves_a_field_it_does_not_change_off_the_screen(
     )
     patch = f"/users/{target}/authorization/patch"
     user_line = ("User", f"target ({end_of(target)})")
+    whole_form = {"fields": {"first_name": stored_name, "last_name": "Jones"}}
 
+    as_in_2_7 = root.ask(patch, whole_form)
     with override_settings(AUTH=REFUSED):
         alone = root.ask(patch, {"fields": {"first_name": stored_name}})
         saved = root.ask(
@@ -385,6 +388,11 @@ def test_a_form_saved_whole_leaves_a_field_it_does_not_change_off_the_screen(
         )
         address = root.ask(patch, {"fields": {"email": "t@example.com"}})
 
+    assert pairs(as_in_2_7) == [
+        user_line,
+        ("First name", stored_name),
+        ("Last name", "Jones"),
+    ]
     assert pairs(alone) == [user_line]
     assert pairs(saved) == [user_line, ("Last name", "Jones")]
     problem(beside, 422, "link_not_shown")

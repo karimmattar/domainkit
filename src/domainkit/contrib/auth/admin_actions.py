@@ -209,8 +209,8 @@ async def show(act: AdminAct) -> Shown:
     the first lines kept for what comes first. What staff typed is
     ``Typed`` (since 2.8): the reason, a group's new name, and each text a
     change sets on a user but the fields that identify them; such a text
-    sent as it is stored (a form saved whole) changes nothing, and is not
-    shown. Then the
+    sent as it is stored (a form saved whole) changes nothing: it is not
+    typed, and with ``TYPED_LINKS`` refused not shown. Then the
     ``on_admin_screen`` checks of a change to a user run, or the
     ``on_admin_group_screen`` checks of a change to a stored group (since
     2.7): approvals refuses there a change it would hold that its
@@ -256,13 +256,15 @@ async def show(act: AdminAct) -> Shown:
         details.append((gettext(PASSWORD), state))
     taken = {label for label, _ in details}
     identifiers = _identifiers()
+    refused = auth_settings().AUTHORIZATIONS.TYPED_LINKS == "refused"
     for name, value in sorted(values.items()):
         label = field_label(name)
         label = name if label in taken else label  # A field "group" beside "Group".
         if name not in identifiers and isinstance(value, str):
-            if user is not None and jsonable(getattr(user, name, None)) == value:
+            if user is None or jsonable(getattr(user, name, None)) != value:
+                value = Typed(value)
+            elif refused:
                 continue  # Sent as stored (a form saved whole): it changes nothing.
-            value = Typed(value)
         details.append((label, value))
         taken.add(label)
     whole = auth_settings().AUTHORIZATIONS.WHOLE
