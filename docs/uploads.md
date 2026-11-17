@@ -495,7 +495,21 @@ A gateway of the infrastructure layer may call `save_upload` with the
 bytes its route hands it: the [layer rules](reference/settings.md#layer-rules)
 allow `domainkit.http.uploads` there since 2.5. They keep Starlette's
 `UploadFile` and `domainkit.http.errors` out, so a gateway raises domain
-errors, which the HTTP layer maps.
+errors, which the HTTP layer maps. A gateway that takes the route's file
+as it is, without reading it into memory first, types it as `Upload`,
+from the same module: a form's file, bytes, or a stream, as `save_upload`
+and `receive_upload` take them (since 2.7). It may catch `UploadRefused`
+from there too.
+
+```python
+# billing/infrastructure/files.py
+from domainkit.http.uploads import CHECKED_PDF, Upload, save_upload
+
+
+class ContractFiles:
+    async def keep(self, upload: Upload) -> StoredUpload:
+        return await save_upload(upload, types=[CHECKED_PDF], max_size=10_000_000)
+```
 
 ### Body limits per route
 

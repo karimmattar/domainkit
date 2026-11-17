@@ -52,7 +52,7 @@ from domainkit.db.encrypted import EncryptedType
 from domainkit.ddd import PermissionDenied
 from domainkit.ddd.query import And, F
 from domainkit.ddd.query import Selection as Listing
-from domainkit.http import Pagination, error_responses
+from domainkit.http import PageRequest, Pagination, error_responses
 from domainkit.http.access import BasePermission, IsUnscoped, Principal, Require
 from domainkit.http.errors import APIError
 from domainkit.resources import HasModelPermission as HasModelPermission
@@ -299,6 +299,41 @@ class UserPage(BaseModel):
     next_cursor: str | None
 
 
+class UserNameOut(BaseModel):
+    """A user as a page names them: who they are, not what they hold."""
+
+    id: UUID
+    username: str
+    name: str | None
+    """The full name, where the user model has one (``get_full_name``)."""
+    identifiers: dict[str, JsonValue]
+    """The fields of ``AUTH.IDENTIFIERS`` among those ``/users`` shows, by name."""
+
+    @classmethod
+    def of(cls, user: AbstractBaseUser) -> Self:
+        """Name ``user``."""
+        model = type(user)
+        shown = model.admin_fields() - HIDDEN_FIELDS
+        full_name = getattr(user, "get_full_name", None)
+        return cls(
+            id=user.id,
+            username=user.get_username(),
+            name=(full_name() or None) if callable(full_name) else None,
+            identifiers={
+                name: jsonable(getattr(user, name))
+                for name in identifier_fields(model)
+                if name in shown
+            },
+        )
+
+
+class UserNamePage(BaseModel):
+    """Users by name, and the cursor of the next page."""
+
+    items: list[UserNameOut]
+    next_cursor: str | None
+
+
 class AdminUserIn(BaseModel):
     """A new user: without a password, it cannot log in with one."""
 
@@ -492,6 +527,28 @@ users = ResourceRouter(
 )
 """``GET /users`` (``search`` matches part of an identifier; ``id`` names
 users) and ``/users/{id}``."""
+
+
+@router.get("/users/names", responses=_errors(*COMMON))
+async def list_user_names(
+    actor: Annotated[AnyUser, _users("view")],
+    listing: Annotated[Listing, Depends(user_listing)],
+    page: Annotated[PageRequest, Depends(pages)],
+) -> UserNamePage:
+    """Users by name: ``GET /users``' page, without what each user holds.
+
+    ``search`` and ``id`` keep the users they name, in the same order, so a
+    cursor of either list reads the next page of both. Each user is their
+    id, ``username``, full name, and identifiers: a page of rows that refer
+    to users names them without their groups and permissions (user report
+    D2).
+    """
+    async with AuthUnitOfWork() as uow:
+        found = await page.fetch(uow.users, listing)
+    out = page.respond(found, [UserNameOut.of(user) for user in found.items], listing)
+    return UserNamePage(items=out.items, next_cursor=out.next_cursor)
+
+
 groups = ResourceRouter(
     "/groups",
     model=Group,

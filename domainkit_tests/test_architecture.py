@@ -18,6 +18,7 @@ from domainkit.architecture import (
 from domainkit.conf import override_settings
 from domainkit.conf.global_settings import ArchitectureConfig, Settings
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.http import uploads
 from domainkit_tests.conftest import MakePackage
 
 
@@ -567,6 +568,43 @@ def test_a_file_gateway_may_check_and_store_uploads(
         ("application.commands", "domainkit.http.uploads"),
         ("application.commands", "domainkit.http.uploads.save_upload"),
     }
+
+
+def test_a_file_gateway_takes_its_routes_file_as_an_upload(
+    make_package: MakePackage,
+) -> None:
+    """``Upload`` names the file a route hands a gateway, without Starlette.
+
+    The gateway takes the route's ``UploadFile`` as it is, typed by
+    ``domainkit.http.uploads.Upload``, which ``save_upload`` and
+    ``receive_upload`` take, and may catch ``UploadRefused`` from there:
+    it needs no layer of its own for Starlette's types (user report D2).
+    The domain layer still imports none of it.
+    """
+    make_package(
+        "arch.forms",
+        {
+            "infrastructure/files.py": """
+                from domainkit.http.uploads import (
+                    CHECKED_PDF,
+                    Upload,
+                    UploadRefused,
+                    receive_upload,
+                )
+            """,
+            "domain/model.py": "from domainkit.http.uploads import Upload\n",
+        },
+    )
+    found = {
+        (v.module.removeprefix("arch.forms."), v.imported)
+        for v in check_domains(["arch.forms"], LayerRules())
+    }
+
+    assert found == {
+        ("domain.model", "domainkit.http.uploads"),
+        ("domain.model", "domainkit.http.uploads.Upload"),
+    }
+    assert "Upload" in uploads.__all__
 
 
 def test_a_project_that_forbids_the_client_by_name_forbids_it(gateway: str) -> None:

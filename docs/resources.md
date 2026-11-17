@@ -947,8 +947,10 @@ members = ResourceRouter("/members", ..., schema=MemberOut, present_many=members
   has the request to decide.
 
 A client that keeps the two apart asks the other domain once per page
-instead, by id: the admin API's `GET /users` takes `id`, repeated
-([the admin API](auth/routes.md#the-admin-api)).
+instead, by id: the admin API's `GET /users` takes `id`, repeated, and
+`GET /users/names` answers the same users by name alone, without their
+groups and permissions (since 2.7,
+[the admin API](auth/routes.md#the-admin-api)).
 
 ### Partial changes
 
