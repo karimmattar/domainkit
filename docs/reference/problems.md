@@ -192,6 +192,7 @@ unique constraint may name its own code
 | `limit_exceeded` | 422 | `LimitExceeded` (contrib.limits.exceptions): A movement over what a limit allows in its window: an amount, or a count. |
 | `limit_not_found` | 404 | `LimitNotFound` (contrib.limits.exceptions): No limit has that id. |
 | `limit_taken` | 409 | `LimitTaken` (contrib.limits.exceptions): Another limit has the same code, kind, direction, currency, and subject. |
+| `link_not_shown` | 422 | `LinkNotShown` (contrib.auth.screens): Text typed for the act holds a link, an email address, or a number to call (422). |
 | `lock_not_available` | 409 | `LockNotAvailable` (ddd.repository): Another transaction holds the row's lock, and the caller would not wait. |
 | `maker_cannot_decide` | 403 | `MakerCannotDecide` (contrib.approvals.exceptions): Whoever submitted a request may not approve or reject it. |
 | `maker_not_allowed` | 403 | `MakerNotAllowed` (contrib.approvals.exceptions): Whoever submitted the command may not make it (any more). |

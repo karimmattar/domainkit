@@ -36,6 +36,29 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.7 to 2.8
+
+2.8 follows up 2.7. Each item of this list says what a project that
+relied on 2.7's behaviour changes, and what to run.
+
+- **With `WHOLE` on, a rejection's or a cancellation's reason fits a
+  line.** The reject and cancel twins answer `422 too_much_to_show` for a
+  reason longer than 64 characters as a screen shows it (a new line
+  counts two), as the admin API's twin does for an impersonation's
+  reason. Clients send a shorter one. Off, the reason is cut on the
+  phone, as in 2.7
+  ([ADR 0180](adr/0180-refuse-links-a-person-typed-for-a-screen-and-a-reason-past-a-line.md)).
+- **To refuse links in what people type**, set
+  `AUTH = {"AUTHORIZATIONS": {"TYPED_LINKS": "refused"}}`. An
+  impersonation's reason, a group's new name, a user's names, and a
+  rejection's or a cancellation's reason that hold a link, an email
+  address, or a number to call are then refused at their twins (`422
+  link_not_shown`), and a group's new name at the admin API too. Mark
+  what a guard's `show` takes from its maker `Typed`; a project's own
+  checks of such text register on `on_typed_text`, in place of twin
+  dependencies that read the body again ([Text a person
+  typed](auth/actions.md#text-a-person-typed)).
+
 ## 2.6 to 2.7
 
 2.7 follows up 2.6. Each item of this list says what a project that

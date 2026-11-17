@@ -9,6 +9,37 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `AUTH["AUTHORIZATIONS"]["TYPED_LINKS"]` (`"shown"`): set to `"refused"`,
+  the framework's acts refuse, when asked for, text a person typed that
+  holds a link, an email address, or a number to call (`422
+  link_not_shown`): an impersonation's reason, a group's new name, the
+  text fields a change sets on a user but those that identify them, a
+  rejection's or a cancellation's reason, and what a guard's `show` marks
+  `Typed`. A held impersonation whose reason holds one is refused when it
+  is submitted, and approving a request whose typed text holds one is
+  refused; the admin API refuses a group named so, with or without its
+  act; rejecting and cancelling check their own reason only ([Text a
+  person typed](docs/auth/actions.md#text-a-person-typed), ADR 0180) (user
+  report A17).
+- `domainkit.contrib.auth.screens`: `Typed` marks text a person typed for
+  `laid_out` to check; `holds_link(text)` says whether text holds a link,
+  an address, or a number, read as a person reads it (full-width and
+  look-alike dots, characters drawn as nothing, `example[.]com`, letters
+  of other scripts that read as Latin); `check_typed(text)` checks text
+  where it is typed; a project's own checks register on `on_typed_text`
+  (user report A17).
+
+### Security
+
+- With `AUTH["AUTHORIZATIONS"]["WHOLE"]` on, a rejection's or a
+  cancellation's reason longer than a line is refused at its twin (`422
+  too_much_to_show`), as an impersonation's reason is: the phone cut it,
+  though the maker reads it whole. Off, it is cut, as in 2.7
+  ([upgrading.md](docs/upgrading.md#27-to-28), ADR 0180) (user report
+  A17).
+
 ## [2.7.0] - 2026-11-17
 
 2.7 answers thirteen of a project's fourteen notes on 2.6 (the last,
