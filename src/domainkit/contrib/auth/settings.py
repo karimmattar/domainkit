@@ -316,6 +316,11 @@ class AuthorizationsSettings(BaseModel):
     """What confirming one must prove, unless its ``Action`` names others: a
     code of the authenticator app (``otp``, which a bound device's key and a
     passkey stand for), the password (``pwd``), or the phone (``phone``)."""
+    WHOLE: bool = False
+    """The framework's acts show what they do whole, or are refused when
+    asked for (``422 too_much_to_show``, ADR 0173): ``auth.admin_change``,
+    ``approvals.submit``, and ``approvals.approve``, and a request that
+    could not be approved so. Off: what does not fit is cut and counted."""
 
     _check_methods = field_validator("METHODS")(with_a_second_factor)
 

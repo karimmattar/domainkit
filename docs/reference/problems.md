@@ -263,6 +263,7 @@ unique constraint may name its own code
 | `too_many_keys` | 409 | `TooManyKeys` (contrib.devices.exceptions): The user has `MAX_PASSKEYS` (or `MAX_DEVICES`) already. |
 | `too_many_phones` | 409 | `TooManyPhones` (contrib.phones.exceptions): The user holds `PHONES.MAX_PHONES` numbers already. |
 | `too_many_tokens` | 409 | contrib.auth.personal_tokens: the user holds the most personal tokens allowed. |
+| `too_much_to_show` | 422 | `TooMuchToShow` (contrib.auth.screens): The act cannot be shown whole on one screen: make it in smaller steps (422). |
 | `transaction_closed` | 409 | `TransactionClosed` (contrib.ciba.exceptions): The transaction was confirmed or used already, or expired. |
 | `transaction_confirmed` | 409 | contrib.auth.sca: This transaction was confirmed already. |
 | `transaction_expired` | 409 | contrib.auth.sca: This transaction can no longer be confirmed; start it again. |

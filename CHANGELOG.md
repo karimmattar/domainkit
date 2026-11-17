@@ -9,6 +9,34 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `AUTH["AUTHORIZATIONS"]["WHOLE"]` (off): the framework's acts show what
+  they do whole on a phone's screen, or are refused when asked for (`422
+  too_much_to_show`): `auth.admin_change`, `approvals.submit`, and
+  `approvals.approve`, never for the name of the user or group they are
+  on. With `APPROVE_ACTION` on, a change of the admin API that approvals
+  would hold is refused at its twin when the approver's screen could not
+  show it whole (auth's new `on_admin_screen` hook), and a request whose
+  approval could not be shown whole is refused when it is submitted, so
+  none waits for an approval nobody could confirm. Rejecting and
+  cancelling are never refused for what they show ([What a screen shows](docs/auth/actions.md#what-a-screen-shows),
+  ADR 0173) (user reports A22, A23).
+- `domainkit.contrib.auth.screens`: `laid_out(details)` lays out an act's
+  labelled values on a screen's six lines, a list over as many lines as it
+  takes ("Adds", "Adds (2)"), so that two different texts never show
+  alike (a backslash doubled, a text item with a comma quoted), and
+  refuses what does not fit whole (`TooMuchToShow`, `422
+  too_much_to_show`), or with `whole=False` cuts it and counts it.
+  `named(name, id)` shows what an act is on by its name, cut to fit, and
+  the end of its id (user report A22).
+- `guard(show=...)` (and `Guard.show`): what a person deciding a request
+  is shown of its command, in place of its arguments by name, a plain or
+  `async` function that may read the database. The holds of users
+  (`auth.grant_superuser` and those `ADMIN_APPROVALS` names) show the user
+  by name and id, read when shown and never stored with the request, and
+  an impersonation's "Stated reason" (user report A23).
+
 ### Changed
 
 - The `kafka` extra accepts aiokafka up to 0.15 (`>=0.12.0,<0.16.0`),
@@ -19,6 +47,25 @@ and a status.
   Poetry 2.4): 2.2.1 wrote a crafted wheel's files outside its target
   (CVE-2026-34591), and its dulwich had nine advisories. CI audits the
   build's hash-pinned tools too.
+- `auth.admin_change`'s screen names flags and fields as a person reads
+  them ("Superuser: yes", "Email", "Display name", not `is_superuser:
+  true`), shows the user or group with its id, and puts a list of groups
+  or permissions over as many lines as it takes ("Adds", "Adds (2)")
+  before it counts what does not fit. An item that holds a comma is
+  quoted, and a backslash is doubled ([upgrading.md](docs/upgrading.md#26-to-27))
+  (user report A22).
+
+### Security
+
+- Approvals' screens no longer cut a list with no count. A grant of 30
+  permission keys showed one line of JSON cut after three keys, and a
+  user by id: a list now goes over the lines left, item by item, whatever
+  its items (an object or a list as compact JSON), and its last line says
+  how many more; the user a held change of the admin API is about shows
+  by name and id. A new line and a backslash followed by `n` no longer
+  show alike. With
+  `AUTH["AUTHORIZATIONS"]["WHOLE"]` on, such a request is refused rather
+  than counted (ADR 0173) (user report A23).
 
 ## [2.6.0] - 2026-11-17
 
