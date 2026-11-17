@@ -67,7 +67,7 @@ from domainkit.resources.access import ModelLike
 from domainkit.tenancy import tenants_beyond
 from domainkit.utils.decimals import jsonable
 
-from ._http import no_store, password_throttle
+from ._http import daily_window, no_store
 from .access import IsAdminUser, IsSuperuser, StepUp, impersonated
 from .actions import (
     ActionAuthorizationOut,
@@ -105,6 +105,7 @@ from .gates import (
 from .models import AbstractBaseUser, AnyUser, Group, GroupId, Permission, UserId
 from .repositories import GroupRepository, user_search
 from .settings import auth_settings, identifier_fields
+from .throttling import attempt
 from .tokens import LoginMethod, LoginOrigin, logging_in
 from .uow import AuthUnitOfWork
 from .users import FieldValue, get_user_model, get_user_table, typed_fields
@@ -699,6 +700,11 @@ async def ask_to_update_user(
     return await _ask(request, response, _user_act(user, change))
 
 
+def _returning_superuser(user: AbstractBaseUser, body: AdminUserPatch) -> bool:
+    """Whether ``body`` makes an inactive superuser active, and leaves them one."""
+    return user.is_superuser and not user.is_active and body.is_active is True
+
+
 def _demoting(user: AbstractBaseUser, body: AdminUserPatch) -> bool:
     """Whether ``body`` takes an active superuser's status or activity away."""
     return (
@@ -725,6 +731,8 @@ async def _updating(
         _superusers_only(actor, "Only superusers may make or unmake superusers.")
         if body.is_superuser:
             _approval_needed()
+    elif _returning_superuser(user, body):
+        _approval_needed()  # A superuser made active again is one made (A21).
     change = AdminChange(
         "update", frozenset({*fields, *flags}), values={**fields, **flags}
     )
@@ -801,16 +809,15 @@ async def set_password(
     With ``AUTH.PASSWORD_CHANGE_ON_FIRST_USE``, another user's password set
     here logs in only to be changed (PCI DSS v4.0 8.3.5). With
     ``AUTH.PASSWORD_HISTORY``, a password among the user's last ones is
-    refused before the ``on_admin_change`` checks, counted as a wrong
-    password of the user's, and spends the change's authorization (since
-    2.7).
+    refused (``422 invalid_password``); too many of them from one staff
+    member for one user answer ``429 rate_limited`` for a while.
     """
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
         change = await _setting_password(actor, user, body)
 
         async def not_reused(made: "AdminAct | None") -> None:
-            await _not_reused(request, uow, user, body, made)
+            await _not_reused(request, uow, actor, user, body, made)
 
         await _admin_change(
             actor,
@@ -818,7 +825,7 @@ async def set_password(
             change,
             uow,
             lambda: _password_act(user, body),
-            first=not_reused,
+            last=not_reused,
         )
         await uow.users.set_password(
             user,
@@ -867,27 +874,44 @@ async def _setting_password(
 async def _not_reused(
     request: Request,
     uow: AuthUnitOfWork,
+    actor: AnyUser,
     user: AbstractBaseUser,
     body: AdminPasswordIn,
     made: "AdminAct | None",
 ) -> None:
     """Refuse a password among ``user``'s last ones; the refusal costs a try.
 
-    A reuse refused is a guess at the user's old passwords: it counts as a
-    wrong password of theirs (``password_throttle``: ``AUTH.LOGIN_RATE``
-    and ``ACCOUNT_LOGIN_RATE``), and spends the change's authorization
-    ``made``, committed before the refusal, so one confirmation is one
-    guess (user report A17). Checked before the ``on_admin_change``
-    checks, so no approval is spent on a password that will be refused
-    (user report A19). A password not reused gives its count back.
+    Compared only when the change is about to be made (``last_check``):
+    after the project's checks, and, where approvals hold setting a
+    password, once an approval is found and before it is spent. While a
+    check refuses or a request waits, nothing is compared, and every
+    password gets the same answer (user reports A17, A19).
+
+    A reuse is a guess at the user's old passwords. It counts against the
+    staff member's guesses at this user's (``AUTH.LOGIN_RATE`` and
+    ``ACCOUNT_LOGIN_RATE``, apart from the user's own counts of wrong
+    passwords: neither holds the other back), and spends the change's
+    authorization ``made``, committed before the refusal, so one
+    confirmation is one guess. A password not reused gives its count back.
 
     Raises:
         InvalidPassword: It is one of the user's last ``PASSWORD_HISTORY``.
-        APIError: 429 ``rate_limited``: too many wrong passwords of the user.
+        APIError: 429 ``rate_limited``: the staff member sent too many of
+            the user's old passwords.
     """
-    if body.password is None or not auth_settings().PASSWORD_HISTORY:
+    config = auth_settings()
+    if body.password is None or not config.PASSWORD_HISTORY:
         return
-    counted = await password_throttle(request, user)
+    key = f"admin-password:staff:{actor.id}:user:{user.id}"
+    counted = await attempt(
+        request,
+        [
+            (key, config.LOGIN_RATE),
+            (f"{key}:daily", daily_window(config.ACCOUNT_LOGIN_RATE)),
+        ],
+        action="auth.admin_change",
+        detail=REUSES_THROTTLED,
+    )
     try:
         await uow.passwords.refuse_reuse(user.id, body.password, priority=True)
     except InvalidPassword:
@@ -896,6 +920,12 @@ async def _not_reused(
             await uow.commit()
         raise
     await counted.succeeded()
+
+
+REUSES_THROTTLED: Final = (
+    "Too many of this user's old passwords were sent; try again later."
+)
+"""The detail of a staff member's password changes refused past the rate."""
 
 
 def _password_act(user: AbstractBaseUser, body: AdminPasswordIn) -> "AdminAct":
@@ -1098,15 +1128,21 @@ async def _grouping(
     added = [group for group in wanted if group not in user.groups]
     removed = [group for group in user.groups if group not in wanted]
     await may_grant(actor, _keys(*added))
-    await may_hold(actor, await _grants_of(*added))
+    held = [
+        AddedGroup(
+            group.id,
+            group.name,
+            frozenset(group.permission_keys()),
+            await object_grants(group),
+        )
+        for group in sorted(added, key=lambda group: group.name)
+    ]
+    await may_hold(actor, {grant for group in held for grant in group.object_grants})
     change = AdminChange(
         "groups",
         added=frozenset(group.name for group in added),
         removed=frozenset(group.name for group in removed),
-        groups=tuple(
-            AddedGroup(group.id, group.name, frozenset(group.permission_keys()))
-            for group in sorted(added, key=lambda group: group.name)
-        ),
+        groups=tuple(held),
     )
     return wanted, added, change
 
@@ -1490,7 +1526,7 @@ async def _admin_change(
     uow: AuthUnitOfWork,
     act: Callable[[], "AdminAct"],
     *,
-    first: Callable[["AdminAct | None"], Awaitable[None]] | None = None,
+    last: Callable[["AdminAct | None"], Awaitable[None]] | None = None,
 ) -> None:
     """Run the domains' ``on_admin_change`` checks; any may refuse ``change``.
 
@@ -1498,20 +1534,23 @@ async def _admin_change(
     ``act()``, the change as staff authorized it: checked before the checks
     (one may spend an approval), and spent after them, in ``uow``'s
     transaction, so it is spent if and only if the change commits. Off, the
-    act is never built. ``first`` is the admin API's own check that only
-    the change makes (a password reused), run before the checks with the
-    act, or None.
+    act is never built. ``last`` is the admin API's own check that only the
+    change makes (a password reused), given the act: the checks see it as
+    ``change.last_check``, and it runs once, when the change is about to be
+    made, by a check that spends something to let it go on, or else after
+    every check passed.
 
     Raises:
         ActionNotAuthorized: With ``ADMIN_ACTION``, the authorization is of
             another change (it is voided), or was spent meanwhile.
     """
 
-    async def checks() -> None:
+    async def checks(once: "_Once | None") -> None:
+        seen = change if once is None else dataclasses.replace(change, last_check=once)
         for hook in on_admin_change:
-            await hook.call(actor, user, change)
+            await hook.call(actor, user, seen)
 
-    await _authorized_change(uow, act, checks, first)
+    await _authorized_change(uow, act, checks, last)
 
 
 async def _admin_group_change(
@@ -1528,7 +1567,7 @@ async def _admin_group_change(
             another change (it is voided), or was spent meanwhile.
     """
 
-    async def checks() -> None:
+    async def checks(once: "_Once | None") -> None:
         for hook in on_admin_group_change:
             await hook.call(actor, group, change)
 
@@ -1538,21 +1577,37 @@ async def _admin_group_change(
 async def _authorized_change(
     uow: AuthUnitOfWork,
     act: Callable[[], "AdminAct"],
-    checks: Callable[[], Awaitable[None]],
-    first: Callable[["AdminAct | None"], Awaitable[None]] | None = None,
+    checks: Callable[["_Once | None"], Awaitable[None]],
+    last: Callable[["AdminAct | None"], Awaitable[None]] | None = None,
 ) -> None:
-    """The authorization of ``act()`` checked, ``first``, ``checks``, then spent.
+    """The authorization of ``act()`` checked, ``checks``, ``last``, then spent.
 
-    Only with ``AUTH.ADMIN_ACTION`` on is the act built, checked, and spent.
+    ``last`` runs once: by a check, or after them. Only with
+    ``AUTH.ADMIN_ACTION`` on is the act built, checked, and spent.
     """
     made = act() if _asked() else None
     if made is not None:
         await check_authorization(_admin_change_action(), made)
-    if first is not None:
-        await first(made)
-    await checks()
+    once = None if last is None else _Once(functools.partial(last, made))
+    await checks(once)
+    if once is not None:
+        await once()
     if made is not None:
         await spend_authorization(uow, _admin_change_action(), made)
+
+
+class _Once:
+    """A check that runs once, however many times it is awaited."""
+
+    def __init__(self, check: Callable[[], Awaitable[None]]) -> None:
+        """Hold ``check``, not yet run."""
+        self._check: Callable[[], Awaitable[None]] | None = check
+
+    async def __call__(self) -> None:
+        """Run the check, the first time only."""
+        check, self._check = self._check, None
+        if check is not None:
+            await check()
 
 
 async def _asked_change(
@@ -1729,11 +1784,6 @@ async def may_hold(
         raise PermissionDenied(
             f"{refusal}; you lack {len(lacked)} of its grants on single objects."
         )
-
-
-async def _grants_of(*groups: Group) -> set[ObjectGrant]:
-    """Every grant on objects the groups hold."""
-    return {grant for group in groups for grant in await object_grants(group)}
 
 
 def _keys(*groups: Group) -> set[str]:

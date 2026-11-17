@@ -856,6 +856,74 @@ def test_a_reused_password_spends_its_authorization(
     problem(again, 403, "action_not_authorized")
 
 
+PASSWORDS_HELD: Final = Shape(
+    "admin_acts_passwords_held",
+    "approvals",
+    {
+        **ACTS.settings,
+        "AUTH": {**ACTS.settings["AUTH"], "PASSWORD_HISTORY": 3},
+        "APPROVALS": {
+            **ACTS.settings["APPROVALS"],
+            "ADMIN_APPROVALS": {"auth.set_password": 1},
+        },
+    },
+)
+"""Each change an act; setting a password waits for a superuser's approval."""
+
+
+def test_nothing_is_compared_while_a_password_waits_for_approval(
+    migrated: Migrated, frozen: FrozenClock
+) -> None:
+    """Every password answers ``approval_pending`` while the change waits.
+
+    The history is compared when the change is about to be made: once
+    the approval is found, before it is spent. A comparison before the
+    hold answered guess after guess on one authorization, misses free,
+    while the change waited (found in review of user report A17). Once
+    approved, a reused password is refused, spends the authorization, and
+    leaves the approval for a password that will do.
+    """
+    with migrated(PASSWORDS_HELD), TestClient(get_asgi_application()) as client:
+        ann = Staff(client, frozen, "ann")
+        root = Staff(client, frozen, "root", superuser=True)
+        target = create_user("target", password=NEW_PASSWORD)
+        path = f"/users/{target}/password"
+        authorization = ann.authorized(
+            f"{path}/authorization", {"password": "x-Guess-0000"}
+        )
+        guesses = [f"x-Guess-{each:04d}" for each in range(5)] + [NEW_PASSWORD]
+        answers = {
+            (answer.status_code, answer.json()["code"])
+            for answer in (
+                ann.call("POST", path, {"password": guess}, authorization)
+                for guess in guesses
+            )
+        }
+        unspent = row(authorization)["consumed_at"]
+        request_id = (
+            ann.call("POST", path, {"password": NEW_PASSWORD}, authorization)
+        ).json()["approval_request_id"]
+        shown = client.get(f"/approvals/requests/{request_id}", headers=root.headers)
+        approved = client.post(
+            f"/approvals/requests/{request_id}/approve",
+            json={"fingerprint": shown.json()["fingerprint"]},
+            headers=root.headers,
+        )
+        reused = ann.call("POST", path, {"password": NEW_PASSWORD}, authorization)
+        spent = row(authorization)["consumed_at"]
+        still = client.get(f"/approvals/requests/{request_id}", headers=ann.headers)
+        fresh = ann.authorized(f"{path}/authorization", {"password": "Fresh-pass-42"})
+        made = ann.call("POST", path, {"password": "Fresh-pass-42"}, fresh)
+
+    assert answers == {(403, "approval_pending")}
+    assert unspent is None
+    assert approved.status_code == 200, approved.json()
+    problem(reused, 422, "invalid_password")
+    assert spent is not None
+    assert still.json()["status"] == "approved"
+    assert made.status_code == 204
+
+
 def test_the_act_digest_is_the_change_sorted_never_a_password() -> None:
     """Groups and permissions sorted; values as JSON; a password only as set or not."""
     from domainkit.contrib.auth.gates import AdminChange

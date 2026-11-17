@@ -39,7 +39,9 @@ registered them. A hook registered with an ``order`` runs by it, lowest
 first, before or after the others (0 by default), whatever its domain's
 place: approvals registers its hold of an admin change with
 ``order=100``, so the project's checks of that change come first (since
-2.7). Only what a domain registered is called: 0.13 removed
+2.7). Domains start, stop, and answer ``/ready`` each as a whole, so
+there (``on_startup``, ``on_shutdown``, ``on_ready``) an order sorts a
+domain's own hooks only. Only what a domain registered is called: 0.13 removed
 the hook methods, and ``setup()`` refuses a ``DomainConfig`` that still
 defines one (``apps.E002``).
 
@@ -97,7 +99,9 @@ class HookPoint[F: Callable[..., object]]:
     registering domain is the one whose ``ready()`` is running, unless
     ``domain`` names another label. ``order`` places a hook before (below
     0) or after (above 0) those registered without one, whatever their
-    domains (since 2.7). Event loops on several threads read the
+    domains (since 2.7); a caller that runs each domain's hooks apart, as
+    the lifespan does, gets them by order within each (``of``). Event
+    loops on several threads read the
     hooks; registering takes a lock, and reading takes none.
     """
 

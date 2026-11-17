@@ -45,7 +45,7 @@ from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Final, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal
 from uuid import UUID
 
 from fastapi import Depends
@@ -57,6 +57,9 @@ from domainkit.http.access import NotAuthenticated
 
 from .models import AbstractBaseUser, Group
 from .tokens import LoginOrigin, SessionLimits, noted, utc_now
+
+if TYPE_CHECKING:
+    from .backends import ObjectGrant
 
 __all__ = [
     "MANAGES_LOGINS",
@@ -195,6 +198,8 @@ class AddedGroup:
     name: str
     permissions: frozenset[str]
     """The keys of the permissions the group grants."""
+    object_grants: "frozenset[ObjectGrant]" = frozenset()
+    """What every backend grants the group on single objects (``object_grants``)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,6 +225,15 @@ class AdminChange:
     """True at the change's twin, which only asks for an authorization of
     it: nothing is changed, and a check that writes (approvals' hold)
     writes nothing (since 2.7)."""
+    last_check: Callable[[], Awaitable[None]] | None = field(
+        default=None, compare=False
+    )
+    """The admin API's own check that only the change itself makes, run
+    once, when the change is about to be made (since 2.7): a password among
+    the user's last ones. A check that lets the change go on by spending
+    something, as approvals' hold spends an approval it found, awaits it
+    first; else the admin API awaits it once every check passed. None:
+    there is none."""
 
 
 type AdminCheck = Callable[[Any, AbstractBaseUser | None, AdminChange], Awaitable[None]]

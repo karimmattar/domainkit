@@ -42,13 +42,15 @@ approvers are superusers (or the holders of ``ADMIN_APPROVERS``), never
 the user the change is about, nor a member of the group granted.
 """
 
-from collections.abc import Mapping
+import hashlib
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID
 
+from domainkit import clock
 from domainkit.apps import registry
 from domainkit.context import current_request
-from domainkit.ddd import Command, PermissionDenied, ValueObject
+from domainkit.ddd import Command, PermissionDenied, ValueObject, fingerprint
 from domainkit.exceptions import ImproperlyConfigured
 
 from .exceptions import ApprovalRequired, MakerNotAllowed
@@ -64,7 +66,9 @@ from .guards import (
     on_guard,
     requires_approval,
 )
+from .models import RequestStatus
 from .settings import ApprovalsSettings
+from .uow import ApprovalsUnitOfWork
 
 if TYPE_CHECKING:
     from domainkit.contrib.accounting import (
@@ -76,6 +80,7 @@ if TYPE_CHECKING:
         ReverseEntry,
     )
     from domainkit.contrib.auth import AbstractBaseUser, AuthUnitOfWork, Group
+    from domainkit.contrib.auth.backends import ObjectGrant
     from domainkit.contrib.auth.gates import AdminChange, GroupChange
 
 POST_ENTRY: Final = "accounting.post_entry"
@@ -396,13 +401,16 @@ class SetStaff(Command):
 class HeldGroup(ValueObject):
     """A group a ``SetGroups`` adds, as it was when the change was asked.
 
-    Its id, its name, and the keys of the permissions it grants, sorted
-    (since 2.7, user report A21).
+    Its id, its name, the keys of the permissions it grants, sorted, and
+    its grants on single objects: how many, and their digest (SHA-256 of
+    them, sorted; empty for none). Since 2.7, user report A21.
     """
 
     id: UUID
     name: str
     permissions: tuple[str, ...]
+    object_grants: int = 0
+    object_grants_digest: str = ""
 
 
 class SetGroups(Command):
@@ -456,10 +464,20 @@ class Reactivate(Command):
 
     ``PATCH /users/{id}`` with ``"is_active": true``, for an inactive user
     who is staff or a superuser, belongs to a group, or holds a
-    permission, directly or on an object: they get it all back.
+    permission, directly or on an object: they get it all back. It holds
+    what they come back with, as the change leaves it: the flags, each
+    group (``HeldGroup``), their own permissions, sorted, and their grants
+    on single objects (how many, and their digest). Anything granted since
+    makes another command, which waits for its own approval.
     """
 
     user_id: UUID
+    is_staff: bool
+    is_superuser: bool
+    groups: tuple[HeldGroup, ...]
+    permissions: tuple[str, ...]
+    object_grants: int
+    object_grants_digest: str
 
 
 class SetGroupPermissions(Command):
@@ -605,7 +623,7 @@ async def check_admin_change(
         return
     held = None if target is None else await _admin_command(target, change)
     if held is not None:
-        await _hold(actor, *held, asking=change.asking)
+        await _hold(actor, *held, asking=change.asking, last=change.last_check)
 
 
 async def check_group_change(
@@ -642,22 +660,45 @@ async def _hold(
     command: Command,
     *,
     asking: bool,
+    last: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     """Spend the staff member's approved request of ``command``, or submit it.
 
     At a twin (``asking``) nothing is submitted or spent: the change is
-    only asked for.
+    only asked for. ``last`` is the admin API's last check of the change
+    (``AdminChange.last_check``): run once an approved request is found,
+    before it is spent, so a change it refuses spends no approval; never
+    while the change waits.
 
     Raises:
         PermissionDenied: Staff act as someone else (an impersonation).
         ApprovalPending: The change waits for its approvals.
+        Exception: Whatever ``last`` raises.
     """
     if asking:
         return
     context = current_request()
     if context is None or context.actor != str(actor.id):
         raise PermissionDenied("Requests are made and decided in one's own name only.")
+    if last is not None and await _approved(action, command, context.actor):
+        await last()
     await ADMIN_SERVICES[action](command, None)
+
+
+async def _approved(action: str, command: Command, maker: str) -> bool:
+    """Whether ``maker`` holds an approved request of ``command`` that has not expired.
+
+    What ``run_by_maker`` looks for, to spend: the call goes on with it.
+    """
+    registered = guards()[action]
+    digest = fingerprint(action, registered.dump(command))
+    async with ApprovalsUnitOfWork() as uow:
+        found = await uow.requests.made_by(maker, action, digest)
+    now = clock.now()
+    return any(
+        request.status is RequestStatus.APPROVED and not request.expired(now)
+        for request in found
+    )
 
 
 TWO_HOLDS: Final = (
@@ -731,18 +772,25 @@ async def _updated(
     staff = getattr(target, "is_staff", False) is True
     making = values.get("is_staff") is True and not staff
     reactivating = values.get("is_active") is True and not target.is_active
-    if reactivating and REACTIVATE in held and await _holds_access(target, change):
+    returning = (
+        await _returning(target, change)
+        if reactivating and REACTIVATE in held
+        else None
+    )
+    if returning is not None:
         if making and SET_STAFF in held:
             raise ApprovalRequired(TWO_HOLDS)
-        return REACTIVATE, Reactivate(user_id=target.id)
+        return REACTIVATE, returning
     staff_after = values.get("is_staff", staff) is True
     if SET_STAFF in held and (making or (reactivating and staff_after)):
         return SET_STAFF, SetStaff(user_id=target.id)
     return None
 
 
-async def _holds_access(target: "AbstractBaseUser", change: "AdminChange") -> bool:
-    """Whether ``target`` holds access once ``change`` is made.
+async def _returning(
+    target: "AbstractBaseUser", change: "AdminChange"
+) -> Reactivate | None:
+    """What ``target`` comes back with once ``change`` is made; None: no access.
 
     Staff or a superuser (as the change leaves them), a member of a group,
     or granted a permission, directly or on an object (every backend's
@@ -751,12 +799,53 @@ async def _holds_access(target: "AbstractBaseUser", change: "AdminChange") -> bo
     """
     from domainkit.contrib.auth.backends import object_grants
 
-    for flag in ("is_staff", "is_superuser"):
-        if change.values.get(flag, getattr(target, flag, False)) is True:
-            return True
-    if target.groups or target.user_permissions:
-        return True
-    return bool(await object_grants(target))
+    values = change.values
+    flags = {
+        flag: values.get(flag, getattr(target, flag, False)) is True
+        for flag in ("is_staff", "is_superuser")
+    }
+    groups = tuple(
+        [
+            await _held(group)
+            for group in sorted(target.groups, key=lambda group: group.name)
+        ]
+    )
+    permissions = tuple(sorted(each.key for each in target.user_permissions))
+    count, digest = _grants_digest(await object_grants(target))
+    if not (any(flags.values()) or groups or permissions or count):
+        return None
+    return Reactivate(
+        user_id=target.id,
+        **flags,
+        groups=groups,
+        permissions=permissions,
+        object_grants=count,
+        object_grants_digest=digest,
+    )
+
+
+async def _held(group: "Group") -> HeldGroup:
+    """``group`` as a command holds it: its id, name, permissions, and grants."""
+    from domainkit.contrib.auth.backends import object_grants
+
+    count, digest = _grants_digest(await object_grants(group))
+    keys = tuple(sorted(group.permission_keys()))
+    return HeldGroup(group.id, group.name, keys, count, digest)
+
+
+def _grants_digest(grants: "Iterable[ObjectGrant]") -> tuple[int, str]:
+    """How many ``grants`` there are, and the SHA-256 of them, sorted ("" for none).
+
+    A grant on an object made since changes the digest: the command holding
+    it is another one.
+    """
+    lines = sorted(
+        f"{grant.permission}\t{grant.content_type}\t{grant.object_id}"
+        for grant in grants
+    )
+    if not lines:
+        return 0, ""
+    return len(lines), hashlib.sha256("\n".join(lines).encode()).hexdigest()
 
 
 def _held_groups(change: "AdminChange") -> tuple[HeldGroup, ...]:
@@ -767,7 +856,12 @@ def _held_groups(change: "AdminChange") -> tuple[HeldGroup, ...]:
             (``AdminChange.groups``): it could not be bound.
     """
     found = tuple(
-        HeldGroup(group.id, group.name, tuple(sorted(group.permissions)))
+        HeldGroup(
+            group.id,
+            group.name,
+            tuple(sorted(group.permissions)),
+            *_grants_digest(group.object_grants),
+        )
         for group in sorted(change.groups, key=lambda group: group.name)
     )
     if {group.name for group in found} != set(change.added):

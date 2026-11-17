@@ -6,10 +6,13 @@ from typing import TYPE_CHECKING, Final
 from domainkit.apps import DomainConfig, Requirement, registry
 from domainkit.apps.hooks import (
     on_check_application,
+    on_deployment_warnings,
     on_erase_subject,
     on_export_subject,
 )
 from domainkit.checks import CheckMessage
+from domainkit.conf import settings
+from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import AllOf, AnyOf, BasePermission, Not
 
@@ -79,6 +82,7 @@ class ApprovalsConfig(DomainConfig):
         on_erase_subject(self.erase_person)
         on_export_subject(self.export_person)
         on_check_application(self.application_problems)
+        on_deployment_warnings(self.weak_settings)
         if asked := [name for name in ACTS if getattr(config, name)]:
             if not registry.is_installed(AUTH):
                 raise ImproperlyConfigured(
@@ -161,6 +165,31 @@ class ApprovalsConfig(DomainConfig):
                         )
                     )
         return problems
+
+    def weak_settings(self) -> list[str]:
+        """``approvals.W001``: a group's permissions held, a user's groups not.
+
+        ``auth.set_group_permissions`` alone holds granting a permission to
+        a group that has members, but a new group made with that permission
+        and joined by them grants it as well, unheld (in staging and
+        production).
+        """
+        held = registry.settings(ApprovalsSettings).ADMIN_APPROVALS
+        if (
+            settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS
+            or "auth.set_group_permissions" not in held
+            or "auth.set_groups" in held
+        ):
+            return []
+        return [
+            CheckMessage(
+                "approvals.W001",
+                "APPROVALS.ADMIN_APPROVALS holds auth.set_group_permissions "
+                "but not auth.set_groups: a group made with the permissions, "
+                "and joined, grants them with no approval.",
+                hint='Hold "auth.set_groups" too.',
+            )
+        ]
 
     async def erase_person(self, subject: str, reason: str) -> Mapping[str, int]:
         """Unlink ``subject`` from the requests they made and decided."""

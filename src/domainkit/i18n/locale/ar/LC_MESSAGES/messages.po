@@ -1434,6 +1434,9 @@ msgstr "يحتاج ضمّ مستخدم إلى الموظفين إلى موافق
 msgid "Make the user staff and active again in two changes: each waits for its own approval."
 msgstr "اجعل المستخدم من الموظفين ونشطًا من جديد في تغييرين: ينتظر كلٌّ منهما موافقته."
 
+msgid "Too many of this user's old passwords were sent; try again later."
+msgstr "أُرسلت كلمات مرور قديمة كثيرة جدًا لهذا المستخدم؛ حاول مرة أخرى لاحقًا."
+
 msgid "Requests are made and decided in one's own name only."
 msgstr "تُقدَّم الطلبات ويُبتّ فيها باسم صاحبها فقط."
 

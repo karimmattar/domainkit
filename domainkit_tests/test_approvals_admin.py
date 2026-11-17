@@ -21,6 +21,7 @@ from sqlalchemy import select, update
 
 from domainkit import clock, setup
 from domainkit.apps import registry
+from domainkit.checks import CheckMessage
 from domainkit.conf import override_settings
 from domainkit.context import RequestContext, bind_request
 from domainkit.contrib.approvals import (
@@ -43,7 +44,14 @@ from domainkit.contrib.approvals.builtin import (
 )
 from domainkit.contrib.approvals.services import _spend
 from domainkit.contrib.approvals.tables import requests
-from domainkit.contrib.auth import AuthUnitOfWork, User
+from domainkit.contrib.auth import (
+    AbstractBaseUser,
+    AuthUnitOfWork,
+    BaseBackend,
+    Group,
+    User,
+)
+from domainkit.contrib.auth.backends import ObjectGrant
 from domainkit.contrib.auth.gates import (
     AdminChange,
     GroupChange,
@@ -279,8 +287,14 @@ def test_a_change_of_groups_is_bound_to_what_it_adds_and_removes(
 
 
 def bound_group(name: str, group_id: UUID, *permissions: str) -> dict[str, Any]:
-    """A group as ``SetGroups`` holds it: its id, name, and permissions."""
-    return {"id": str(group_id), "name": name, "permissions": sorted(permissions)}
+    """A group as ``SetGroups`` holds it: id, name, permissions, no object grants."""
+    return {
+        "id": str(group_id),
+        "name": name,
+        "permissions": sorted(permissions),
+        "object_grants": 0,
+        "object_grants_digest": "",
+    }
 
 
 def test_the_bounds_of_staff_are_checked_before_anything_is_submitted(
@@ -786,8 +800,17 @@ def test_making_someone_who_holds_access_active_again_waits(
     free = client.patch(f"{ADMIN}/users/{plain}", json=body, headers=root)
 
     assert (request["action"], request["policy"]) == (REACTIVATE, "auth.reactivation")
-    assert request["arguments"] == {"user_id": str(boss)}
-    assert guards()[REACTIVATE].parties_of(Reactivate(user_id=boss)) == {str(boss)}
+    assert request["arguments"] == {
+        "user_id": str(boss),
+        "is_staff": False,
+        "is_superuser": True,
+        "groups": [],
+        "permissions": [],
+        "object_grants": 0,
+        "object_grants_digest": "",
+    }
+    returning = guards()[REACTIVATE].load(request["arguments"])
+    assert guards()[REACTIVATE].parties_of(returning) == {str(boss)}
     assert back.status_code == 200, back.json()
     assert back.json()["is_active"] is True
     assert read(client, member, root)["action"] == REACTIVATE
@@ -853,10 +876,121 @@ def test_which_hold_a_user_made_active_again_waits_for(client: TestClient) -> No
         (SET_STAFF, SetStaff(user_id=staff_id)),
         None,
         None,
-        (REACTIVATE, Reactivate(user_id=plain_id)),
+        (REACTIVATE, comes_back(plain_id, is_staff=True)),
         (SET_STAFF, SetStaff(user_id=plain_id)),
         None,
     ]
+
+
+def comes_back(user_id: UUID, **held: Any) -> Reactivate:  # noqa: ANN401 - fields.
+    """The return of ``user_id`` with ``held``, and nothing else."""
+    fields: dict[str, Any] = {
+        "is_staff": False,
+        "is_superuser": False,
+        "groups": (),
+        "permissions": (),
+        "object_grants": 0,
+        "object_grants_digest": "",
+    }
+    return Reactivate(user_id=user_id, **{**fields, **held})
+
+
+def test_an_approved_return_brings_back_only_what_it_held(
+    client: TestClient,
+) -> None:
+    """A user given more while inactive comes back with another approval.
+
+    The approver of a return saw what the user would hold: their groups,
+    flags, and permissions. Before, the request held the user alone: while
+    they were still inactive, the maker made them a superuser and the
+    return approved for a reader brought back a superuser (found in
+    review of user report A21).
+    """
+    root = staff("root", superuser=True)
+    other = staff("other", superuser=True)
+    readers = make_group("readers", "accounting.view_entry")
+    user = deactivated("user")
+    join("user", "readers")
+    body = {"is_active": True}
+
+    approved = pending(client.patch(f"{ADMIN}/users/{user}", json=body, headers=root))
+    shown = read(client, approved, root)["arguments"]
+    approve(client, approved, other)
+    made = client.patch(
+        f"{ADMIN}/users/{user}", json={"is_superuser": True}, headers=root
+    )
+    wider = pending(client.patch(f"{ADMIN}/users/{user}", json=body, headers=root))
+    unmade = client.patch(
+        f"{ADMIN}/users/{user}", json={"is_superuser": False}, headers=root
+    )
+    granted = grant_directly(user, "accounting.add_entry")
+    widened = pending(client.patch(f"{ADMIN}/users/{user}", json=body, headers=root))
+    revoke_directly(user, "accounting.add_entry")
+    back = client.patch(f"{ADMIN}/users/{user}", json=body, headers=root)
+
+    assert shown["groups"] == [bound_group("readers", readers, "accounting.view_entry")]
+    assert (shown["is_superuser"], shown["permissions"]) == (False, [])
+    assert made.status_code == 200, made.json()
+    assert read(client, wider, root)["arguments"]["is_superuser"] is True
+    assert unmade.status_code == 200, unmade.json()
+    assert granted == ["accounting.add_entry"]
+    assert read(client, widened, root)["arguments"]["permissions"] == [
+        "accounting.add_entry"
+    ]
+    assert wider not in (approved, widened)
+    assert back.status_code == 200, back.json()
+    assert (back.json()["is_active"], back.json()["is_superuser"]) == (True, False)
+    assert read(client, approved, root)["status"] == "executed"
+
+
+def grant_directly(user_id: UUID, *keys: str) -> list[str]:
+    """Grant ``user_id`` permissions, as a way round the admin API would; their keys."""
+
+    async def run() -> list[str]:
+        async with AuthUnitOfWork() as uow:
+            user = await uow.users.get(user_id)  # type: ignore[arg-type]
+            user.grant(*await uow.permissions.get_many(keys))
+            await uow.commit()
+        return sorted(permission.key for permission in user.user_permissions)
+
+    return run_async(run())
+
+
+def revoke_directly(user_id: UUID, *keys: str) -> None:
+    """Take permissions from ``user_id`` again."""
+
+    async def run() -> None:
+        async with AuthUnitOfWork() as uow:
+            user = await uow.users.get(user_id)  # type: ignore[arg-type]
+            user.revoke(*await uow.permissions.get_many(keys))
+            await uow.commit()
+
+    run_async(run())
+
+
+def test_a_superuser_comes_back_as_one_is_made(migrated: Migrated) -> None:
+    """With ``SUPERUSER_APPROVALS``, a deactivated superuser is not made active here.
+
+    Bringing one back gives every permission, as making one does; before,
+    it passed with no approval (found in review of user report A21). Taking
+    superuser away first, the user comes back plain, and an approved
+    ``auth.grant_superuser`` makes them one again.
+    """
+    with migrated(APPROVALS_API), TestClient(get_asgi_application()) as client:
+        root = staff("root", superuser=True)
+        boss = deactivated("boss", is_superuser=True)
+        body = {"is_active": True}
+
+        refused = client.patch(f"{ADMIN}/users/{boss}", json=body, headers=root)
+        demoted = client.patch(
+            f"{ADMIN}/users/{boss}", json={"is_superuser": False}, headers=root
+        )
+        back = client.patch(f"{ADMIN}/users/{boss}", json=body, headers=root)
+
+    problem(refused, 403, "approval_required")
+    assert demoted.status_code == 200, demoted.json()
+    assert back.status_code == 200, back.json()
+    assert (back.json()["is_active"], back.json()["is_superuser"]) == (True, False)
 
 
 def test_granting_a_group_permissions_waits_and_its_members_do_not_decide(
@@ -992,3 +1126,92 @@ async def _group(name: str) -> Any:  # noqa: ANN401 - a group.
         group = await uow.groups.create(name)
         await uow.commit()
     return group
+
+
+GROUP_GRANTS: dict[str, frozenset[ObjectGrant]] = {}
+"""What ``GroupGrantsBackend`` grants each group, by name, on single objects."""
+
+
+class GroupGrantsBackend(BaseBackend):
+    """Grants groups permissions on single objects, as an object-permissions app."""
+
+    async def object_grants(
+        self, holder: AbstractBaseUser | Group
+    ) -> frozenset[ObjectGrant]:
+        """``GROUP_GRANTS``'s, for a group; a user's are their groups'."""
+        if isinstance(holder, Group):
+            return GROUP_GRANTS.get(holder.name, frozenset())
+        return frozenset().union(*(GROUP_GRANTS.get(g.name, ()) for g in holder.groups))
+
+
+def test_an_approval_binds_a_groups_grants_on_objects(client: TestClient) -> None:
+    """A grant on an object given to the group since is another group too.
+
+    ``HeldGroup`` holds how many grants on single objects the group holds,
+    and their digest: a grant made after the approval (by an object
+    permissions app, say) no longer rides it (found in review of user
+    report A21).
+    """
+    ann = staff("ann", "accounting.view_entry")
+    root = staff("root", superuser=True)
+    bob = create_user("bob")
+    readers = make_group("readers", "accounting.view_entry")
+    path = f"{ADMIN}/users/{bob}/groups"
+    body = {"groups": ["readers"]}
+    auth = {
+        **APPROVALS_ADMIN.settings["AUTH"],
+        "BACKENDS": [
+            "domainkit.contrib.auth.backends.ModelBackend",
+            f"{__name__}.GroupGrantsBackend",
+        ],
+    }
+    vault = ObjectGrant("accounting.view_entry", "accounting.entry", 7)
+
+    GROUP_GRANTS.clear()
+    with override_settings(AUTH=auth):
+        approved = pending(client.put(path, json=body, headers=ann))
+        approve(client, approved, root)
+        GROUP_GRANTS["readers"] = frozenset({vault})
+        wider = pending(client.put(path, json=body, headers=ann))
+        held = read(client, wider, ann)["arguments"]["groups"]
+        GROUP_GRANTS.clear()
+        joined = client.put(path, json=body, headers=ann)
+
+    assert wider != approved
+    assert [
+        (each["object_grants"], len(each["object_grants_digest"])) for each in held
+    ] == [(1, 64)]
+    assert held[0]["id"] == str(readers)
+    assert joined.status_code == 200, joined.json()
+    assert read(client, approved, ann)["status"] == "executed"
+
+
+def test_a_group_permissions_hold_alone_is_warned_about(client: TestClient) -> None:
+    """``approvals.W001``: a new group made with the permissions, then joined, passes.
+
+    Where deployed, ``auth.set_group_permissions`` held without
+    ``auth.set_groups`` is reported (found in review of user report A20).
+    """
+    from domainkit.contrib.approvals.apps import ApprovalsConfig
+
+    config = ApprovalsConfig.__new__(ApprovalsConfig)
+    alone = {"auth.set_group_permissions": 1}
+    both = {**alone, "auth.set_groups": 1}
+
+    with override_settings(
+        ENVIRONMENT="production", APPROVALS={"ADMIN_APPROVALS": alone}
+    ):
+        warned = config.weak_settings()
+    with override_settings(
+        ENVIRONMENT="production", APPROVALS={"ADMIN_APPROVALS": both}
+    ):
+        paired = config.weak_settings()
+    with override_settings(
+        ENVIRONMENT="local", APPROVALS={"ADMIN_APPROVALS": alone}
+    ):
+        local = config.weak_settings()
+
+    assert [each.id for each in warned if isinstance(each, CheckMessage)] == [
+        "approvals.W001"
+    ]
+    assert paired == local == []
