@@ -906,7 +906,8 @@ def _before_fork() -> None:
     thread it does not have, and its first write to that stream waits
     forever. Each handler writes under its own lock, so a fork asks every
     thread to wait at its turnstile and takes the turnstiles, so none
-    starts another record, then each handler's lock, as its write ends.
+    starts another record, then each handler's lock, as its write ends: a
+    thread's lock, which the child renews (``_pause``).
 
     ``logging``'s lock comes first, taken as ``logging``'s own hook takes
     it, holding nothing: a ``dictConfig`` under way finishes first, with
@@ -969,7 +970,11 @@ def _pause(
         _take(listener._turnstile, held, _left(deadline))
     for listener in listeners:
         for handler in listener.handlers:
-            if handler.lock is not None:
+            # A thread's lock only: a lock shared between processes (a
+            # ``multiprocessing`` one) taken here would be the child's too,
+            # its owner's thread being the forking one, and the child would
+            # take it again without waiting while the parent let it go.
+            if handler.lock is not None and hasattr(handler.lock, "_at_fork_reinit"):
                 _take(handler.lock, held, _left(deadline))
 
 
@@ -1011,35 +1016,27 @@ def _after_fork_in_child() -> None:
     after this fork, or a fork it was nested in.
     """
     global _handlers_lock, _listening, _forking
-    _renew([item for held in _forking.held for item in held])
+    taken = [item for held in _forking.held for item in held]
     _handlers_lock = threading.RLock()
     _listening = weakref.WeakSet()
     _forking = _Forks()
     for handler in _live_handlers():
         handler._after_fork()
+    _renew(taken)  # Last: nothing above depends on it.
 
 
 def _renew(taken: list[_Held]) -> None:
-    """Renew in a child the locks a fork took, held by its only thread.
+    """Renew in a child the ``threading`` locks a fork took.
 
     ``logging`` renews the locks its own ``createLock`` made, not those a
     handler makes itself: the child's logging thread would wait for one
-    at its first record. ``threading``'s locks are renewed in place; a
-    lock of another kind is made again by its handler's ``createLock``.
+    at its first record, held by a thread the child does not have. The
+    fork takes no lock of another kind (``_pause``).
     """
     for item in taken:
         renew = getattr(item, "_at_fork_reinit", None)
         if renew is not None:
             renew()
-    for pause in taken:
-        if not isinstance(pause, _Pause):
-            continue
-        for handler in pause.listener.handlers:
-            lock = handler.lock
-            if not hasattr(lock, "_at_fork_reinit") and any(
-                lock is item for item in taken
-            ):
-                handler.createLock()
 
 
 if hasattr(os, "register_at_fork"):  # pragma: no branch - POSIX has it.

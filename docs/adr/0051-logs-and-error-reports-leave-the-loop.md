@@ -123,13 +123,14 @@ So a fork now waits for the writes in progress too, not only for a
 thread changing the list of handlers. `logging` has each handler write
 under its own lock. The hook before a fork asks every running logging
 thread to wait at its turnstile before its next record, takes the
-turnstiles, then each handler's lock as its write ends. The thread
-itself takes no lock per record, and passes the turnstile only while a
-fork asks: no call more per record than before. Without the turnstile,
-a thread took its handler's lock again for its next record before the
-fork woke. The waits end `FLUSH_TIMEOUT` after the fork has `logging`'s
-lock: a write still going on then is on a stuck stream, which the child
-could not write to either, and the fork goes on without it.
+turnstiles, then each handler's lock (a thread's, below) as its write
+ends. The thread itself takes no lock per record, and passes the
+turnstile only while a fork asks: no call more per record than before.
+Without the turnstile, a thread took its handler's lock again for its
+next record before the fork woke. The waits end `FLUSH_TIMEOUT` after
+the fork has `logging`'s lock: a write still going on then is on a stuck
+stream, which the child could not write to either, and the fork goes on
+without it.
 
 The hook takes `logging`'s lock first, as `logging`'s own hook does,
 waiting while it holds nothing, and the lock of the handler list last.
@@ -158,8 +159,13 @@ write, which plain `logging` does not support either.
 In the child, the hook renews what the fork took. `logging` renews only
 the locks its own `createLock` made; a handler that makes its own kept
 it held by the child's only thread, and the child's logging thread
-waited for it at its first record. `threading`'s locks are renewed in
-place; another kind is made again by its handler's `createLock`.
+waited for it at its first record. The fork takes only the locks it can
+renew, `threading`'s. A lock shared between processes (a
+`multiprocessing` one) taken at the fork was the child's too, its owner
+being the forking thread: the child took it again without waiting while
+the parent let it go, and both wrote at once. Such a lock is not waited
+for: a write in progress under it is the child's to wait for, as any
+other process's.
 
 Each thread keeps what its forks hold apart, noted as each lock is
 taken, and takes no lock twice. A signal handler may fork while its
