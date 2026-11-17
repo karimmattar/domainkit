@@ -614,9 +614,10 @@ async def slow_proxy(port: int, delay: dict[str, float]) -> asyncio.Server:
     more: "unexpected connection_lost() call". The loop reports it, and the
     test runner fails whichever test is running with it. These tests check
     no TLS: CI's PostgreSQL, as the local one, runs without it, so the
-    SSLRequest was always answered "no". Once asyncpg guards that future
-    when the connect is cancelled, as it guards ``connected`` already, the
-    setting can go.
+    SSLRequest was always answered "no". It is asyncpg's issue 1397
+    (https://github.com/MagicStack/asyncpg/issues/1397). Its pull request
+    1398 proposes a fix in ``_create_ssl_connection``, which the cancel
+    request goes through too: once a release has it, the setting can go.
     """
 
     async def pipe(
