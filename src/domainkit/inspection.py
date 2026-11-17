@@ -458,16 +458,16 @@ class _Clock:
     values: int = 0
     """What a PDF check may still read; an Office check counts none."""
 
-    def tick(self) -> None:
-        """Count one value; look at the clock now and then.
+    def tick(self, values: int = 1) -> None:
+        """Count ``values`` values (one by default); look at the clock now and then.
 
         Raises:
             FileRefused: The budget or the time ran out.
         """
-        self.values -= 1
+        self.values -= values
         if self.values < 0:
             raise FileRefused(COMPLEX)
-        if self.values % DEADLINE_EVERY == 0:
+        if values > 1 or self.values % DEADLINE_EVERY == 0:
             self.check()
 
     def check(self) -> None:
@@ -1360,6 +1360,9 @@ class _Pdf:
         decoded: dict[object, int] = {}
         """What each stream decoded to, once it is: by its reference, or by the
         stream itself where it is written in the page (pypdf reads it there)."""
+        drawn: dict[object, tuple[int, int]] = {}
+        """What an array of content another page named too costs, once walked:
+        how many streams it names, and what they decode to, in all."""
         # One stream of content may take what is left of max_content, not
         # PDF_STREAM_LIMIT: the budget lowers it to that, stream by stream.
         limits = dict.fromkeys(DECODED, check.max_content)
@@ -1368,11 +1371,24 @@ class _Pdf:
                 self.clock.check()
                 named = dict.get(page, "/Contents")
                 contents = _resolved(named)
-                references = (
-                    list(list.__iter__(contents))
-                    if isinstance(contents, ArrayObject)
-                    else [named]
-                )
+                if not isinstance(contents, ArrayObject):
+                    references = [named]
+                    array = None
+                else:
+                    array = (
+                        (named.idnum, named.generation)
+                        if isinstance(named, IndirectObject)
+                        else id(contents)  # Kept by its page while the check runs.
+                    )
+                    if array in drawn:
+                        # Pages that share one array draw it whole each time,
+                        # and cost as much again: counted at once, not walked.
+                        names, total = drawn[array]
+                        self.clock.tick(names)
+                        content.count(total)
+                        continue
+                    references = list(list.__iter__(contents))
+                before = content.left
                 for reference in references:
                     self.clock.tick()
                     key: object = (
@@ -1388,6 +1404,8 @@ class _Pdf:
                         left = content.left
                         content.spend(stream)
                         decoded[key] = left - content.left
+                if array is not None:
+                    drawn[array] = (len(references), before - content.left)
 
     def _written(self) -> Iterator[object]:
         """Every object written in the file that the tables do not point at.

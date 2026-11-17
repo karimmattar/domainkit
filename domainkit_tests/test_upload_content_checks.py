@@ -112,6 +112,9 @@ def test_twenty_pages_of_deflated_spaces_are_refused() -> None:
     [
         ([0, 0, 0], [stream(spaces(1000))], 3000),
         ([[0, 1, 0]], [stream(spaces(1000)), stream(spaces(500))], 2500),
+        # Pages that share one array of content each draw it whole.
+        ([0, 0, 0], ["[7 0 R 7 0 R]", stream(spaces(1000))], 6000),
+        ([0, 0, 1], ["[7 0 R 7 0 R]", stream(spaces(1000))], 5000),
         ([0], [stream(b"q Q " * 250, "")], 1000),
         (
             [0],
@@ -129,8 +132,9 @@ def test_each_pages_content_counts_each_time_it_is_drawn(
 ) -> None:
     """A stream drawn twice counts twice; what is not content is not.
 
-    Deflated twice; with bytes after its end, or cut short of its
-    checksum; not encoded at all.
+    Twice in an array, or in an array several pages share; deflated twice;
+    with bytes after its end, or cut short of its checksum; not encoded at
+    all.
     """
     data = paged(pages, *streams)
 
