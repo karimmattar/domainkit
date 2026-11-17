@@ -135,10 +135,11 @@ DATE: Final = re.compile(
 AMOUNT: Final = re.compile(r"(?<![\d.,])\d+[.,]\d{2}(?![\d.,])")
 """An amount with its cents: ``1250000.00``."""
 DIGITS: Final = re.compile(
-    "(?:\\+\\s?)?\\(?\\d(?:[\\s.\\-\u2010-\u2015\u2212()/]{0,3}\\d)*"
+    "(?:\\+\\s?)?\\(?\\d(?:[\\s.\\-_\u2010-\u2015\u2022\u2212\u2800()/]{0,3}\\d)*"
 )
-"""Digits written as one number: in groups apart by spaces, dots, dashes,
-brackets, or slashes, after a plus sign if any (``+1 (555) 010-0100``)."""
+"""Digits written as one number: in groups apart by spaces (a blank braille
+cell too), dots, dashes, bullets, underscores, brackets, or slashes, after a
+plus sign if any (``+1 (555) 010-0100``)."""
 
 type Value = object
 """What a label shows: a text, or a JSON value (a number, ``True``, ``None``,
