@@ -94,7 +94,43 @@ and a status.
   user has is refused at the twin (`409`), before the staff member
   confirms the change (user report A17).
 
+### Fixed
+
+- `OfficeCheck` reads an XML part with a comment or an instruction before
+  its root, as a drawing program writes an SVG (`<!-- Generator: ... -->`
+  first). 2.7 refused the document as `unreadable_file`
+  ([Checking documents](docs/uploads.md#checking-documents)) (user report
+  U8).
+
 ### Security
+
+- `DOCX`, `XLSX` and `PPTX` (`OfficeCheck`) read a Word field's name as
+  Word and LibreOffice read it, in a field's runs and in `w:fldSimple`:
+  in any case, past white space, invisible marks (a zero-width space, a
+  byte order mark, a soft hyphen, a directional mark), backslashes and
+  quotes, straight or curly. `\INCLUDEPICTURE "http://..."` and
+  `"INCLUDETEXT" "http://..."` passed, and LibreOffice 24.2 imports both
+  as the field; a `HYPERLINK` so written is held to `http`, `https` and
+  `mailto` too ([Checking documents](docs/uploads.md#checking-documents),
+  ADR 0175) (user report U8).
+
+- `OfficeCheck` reads an SVG picture whatever its name or type, by its
+  bytes too, inflated if it is gzip, and refuses one that
+  loads anything but a fragment of itself or a `data:` URL: an `href` or
+  `xlink:href` (on any element, whatever its namespace), CSS's `url()`
+  and `@import`, an `<?xml-stylesheet?>`, or a `data:` URL holding an SVG
+  that does. LibreOffice 24.2 drew a local file an SVG's `href` named
+  into the PDF it made of a document 2.7 took
+  ([Checking documents](docs/uploads.md#checking-documents), ADR 0175)
+  (user report U8).
+
+- `OfficeCheck` refuses a Word mail merge that names its data source or a
+  connection to one (`w:connectString`, `w:query`, `w:dataSource`,
+  `w:headerSource`, `w:odso`'s `w:udl` and `w:src`), as it refuses a
+  relationship to one: Word connects to it when the document opens, and
+  2.7 took it with no relationship
+  ([Checking documents](docs/uploads.md#checking-documents), ADR 0175)
+  (user report U8).
 
 - The admin API's act binds each group a change adds by its id, the keys
   it grants, and its grants on objects, and each it takes away by its

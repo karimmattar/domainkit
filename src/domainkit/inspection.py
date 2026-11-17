@@ -38,33 +38,39 @@ form. Names are compared decoded (``/J#61vaScript`` is ``/JavaScript``).
 An Office document is refused when its ZIP holds more than ``max_parts``
 parts, inflates past ``max_expansion`` times its own size (or
 ``max_size``) in all, or a part more than ``max_ratio`` times; when a
-part is encrypted, compressed but by deflate, or named differently in its
-header; when its main part is macro-enabled (a ``.docm`` named
+part is encrypted, compressed but by deflate, or named differently in
+its header; when its main part is macro-enabled (a ``.docm`` named
 ``.docx``) or not of the type asked; when it holds macros
 (``vbaProject.bin``, Excel 4.0 macro sheets), OLE objects, ActiveX
 controls, or a chunk imported from another format (``altChunk``); when a
 relationship points outside the package but for a hyperlink to ``http``,
 ``https`` or ``mailto`` (a remote template, a linked image or object:
-CVE-2022-30190 opened one), whatever its ``TargetMode`` says; when a Word
-field pulls content in or runs a program (``INCLUDEPICTURE``,
+CVE-2022-30190 opened one), whatever its ``TargetMode`` says; when a
+Word field pulls content in or runs a program (``INCLUDEPICTURE``,
 ``INCLUDETEXT``, ``INCLUDE``, ``IMPORT``, ``LINK``, ``DATABASE``,
 ``DDE``, ``DDEAUTO``), with or without its tracked deletions
-(``w:delInstrText``), ended or not, or its instruction starts with
-another field, which hides its name; when an Excel workbook links to
-another workbook, holds a data connection or a query table, or a formula
-anywhere in a sheet calls a web service (``WEBSERVICE``, ``RTD``), a
-picture from a URL (``IMAGE``) or DDE (``cmd|'...'!A0``); when its XML
-writes an OLE object or a control (``w:object``, ``o:OLEObject``,
-``w:control``), a picture names a hyperlink's relationship (``r:id``,
-VML's ``o:relid``), or a VML picture or fill names a source of its own
-(``src``, a picture's ``o:href``); or when an XML part declares a DTD or
-an entity, which the Open Packaging Conventions forbid, or is in an
-encoding but UTF-8 and UTF-16. A part is XML by its name or its content
-type, never by its first bytes, and is read whole; a DTD is refused in
-its bytes, before lxml parses them, so nothing outside the file is ever
-opened. An embedded workbook, document or
-presentation (a chart's data) is checked the same way, one level deep,
-from a temporary file.
+(``w:delInstrText``), ended or not, its name read in any case past white
+space, invisible marks, backslashes and quotes, as Word and LibreOffice
+read it, or its instruction starts with another field, which hides its
+name; when a mail merge names its data source or a connection to one
+(``w:connectString``, ``w:query``, ``w:dataSource``); when an Excel
+workbook links to another workbook, holds a data connection or a query
+table, or a formula anywhere in a sheet calls a web service
+(``WEBSERVICE``, ``RTD``), a picture from a URL (``IMAGE``) or DDE
+(``cmd|'...'!A0``); when its XML writes an OLE object or a control
+(``w:object``, ``o:OLEObject``, ``w:control``), a picture names a
+hyperlink's relationship (``r:id``, VML's ``o:relid``), or a VML picture
+or fill names a source of its own (``src``, a picture's ``o:href``);
+when an SVG picture (a part SVG by its name, its type or its bytes, gzip
+or not) loads anything but a fragment of itself or a ``data:`` URL (an
+``href``, CSS's ``url()`` or ``@import``), or holds a ``data:`` URL of
+an SVG that does; or when an XML part declares a DTD or an entity, which
+the Open Packaging Conventions forbid, or is in an encoding but UTF-8
+and UTF-16. A part is XML by its name or its content type, never by its
+first bytes, and is read whole; a DTD is refused in its bytes, before
+lxml parses them, so nothing outside the file is ever opened. An
+embedded workbook, document or presentation (a chart's data) is checked
+the same way, one level deep, from a temporary file.
 
 ``save_upload`` runs the checks in a process of their own
 (``run_checks``): the system holds it to an address space and CPU time,
@@ -94,9 +100,11 @@ too.
 """
 
 import asyncio
+import base64
 import codecs
 import contextlib
 import io
+import itertools
 import json
 import logging
 import math
@@ -113,13 +121,14 @@ import time
 import traceback
 import unicodedata
 import zipfile
+import zlib
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import cache
 from posixpath import dirname, join, normpath
 from typing import IO, TYPE_CHECKING, Any, Final, Literal, Self
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote, unquote_to_bytes, urlsplit
 
 from domainkit.exceptions import DomainkitError, ImproperlyConfigured, ServiceBusy
 from domainkit.i18n.lazy import LazyString, gettext_lazy, ngettext_lazy, pgettext_lazy
@@ -299,8 +308,24 @@ OFFICE_FIELDS: Final = {
 """Word fields that run a program or pull content in when they are updated."""
 RESULT: Final = "\x00"
 """Stands for a field's result, whose own fields are not its instruction."""
-FIELD_NAME: Final = re.compile(r"^\s*([A-Za-z]+)")
-"""A field instruction's name: the letters it starts with, whatever follows."""
+FIELD_QUOTES: Final = "\"'\u201c\u201d\u201e\u201f\u2018\u2019\u201a\u201b\u00ab\u00bb"
+"""Quotes a field's name may be written in: straight, curly, low, and guillemets."""
+IGNORABLE: Final = (
+    "\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f"
+    "\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufff8"
+    "\U0001bca0-\U0001bca3\U0001d173-\U0001d17a\U000e0000-\U000e0fff"
+)
+"""Unicode's default ignorable code points, as a character class: what is never
+shown (a zero-width space or joiner, a soft hyphen, a byte order mark, a
+directional mark or override, a variation selector)."""
+IGNORED: Final = re.compile(f"[{IGNORABLE}]")
+FIELD_NAME: Final = re.compile(
+    rf"([\s\\{FIELD_QUOTES}{IGNORABLE}]*)((?:[A-Za-z][{IGNORABLE}]*)+)"
+)
+r"""A field instruction's name, as Word and LibreOffice read it: the letters it
+starts with once white space, invisible marks, backslashes (``\INCLUDETEXT``)
+and quotes (``"INCLUDETEXT"``) are passed over, invisible marks between them
+left out, whatever follows."""
 FIELD_ARGUMENT: Final = re.compile(r'"((?:[^"\\]|\\.)*)"?|(\S+)')
 """A field's argument: quoted (to the closing quote, or the end), or a word."""
 FIELD_SWITCH: Final = re.compile(r"\\[^\\\s]")
@@ -419,6 +444,62 @@ XML_ENCODINGS: Final = frozenset({"utf8", "utf16"})
 """What an XML part of a package may be in (ECMA-376 Part 2)."""
 DECLARATIONS: Final = ("<!DOCTYPE", "<!ENTITY")
 """What declares a DTD or an entity: refused before lxml reads the part."""
+XML_START: Final = re.compile(rb"[ \t\r\n\x00]*<")
+"""How XML starts but for a byte order mark: ``<`` after any white space."""
+GZIP: Final = b"\x1f\x8b"
+"""How a gzip stream starts: an SVG's, compressed (``.svgz``)."""
+GZIP_FLAGS: Final = {"extra": 0x04, "name": 0x08, "comment": 0x10, "crc": 0x02}
+"""A gzip header's flags: what follows its first ten bytes (RFC 1952)."""
+GZIP_RESERVED: Final = 0xE0
+"""A gzip header's flags no stream sets."""
+SVG_TYPE: Final = "image/svg"
+"""How an SVG part's content type starts (``image/svg+xml``)."""
+SVG_EXTENSIONS: Final = frozenset({"svg", "svgz"})
+"""Parts that are SVG by their name."""
+SVG_LINKS: Final = frozenset({"href", "src"})
+"""Attributes an SVG element loads what they name from, whatever their namespace:
+``href``, ``xlink:href`` (LibreOffice reads it by its prefix, whatever the
+namespace), HTML's ``src`` in a ``foreignObject``."""
+SVG_ANIMATIONS: Final = frozenset({"animate", "set"})
+"""Elements that set another attribute's value as time goes, ``href`` too."""
+SVG_ANIMATED: Final = ("from", "to", "by", "values")
+"""The values an animation sets: ``values`` lists them, apart by semicolons."""
+SVG_STYLESHEET: Final = "<?xml-stylesheet"
+"""An XML stylesheet's instruction, which loads what it names."""
+SVG_DEPTH: Final = 4
+"""How deep an SVG in a ``data:`` URL of an SVG is checked; deeper is refused."""
+CSS_COMMENT: Final = re.compile(r"/\*.*?(?:\*/|\Z)", re.DOTALL)
+CSS_ESCAPE: Final = re.compile(
+    r"\\(?:([0-9A-Fa-f]{1,6})(?:\r\n|[ \t\r\n\f])?|(\r\n|.))", re.DOTALL
+)
+"""A CSS escape: a code point in hexadecimal (``\\75``) and one white space, or a
+character; a line's end escaped is left out."""
+CSS_HINTS: Final = re.compile(
+    r"url\(|src\(|image(?:-set)?\(|@import|\\|/\*", re.IGNORECASE
+)
+"""What CSS that may load holds: looked for before it is read (an escape or a
+comment may hide the rest)."""
+CSS_IMPORT: Final = re.compile(r"@import", re.IGNORECASE)
+CSS_IMAGES: Final = re.compile(
+    r"(?<![\w-])(?:-[A-Za-z]+-)?image(?:-set)?\(", re.IGNORECASE
+)
+"""CSS's ``image()`` and ``image-set()``, which take a URL as a string."""
+CSS_URL: Final = re.compile(
+    r"""(?<![\w-])(?:url|src)\(\s*(?:"([^"]*)"?|'([^']*)'?|([^)\s]*))""",
+    re.IGNORECASE,
+)
+"""CSS's ``url()`` and ``src()``, and what they name: quoted, or not."""
+BASE64_DATA: Final = re.compile(r"[A-Za-z0-9+/\s]*(?:=\s*){0,2}")
+"""A ``data:`` URL's base64, white space anywhere, its padding at its end alone:
+what every reader decodes alike (LibreOffice reads on past a ``=``)."""
+BASE64_OTHERS: Final = re.compile(r"[^A-Za-z0-9+/=]")
+"""What LibreOffice leaves out of base64 before it decodes it."""
+MAIL_MERGE: Final = "mailMerge"
+MAIL_MERGE_SOURCES: Final = frozenset(
+    {"connectString", "query", "dataSource", "headerSource", "udl", "src"}
+)
+"""What names a mail merge's data source, or a connection to one, in
+``w:mailMerge`` and its ``w:odso``."""
 
 
 class FileRefused(DomainkitError):
@@ -1513,6 +1594,9 @@ class _Package:
     reached: set[str] = field(default_factory=set)
     """The parts a relationship names, which a reader may parse as XML: a header,
     a footnote, whatever their content type, or their relationship's, says."""
+    work: int = 0
+    """What reading SVGs did since it last looked at the clock: values, matches,
+    escapes, and each KiB scanned."""
 
     def check(self, file: IO[bytes], kind: Kind, *, nested: bool) -> None:
         """Check the package ``file`` holds as a ``kind`` document.
@@ -1655,11 +1739,16 @@ class _Package:
             return
         fields = _Fields()
         hyperlinks = self.hyperlinks.get(name, set())
+        svg = _is_svg(name, self.types.get(name, "")) or _holds_svg(data)
+        if svg:
+            _check_stylesheets(data)
         try:
             for element in self._elements(data):
                 fields.read(element)
                 _check_formula(element)
                 _check_element(element, hyperlinks)
+                if svg:
+                    self._check_svg(element, 0)
         except FileRefused as refused:
             if refused.code != UNREADABLE or _is_xml(name, self.types.get(name, "")):
                 raise
@@ -1720,24 +1809,37 @@ class _Package:
         XML does, after any white space; one lxml stops reading is passed
         over only if it is binary data (``_binary``, ``_check_part``). It
         is read whole, but never past its stated size; another part (an
-        image) is opened all the same, and not read.
+        image) is opened all the same, and not read. A part a relationship
+        names that is a gzip stream, or an SVG by its name or type that is
+        one, is read as what it inflates to, as LibreOffice reads an SVG
+        compressed (``.svgz``) whatever its name.
 
         Raises:
             FileRefused: It declares a DTD or an entity, or is XML in an
                 encoding a package may not use, or holds more than its
-                stated size.
+                stated size, or inflates past the budget.
         """
         info = self.parts[name]
+        content_type = self.types.get(name, "")
+        xml = _is_xml(name, content_type)
         buffer = io.BytesIO()
         with archive.open(info) as part:
-            if not _is_xml(name, self.types.get(name, "")) and not (
-                name in self.reached and _starts_as_xml(part, buffer)
+            if not xml and not (
+                name in self.reached
+                and (
+                    _starts_as_xml(part, buffer)
+                    or buffer.getvalue()[: len(GZIP)] == GZIP
+                )
             ):
                 return None
             # In chunks, and never past the stated size: read whole at
             # once, zipfile copies what it has so far, four times the part.
             shutil.copyfileobj(part, buffer, CHUNK)
         data = buffer.getvalue()
+        if data.startswith(GZIP) and (not xml or _is_svg(name, content_type)):
+            data = self._inflated(data)
+            if not xml and not _begins_as_xml(data):
+                return None  # Binary data, compressed.
         encoding = _xml_encoding(data)
         if any(declaration.encode(encoding) in data for declaration in DECLARATIONS):
             raise FileRefused(DTD)
@@ -1837,10 +1939,327 @@ class _Package:
                     clock.check()
                 yield element
                 element.clear(keep_tail=True)
-                while element.getprevious() is not None:
-                    del element.getparent()[0]
+                parent = element.getparent()  # None for the root, which a
+                # comment or an instruction may come before.
+                while parent is not None and element.getprevious() is not None:
+                    del parent[0]
         except self.etree.XMLSyntaxError as exc:
             raise FileRefused(DAMAGED, code=UNREADABLE) from exc
+
+    def _inflated(self, data: bytes) -> bytes:
+        """What the gzip stream ``data`` inflates to, counted against the budget.
+
+        Read as LibreOffice reads an SVG so compressed: its header, then
+        its first member's deflated data, its checksum not read. Data that
+        is not gzip after all (an embedded font's first bytes, scrambled)
+        inflates to nothing; a stream cut short, to what it holds.
+
+        Raises:
+            FileRefused: It inflates past what the check may still read,
+                its deflated data is broken, or the time ran out.
+        """
+        start = _gzip_start(data)
+        if start is None:
+            return b""
+        inflater = zlib.decompressobj(-zlib.MAX_WBITS)
+        out = io.BytesIO()
+        pending = data[start:]
+        try:
+            while not inflater.eof:
+                chunk = inflater.decompress(pending, CHUNK)
+                pending = inflater.unconsumed_tail
+                if not chunk:
+                    break
+                self.budget.size -= len(chunk)
+                if self.budget.size < 0:
+                    raise FileRefused(COMPLEX)
+                self.budget.clock.check()
+                out.write(chunk)
+        except zlib.error:
+            raise FileRefused(COMPLEX) from None  # A reader may show part.
+        return out.getvalue()
+
+    def _check_svg(self, element: Any, depth: int) -> None:  # noqa: ANN401 - an lxml element.
+        """Refuse what an SVG's element loads from outside the part.
+
+        Any attribute ``href`` or ``src``, whatever its namespace, and any
+        value an animation gives one (``set``, ``animate``), names a
+        fragment of the document (``#id``) or a ``data:`` URL. CSS anywhere
+        (an attribute, a ``style`` element, any text: the element's own,
+        and what follows its children and the siblings before it, which
+        are dropped once read) names nothing else (``url()``, ``src()``),
+        and imports nothing (``@import``, ``image()``, ``image-set()``).
+
+        Each value, match and escape read, and each KiB scanned, counts
+        towards a look at the clock (``_spend``): a few elements of large
+        values are not read past the deadline.
+
+        Raises:
+            FileRefused: It loads from elsewhere, or a ``data:`` URL holds
+                an SVG that does; or the time ran out.
+        """
+        for name, value in element.attrib.items():
+            if str(name).rpartition("}")[2] in SVG_LINKS:
+                self._check_reference(str(value), depth)
+            self._check_css(str(value), depth)
+        if (
+            str(element.tag).rpartition("}")[2] in SVG_ANIMATIONS
+            and str(element.get("attributeName", "")).rpartition(":")[2] in SVG_LINKS
+        ):
+            for animated in SVG_ANIMATED:
+                for value in str(element.get(animated, "")).split(";"):
+                    self._check_reference(value, depth)
+        if element.text:
+            self._check_css(element.text, depth)
+        for each in itertools.chain(element, element.itersiblings(preceding=True)):
+            self._spend()
+            if each.tail:
+                self._check_css(each.tail, depth)
+
+    def _check_reference(self, value: str, depth: int) -> None:
+        """Refuse a reference an SVG loads but for a fragment or a ``data:`` URL.
+
+        A ``data:`` URL holding an SVG is checked as one, ``SVG_DEPTH`` deep:
+        its base64 decoded, or its text unquoted. One that readers may read
+        otherwise (``base64`` named but not last, as in ``;base64x,``,
+        which LibreOffice decodes from the ``x``; padding before its end) is
+        refused.
+
+        Raises:
+            FileRefused: It names anything else: a file, a share, a page,
+                another scheme; or a ``data:`` URL readers may read otherwise.
+        """
+        self._spend(len(value))
+        target = value.strip(" \t\r\n\f")
+        if not target or target.startswith("#"):
+            return
+        scheme, colon, rest = target.partition(":")
+        if not colon or scheme.lower() != "data":
+            raise FileRefused(EXTERNAL)
+        for data in _data_urls(rest, self._spend):
+            self._check_svg_data(data, depth + 1)
+
+    def _check_css(self, text: str, depth: int) -> None:
+        r"""Refuse CSS that loads anything but a fragment or a ``data:`` URL.
+
+        Read once its comments are left out and its escapes undone, as a
+        reader reads it (``\75 rl(`` is ``url(``).
+
+        Raises:
+            FileRefused: It imports a style sheet, names an image as a
+                string, or names something else in ``url()`` or ``src()``.
+        """
+        self._spend(len(text))
+        if CSS_HINTS.search(text) is None:
+            return
+        css = (
+            _css_unescaped(text, self._spend) if "\\" in text or "/*" in text else text
+        )
+        if CSS_IMPORT.search(css) or CSS_IMAGES.search(css):
+            raise FileRefused(EXTERNAL)
+        for found in CSS_URL.finditer(css):
+            self._check_reference(
+                next(each for each in found.groups() if each is not None), depth
+            )
+
+    def _spend(self, size: int = 0) -> None:
+        """Count a value read, and ``size`` characters scanned; now and then, the clock.
+
+        Raises:
+            FileRefused: The time ran out.
+        """
+        self.work += 1 + size // 1024
+        if self.work >= DEADLINE_EVERY:
+            self.work = 0
+            self.budget.clock.check()
+
+    def _check_svg_data(self, data: bytes, depth: int) -> None:
+        """Check the SVG a ``data:`` URL of an SVG holds, if it holds one.
+
+        A reader takes the data for an SVG by what it holds, whatever its
+        media type says (LibreOffice: ``<svg``, inflated first if it is
+        gzip), and loads what that SVG names: it is checked as the part
+        is. Any other data (a PNG) is a picture, and passes.
+
+        Raises:
+            FileRefused: The SVG loads from elsewhere, declares a DTD, or
+                cannot be read; or SVGs are nested too deep.
+        """
+        if data.startswith(GZIP):
+            data = self._inflated(data)
+        if not _begins_as_xml(data):
+            return
+        try:
+            if not _holds_svg(data):
+                return
+            if depth > SVG_DEPTH:
+                raise FileRefused(COMPLEX)
+            encoding = _xml_encoding(data)
+            if any(each.encode(encoding) in data for each in DECLARATIONS):
+                raise FileRefused(DTD)
+            _check_stylesheets(data)
+            for element in self._elements(data):
+                self._check_svg(element, depth)
+        except FileRefused as refused:
+            if refused.code == UNREADABLE:  # Not the part's: an SVG it holds.
+                raise FileRefused(COMPLEX) from None
+            raise
+
+
+def _gzip_start(data: bytes) -> int | None:
+    """Where the deflated data of the gzip stream ``data`` starts; None if no gzip.
+
+    Past its header (RFC 1952): ten bytes, then an extra field, a name, a
+    comment and a checksum, as its flags say. Deflate is its only method.
+    """
+    if len(data) < 10 or not data.startswith(GZIP) or data[2] != 8:
+        return None
+    flags, at = data[3], 10
+    if flags & GZIP_RESERVED:
+        return None
+    if flags & GZIP_FLAGS["extra"]:
+        at += 2 + int.from_bytes(data[at : at + 2], "little")
+    for flag in (GZIP_FLAGS["name"], GZIP_FLAGS["comment"]):
+        if flags & flag:
+            at = data.find(b"\x00", at) + 1
+            if at == 0:
+                return None
+    if flags & GZIP_FLAGS["crc"]:
+        at += 2
+    return at if at <= len(data) else None
+
+
+def _data_urls(url: str, spend: Callable[[int], None]) -> list[bytes]:
+    """What the ``data:`` URL ``url`` (past ``data:``) holds, as each reader reads it.
+
+    A browser reads its media type and parameters to the first comma, and
+    decodes base64 when ``base64`` is the last parameter, else unquotes
+    it. LibreOffice reads its media type to the first semicolon, wherever
+    the first comma is, and decodes base64 when what follows starts with
+    ``base64``, from past the spaces and commas after it, leaving out what
+    base64 does not write (``image/png;base64x,ICAg...`` decodes from the
+    ``x``). Each reading is returned once; ``spend`` counts what is unquoted.
+
+    Raises:
+        FileRefused: Readers may read it otherwise: ``base64`` named but
+            not last, base64 padded before its end, or with what base64
+            does not write.
+    """
+    header, comma, payload = url.partition(",")
+    named = [each.strip().lower() for each in header.split(";")[1:]]
+    encoded = named[-1:] == ["base64"]
+    if any("base64" in each for each in named[: -1 if encoded else None]):
+        raise FileRefused(EXTERNAL)
+    if not encoded:
+        found = [_unquoted(payload, spend)] if comma else []
+    elif BASE64_DATA.fullmatch(payload) is None:
+        raise FileRefused(EXTERNAL)
+    else:
+        found = [_base64(BASE64_OTHERS.sub("", payload))]
+    media, semicolon, rest = url.lstrip(" ").partition(";")
+    rest = rest.lstrip(" ;")
+    if semicolon and media.startswith("image") and rest.startswith("base64"):
+        letters = BASE64_OTHERS.sub("", rest[len("base64") :].lstrip(" ,"))
+        if "=" in letters.rstrip("="):
+            raise FileRefused(EXTERNAL)
+        letters = letters[: len(letters) - len(letters) % 4]
+        if not encoded or letters != BASE64_OTHERS.sub("", payload)[: len(letters)]:
+            found.append(_base64(letters))
+    return found
+
+
+def _unquoted(text: str, spend: Callable[[int], None]) -> bytes:
+    """``text`` unquoted (``%3C`` is ``<``), ``CHUNK`` characters at a time.
+
+    ``unquote_to_bytes`` loops in Python over each ``%``: each chunk is
+    counted by ``spend``, ended before a ``%`` its last two characters cut.
+    """
+    out = io.BytesIO()
+    at = 0
+    while at < len(text):
+        end = min(at + CHUNK, len(text))
+        cut = text.rfind("%", max(at + 1, end - 2), end)
+        if cut != -1 and end < len(text):
+            end = cut
+        spend(end - at)
+        out.write(unquote_to_bytes(text[at:end]))
+        at = end
+    return out.getvalue()
+
+
+def _base64(letters: str) -> bytes:
+    """The base64 ``letters`` decoded, the last ones padded as they need."""
+    letters = letters.rstrip("=")
+    letters = letters[: len(letters) - (len(letters) % 4 == 1)]
+    return base64.b64decode(letters + "=" * (-len(letters) % 4))
+
+
+def _is_svg(name: str, content_type: str) -> bool:
+    """Whether a part is an SVG by its name or its content type."""
+    return _extension(name) in SVG_EXTENSIONS or content_type.lower().startswith(
+        SVG_TYPE
+    )
+
+
+def _holds_svg(data: bytes) -> bool:
+    """Whether the XML ``data`` holds an SVG, by its bytes, as LibreOffice finds one.
+
+    ``<svg`` anywhere (in a comment too: LibreOffice takes the part for an
+    SVG, and draws an ``image`` at its root), in its encoding or in ASCII
+    (as LibreOffice looks for it), or an element ``svg`` of a prefix
+    (``s:svg``).
+
+    Raises:
+        FileRefused: It is not XML in an encoding a package may use.
+    """
+    encoding = _xml_encoding(data)
+    return (
+        b"<svg" in data
+        or "<svg".encode(encoding) in data
+        or _prefixed_svg(encoding).search(data) is not None
+    )
+
+
+@cache
+def _prefixed_svg(encoding: str) -> re.Pattern[bytes]:
+    """``:svg`` then a space or a tag's end, in ``encoding``: an element ``s:svg``."""
+    ends = b"|".join(re.escape(each.encode(encoding)) for each in " \t\r\n/>")
+    return re.compile(re.escape(":svg".encode(encoding)) + b"(?:" + ends + b")")
+
+
+def _check_stylesheets(data: bytes) -> None:
+    """Refuse an SVG's XML stylesheet (``<?xml-stylesheet href=...?>``).
+
+    Raises:
+        FileRefused: The SVG ``data`` holds one.
+    """
+    if SVG_STYLESHEET.encode(_xml_encoding(data)) in data:
+        raise FileRefused(EXTERNAL)
+
+
+def _begins_as_xml(data: bytes) -> bool:
+    """Whether ``data`` starts as XML: a byte order mark, or ``<`` after white space."""
+    return data.startswith(XML_MARKS) or XML_START.match(data) is not None
+
+
+def _css_unescaped(text: str, spend: Callable[[], None]) -> str:
+    """The CSS ``text`` with its comments left out and its escapes undone.
+
+    ``spend`` counts each escape, undone in Python.
+    """
+
+    def unescaped(found: re.Match[str]) -> str:
+        spend()
+        if found[1] is None:
+            return "" if found[2] in {"\r\n", "\r", "\n", "\f"} else found[2]
+        point = int(found[1], 16)
+        return (
+            chr(point)
+            if 0 < point <= 0x10FFFF and not 0xD800 <= point <= 0xDFFF
+            else "\ufffd"
+        )
+
+    return CSS_ESCAPE.sub(unescaped, CSS_COMMENT.sub("", text))
 
 
 def _starts_as_xml(part: IO[bytes], buffer: IO[bytes]) -> bool:
@@ -1969,13 +2388,32 @@ def _check_element(element: Any, hyperlinks: set[str]) -> None:  # noqa: ANN401 
                 raise FileRefused(EXTERNAL)
 
 
+def _check_mail_merge(element: Any) -> None:  # noqa: ANN401 - an lxml element.
+    """Refuse ``element``, of ``MAIL_MERGE_SOURCES``, if it names a mail merge's source.
+
+    Word connects to it when the document opens (``w:connectString``, an
+    OLE DB connection string; ``w:query``, the file or table it reads;
+    ``w:dataSource``, ``w:headerSource``, and ``w:odso``'s ``w:udl`` and
+    ``w:src``), as it would to an outside relationship's target, which is
+    refused. A mail merge that names none (begun, no recipients chosen)
+    passes, and so does an element of them left empty.
+
+    Raises:
+        FileRefused: It names one.
+    """
+    if any(str(value).strip() for value in element.attrib.values()) and any(
+        _local(each, WORDML) == MAIL_MERGE for each in element.iterancestors()
+    ):
+        raise FileRefused(EXTERNAL)
+
+
 type _Instruction = list[tuple[str, bool]]
 """A field's instruction as read: each piece of text, and whether it is deleted."""
 
 
 @dataclass(slots=True)
 class _Fields:
-    """The Word fields of a part, read one element at a time."""
+    """The Word fields of a part, and its mail merge, read one element at a time."""
 
     open: list[_Instruction] = field(default_factory=list)
     """The instructions of the fields begun and not yet separated or ended."""
@@ -1989,13 +2427,16 @@ class _Fields:
 
         Raises:
             FileRefused: A field runs a program or pulls content in, or its
-                instruction starts with another field, which hides its name.
+                instruction starts with another field, which hides its name;
+                or a mail merge names its data source (``_check_mail_merge``).
         """
         local = _local(element, WORDML)
         if local == "fldSimple":
             for name, value in element.attrib.items():
                 if str(name).endswith("}instr"):
                     _check_field(str(value))
+        elif local in MAIL_MERGE_SOURCES:
+            _check_mail_merge(element)
         elif local in INSTRUCTIONS and self.open:
             self.open[-1].append((element.text or "", local == "delInstrText"))
         elif local == "fldChar":
@@ -2044,22 +2485,29 @@ def _check_instruction(instruction: _Instruction) -> None:
 
 
 def _check_field(instruction: str) -> None:
-    """Refuse a field instruction that runs a program or pulls content in.
+    r"""Refuse a field instruction that runs a program or pulls content in.
 
     A ``HYPERLINK`` field's target is held to what a hyperlink's
     relationship may name: a web page or a mail address, never a file or a
-    share.
+    share. The name is read as Word and LibreOffice read it, in any case:
+    past white space, invisible marks, backslashes and quotes, straight or
+    curly (``\INCLUDEPICTURE``, ``"INCLUDETEXT"``); a quote that closes a
+    quoted name is no argument.
 
     Raises:
         FileRefused: It does, or it links to something else.
     """
-    name = FIELD_NAME.match(instruction)
-    if name is None:
+    found = FIELD_NAME.match(instruction)
+    if found is None:
         return
-    if message := OFFICE_FIELDS.get(name[1].upper()):
+    name = IGNORED.sub("", found[2]).upper()
+    if message := OFFICE_FIELDS.get(name):
         raise FileRefused(message)
-    if name[1].upper() == "HYPERLINK":
-        target = _hyperlink_target(instruction[name.end() :])
+    if name == "HYPERLINK":
+        arguments = instruction[found.end() :]
+        if set(found[1]) & set(FIELD_QUOTES) and arguments[:1] in FIELD_QUOTES:
+            arguments = arguments[1:]
+        target = _hyperlink_target(arguments)
         if target is not None:
             _check_link(target)
 
