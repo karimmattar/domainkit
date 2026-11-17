@@ -34,6 +34,22 @@ and a status.
   ([The file received](docs/resources.md#the-file-received)) (user report
   U7).
 
+### Security
+
+- `placeholders` and `fill_docx` bound the XML they parse, in the
+  process that calls them: `ArchiveLimits(max_xml_bytes=8 MiB,
+  max_nodes=500_000)`, the content types and the parts filled in all,
+  counted before anything is parsed, a paragraph's placeholders before
+  they are read. A Word document of 340 KB that `OfficeCheck` takes,
+  holding 16 MiB of empty paragraphs, took 546 MiB of memory in
+  `placeholders`; it is refused at once, and the XML takes about 150 MiB
+  at most. A document past either bound, which 2.7 filled, is refused:
+  give larger `ArchiveLimits`. The files not filled are inflated a piece
+  at a time, and only as `fill_docx` writes them back, where 2.7 held
+  them all, 256 MiB at most, for the whole call
+  ([The XML parsed](docs/documents.md#the-xml-parsed), ADR 0181) (user
+  report U7).
+
 ## [2.7.0] - 2026-11-17
 
 2.7 answers thirteen of a project's fourteen notes on 2.6 (the last,

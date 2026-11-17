@@ -36,6 +36,26 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.7 to 2.8
+
+2.8 follows up 2.7. Each item of this list says what a project that
+relied on 2.7's behaviour changes, and what to run.
+
+- **A Word document's XML is bounded before it is parsed** (security).
+  `placeholders` and `fill_docx` refuse, with `DocumentError`, a
+  document whose content types and filled parts pass 8 MiB of XML, or
+  500,000 elements, texts, attributes, and placeholders, in all: about
+  350 pages of plain text, fewer where formatting splits it into many
+  runs. 2.7 parsed what `ArchiveLimits` let inflate, 256 MiB, in the
+  process that called it, at up to 90 times its size in memory
+  ([The XML parsed](documents.md#the-xml-parsed)). A project that fills
+  larger templates passes larger bounds, and has the memory for them,
+  about 250 bytes a node:
+  `fill_docx(template, values, limits=ArchiveLimits(max_xml_bytes=16 * 1024 * 1024, max_nodes=1_000_000))`,
+  and the same to `placeholders`. A project that checked limits of its
+  own at upload, in the check's process, may keep doing so, with these
+  bounds: a template refused there is never stored.
+
 ## 2.6 to 2.7
 
 2.7 follows up 2.6. Each item of this list says what a project that

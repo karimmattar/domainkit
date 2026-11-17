@@ -29,8 +29,9 @@ pip install "domainkit[documents,httpclient]"
 
 The decisions are in
 [ADR 0168](adr/0168-render-documents-through-a-port-with-gotenberg-and-fill-them-locally.md)
-and
-[ADR 0176](adr/0176-bound-what-a-pdf-decodes-list-placeholders-fill-drafts-and-clean-less.md).
+,
+[ADR 0176](adr/0176-bound-what-a-pdf-decodes-list-placeholders-fill-drafts-and-clean-less.md),
+and [ADR 0181](adr/0181-decide-a-body-limit-per-request-count-before-the-rules-hand-over-the-file-received-and-bound-the-xml-parsed.md).
 
 ## A first example
 
@@ -237,7 +238,8 @@ prefixes are kept, since Word reads `mc:Ignorable` by prefix. The text
 is read in one walk of each part, so paragraphs nested in text boxes,
 however deep, cost no more than the rest.
 
-The archive is read within `ArchiveLimits`, so a zip bomb costs nothing:
+The archive is read within `ArchiveLimits`, so a zip bomb costs nothing,
+and neither does XML made to cost memory once parsed:
 
 | `ArchiveLimits` field | Default | Bounds |
 | --- | --- | --- |
@@ -246,6 +248,8 @@ The archive is read within `ArchiveLimits`, so a zip bomb costs nothing:
 | `max_part_bytes` | 64 MiB | One file, inflated. |
 | `max_total_bytes` | 256 MiB | Every file, inflated. |
 | `max_ratio` | 100 | A file past 100 KiB may inflate at most this many times its stored size, as Apache POI allows. |
+| `max_xml_bytes` | 8 MiB | The XML parsed, inflated, in all: the content types and the parts filled. *New in 2.8.* |
+| `max_nodes` | 500,000 | The elements, texts, and attributes the XML parsed may make, and the placeholders its paragraphs hold, in all. *New in 2.8.* |
 
 Sizes are checked as the archive states them, before anything is
 inflated. Then each file is inflated no further than its stated size, so
@@ -256,6 +260,63 @@ archive before anything else. Files are stored or deflated, as Word writes
 them; other methods (bzip2, LZMA) are refused. Each file is named by a
 plain relative path (no `/` first, no `..`, `\`, or `:`), and no two
 names are the same once case and Unicode forms are set aside.
+
+### The XML parsed
+
+*New in 2.8.* lxml keeps each element, text, and attribute of a part as
+a node of its own, of 120 to 250 bytes with what `fill_docx` keeps of it:
+some 12 times the bytes of the XML Word or LibreOffice writes, and up to
+90 times for XML written to cost (`<w:p/>` over and over, or attributes
+with nothing in them). A Word document of 340 KB that `OfficeCheck`
+takes, holding 16 MiB of empty paragraphs, took 546 MiB of memory in
+2.7's `placeholders`, in the process that called it. So the XML is
+bounded in all, before it is parsed:
+
+- A part's size, as the archive states it, counts against
+  `max_xml_bytes` before it is inflated; the content types count too.
+- Its nodes are counted on its bytes before it is parsed: each `<`
+  twice (a tag, and the text before it), each `=` once (an attribute).
+  Nothing else makes a node with no DTD and no entity, so lxml never
+  makes more than counted. Each `{{` of a paragraph's text counts once
+  more before its placeholders are read, however its bytes wrote it
+  (`&#123;` too).
+- Past either, the document is refused (`DocumentError`) at once, having
+  parsed nothing past it ([ADR 0181](adr/0181-decide-a-body-limit-per-request-count-before-the-rules-hand-over-the-file-received-and-bound-the-xml-parsed.md)).
+
+At the defaults, the XML takes about 150 MiB of memory at most, whatever
+it holds (measured on the shapes that cost the most), and Word's own XML
+much less: they take a document of a few hundred pages of text, fewer
+where its formatting splits it into many runs. Every other file is
+checked a piece at a time, then inflated only as it is written back,
+one at a time; `placeholders` inflates none of them. A larger template
+needs larger bounds, and the memory for them:
+`ArchiveLimits(max_xml_bytes=16 * 1024 * 1024, max_nodes=1_000_000)`
+takes about twice as much.
+
+To refuse at upload a template that `fill_docx` would refuse, read its
+placeholders in the upload's check, in a process of its own
+([Checks of your own](uploads.md#checks-of-your-own)):
+
+```python
+from typing import IO
+
+from domainkit.documents import DocumentError, placeholders
+from domainkit.http.uploads import DOCX, FileType
+from domainkit.inspection import FileRefused, OfficeCheck
+
+
+def template_check(file: IO[bytes]) -> None:
+    """``OfficeCheck``, then the placeholders, read as ``fill_docx`` reads them."""
+    OfficeCheck("docx")(file)
+    file.seek(0)
+    try:
+        placeholders(file.read())
+    except DocumentError as error:
+        raise FileRefused(str(error)) from None
+
+
+TEMPLATE = FileType(DOCX.content_type, ".docx", DOCX.matches, template_check)
+```
 
 `fill_docx` works on the CPU: in a request, run it in a thread with
 `asyncio.to_thread`, as the first example does.
