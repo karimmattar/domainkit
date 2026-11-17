@@ -1,6 +1,6 @@
 # 0172. Hold admin changes by what they grant, and check before the hold
 
-- Status: Accepted
+- Status: Accepted; amended by [0179](0179-bind-the-admin-acts-groups-by-id-and-keep-a-held-confirmation-to-its-request.md)
 - Date: 2026-11-17
 - Amends: [0154](0154-hold-admin-changes-for-approval-and-show-requests-to-those-they-concern.md),
   [0163](0163-authorize-admin-changes-and-requests-steps-as-acts.md)

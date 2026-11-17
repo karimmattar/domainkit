@@ -1447,6 +1447,13 @@ msgstr "المجموعات"
 msgid "Also holds"
 msgstr "يملك أيضًا"
 
+msgid "Grants"
+msgstr "يمنح"
+
+msgctxt "value"
+msgid "(none)"
+msgstr "(لا شيء)"
+
 msgctxt "held group"
 msgid "{name} ({id}) {grants}"
 msgstr "{name} ({id}) {grants}"

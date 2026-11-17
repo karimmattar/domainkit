@@ -36,6 +36,36 @@ and a status.
   ([The admin API](docs/auth/routes.md#the-admin-api), ADR 0182) (user
   report D2).
 
+- `AUTH["AUTHORIZATIONS"]["NAMED_PERMISSIONS"]`: the permission keys a
+  screen names wherever it would count them, by default
+  `TENANCY.ALL_TENANTS_PERMISSION` where it is set. Approving
+  `auth.set_groups` or `auth.reactivate`, and the admin API's act of a
+  change of groups, show those among what the groups or the user grant
+  on a line of their own ("Grants: companies.administer_company"), where
+  "readers (…9abc) 3 perms" counted them; a list of keys shows them
+  first, so a list cut and counted keeps them. A grant on a single object
+  is counted, whatever its key. The line counts as any other under
+  `WHOLE` ([What a screen shows](docs/auth/actions.md#what-a-screen-shows),
+  ADR 0179) (user report A17).
+
+- `AUTH["STAFF_REUSES_COUNT_AS_PASSWORD_CHECKS"]` (off): a staff
+  member's reuses of a user's old passwords count against the user's
+  own counts of wrong passwords too, so staff acting together share one
+  count of that user's history. Off, as in 2.7, the user's wrong
+  passwords never hold back a staff reset, and staff reuses never refuse
+  the user's checks ([Each change, authorized as one act](docs/auth/routes.md#each-change-authorized-as-one-act))
+  (user report A17).
+
+- `held_groups(names)` (`domainkit.contrib.approvals`): the groups a
+  project's own grant names, held as `auth.set_groups` holds them, by id
+  with the keys they grant and their grants on objects (`HeldGroup`), to
+  compare when the grant is made. `domainkit.contrib.auth.integration`
+  names what the screens share (`group_item`, `list_item`,
+  `field_label`, `named_permissions`, `named_first`, `grants_digest`),
+  and `held_elsewhere` and `refuse_held_elsewhere` (`auth.actions`) let
+  an app that holds acts keep a held authorization to its request ([Grants made elsewhere](docs/contrib/approvals.md#grants-made-elsewhere))
+  (user report A17).
+
 ### Changed
 
 - The layer rules let the infrastructure layer import
@@ -56,6 +86,13 @@ and a status.
 - `GET /users/names` strips the names it joins: a first or last name of
   white space alone no longer makes a name of spaces, and a padded one
   is answered without its padding (user report D2).
+
+- The admin API's act of a change of groups shows each group added as
+  approvals does, "Adds: readers (…9abc) 3 perms + 2 object grants",
+  where it showed the names alone. With `WHOLE` on, fewer groups fit one
+  act: add them in steps. A username, an address, or a number another
+  user has is refused at the twin (`409`), before the staff member
+  confirms the change (user report A17).
 
 ### Fixed
 
@@ -94,6 +131,38 @@ and a status.
   2.7 took it with no relationship
   ([Checking documents](docs/uploads.md#checking-documents), ADR 0175)
   (user report U8).
+
+- The admin API's act binds each group a change adds by its id, the keys
+  it grants, and its grants on objects, and each it takes away by its
+  id, as approvals' `auth.set_groups` does. It bound their names: with
+  `AUTH.AUTHORIZATIONS.HELD_TTL`, a group renamed while the change
+  waited, and another named so, was added with the confirmation kept
+  for the first, though the phone had shown "Adds: readers". An
+  authorization of a change of groups asked for under 2.7 is refused
+  once; every other still binds ([upgrading.md](docs/upgrading.md#27-to-28),
+  ADR 0179) (user report A17).
+
+- An authorization held for approval serves its own request alone: a
+  call whose command changed since (a user made active again who was put
+  in a group meanwhile) is refused (`403 action_not_authorized`) where it
+  would wait on or submit another request, and an approved request it is
+  not kept for, or whose time is up, is passed over. It submitted one, and
+  the authorization held for the first, which still waited, made it once
+  approved (ADR 0179) (user report A17).
+
+- `auth.set_staff` and `auth.reactivate` hold what else the call sets
+  (`values`: an address, a number, a flag), which the approver sees and
+  the approval binds. They held the grant alone, and the approval was
+  spent by a call that also set a number no approver saw. A request of
+  2.7 is still found and spent by a call that sets nothing else (ADR
+  0179) (user report A17).
+
+- `PATCH /users/{id}` and `POST /users` refuse a username, an address
+  that identifies users, or a number another user has before the
+  `on_admin_change` checks: the commit refused it after approvals' hold
+  had spent the approval. A value the user holds already is not checked
+  again; one taken between the check and the commit is still refused by
+  the commit, the approval spent (ADR 0179) (user report A17).
 
 ## [2.7.0] - 2026-11-17
 

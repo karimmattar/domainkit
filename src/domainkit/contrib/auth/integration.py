@@ -13,9 +13,24 @@ links what confirms it (``link_action_authorization``, and finds it again
 by that link: ``linked_action_authorization``), confirms it with what it
 proved (``confirm_action_with``), and hands over what it confirmed in
 another request (``confirmed_action_authorization``).
+
+An app that shows a grant on a screen, as approvals shows the admin API's
+changes it holds, names it as the admin API's act does (since 2.8): a group
+in a few words (``group_item``), a name cut to a list's item
+(``list_item``), a user's field (``field_label``), the keys
+``AUTH.AUTHORIZATIONS.NAMED_PERMISSIONS`` names (``named_permissions``,
+``named_first``), and grants on objects by their digest (``grants_digest``).
 """
 
 from ._http import PASSWORD_MAX_LENGTH
+from ._shown import (
+    field_label,
+    grants_digest,
+    group_item,
+    list_item,
+    named_first,
+    named_permissions,
+)
 from .access import impersonated, proof_of
 from .actions import (
     ActionAuthorization,
@@ -127,16 +142,22 @@ __all__ = [
     "confirm_transaction_with",
     "confirmed_action_authorization",
     "end_device_logins",
+    "field_label",
     "first_use_after_code",
     "gates_passed",
+    "grants_digest",
+    "group_item",
     "impersonated",
     "issue_login",
     "language_argument",
     "language_of",
     "link_action_authorization",
     "linked_action_authorization",
+    "list_item",
     "login_digest",
     "mail_user",
+    "named_first",
+    "named_permissions",
     "needs_second_factor",
     "note_login_device",
     "note_login_sign_in",

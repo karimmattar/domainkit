@@ -205,6 +205,7 @@ Maker-checker: commands that run only once other people approve them.
 - `fingerprint`: SHA-256 of the action and the arguments, as canonical JSON (64 hex digits).
 - `guard`: Register the guard of a use case decorated `requires_approval(action)`.
 - `guards`: Every registered guard, by action.
+- `held_groups`: The groups `names` names, as a command holds them: by id, with their grants.
 - `record_approval`: Approve a request, asking for no authorization: for the project's own code.
 - `record_cancellation`: Withdraw a request, asking for no authorization: for the project's own code.
 - `record_rejection`: Reject a request, asking for no authorization: for the project's own code.

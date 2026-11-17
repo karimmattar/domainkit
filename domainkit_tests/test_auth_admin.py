@@ -2027,6 +2027,158 @@ def test_the_users_counts_and_a_staff_members_reuses_hold_neither_back(
     assert logged_in.status_code == 200, logged_in.json()
 
 
+def test_staff_reuses_can_count_against_the_users_own_checks(api: Api) -> None:
+    """``STAFF_REUSES_COUNT_AS_PASSWORD_CHECKS``: one count per user, both ways.
+
+    Opted in, a staff member's reuses of Dave's old passwords count against
+    Dave's own count of wrong passwords too: two staff members acting
+    together share it, past it Dave's own checks wait, and Dave's own wrong
+    checks hold back a staff reset of his password. His login, counted
+    apart (no ``PASSWORD_CHECKS_COUNT_AS_LOGINS``), is not refused (user
+    report A17).
+    """
+    client = api(
+        PASSWORD_HISTORY=2,
+        LOGIN_RATE="3/minute",
+        STAFF_REUSES_COUNT_AS_PASSWORD_CHECKS=True,
+    )
+    ann = staff("ann", *ADMIN_PERMISSIONS)
+    bea = staff("bea", *ADMIN_PERMISSIONS)
+    dave = create_user("dave", password=NEW_PASSWORD)
+    bob = create_user("bob", password=NEW_PASSWORD)
+    hijacked = token_for("bob")
+    own = {"old_password": NEW_PASSWORD, "new_password": "Another-pass-77"}
+    wrong = {"old_password": "nope-nope-1", "new_password": "Another-pass-77"}
+
+    def reuse(headers: Headers, user: UUID) -> int:
+        return client.post(
+            f"{ADMIN}/users/{user}/password",
+            json={"password": NEW_PASSWORD},
+            headers=headers,
+        ).status_code
+
+    together = [reuse(ann, dave), reuse(bea, dave), reuse(ann, dave), reuse(bea, dave)]
+    held_back = client.post("/auth/password", json=own, headers=token_for("dave"))
+    logged_in = client.post(
+        "/auth/login", json={"username": "dave", "password": NEW_PASSWORD}
+    )
+    checks = [
+        client.post("/auth/password", json=wrong, headers=hijacked).status_code
+        for _ in range(3)
+    ]
+    reset = client.post(
+        f"{ADMIN}/users/{bob}/password",
+        json={"password": "Brand-new-pass-99"},
+        headers=ann,
+    )
+
+    assert together == [422, 422, 422, 429]
+    assert error(held_back, 429)[0] == "rate_limited"
+    assert logged_in.status_code == 200, logged_in.json()
+    assert checks == [400, 400, 400]
+    assert error(reset, 429)[0] == "rate_limited"
+
+
+def test_a_value_another_user_has_is_refused_before_the_checks(api: Api) -> None:
+    """A taken username, address, or number: ``409`` before ``on_admin_change``.
+
+    The checks may hold the change for approval and spend it (approvals'
+    hold); a value the commit then refused spent the approval for nothing
+    (user report A17). The address counts in any case, where it identifies
+    users; one that does not identify users may be shared, as before.
+    """
+    from domainkit.contrib.auth.gates import AdminChange, on_admin_change
+
+    client = api(IDENTIFIERS=("username", "email", "mobile_number"))
+    headers = staff("admin", *ADMIN_PERMISSIONS)
+    create_user("carol", email="carol@example.com", mobile_number="+447700900123")
+    bob = create_user("bob")
+    checked: list[str] = []
+
+    async def recorded(actor: Any, target: Any, change: AdminChange) -> None:  # noqa: ANN401
+        checked.append(change.kind)
+
+    on_admin_change(recorded, domain="auth")
+    path = f"{ADMIN}/users/{bob}"
+    refused = [
+        client.patch(path, json={"fields": fields}, headers=headers)
+        for fields in (
+            {"email": "Carol@Example.com"},
+            {"mobile_number": "+44 7700 900123"},
+        )
+    ]
+    created = [
+        client.post(f"{ADMIN}/users", json=body, headers=headers)
+        for body in (
+            {"username": "CAROL"},
+            {"username": "dan", "fields": {"email": "carol@example.com"}},
+        )
+    ]
+    own = client.patch(
+        path, json={"fields": {"email": "bob@example.com"}}, headers=headers
+    )
+    again = client.patch(
+        path, json={"fields": {"email": "bob@example.com"}}, headers=headers
+    )
+
+    assert [error(each, 409)[0] for each in refused] == [
+        "email_taken",
+        "mobile_number_taken",
+    ]
+    assert [error(each, 409)[0] for each in created] == [
+        "username_taken",
+        "email_taken",
+    ]
+    assert own.status_code == 200, own.json()
+    assert again.status_code == 200, again.json()
+    assert checked == ["update", "update"]
+
+
+def test_an_unchanged_address_shared_from_before_is_sent_again(api: Api) -> None:
+    """A form sent whole keeps the address Bob shares with Carol, in any case.
+
+    Their accounts were made before the address identified users; changing
+    Bob's first name re-sends his address, which is not checked again, as
+    at the commit (found in review of user report A17).
+    """
+    api()
+    headers = staff("admin", *ADMIN_PERMISSIONS)
+    create_user("carol", email="shared@example.com")
+    bob = create_user("bob", email="shared@example.com", mobile_number="+447700900123")
+    client = api(IDENTIFIERS=("username", "email"))
+
+    edited = client.patch(
+        f"{ADMIN}/users/{bob}",
+        json={
+            "fields": {
+                "email": "Shared@example.com",
+                "mobile_number": "+44 7700 900123",
+                "first_name": "Bob",
+            }
+        },
+        headers=headers,
+    )
+
+    assert edited.status_code == 200, edited.json()
+    assert edited.json()["fields"]["first_name"] == "Bob"
+
+
+def test_an_address_that_identifies_no_one_may_be_shared(api: Api) -> None:
+    """Without ``email`` among ``AUTH.IDENTIFIERS``, staff set a shared address."""
+    client = api()
+    headers = staff("admin", *ADMIN_PERMISSIONS)
+    create_user("carol", email="carol@example.com")
+    bob = create_user("bob")
+
+    shared = client.patch(
+        f"{ADMIN}/users/{bob}",
+        json={"fields": {"email": "carol@example.com", "first_name": ""}},
+        headers=headers,
+    )
+
+    assert shared.status_code == 200, shared.json()
+
+
 def test_nothing_is_compared_while_a_check_refuses_the_change(api: Api) -> None:
     """A change the project refuses answers the same whatever the password.
 
