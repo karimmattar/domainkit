@@ -296,6 +296,13 @@ RESULT: Final = "\x00"
 """Stands for a field's result, whose own fields are not its instruction."""
 FIELD_NAME: Final = re.compile(r"^\s*([A-Za-z]+)")
 """A field instruction's name: the letters it starts with, whatever follows."""
+FIELD_ARGUMENT: Final = re.compile(r'"((?:[^"\\]|\\.)*)"?|(\S+)')
+"""A field's argument: quoted (to the closing quote, or the end), or a word."""
+FIELD_SWITCH: Final = re.compile(r"\\[^\\\s]")
+r"""A field's switch: a backslash and one character (``\o``, ``\*``)."""
+HYPERLINK_SWITCHES: Final = frozenset({"l", "o", "t", "*"})
+"""Switches of ``HYPERLINK`` that take an argument: an anchor, a tip, a frame, a
+format."""
 FORMULA_CALLS: Final = re.compile(r"\b(?:WEBSERVICE|RTD|IMAGE)\s*\(", re.IGNORECASE)
 """Excel functions that reach outside the workbook when the sheet calculates."""
 FORMULA_QUOTED: Final = re.compile(r""""(?:[^"]|"")*"|'(?:[^']|'')*'""")
@@ -332,10 +339,13 @@ OFFICE_NAMESPACE: Final = "{urn:schemas-microsoft-com:office:office}"
 VML_NAMESPACE: Final = "{urn:schemas-microsoft-com:vml}"
 RELID: Final = f"{OFFICE_NAMESPACE}relid"
 """``o:relid``: VML's own way to name a relationship (a picture's, a fill's)."""
-VML_PICTURE: Final = f"{VML_NAMESPACE}imagedata"
+VML_PICTURES: Final = frozenset(
+    f"{VML_NAMESPACE}{name}" for name in ("imagedata", "fill", "stroke")
+)
+"""VML's elements that draw an image: a picture, a fill, a stroke."""
 VML_SOURCES: Final = (f"{OFFICE_NAMESPACE}href", f"{OFFICE_NAMESPACE}althref")
-"""Where a VML picture names its image's URL, besides the ``src`` any VML element
-(a picture, a fill, a stroke) may name one in."""
+"""Where a VML picture, fill or stroke names its image's URL, besides the ``src``
+any VML element may name one in."""
 INSTRUCTIONS: Final = frozenset({"instrText", "delInstrText"})
 """What holds a field's instruction: as written, and as a tracked deletion left it."""
 HYPERLINK_ELEMENTS: Final = frozenset(
@@ -867,6 +877,8 @@ class _Pdf:
     def _decode(self, stream: Any) -> None:  # noqa: ANN401 - a pypdf stream.
         """Count what ``stream`` decodes to, within what is left of ``max_content``.
 
+        The clock is looked at once it is decoded, however it was.
+
         Raises:
             FileRefused: It decodes to more, or the time ran out.
         """
@@ -894,6 +906,7 @@ class _Pdf:
         self.content += size
         if self.content > self.check_of.max_content:
             raise FileRefused(COMPLEX)
+        self.clock.check()  # pypdf's decoding looks at no clock.
 
     def _inflated(self, data: bytes, times: int, left: int) -> int:
         """The bytes ``data`` inflated ``times`` makes, counted, never held whole.
@@ -1424,8 +1437,8 @@ def _check_element(element: Any, hyperlinks: set[str]) -> None:  # noqa: ANN401 
     ``hyperlinks`` are the ids of the part's relationships to outside the
     package, which only a hyperlink may name: a picture or an object that
     names one (by ``r:id``, or VML's ``o:relid``) is fetched from there. A
-    VML element is fetched from its ``src`` too, and a VML picture from
-    its ``o:href`` or ``o:althref``.
+    VML element is fetched from its ``src`` too, and a VML picture, fill or
+    stroke from its ``o:href`` or ``o:althref``.
 
     Raises:
         FileRefused: It is one of them.
@@ -1437,7 +1450,7 @@ def _check_element(element: Any, hyperlinks: set[str]) -> None:  # noqa: ANN401 
         raise FileRefused(EXTERNAL)  # A picture or an object linked, not held.
     if tag.startswith(VML_NAMESPACE) and any(
         str(element.get(name) or "").strip()
-        for name in ("src", *(VML_SOURCES if tag == VML_PICTURE else ()))
+        for name in ("src", *(VML_SOURCES if tag in VML_PICTURES else ()))
     ):
         raise FileRefused(EXTERNAL)  # A picture or a fill from a URL or a file.
     if hyperlinks and tag.rpartition("}")[2] not in HYPERLINK_ELEMENTS:
@@ -1524,12 +1537,44 @@ def _check_instruction(instruction: _Instruction) -> None:
 def _check_field(instruction: str) -> None:
     """Refuse a field instruction that runs a program or pulls content in.
 
+    A ``HYPERLINK`` field's target is held to what a hyperlink's
+    relationship may name: a web page or a mail address, never a file or a
+    share.
+
     Raises:
-        FileRefused: It does.
+        FileRefused: It does, or it links to something else.
     """
     name = FIELD_NAME.match(instruction)
-    if name is not None and (message := OFFICE_FIELDS.get(name[1].upper())):
+    if name is None:
+        return
+    if message := OFFICE_FIELDS.get(name[1].upper()):
         raise FileRefused(message)
+    if name[1].upper() == "HYPERLINK":
+        target = _hyperlink_target(instruction[name.end() :])
+        if target is not None:
+            _check_link(target)
+
+
+def _hyperlink_target(arguments: str) -> str | None:
+    r"""The target ``HYPERLINK``'s ``arguments`` name; None for an anchor alone.
+
+    Its first argument that is neither a switch (``\o``, a backslash and
+    one character) nor a switch's own (``\l "anchor"``, ``\o "tip"``,
+    ``\t "frame"``, ``\* MERGEFORMAT``), quoted or not; a backslash in
+    quotes escapes the character after it. A share (``\\host\share``) is
+    no switch.
+    """
+    skip = False
+    for found in FIELD_ARGUMENT.finditer(arguments):
+        quoted, bare = found[1], found[2]
+        if bare is not None and FIELD_SWITCH.fullmatch(bare):
+            skip = bare[1:].lower() in HYPERLINK_SWITCHES
+            continue
+        if skip:
+            skip = False
+            continue
+        return re.sub(r"\\(.)", r"\1", quoted) if quoted is not None else bare
+    return None
 
 
 # A process of its own ----------------------------------------------------------------

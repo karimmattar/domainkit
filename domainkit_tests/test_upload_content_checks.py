@@ -196,6 +196,28 @@ def test_content_is_counted_within_the_checks_time(
     assert looks > 3
 
 
+def test_the_time_is_read_once_pypdf_has_decoded_a_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stream pypdf decoded past the deadline refuses: pypdf looks at no clock."""
+    import pypdf.filters
+
+    data = paged([0], stream(b"20" * 10 + b">", "/ASCIIHexDecode"))
+    decode = pypdf.filters.decode_stream_data
+    late = False
+    real = time.monotonic
+
+    def slow(stream: object) -> bytes:
+        nonlocal late
+        late = True
+        return decode(stream)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(pypdf.filters, "decode_stream_data", slow)
+    monkeypatch.setattr(time, "monotonic", lambda: real() + (100.0 if late else 0.0))
+
+    assert verdict(PdfCheck(), data) == COMPLEX
+
+
 def test_a_bound_on_content_is_positive() -> None:
     """``max_content`` as the others."""
     with pytest.raises(ValueError, match="max_content is more than 0"):
@@ -267,6 +289,44 @@ def test_a_field_never_ended_or_deleted_is_read_too(body: str, expected: str) ->
     assert verdict(OfficeCheck("docx"), office(main=document(body))) == expected
 
 
+def instruction(text: str) -> str:
+    """A field of ``text``, as Word writes one: begun, instructed, shown, ended."""
+    return field(
+        BEGIN,
+        f'<w:instrText xml:space="preserve">{text}</w:instrText>',
+        SEPARATE,
+        "<w:t>shown</w:t>",
+        END,
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (instruction('HYPERLINK "file://host/share/x"'), EXTERNAL),
+        (instruction('HYPERLINK "\\\\\\\\host\\\\share\\\\x"'), EXTERNAL),
+        (instruction("HYPERLINK \\\\host\\share"), EXTERNAL),
+        (instruction('HYPERLINK "other.docx"'), EXTERNAL),
+        (instruction('HYPERLINK \\o "https://a.example" "file:///c:/x"'), EXTERNAL),
+        (instruction('HYPERLINK "https://a.example/" \\o "file:///tip"'), "ok"),
+        (instruction('HYPERLINK "mailto:a@b.example"'), "ok"),
+        (instruction('HYPERLINK \\l "chapter_2"'), "ok"),
+        (instruction('HYPERLINK \\* MERGEFORMAT "https://a.example/"'), "ok"),
+        (
+            "<w:p><w:fldSimple w:instr='HYPERLINK \"file:///c:/x\"'/></w:p>",
+            EXTERNAL,
+        ),
+    ],
+)
+def test_a_hyperlink_field_links_as_a_hyperlink_may(body: str, expected: str) -> None:
+    """To a web page or a mail address, as a hyperlink's relationship may.
+
+    A file or a share is refused, as such a relationship is: a converter
+    may fetch it. An anchor in the document is no target.
+    """
+    assert verdict(OfficeCheck("docx"), office(main=document(body))) == expected
+
+
 def picture(element: str, *namespaces: str) -> str:
     """A paragraph holding a VML shape of ``element``."""
     declared = " ".join((VML, *namespaces))
@@ -293,6 +353,9 @@ IMAGE: Final = (f"{R}image", "media/x.png")
         (f'<v:imagedata {RELS} r:id="rId2"/>', "ok"),
         (f'<v:imagedata {OFFICE} o:href="https://a.example/x.png"/>', EXTERNAL),
         (f'<v:imagedata {OFFICE} o:althref="file:///c:/x.png"/>', EXTERNAL),
+        (f'<v:fill {OFFICE} o:href="https://a.example/x.png" type="frame"/>', EXTERNAL),
+        (f'<v:fill {OFFICE} o:althref="https://a.example/x.png"/>', EXTERNAL),
+        (f'<v:stroke {OFFICE} o:href="https://a.example/x.png"/>', EXTERNAL),
         (f'<v:shape {OFFICE} o:href="https://a.example/"/>', "ok"),
     ],
 )
