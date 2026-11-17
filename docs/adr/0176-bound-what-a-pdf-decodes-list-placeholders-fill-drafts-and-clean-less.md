@@ -143,22 +143,33 @@ worked in 2.6 is refused but a PDF past the new bounds.
   what another filter inflated; and no filter has a predictor, which
   belongs to images and cross-reference streams. What the streams
   decoded in Python store is counted, per call, and bounded in all at
-  `max_decoded / 32` (1 MiB: 0.6 seconds and 100 MiB at worst,
-  measured). `[/ASCII85Decode /FlateDecode]` is read;
+  `max_decoded / 32` (1 MiB), with LZW at `max_decoded / 512` (64 KiB),
+  since its clear codes cost pypdf 11 seconds a MiB: about a second and
+  100 MiB at worst, measured. `[/ASCII85Decode /FlateDecode]` is read;
   `[/FlateDecode /ASCII85Decode]` is refused in a millisecond, and so is
   the 64-stream file once two streams are decoded. The judgement is one
   function (`filters_refused`), and the per-call count one object
   (`DecodeBudget`), for an upload check to use too.
-- **The cross-reference sections** are counted from the file's bytes
-  before pypdf opens it, following `/Prev` and `/XRefStm` from the last
-  `startxref` as pypdf does: 8 at most, one for the file and one for
-  each save added to it (`xref_sections_past`). Their streams list
+- **The cross-reference sections** are counted where pypdf reads them:
+  a subclass of its reader (`bounded_reader`) counts each call of
+  pypdf's own `_read_xref` and `_read_pdf15_xref_stream`, which a
+  hybrid file's `/XRefStm` calls too, and refuses the one past 32 before
+  reading it. 32: one for the file and one for each save added to it,
+  two in a hybrid file, as Acrobat saves a form filled or signed. A
+  first version read the links from the file's bytes, and a third
+  review fooled it with `/P#72ev`, a comment, and a string holding
+  `stream`: pypdf parses PDF, a regex does not. The methods are pypdf's
+  private ones, so a test checks that each runs. The same subclass
+  refuses to rebuild a damaged file's table (`_rebuild_xref_table`),
+  which reads the whole file and decodes every object stream with
+  whatever filters it has, outside any budget: 1000 of them took 65
+  seconds, and the file was accepted. Their streams list
   65,536 entries in all, or one for each 512 bytes of `max_decoded`
   where that is more (`xref_stream_maximum_entries`), and each decodes
   to 8 bytes an entry at most while the file is opened, an entry of a
-  file under 4 GB and its predictor's byte (512 KiB). Eight sections,
-  each as large and slow as that allows, took 0.8 seconds. A file past
-  any of these is refused at once.
+  file under 4 GB and its predictor's byte (512 KiB). Thirty-two
+  sections, each as large and slow as that allows, took 3.8 seconds. A
+  file past any of these is refused at once.
 - **`renderer()` with no renderer raises `RendererNotConfigured`**, a
   `RendererUnavailable` and an `ImproperlyConfigured`: the HTTP layer
   answers it 503 `renderer_unavailable`, with the same detail, and code
@@ -208,8 +219,9 @@ worked in 2.6 is refused but a PDF past the new bounds.
 - PDFs whose content or objects use an image's filter, a stage run in
   Python after another filter, such stages on more than 1 MiB in all, or
   a predictor are refused, as are object streams that cannot be decoded,
-  files of more than 65,536 cross-reference entries, and files saved
-  more than seven times over. PDFs of the
+  files of more than 65,536 cross-reference entries, files saved more
+  than 31 times over (15 for a hybrid file), and damaged files whose
+  table pypdf would rebuild. PDFs of the
   early 1990s used `[/ASCII85Decode /LZWDecode]`: they are refused too.
 - `page_sizes` decodes every object stream of the file up front, where
   it decoded those of the page tree only; the work is bounded by the

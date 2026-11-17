@@ -68,12 +68,14 @@ and a status.
   first, and it is refused unread unless its filters are those a page's
   content uses, one of those four at most, first, with no predictor
   (deflate then ASCII85 took a 31 KB PDF to 2.8 GB); and the streams
-  decoded in Python store `max_decoded / 32` bytes in all (64 small ones
-  took 17 seconds a call). The cross-reference sections are counted from
-  the file's bytes first, 8 at most (500 took pypdf 47 seconds); their
-  streams list 65,536 entries at most, or one for each 512 bytes of
-  `max_decoded`, each decoded to 8 bytes an entry; a stream that cannot
-  be decoded is refused. A page laid over is written back
+  decoded in Python store `max_decoded / 32` bytes in all, with LZW
+  `max_decoded / 512` (64 small ones took 17 seconds a call, LZW clear
+  codes 11 seconds a MiB). The cross-reference sections are counted where
+  pypdf reads them, 32 at most (500 took pypdf 47 seconds); their streams
+  list 65,536 entries at most, or one for each 512 bytes of
+  `max_decoded`, each decoded to 8 bytes an entry. A damaged file whose
+  table pypdf would rebuild, decoding every object stream unchecked, is
+  refused, and so is a stream that cannot be decoded. A page laid over is written back
   deflated. A PDF that decodes past 32 MiB, which 2.6 laid over, is
   refused: raise `max_decoded` for it
   ([What a PDF may decode](docs/documents.md#what-a-pdf-may-decode),

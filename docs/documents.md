@@ -385,16 +385,18 @@ refused, never decoded, unless:
 - `LZWDecode`, `RunLengthDecode`, `ASCIIHexDecode`, or `ASCII85Decode`
   comes first, if at all, and only one of them. pypdf decodes these in
   Python: ASCII85's `z` costs it 94 MiB of memory for each MiB it reads,
-  and LZW 0.6 seconds. First, they read the stream as it is stored, so
+  and LZW 0.6 seconds, or 11 of nothing but clear codes. First, they
+  read the stream as it is stored, so
   `[/ASCII85Decode /FlateDecode]`, as ReportLab writes, is decoded; after
   deflate, they would read what deflate inflated, so
   `[/FlateDecode /ASCII85Decode]` is refused: a test PDF of 31 KB took
   2.8 GB that way.
 - the streams decoded so store `max_decoded / 32` bytes in all, as the
-  call counts them: 1 MiB by default, which pypdf decodes in 0.6 seconds
-  and 100 MiB at worst. A file of 64 such streams, each under the bound,
-  is refused once they pass it, in a fraction of a second, where each
-  call took 5 seconds.
+  call counts them, and those decoded with LZW `max_decoded / 512`: 1
+  MiB and 64 KiB by default, which pypdf decodes in about a second and
+  100 MiB at worst. A file of 64 such streams, each under the bound, is
+  refused once they pass it, in a fraction of a second, where each call
+  took 17 seconds.
 - no filter has a predictor (`/DecodeParms` with `/Predictor`). A
   predictor is for images and cross-reference streams; pypdf runs it in
   Python, at up to 0.3 seconds a megabyte.
@@ -424,14 +426,19 @@ their own, and a limit lower than `max_decoded` that your code set with
 Bounded otherwise:
 
 - **The cross-reference sections**, which pypdf reads as it opens a
-  file, one for the file and one for each save added to it. They are
-  counted from the file's bytes first, and a file that chains more than
-  8 (by `/Prev` and `/XRefStm`) is refused unread: pypdf follows any
-  number, and took 47 seconds over 500 with predictors. Their streams
-  list 65,536 entries in all, or one for each 512 bytes of `max_decoded`
-  where that is more, and each decodes to 8 bytes an entry at most (512
-  KiB by default); a predictor on each runs in Python. Eight of them,
-  each as large and slow as allowed, took 0.8 seconds.
+  file: one for the file and one for each save added to it, two in a
+  hybrid file (a form filled or signed in Acrobat). pypdf follows any
+  number, and took 47 seconds over 500 with predictors. They are counted
+  where pypdf reads them, so no way of writing `/Prev` hides one, and a
+  file that chains more than 32 is refused before pypdf reads the next.
+  Their streams list 65,536 entries in all, or one for each 512 bytes of
+  `max_decoded` where that is more, and each decodes to 8 bytes an entry
+  at most (512 KiB by default); a predictor on each runs in Python.
+  Thirty-two of them, each as large and slow as allowed, took 3.8
+  seconds.
+- **A damaged file**, whose table pypdf would rebuild by reading the
+  whole file, decoding every object stream with whatever filters it has:
+  1000 of them took 65 seconds. It is refused instead.
 - **Parsing the overlay.** pypdf reads the overlay's drawing into
   operators to move it onto the page, at far more than its bytes: 2 MiB
   of drawing operators took 8 seconds and 200 MiB, without a profiler.

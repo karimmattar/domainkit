@@ -32,7 +32,7 @@ from pypdf.generic import (
 
 from domainkit.documents import DocumentError, overlay_pdf, page_sizes
 from domainkit.documents import pdf as pdf_module
-from domainkit.documents.pdf import xref_sections_past
+from domainkit.documents.pdf import Tally, bounded_reader
 
 ROTATIONS: Final = (0, 90, 180, 270, -90, 450)
 KiB: Final = 1024
@@ -193,11 +193,18 @@ def streamed(
     return bytes(out + f"startxref\n{start}\n%%EOF\n".encode())
 
 
-def chained(sections: int, *, streams: bool = False, hybrid: bool = False) -> bytes:
+def chained(
+    sections: int,
+    *,
+    streams: bool = False,
+    hybrid: bool = False,
+    link: str = "/Prev {at}",
+) -> bytes:
     """A one-page PDF saved ``sections`` times, each save a section linked by ``/Prev``.
 
     Tables, or ``streams``; ``hybrid`` gives the last table a stream of its
-    own by ``/XRefStm``, as a hybrid file does: one section more.
+    own by ``/XRefStm``, as a hybrid file does: one section more. ``link``
+    writes the link to the section before, as PDF lets it be written.
     """
     out = bytearray(b"%PDF-1.7\n")
     offsets = []
@@ -240,7 +247,7 @@ def chained(sections: int, *, streams: bool = False, hybrid: bool = False) -> by
             table = f"0 4\n0000000000 65535 f \n{rows}" if save == 0 else "0 0\n"
             trailer = f"/Size {number + 1} /Root 1 0 R{previous}{extra}"
             out += f"xref\n{table}trailer\n<< {trailer} >>\n".encode()
-        previous = f" /Prev {at}"
+        previous = " " + link.format(at=at)
     return bytes(out + f"startxref\n{at}\n%%EOF\n".encode())
 
 
@@ -728,48 +735,111 @@ def test_cross_reference_streams_list_a_bounded_number_of_entries(
     assert page_sizes(streamed(padding=6_000), max_decoded=512_000) == [(300.0, 400.0)]
 
 
-def test_a_chain_of_cross_reference_sections_is_bounded() -> None:
-    """Eight sections, as a file and its saves make, and not one more.
+@pytest.mark.parametrize(
+    "link",
+    [
+        "/Prev {at}",
+        "/P#72ev {at}",
+        "/Prev%c\n{at}",
+        "/Note (stream startxref) /Prev {at}",
+    ],
+)
+def test_a_chain_of_cross_reference_sections_is_bounded(link: str) -> None:
+    """32 sections, as a file and the saves added to it make, and not one more.
 
     pypdf follows every ``/Prev`` and ``/XRefStm``: 500 sections of 1 MiB
-    took it 0.8 s and 540 MiB, with a predictor 47 s. The chain is read
-    from the file's bytes first, and refused unread.
+    took it 0.8 s and 540 MiB, with a predictor 47 s. They are counted
+    where pypdf reads them, so a name escaped, a comment, or a string that
+    looks like a keyword hides none.
     """
-    assert page_sizes(chained(8)) == [(300.0, 400.0)]
-    assert page_sizes(chained(8, streams=True)) == [(300.0, 400.0)]
-    assert page_sizes(chained(7, hybrid=True)) == [(300.0, 400.0)]
-    for document in (chained(9), chained(9, streams=True), chained(8, hybrid=True)):
+    assert page_sizes(chained(32, link=link)) == [(300.0, 400.0)]
+    assert page_sizes(chained(32, streams=True, link=link)) == [(300.0, 400.0)]
+    assert page_sizes(chained(31, hybrid=True, link=link)) == [(300.0, 400.0)]
+    for document in (
+        chained(33, link=link),
+        chained(33, streams=True, link=link),
+        chained(32, hybrid=True, link=link),
+    ):
         with pytest.raises(DocumentError) as refused:
             overlay_pdf(document, pdf(Page(width=300, height=400)))
         assert str(refused.value) == (
-            "The document chains more than 8 cross-reference sections: one for "
+            "The document chains more than 32 cross-reference sections: one for "
             "the file, and one for each save added to it."
         )
 
-    long = chained(500)
+    long = chained(500, streams=True, link=link)
     tracemalloc.start()
     try:
         started = time.perf_counter()
-        with pytest.raises(DocumentError, match="more than 8 cross-reference"):
+        with pytest.raises(DocumentError, match="more than 32 cross-reference"):
             page_sizes(long)
         took = time.perf_counter() - started
         peak = tracemalloc.get_traced_memory()[1]
     finally:
         tracemalloc.stop()
     assert took < 1
-    assert peak < 2 * MiB
+    assert peak < 4 * MiB
+
+
+def test_the_sections_are_counted_where_pypdf_reads_them() -> None:
+    """Each of pypdf's own readers runs, counted: a table, a stream, a hybrid's.
+
+    They are pypdf's private methods: renamed in an update, the count
+    would stay at nothing, and this fails.
+    """
+    for document, sections in (
+        (chained(3), 3),
+        (chained(3, streams=True), 3),
+        (chained(2, hybrid=True), 3),
+    ):
+        tally = Tally()
+        bounded_reader(pypdf)(io.BytesIO(document), sections=32, tally=tally)
+        assert (tally.sections, tally.rebuilt) == (sections, False)
 
 
 @pytest.mark.parametrize(
-    ("data", "past"),
-    [
-        (b"%PDF-1.7\nno cross-reference section", False),
-        (b"%PDF-1.7\nstartxref\n999\n%%EOF", False),
-        (b"%PDF-1.7\nxref\n0 1\nstartxref\n9\n%%EOF", False),
-        (b"%PDF-1.7\n1 0 obj << /Prev 9 >> endobj startxref\n9\n%%EOF", False),
-        (b"%PDF-1.7\n1 0 obj << /Prev 23 >> 2 0 obj << /Prev 9 >> startxref 9", True),
-    ],
+    "filters", [b"[/FlateDecode /ASCII85Decode]", b"[/LZWDecode /FlateDecode]"]
 )
-def test_the_chain_is_read_from_the_files_bytes(data: bytes, past: bool) -> None:
-    """No section, one past the end, a table with no trailer, a loop, two."""
-    assert xref_sections_past(data, 1) is past
+def test_a_file_whose_table_would_be_rebuilt_is_refused(filters: bytes) -> None:
+    """A damaged file's table is rebuilt by pypdf, which decodes every object stream.
+
+    With whatever filters they have, unchecked: 1000 of ASCII85 took it 65
+    seconds, then the file was accepted. None is decoded here: the object
+    streams' bytes would not decode at all.
+    """
+    document = streamed(extras=((filters, b"not decoded"),) * 3)
+    damaged = document[: document.rindex(b"startxref")] + b"startxref\n0\n%%EOF\n"
+    tally = Tally()
+
+    with pytest.raises(DocumentError) as refused:
+        page_sizes(damaged)
+    bounded_reader(pypdf)(io.BytesIO(damaged), sections=32, tally=tally)
+
+    assert str(refused.value) == (
+        "The document is damaged: its cross-reference table would be rebuilt, "
+        "which decodes every object stream unchecked."
+    )
+    assert tally.rebuilt
+
+
+def clear_codes(size: int) -> bytes:
+    """LZW of ``size`` bytes clearing its table at every code: it decodes to nothing."""
+    codes = size * 8 // 9 - 1
+    bits = "100000000" * codes + "100000001"  # Clear (256), then the end (257).
+    bits += "0" * (-len(bits) % 8)
+    return int(bits, 2).to_bytes(len(bits) // 8, "big")
+
+
+def test_lzw_has_a_share_of_its_own() -> None:
+    """64 KiB stored in all by default: clear codes cost pypdf 11 s a MiB."""
+    document = pdf(Page(stored=clear_codes(70 * KiB), filters=("/LZWDecode",)))
+    small = pdf(Page(stored=clear_codes(60 * KiB), filters=("/LZWDecode",)))
+
+    with pytest.raises(DocumentError) as refused:
+        overlay_pdf(document, overlay_for(document))
+
+    assert str(refused.value) == (
+        "The streams pypdf decodes with LZW store more than 65,536 bytes in all "
+        "(max_decoded / 512)."
+    )
+    assert len(overlay_pdf(small, overlay_for(small))) > 0

@@ -30,22 +30,25 @@ one decoded in Python at most, first, and no predictor (one is for
 images and cross-reference streams). Anything else is refused, never
 decoded: an ASCII85 stage after deflate, as one test PDF had, would
 turn 31 KB into gigabytes. What the streams decoded in Python store is
-counted too, ``max_decoded / IN_PYTHON_SHARE`` in all.
+counted too, ``max_decoded / IN_PYTHON_SHARE`` in all, and of LZW, whose
+clear codes cost pypdf 11 seconds a megabyte, ``max_decoded / LZW_SHARE``.
 
-The cross-reference sections pypdf reads as it opens a file are counted
-from the file's bytes first, ``XREF_SECTIONS`` at most
-(``xref_sections_past``). Their streams list ``max_decoded / 512``
-entries in all (``XREF_ENTRIES`` at least), and each decodes to
-``XREF_ENTRY_BYTES`` an entry at most. pypdf parses the overlay's
+A file is opened by ``bounded_reader``: pypdf's reader, counting the
+cross-reference sections where pypdf reads them, ``XREF_SECTIONS`` at
+most, and refusing to rebuild the table of a damaged file, which would
+decode every object stream unchecked. The sections' streams list
+``max_decoded / 512`` entries in all (``XREF_ENTRIES`` at least), and
+each decodes to ``XREF_ENTRY_BYTES`` an entry at most. pypdf parses the overlay's
 drawing into operators, at far more than its bytes, and that is not
 counted: the overlay is the renderer's output from the project's HTML,
 never a PDF a person sent.
 """
 
 import io
-import re
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from dataclasses import dataclass
+from functools import cache
 from typing import Any, Final
 
 from domainkit.documents.base import DocumentError, missing
@@ -84,10 +87,14 @@ IN_PYTHON: Final = frozenset(
     {"/LZWDecode", "/RunLengthDecode", "/ASCIIHexDecode", "/ASCII85Decode"}
 )
 """Filters pypdf decodes in Python: per MiB read, ASCII85's ``z`` costs it 94 MiB
-of memory, ASCII85 0.15 s, run-length up to 0.3 s, LZW 0.6 s."""
+of memory, ASCII85 0.15 s, run-length up to 0.3 s, LZW 0.6 s, and 11 s of
+nothing but clear codes."""
 IN_PYTHON_SHARE: Final = 32
 """The streams a call decodes in Python store ``max_decoded`` / 32 bytes in all:
-at the default, 1 MiB, which pypdf decodes in 0.6 s and 100 MiB at worst."""
+at the default, 1 MiB: about 1 s and 100 MiB at worst, LZW's share included."""
+LZW_SHARE: Final = 512
+"""The streams a call decodes with LZW store ``max_decoded`` / 512 bytes in all,
+counted in ``IN_PYTHON_SHARE`` too: at the default, 64 KiB, 0.7 s of clear codes."""
 XREF_ENTRIES: Final = 65_536
 """Entries a PDF's cross-reference streams list in all, at least: pypdf takes
 up to about 200 bytes and 13 µs for each. One for each 512 bytes of ``max_decoded``
@@ -95,17 +102,11 @@ where that is more."""
 XREF_ENTRY_BYTES: Final = 8
 """Bytes a cross-reference stream decodes to for each entry it may list: an
 entry of a file under 4 GB (``/W [1 4 2]``) and its predictor's byte."""
-XREF_SECTIONS: Final = 8
+XREF_SECTIONS: Final = 32
 """Cross-reference sections a PDF may chain by ``/Prev`` and ``/XRefStm``: one
-for the file and one for each save added to it. pypdf follows any number, and
-runs a stream's predictor in Python: eight of 512 KiB took 0.8 s at worst."""
-STARTXREF: Final = re.compile(rb"startxref\s+([0-9]{1,20})")
-LINK: Final = re.compile(rb"/(?:Prev|XRefStm)\s+([0-9]{1,20})")
-"""A section's link to another, in its trailer or its stream's dictionary."""
-BLANK: Final = b"\x00\t\n\x0c\r "
-"""PDF's white-space characters."""
-SECTION_BYTES: Final = 64 * 1024
-"""How far a section's dictionary is looked for, and read, from where it starts."""
+for the file and one for each save added to it (two, in a hybrid file: a form
+filled or signed in Acrobat). pypdf follows any number, and runs a stream's
+predictor in Python: 32 of 512 KiB took 3.8 s at worst."""
 type Matrix = tuple[float, float, float, float, float, float]
 """A PDF transformation ``[a b c d e f]``: x' = a x + c y + e, y' = b x + d y + f."""
 
@@ -234,6 +235,8 @@ class DecodeBudget:
         self.xref_entries = max(XREF_ENTRIES, max_decoded // 512)
         self.in_python = max_decoded // IN_PYTHON_SHARE
         """What the streams decoded in Python may still store."""
+        self.lzw = max_decoded // LZW_SHARE
+        """What the streams decoded with LZW may still store."""
 
     @contextmanager
     def limited(self, most: int | None = None) -> Iterator[None]:
@@ -283,7 +286,8 @@ class DecodeBudget:
 
         Its filters must pass ``filters_refused``, and what the streams
         decoded in Python store must stay within ``max_decoded`` /
-        ``IN_PYTHON_SHARE`` in all, this one counted.
+        ``IN_PYTHON_SHARE`` in all, and with LZW within ``max_decoded`` /
+        ``LZW_SHARE``, this one counted.
 
         Raises:
             DocumentError: The stream would be decoded otherwise.
@@ -291,7 +295,16 @@ class DecodeBudget:
         refused = filters_refused(stream)
         if refused is not None:
             raise DocumentError(refused)
-        self.in_python -= stored_in_python(stream)
+        kind, stored = decoded_in_python(stream)
+        self.in_python -= stored
+        if kind == "/LZWDecode":
+            self.lzw -= stored
+        if self.lzw < 0:
+            raise DocumentError(
+                "The streams pypdf decodes with LZW store more than "
+                f"{self.max_decoded // LZW_SHARE:,} bytes in all "
+                f"(max_decoded / {LZW_SHARE})."
+            )
         if self.in_python < 0:
             raise DocumentError(
                 "The streams pypdf decodes in Python (LZW, run-length, ASCIIHex, "
@@ -367,15 +380,17 @@ def filters_refused(stream: Any) -> str | None:  # noqa: ANN401 - pypdf's types.
     return None
 
 
-def stored_in_python(stream: Any) -> int:  # noqa: ANN401 - pypdf's types.
-    """The bytes ``stream`` stores, if pypdf decodes it in Python first; else 0.
+def decoded_in_python(stream: Any) -> tuple[str | None, int]:  # noqa: ANN401 - pypdf's types.
+    """The filter of ``IN_PYTHON`` decoding ``stream`` first, and the bytes it stores.
 
-    For a stream ``filters_refused`` lets through.
+    ``(None, 0)`` where pypdf decodes it in C, or not at all. For a stream
+    ``filters_refused`` lets through.
     """
     named = _filters(stream)
-    if named and FILTERS[named[0]] in IN_PYTHON:
-        return len(stream._data)  # As stored: what the first filter reads.
-    return 0
+    kind = FILTERS[named[0]] if named else None
+    if kind in IN_PYTHON:
+        return kind, len(stream._data)  # As stored: what the first filter reads.
+    return None, 0
 
 
 def _filters(stream: Any) -> list[Any]:  # noqa: ANN401 - pypdf's types.
@@ -386,36 +401,90 @@ def _filters(stream: Any) -> list[Any]:  # noqa: ANN401 - pypdf's types.
     return [each.get_object() for each in names if each is not None]
 
 
-def xref_sections_past(data: bytes, most: int) -> bool:
-    """Whether the PDF ``data`` chains more than ``most`` cross-reference sections.
+@dataclass(slots=True)
+class Tally:
+    """What a ``bounded_reader`` read as it opened a file, refused or not."""
 
-    Read from its bytes, before pypdf follows them, as pypdf does: from the
-    last ``startxref``, each table's trailer or stream's dictionary names
-    the next by ``/Prev``, and a hybrid file's stream by ``/XRefStm``.
-    Each place is counted once.
+    sections: int = 0
+    """Cross-reference sections it read, or was refused."""
+    rebuilt: bool = False
+    """Whether pypdf would have rebuilt the cross-reference table."""
+
+    def refusal(self, most: int) -> str | None:
+        """Why the file is refused, if it is: more than ``most`` sections, a rebuild."""
+        if self.rebuilt:
+            return (
+                "is damaged: its cross-reference table would be rebuilt, which "
+                "decodes every object stream unchecked."
+            )
+        if self.sections > most:
+            return (
+                f"chains more than {most} cross-reference sections: one for the "
+                "file, and one for each save added to it."
+            )
+        return None
+
+
+def bounded_reader(pypdf: Any) -> Any:  # noqa: ANN401 - the module, and its class.
+    """A ``PdfReader`` of pypdf that counts the sections it reads, and never rebuilds.
+
+    It takes ``sections``, the cross-reference sections it may read (a
+    table, or a stream, followed by ``/Prev``, or by a hybrid file's
+    ``/XRefStm``), and ``tally``, a ``Tally`` it counts them in. It counts
+    each where pypdf reads it (``_read_xref``, ``_read_pdf15_xref_stream``),
+    so no syntax hides one, and refuses the one past ``sections`` with
+    ``LimitReachedError`` before reading it. It never rebuilds a damaged
+    file's table (``_rebuild_xref_table``), which decodes every object
+    stream with whatever filters it has. pypdf swallows some errors as it
+    follows a chain, so the tally, not the error, says what was refused.
+    The methods are pypdf's own, not its public API: a test checks that
+    each runs.
     """
-    start = data.rfind(b"startxref")
-    found = STARTXREF.match(data, max(start, 0))
-    waiting = [int(found[1])] if found else []
-    seen: set[int] = set()
-    while waiting:
-        offset = waiting.pop()
-        if offset in seen or offset >= len(data):
-            continue
-        seen.add(offset)
-        if len(seen) > most:
-            return True
-        head = data[offset : offset + 64]
-        at = offset + len(head) - len(head.lstrip(BLANK))
-        if data.startswith(b"xref", at):
-            at = data.find(b"trailer", at)
-            end = data.find(b"startxref", at, at + SECTION_BYTES)
-        else:
-            end = data.find(b"stream", at, at + SECTION_BYTES)
-        if at >= 0:
-            region = data[at : end if end > at else at + SECTION_BYTES]
-            waiting.extend(int(link[1]) for link in LINK.finditer(region))
-    return False
+    return _bounded_reader(pypdf.PdfReader, pypdf.errors.LimitReachedError)
+
+
+@cache
+def _bounded_reader(reader: type, limit: type[Exception]) -> type:
+    """The class ``bounded_reader`` gives, made once."""
+
+    class BoundedReader(reader):  # type: ignore[misc]
+        """A ``PdfReader`` of ``sections`` cross-reference sections at most."""
+
+        def __init__(
+            self,
+            stream: Any,  # noqa: ANN401 - pypdf's.
+            *,
+            sections: int,
+            tally: Tally,
+            **options: Any,  # noqa: ANN401 - pypdf's.
+        ) -> None:
+            """Read ``sections`` sections at most, each counted in ``tally``."""
+            self.most_sections = sections
+            self.tally = tally
+            super().__init__(stream, **options)
+
+        def _read_xref(self, stream: Any) -> Any:  # noqa: ANN401 - pypdf's.
+            """A table's section, counted first."""
+            self._count()
+            return super()._read_xref(stream)
+
+        def _read_pdf15_xref_stream(self, stream: Any) -> Any:  # noqa: ANN401 - pypdf's.
+            """A stream's section, counted first."""
+            self._count()
+            return super()._read_pdf15_xref_stream(stream)
+
+        def _rebuild_xref_table(self, stream: Any) -> None:  # noqa: ANN401 - pypdf's.
+            """Refuse to rebuild the table: it decodes every object stream."""
+            self.tally.rebuilt = True
+            raise limit("The cross-reference table would be rebuilt.")
+
+        def _count(self) -> None:
+            """Count a section; refuse one past ``sections``."""
+            self.tally.sections += 1
+            if self.tally.sections > self.most_sections:
+                raise limit(f"More than {self.most_sections} cross-reference sections.")
+
+    return BoundedReader
 
 
 def _pypdf() -> Any:  # noqa: ANN401 - the module.
@@ -436,20 +505,21 @@ def _reader(pypdf: Any, data: bytes, what: str, budget: DecodeBudget) -> Any:  #
 
     Raises:
         DocumentError: pypdf cannot read it, it is encrypted, it chains more
-            than ``XREF_SECTIONS`` cross-reference sections, or it decodes
-            past what is left of ``budget``.
+            than ``XREF_SECTIONS`` cross-reference sections, its table would
+            be rebuilt, or it decodes past what is left of ``budget``.
     """
-    if xref_sections_past(data, XREF_SECTIONS):
-        raise DocumentError(
-            f"{what} chains more than {XREF_SECTIONS} cross-reference sections: "
-            "one for the file, and one for each save added to it."
-        )
+    tally = Tally()
     try:
         # The cross-reference streams: their entries in all, each one's bytes.
         with budget.limited(budget.xref_entries * XREF_ENTRY_BYTES):
-            reader = pypdf.PdfReader(
-                io.BytesIO(data), xref_stream_maximum_entries=budget.xref_entries
+            reader = bounded_reader(pypdf)(
+                io.BytesIO(data),
+                sections=XREF_SECTIONS,
+                tally=tally,
+                xref_stream_maximum_entries=budget.xref_entries,
             )
+        if refusal := tally.refusal(XREF_SECTIONS):
+            raise DocumentError(f"{what} {refusal}")
         encrypted = reader.is_encrypted
         if not encrypted:
             budget.spend_objects(reader)
@@ -457,6 +527,8 @@ def _reader(pypdf: Any, data: bytes, what: str, budget: DecodeBudget) -> Any:  #
     except DocumentError:
         raise
     except Exception as exc:  # noqa: BLE001 - pypdf raises many kinds on a bad file.
+        if refusal := tally.refusal(XREF_SECTIONS):  # What stopped pypdf, if it was.
+            raise DocumentError(f"{what} {refusal}") from None
         limit = exc.__cause__  # pypdf wraps what stops it as it opens a file.
         if isinstance(limit, pypdf.errors.LimitReachedError):
             raise DocumentError(
