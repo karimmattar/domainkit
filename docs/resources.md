@@ -535,6 +535,12 @@ invitations.command_route(
   the caller's reach (`404`), and the rules on the aggregate. The caller
   must have proved who they are. So no one asks for an authorization of
   an act they could not make.
+- On an act on one aggregate it reads `If-Match` as the act does,
+  optional (*new in 2.8*): after the checks above, an aggregate at none
+  of the versions it names is `412`, and the unit of work it lends is
+  held to them. A rule whose method takes `if_match` is given the
+  header; `StepUp(for_=...)` binds the act to it
+  ([The version the page read](auth/actions.md#the-version-the-page-read)).
 - It then awaits the rule's `ask_authorization(request, command)`, and
   answers `201` with what it returns, marked `Cache-Control: no-store`.
   It never runs the service, and writes nothing through its unit of

@@ -36,6 +36,24 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.7 to 2.8
+
+2.8 follows up 2.7. Each item of this list says what a project that
+relied on 2.7's behaviour changes, and what to run.
+
+- **A twin reads `If-Match`** ([ADR 0178](adr/0178-bind-an-act-to-the-version-its-page-read.md)).
+  On a `ResourceRouter`'s act on one aggregate, a twin asked with
+  `If-Match` answers `412 precondition_failed` when the aggregate is at
+  none of the versions it names, where 2.7 ignored the header, and the
+  authorization then holds only for an act that sends the same
+  `If-Match`: another, `*`, or none is `403 action_not_authorized`. A
+  client that sent `If-Match` to a twin by habit sends the act the same
+  one, or none to the twin. A twin asked without it, an `If-Match` sent
+  to the act alone, and the authorizations stored before are as in
+  2.7. To have every client send it, declare the act with
+  `Action(..., require_if_match=True)`
+  ([The version the page read](auth/actions.md#the-version-the-page-read)).
+
 ## 2.6 to 2.7
 
 2.7 follows up 2.6. Each item of this list says what a project that

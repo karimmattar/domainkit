@@ -115,6 +115,7 @@ action_not_authorized`: the authorization was spent.
 | `ttl` | How long its authorizations work, in place of `AUTH.AUTHORIZATIONS.TTL`: more than 0, 30 minutes at most. `AUTHORIZATIONS.ACTIONS` may name another for the act ([below](#each-act-its-own-methods-and-lifetime)). |
 | `methods` | What confirming must prove, in place of `AUTH.AUTHORIZATIONS.METHODS`: `otp`, `pwd`, and `phone`, holding `otp` or `phone`. `AUTHORIZATIONS.ACTIONS` may name others for the act. |
 | `binds` | `(command, uow) -> value`, a coroutine or a plain function: what the act decides on, read from the stored record in the act's unit of work (an aggregate's `version`, the fields it decides on). The authorization holds while it reads the same (*new in 2.7*, [below](#the-record-it-decides-on)). |
+| `require_if_match` | `True`: asking, and the act, need `If-Match` naming the version the page read (`428 precondition_required` without). `False` by default (*new in 2.8*, [below](#the-version-the-page-read)). |
 
 `Shown(title, details)` is what a screen shows: a title of at most 64
 printable characters, and at most six labels and values of at most 64
@@ -385,6 +386,109 @@ APPROVE_DOCUMENT = Action(
   or that commits; asking without the act's unit of work
   (`unit_of_work=`); a service that takes none, or never opens it.
 
+## The version the page read
+
+*New in 2.8* ([ADR 0178](../adr/0178-bind-an-act-to-the-version-its-page-read.md)).
+`binds` holds the record as the twin reads it, and the page read it
+before: a file replaced in between, under the same name, is bound as
+replaced, and the phone shows the same lines for both. The page knows
+which version it showed, its `ETag`. Sent as `If-Match`, the twin and
+the act hold to it:
+
+```http
+GET  /documents/42                           200 ETag: W/"3-5d41402abc4b2a76"
+POST /documents/42/approve/authorization
+     If-Match: W/"3-5d41402abc4b2a76"        412 precondition_failed (now version 4)
+GET  /documents/42                           200 ETag: W/"4-0f8e2a6c91d3b745"
+POST /documents/42/approve/authorization
+     If-Match: W/"4-0f8e2a6c91d3b745"        201 {"id": "9f0c...", ...}
+POST /documents/42/approve
+     If-Match: W/"4-0f8e2a6c91d3b745"
+     Action-Authorization: 9f0c....mYd3...   200
+```
+
+- **The twin holds it as its act does.** On a `ResourceRouter`'s act
+  on one aggregate, after the route's rules, the reach check, and the
+  rules on the aggregate, an aggregate at none of the versions
+  `If-Match` names is `412 precondition_failed`: nothing is stored, and
+  the phone is never asked. The unit of work the twin lends to `show`
+  and `binds` is held to them too: what they load through it at another
+  version is `412`, before anything is stored.
+- **The digest covers it**: the versions it names, sorted, beside the
+  arguments and what `binds` read. The act's `If-Match` must name the
+  same versions, however written (`W/"4-…"` or `"4"`). Another, `*`, or
+  none is `403 action_not_authorized`, and voids the authorization, as
+  other arguments do.
+- **At the act**, `If-Match` holds the write as before (`412`), and
+  `binds` reads the record again (`409 action_record_changed`). A
+  `binds` that loads it at a version the authorization does not hold
+  voids it, and the act answers `412`: it will never be at that version
+  again.
+- **Without `If-Match` at the twin**, the act is bound as in 2.7: an
+  `If-Match` sent to the act alone holds its write and nothing else, and
+  an authorization stored before 2.8 holds. `*` names no version, and
+  counts as none.
+- Versions are read as a write reads them
+  ([resources.md](../resources.md#versions-and-conditional-requests)):
+  by the number a tag carries, weak or strong; with several tags, any of
+  them; a tag that names no version, or a malformed one, matches
+  nothing. A twin on the collection reads no `If-Match`, as its act
+  reads none.
+- **`Action(require_if_match=True)`** asks for it. The twin without
+  `If-Match`, or with `*`, is `428 precondition_required`, before
+  anything is stored. The act without one is `428` too, and voids
+  nothing: send it again with the tag. An authorization asked without
+  one is refused (`403`, voided). Only for an act on one aggregate: an
+  act on the collection has no `If-Match` to send, and is never
+  authorized.
+
+A route of your own reads `If-Match` itself, as its act already must to
+hold its write: the framework does not know which record your route
+names. Its twin holds the unit of work that `show` and `binds` read in
+to the versions, lends it, and passes the header on:
+
+```python
+from typing import Annotated
+
+from fastapi import Header, Request
+
+from domainkit.contrib.auth import AuthenticatedUser
+from domainkit.contrib.auth.actions import (
+    ActionAuthorizationOut,
+    request_action_authorization,
+)
+from domainkit.resources import expected_versions
+
+
+@router.post("/documents/{document_id}/approve/authorization", status_code=201)
+async def ask_to_approve(
+    document_id: UUID,
+    request: Request,
+    user: AuthenticatedUser,
+    if_match: Annotated[str | None, Header()] = None,
+) -> ActionAuthorizationOut:
+    uow = DocumentsUnitOfWork()
+    versions = None if if_match is None else expected_versions(if_match)
+    with uow.expect(Document, DocumentId(document_id), versions):
+        asked = await request_action_authorization(
+            request,
+            APPROVE_DOCUMENT,
+            ApproveDocument(document_id=document_id),
+            unit_of_work=lambda: uow,
+            if_match=if_match,
+        )
+    return ActionAuthorizationOut.of(asked)
+```
+
+- `binds` (or `show`) loads the record through `uow`, so its version is
+  checked there. A record they do not load is not checked: load it.
+- The act's rule, `StepUp(for_=...)`, reads the act's own `If-Match`.
+  Its route holds its unit of work to it, as any conditional write does
+  ([A route of your own](../resources.md#versions-and-conditional-requests)).
+- A rule of your own that asks (`AsksAuthorization`) is given the
+  header when its `ask_authorization` takes `if_match`;
+  `StepUp(for_=...)` does.
+
 ## The route asks: `StepUp(for_=...)`
 
 `StepUp(for_=...)` takes the `Action`, or its purpose, in place of
@@ -604,7 +708,10 @@ async def end_membership_now(command: EndMembership) -> None:
   JSON: the function approvals computes its fingerprints with. For an
   action that `binds`, the SHA-256 of `{"action", "arguments", "binds"}`,
   where `binds` is the SHA-256 of what it read, which the row keeps
-  (`bound`).
+  (`bound`). Asked with `If-Match` (since 2.8), the SHA-256 of
+  `{"action", "arguments", "binds", "if_match"}`, where `if_match` lists
+  the versions it names, sorted, and `binds` is null for an action that
+  binds nothing.
 - **The code**: an HMAC-SHA256, under a key derived from `SECRET_KEY` for
   `auth.authorization` (its fallbacks verify), of a JSON array of
   `domainkit.authorization.v1`, the id, the user, the login's digest, the
@@ -820,6 +927,8 @@ An app that confirms its own way (the phone of
 | `409 authorization_needs_other_factors` | A code or a passkey where the act asks the phone; the phone asked for an act that asks the password. |
 | `409 authorization_changed` | The phone, or another app (the app's own act), confirms a digest other than the act's. |
 | `409 action_record_changed` | The action `binds` the record, and it reads otherwise than when the authorization was asked for; the authorization is voided. |
+| `412 precondition_failed` | The twin, or the act, sent `If-Match`, and the record is at none of the versions it names; at the act, a `binds` that loads it so voids an authorization asked with `If-Match`. |
+| `428 precondition_required` | The action asks for `If-Match` (`require_if_match`), and the twin or the act sent none, or `*`. |
 | `404 authorization_not_found` | Another user's or another login's authorization. |
 | `401 invalid_code`, `400 password_required`, `400 wrong_password`, `429` | As for a step-up. |
 | `500 authorization_unspent` | Under `DEBUG` and in tests: a rule accepted one, and no service spent it. |
@@ -850,8 +959,9 @@ as_alice.delete(act, headers={"Action-Authorization": authorization})
 ```
 
 - `authorize_act(client, url, app=None, *, json=None, password=None,
-  prefix="/auth")` asks `POST <url>/authorization` with the act's body,
-  and confirms the answer.
+  prefix="/auth", if_match=None)` asks `POST <url>/authorization` with
+  the act's body, and `If-Match` if given (*new in 2.8*), and confirms
+  the answer.
 - `confirm_authorization(client, authorization_id, app=None, *,
   password=None, prefix="/auth")` confirms one asked elsewhere.
 - With `app`, a code of the authenticator confirms it, and `password`

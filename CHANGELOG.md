@@ -9,6 +9,37 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `Action(require_if_match=True)` (off by default): asking for an
+  authorization of the act, and the act, need `If-Match` naming the
+  version the page read; without one, or with `*`, `428
+  precondition_required`, before anything is stored, and the act voids
+  nothing. `request_action_authorization(..., if_match=...)` lets a
+  route of the project's own bind it, and `authorize_act(...,
+  if_match=...)` sends it to a twin in tests
+  ([The version the page read](docs/auth/actions.md#the-version-the-page-read),
+  ADR 0178) (user report A25).
+
+### Security
+
+- An act binds the version its page read, not only the record as its
+  twin reads it. A reviewer opened file A, the company stored B under
+  its name, and the twin bound B, which the phone showed in the same
+  lines: B was approved. A twin of an act on one aggregate now holds
+  `If-Match` as its act does: an aggregate at none of the versions it
+  names is `412 precondition_failed`, after the rules and the reach
+  check and before the phone is asked, and again where `show` and
+  `binds` read. The digest covers those versions, so an act sent
+  without the same `If-Match`, or with another, is refused (`403
+  action_not_authorized`) and voids the authorization; a `binds` that
+  loads the record at another version voids it too (`412`). A twin
+  documents the header in OpenAPI. A twin asked without `If-Match` binds
+  as in 2.7, and authorizations stored before hold
+  ([upgrading.md](docs/upgrading.md#27-to-28),
+  [The version the page read](docs/auth/actions.md#the-version-the-page-read),
+  ADR 0178) (user report A25).
+
 ## [2.7.0] - 2026-11-17
 
 2.7 answers thirteen of a project's fourteen notes on 2.6 (the last,
