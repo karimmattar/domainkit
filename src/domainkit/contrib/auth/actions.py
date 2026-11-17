@@ -161,6 +161,7 @@ __all__ = [
     "login_digest",
     "on_action_confirmation",
     "on_held_act",
+    "refuse_held_elsewhere",
     "register_action",
     "registered_actions",
     "request_action_authorization",
@@ -1864,9 +1865,10 @@ def hold_authorizations(until: datetime, *, held_for: str) -> None:
     what the act waits on (``approvals.request:<id>``), until ``until``,
     its expiry, and within ``AUTH.AUTHORIZATIONS.HELD_TTL`` of its own
     (ADR 0174). It works only while an ``on_held_act`` hook says
-    ``held_for`` still waits, and is never held for another. Written as
-    the response starts, whatever it is; nothing while ``HELD_TTL`` is
-    None, the default, nor outside a request.
+    ``held_for`` still waits, and is never held for another: the holding
+    app refuses its call to wait on another (``refuse_held_elsewhere``,
+    since 2.8). Written as the response starts, whatever it is; nothing
+    while ``HELD_TTL`` is None, the default, nor outside a request.
 
     Raises:
         ValueError: ``held_for`` is empty, or longer than 200 characters.
@@ -1882,6 +1884,37 @@ def hold_authorizations(until: datetime, *, held_for: str) -> None:
     for accepted in kept.accepted.values():
         if accepted.taken and not accepted.consumed:
             accepted.held = (until, held_for)
+
+
+def refuse_held_elsewhere(held_for: str | None) -> None:
+    """Refuse the request's act if its authorization is kept for another (since 2.8).
+
+    For the app that holds acts (``hold_authorizations``), before the act
+    spends, waits on, or submits what ``held_for`` names (None: something
+    not made yet, such as a request it is about to submit): an
+    authorization the act took that is kept for something else serves that
+    alone (ADR 0179). A call whose command changed since its authorization
+    was kept would otherwise submit a request of its own, and spend it once
+    approved, on a confirmation of the first. Nothing is written: the
+    authorization still serves what it is kept for. The trail hears of it
+    at the end of the request (``held_elsewhere``).
+
+    Raises:
+        ActionNotAuthorized: One is kept for another: ask for a new one.
+    """
+    kept = _kept.get()
+    if kept is None:
+        return
+    for accepted in kept.accepted.values():
+        other = accepted.authorization.held_for
+        if (
+            accepted.taken
+            and not accepted.consumed
+            and other is not None
+            and other != held_for
+        ):
+            accepted.unheard = "held_elsewhere"
+            raise ActionNotAuthorized
 
 
 async def _hold(kept: Kept) -> None:

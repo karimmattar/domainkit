@@ -59,6 +59,7 @@ from .builtin import (
     SetPassword,
     SetPermissions,
     SetStaff,
+    held_groups,
     refuse_if_guarded,
 )
 from .exceptions import (
@@ -194,6 +195,7 @@ __all__ = [
     "fingerprint",
     "guard",
     "guards",
+    "held_groups",
     "record_approval",
     "record_cancellation",
     "record_rejection",

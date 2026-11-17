@@ -105,6 +105,7 @@ Authorize one act, with its arguments, once (ADR 0144).
 - `login_digest`: The login's digest: the SHA-256 of its scheme and token, as the phone keeps it.
 - `on_action_confirmation`: Register a way to confirm action authorizations (an `ActionConfirmation`).
 - `on_held_act`: Say whether what a held authorization's act waits on still waits.
+- `refuse_held_elsewhere`: Refuse the request's act if its authorization is kept for another (since 2.8).
 - `register_action`: Register an `Action` (`register_action(END_MEMBERSHIP)` in `ready()`).
 - `registered_actions`: Every registered action, by purpose.
 - `request_action_authorization`: Store an authorization of `command` for the request's user and login.
@@ -611,16 +612,22 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `confirm_transaction_with`: Confirm `challenge`, which `methods` proved; return its authorization.
 - `confirmed_action_authorization`: `<id>.<code>` of the user's confirmed authorization, for the confirming app.
 - `end_device_logins`: End the logins marked as the bound device `device_id`'s: how many.
+- `field_label`: How a screen names the user's field `name`: "Email", "Display name".
 - `first_use_after_code`: `user`, a password staff set changed now that the second factor held.
 - `gates_passed`: Let the login of `user_id` through, in the block, with no gate run.
+- `grants_digest`: How many `grants` there are, and the SHA-256 of them, sorted ("" for none).
+- `group_item`: A group added, in a few words: its name, the end of its id, what it grants.
 - `impersonated`: Whether staff act as the user on `connection` (an impersonation).
 - `issue_login`: Record the user's login, and issue them tokens (the first class's).
 - `language_argument`: The request's language, as a task's keyword argument: `{"language": "ar"}`.
 - `language_of`: The language to write to `user` in: one of `LANGUAGES`.
 - `link_action_authorization`: Link what will confirm the authorization: the phone's request, or a passkey's.
 - `linked_action_authorization`: The user's authorization the phone's request `sign_in_request_id` confirms.
+- `list_item`: `name`, cut where need be, so that a list shows it on one line.
 - `login_digest`: The login's digest: the SHA-256 of its scheme and token, as the phone keeps it.
 - `mail_user`: Mail `user` at their address from `template`; False where none can go.
+- `named_first`: `keys`, sorted, those `named_permissions` names first.
+- `named_permissions`: The permission keys a screen names wherever it would count them.
 - `needs_second_factor`: Whether `user` turned a second factor on: a login needs its code.
 - `note_login_device`: Say that the user's bound device `device_id` signed this request.
 - `note_login_sign_in`: Say that the login this request makes redeems sign-in request `request_id`.

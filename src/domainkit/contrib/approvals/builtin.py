@@ -48,15 +48,26 @@ adds and takes away, each list over as many lines as it takes, and an
 impersonation's stated reason (ADR 0173). With ``APPROVE_ACTION`` on, the
 admin API's twin refuses a change held here that the approver's screen
 could not show whole (``check_admin_screen``, ``check_group_screen``).
+
+Since 2.8 (ADR 0179), making staff and making a user active again hold
+what else the change sets (``values``: an address, a name, a flag), so
+their approver sees it and approves it; the keys
+``AUTH.AUTHORIZATIONS.NAMED_PERMISSIONS`` names show by name wherever a
+hold would count them ("Grants"); and ``held_groups`` holds the groups a
+project's own grant names as ``auth.set_groups`` holds them.
 """
 
 import dataclasses
-import hashlib
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID
 
-from pydantic import TypeAdapter
+from pydantic import (
+    JsonValue,
+    SerializerFunctionWrapHandler,
+    TypeAdapter,
+    model_serializer,
+)
 
 from domainkit.apps import registry
 from domainkit.context import current_request
@@ -141,6 +152,16 @@ STAFF: Final = gettext_noop("Staff")
 ALSO_HOLDS: Final = gettext_noop("Also holds")
 """The label of how many permissions of their own, and grants on objects, a
 user made active again comes back with."""
+ACTIVE: Final = gettext_noop("Active")
+GRANTS: Final = gettext_noop("Grants")
+"""The label of the keys ``NAMED_PERMISSIONS`` names among what a hold grants
+(since 2.8): by name, where the hold counts the rest."""
+FLAG_LABELS: Final = {
+    "is_superuser": SUPERUSER,
+    "is_staff": STAFF,
+    "is_active": ACTIVE,
+}
+"""The labels of the flags a change sets beside its grant (since 2.8)."""
 SHOWN_ID: Final = 4
 """How many of a group's id's last characters its item shows: a check for the
 person beside the name, short enough that two groups share a line; the
@@ -367,11 +388,13 @@ async def show_about_user(command: Any) -> list[tuple[str, object]]:  # noqa: AN
     (``get_username()``), read now and never stored with the request, cut
     to fit beside the id, which the request binds: a user erased or gone
     meanwhile shows as "(erased)". ``added`` and ``removed`` are lists
-    ("Adds", "Takes away"), left out when empty; ``reason`` is "Stated
-    reason"; any other field shows by its name. A command with no
-    ``user_id`` shows its fields alone.
+    ("Adds", "Takes away"), left out when empty, the keys
+    ``AUTH.AUTHORIZATIONS.NAMED_PERMISSIONS`` names first among those it
+    adds (since 2.8); ``reason`` is "Stated reason"; any other field shows
+    by its name. A command with no ``user_id`` shows its fields alone.
     """
     from domainkit.contrib.auth import AuthUnitOfWork, UserId
+    from domainkit.contrib.auth.integration import named_first
     from domainkit.contrib.auth.screens import named
 
     shown: list[tuple[str, object]] = []
@@ -383,6 +406,8 @@ async def show_about_user(command: Any) -> list[tuple[str, object]]:  # noqa: AN
             username = "" if user is None else user.get_username()
             shown.append((gettext(USER), named(username, value)))
         elif name in ("added", "removed"):
+            if value and name == "added" and all(isinstance(k, str) for k in value):
+                value = named_first(value)
             if value:
                 shown.append((gettext(SHOWN_LABELS[name]), value))
         elif name in SHOWN_LABELS:
@@ -395,50 +420,80 @@ async def show_about_user(command: Any) -> list[tuple[str, object]]:  # noqa: AN
 async def show_set_groups(command: "SetGroups") -> list[tuple[str, object]]:
     """What adding a user to groups shows: the user, then each group in words.
 
-    The user by name and id, as ``show_about_user`` shows one. Each group
-    added ("Adds", as many on a line as fit, over as many lines as it
-    takes) by its name, read now (the name held, if it is gone), the end
-    of its id, and what it grants: "readers (…9abc) 3 perms + 2 object
-    grants". A name too long for its line is cut, never refused: the
-    request binds the id. Then the names of the groups it takes away
-    ("Takes away").
+    The user by name and id, as ``show_about_user`` shows one. Since 2.8,
+    the keys ``AUTH.AUTHORIZATIONS.NAMED_PERMISSIONS`` names among those
+    the groups grant, by name ("Grants"). Each group added ("Adds", as
+    many on a line as fit, over as many lines as it takes) by its name,
+    read now (the name held, if it is gone), the end of its id, and what
+    it grants: "readers (…9abc) 3 perms + 2 object grants". A name too
+    long for its line is cut, never refused: the request binds the id.
+    Then the names of the groups it takes away ("Takes away").
     """
+    from domainkit.contrib.auth.integration import group_item, list_item
+
     shown = [await _user_line(command.user_id)]
     names = await _group_names(group.id for group in command.groups)
     items = [
-        _held_group(names.get(group.id, group.name), group) for group in command.groups
+        group_item(
+            names.get(group.id, group.name),
+            group.id,
+            len(group.permissions),
+            group.object_grants,
+        )
+        for group in command.groups
     ]
     if not command.groups:  # A request of 2.6, which held names alone.
-        items = [_item(name) for name in command.added]
+        items = [list_item(name) for name in command.added]
+    shown.extend(_granted(key for group in command.groups for key in group.permissions))
     if items:
         shown.append((gettext(SHOWN_LABELS["added"]), items))
     if command.removed:
-        removed = [_item(name) for name in command.removed]
+        removed = [list_item(name) for name in command.removed]
         shown.append((gettext(SHOWN_LABELS["removed"]), removed))
     return shown
+
+
+async def show_set_staff(command: "SetStaff") -> list[tuple[str, object]]:
+    """What making staff shows: the user, then what else the change sets.
+
+    The user by name and id; then, since 2.8, each value the change sets
+    beside making staff (``values``), by its label: "Active: yes",
+    "Email: ann@example.com".
+    """
+    return [await _user_line(command.user_id), *_values(command.values)]
 
 
 async def show_reactivation(command: "Reactivate") -> list[tuple[str, object]]:
     """What making a user active again shows: the user, and what they come back with.
 
     The user by name and id; "Superuser" and "Staff" where they come back
-    as such; their groups by name, read now ("Groups"); and how many
-    permissions of their own and grants on objects they hold ("Also
-    holds"). A name too long for its line is cut, never refused.
+    as such; since 2.8, the keys ``NAMED_PERMISSIONS`` names among those
+    they hold, directly or through a group, by name ("Grants"); their
+    groups by name, read now ("Groups"); how many permissions of their own
+    and grants on objects they hold ("Also holds"); and each value the
+    change sets beside (``values``), by its label. A name too long for its
+    line is cut, never refused.
     """
+    from domainkit.contrib.auth.integration import list_item
+
     shown: list[tuple[str, object]] = [await _user_line(command.user_id)]
     yes = pgettext("flag", "yes")
     if command.is_superuser:
         shown.append((gettext(SUPERUSER), yes))
     if command.is_staff:
         shown.append((gettext(STAFF), yes))
+    held = [*command.permissions, *(k for g in command.groups for k in g.permissions)]
+    shown.extend(_granted(held))
     if command.groups:
         names = await _group_names(group.id for group in command.groups)
-        groups = [_item(names.get(group.id, group.name)) for group in command.groups]
+        groups = [
+            list_item(names.get(group.id, group.name)) for group in command.groups
+        ]
         shown.append((gettext(GROUPS), groups))
-    held = _counts(len(command.permissions), command.object_grants)
-    if held:
-        shown.append((gettext(ALSO_HOLDS), held))
+    counted = _counts(len(command.permissions), command.object_grants)
+    if counted:
+        shown.append((gettext(ALSO_HOLDS), counted))
+    shown.extend(_values(command.values))
     return shown
 
 
@@ -449,19 +504,55 @@ async def show_group_permissions(
 
     The group by its name, read now (the name held, if it is gone), and the
     end of its id; then the permissions it adds and takes away, each list
-    over as many lines as it takes ("Adds", "Takes away"). A name too long
-    is cut beside the id, never refused.
+    over as many lines as it takes ("Adds", "Takes away"), sorted, those
+    ``NAMED_PERMISSIONS`` names first (since 2.8): a list cut and counted
+    keeps them. A name too long is cut beside the id, never refused.
     """
+    from domainkit.contrib.auth.integration import named_first
     from domainkit.contrib.auth.screens import named
 
     names = await _group_names([command.group_id])
     name = names.get(command.group_id, command.name)
     shown: list[tuple[str, object]] = [(gettext(GROUP), named(name, command.group_id))]
     if command.added:
-        shown.append((gettext(SHOWN_LABELS["added"]), list(command.added)))
+        shown.append((gettext(SHOWN_LABELS["added"]), named_first(command.added)))
     if command.removed:
         shown.append((gettext(SHOWN_LABELS["removed"]), list(command.removed)))
     return shown
+
+
+def _granted(keys: Iterable[str]) -> list[tuple[str, object]]:
+    """The keys ``NAMED_PERMISSIONS`` names among ``keys``, sorted: "Grants"."""
+    from domainkit.contrib.auth.integration import named_permissions
+
+    named = sorted(set(keys) & named_permissions())
+    return [(gettext(GRANTS), named)] if named else []
+
+
+def _values(values: Mapping[str, object]) -> list[tuple[str, object]]:
+    """What a change sets beside its grant, each by its label (since 2.8).
+
+    The flags first ("Active: no"), then the fields as the admin API's act
+    names them ("Email", "Display name"), each in its order.
+    """
+    from domainkit.contrib.auth.integration import field_label
+
+    yes_no = {True: pgettext("flag", "yes"), False: pgettext("flag", "no")}
+    flags = [
+        (gettext(label), yes_no.get(value, value) if isinstance(value, bool) else value)
+        for name, label in FLAG_LABELS.items()
+        if (value := values.get(name, UNSHOWN)) is not UNSHOWN
+    ]
+    fields = [
+        (field_label(name), value)
+        for name, value in sorted(values.items())
+        if name not in FLAG_LABELS
+    ]
+    return [*flags, *fields]
+
+
+UNSHOWN: Final = object()
+"""A flag the change does not set."""
 
 
 async def _user_line(user_id: UUID) -> tuple[str, object]:
@@ -487,25 +578,6 @@ async def _group_names(ids: Iterable[UUID]) -> dict[UUID, str]:
     return found
 
 
-def _held_group(name: str, group: "HeldGroup") -> str:
-    """A group added, in a few words: its name, the end of its id, what it grants.
-
-    "readers (…9abc) 3 perms", and "+ 2 object grants" where it holds any:
-    short, so that a screen puts two or more on a line.
-    """
-    ident = str(group.id)
-    ident = "…" + ident[-SHOWN_ID:] if len(ident) > SHOWN_ID else ident
-    count = len(group.permissions)
-    grants = ngettext("{count} perm", "{count} perms", count).format(count=count)
-    if group.object_grants:
-        more = ngettext(
-            "{count} object grant", "{count} object grants", group.object_grants
-        )
-        grants += " + " + more.format(count=group.object_grants)
-    line = pgettext("held group", "{name} ({id}) {grants}")
-    return _fitting(lambda text: line.format(name=text, id=ident, grants=grants), name)
-
-
 def _counts(permissions: int, grants: int) -> str:
     """How many permissions, and grants on objects, those there are ("" for none)."""
     parts: list[str] = []
@@ -516,40 +588,6 @@ def _counts(permissions: int, grants: int) -> str:
         many = ngettext("{count} object grant", "{count} object grants", grants)
         parts.append(many.format(count=grants))
     return "; ".join(parts)
-
-
-def _item(name: str) -> str:
-    """``name``, cut where need be, so that a list shows it on one line."""
-    return _fitting(lambda text: text, name)
-
-
-def _fitting(make: Callable[[str], str], name: str) -> str:
-    """``make(name)``, the name cut and ended with ``…`` where a line needs it.
-
-    Measured as a screen lays a list's item out (quoted, escaped), so what
-    a request grants is never refused for the length of a name.
-    """
-    from domainkit.contrib.auth.screens import TooMuchToShow, laid_out
-
-    def fits(text: str) -> bool:
-        try:
-            laid_out([("·", [text])], whole=True)
-        except TooMuchToShow:
-            return False
-        return True
-
-    whole = make(name)
-    if fits(whole):
-        return whole
-    low, high, best = 0, len(name) - 1, make("…")
-    while low <= high:
-        middle = (low + high) // 2
-        candidate = make(name[:middle] + "…")
-        if fits(candidate):
-            best, low = candidate, middle + 1
-        else:
-            high = middle - 1
-    return best
 
 
 def _promoted(command: GrantSuperuser) -> list[str]:
@@ -616,14 +654,35 @@ def refuse_if_guarded(action: str) -> None:
         raise ApprovalRequired("This command needs approval: submit it for approval.")
 
 
+def _held_values(
+    self: Command, handler: SerializerFunctionWrapHandler
+) -> dict[str, Any]:
+    """The command's arguments, ``values`` left out when empty, as before 2.8.
+
+    A request of 2.7 holds no ``values``: it reads, and is found, as it was.
+    """
+    dumped: dict[str, Any] = handler(self)
+    if not dumped.get("values"):
+        dumped.pop("values", None)
+    return dumped
+
+
 class SetStaff(Command):
     """Make a user staff, in the admin API (``PATCH /users/{id}``).
 
     Where ``auth.reactivate`` is not held, it is also making a staff member
     active again: their return gives staff back (since 2.7).
+
+    ``values`` holds what else the change sets, as JSON, by field: the
+    user's fields (an address, a name) and the flags but the grant, so its
+    approver sees them and the approval binds them (since 2.8, user report
+    A17). Left out of the arguments when empty.
     """
 
     user_id: UUID
+    values: dict[str, JsonValue] = dataclasses.field(default_factory=dict)
+
+    _as_held = model_serializer(mode="wrap")(_held_values)
 
 
 class HeldGroup(ValueObject):
@@ -696,7 +755,8 @@ class Reactivate(Command):
     what they come back with, as the change leaves it: the flags, each
     group (``HeldGroup``), their own permissions, sorted, and their grants
     on single objects (how many, and their digest). Anything granted since
-    makes another command, which waits for its own approval.
+    makes another command, which waits for its own approval. ``values``
+    holds what else the change sets, as ``SetStaff`` does (since 2.8).
     """
 
     user_id: UUID
@@ -706,6 +766,9 @@ class Reactivate(Command):
     permissions: tuple[str, ...]
     object_grants: int
     object_grants_digest: str
+    values: dict[str, JsonValue] = dataclasses.field(default_factory=dict)
+
+    _as_held = model_serializer(mode="wrap")(_held_values)
 
 
 class SetGroupPermissions(Command):
@@ -765,6 +828,7 @@ ADMIN_SERVICES: Final[Mapping[str, Service]] = {
 """Each admin action's decorated service."""
 ADMIN_SHOWS: Final[Mapping[str, Show]] = {
     **dict.fromkeys(ADMIN_COMMANDS, show_about_user),
+    SET_STAFF: show_set_staff,
     SET_GROUPS: show_set_groups,
     REACTIVATE: show_reactivation,
     SET_GROUP_PERMISSIONS: show_group_permissions,
@@ -1057,7 +1121,8 @@ async def _updated(
     Making the user active again is ``REACTIVATE``'s while they will hold
     access; else, where only making staff is held, ``SET_STAFF`` covers a
     staff member made active again, as it covers making staff (user report
-    A21).
+    A21). Either holds what else the change sets (``values``, since 2.8):
+    an address set with a grant is approved with it, or not at all.
 
     Raises:
         ApprovalRequired: The change makes the user staff and active again
@@ -1078,8 +1143,23 @@ async def _updated(
         return REACTIVATE, returning
     staff_after = values.get("is_staff", staff) is True
     if SET_STAFF in held and (making or (reactivating and staff_after)):
-        return SET_STAFF, SetStaff(user_id=target.id)
+        granted = [
+            name for name in ("is_staff", "is_active") if values.get(name) is True
+        ]
+        return SET_STAFF, SetStaff(user_id=target.id, values=_beside(values, granted))
     return None
+
+
+def _beside(values: Mapping[str, object], granted: Iterable[str]) -> dict[str, Any]:
+    """What a change sets beside its grant (``granted``), as JSON, by field."""
+    from domainkit.utils.decimals import jsonable
+
+    left = set(granted)
+    return {
+        name: jsonable(value)
+        for name, value in sorted(values.items())
+        if name not in left
+    }
 
 
 async def _returning(
@@ -1116,6 +1196,7 @@ async def _returning(
         permissions=permissions,
         object_grants=count,
         object_grants_digest=digest,
+        values=_beside(values, ("is_active", *flags)),
     )
 
 
@@ -1128,27 +1209,46 @@ async def _held(group: "Group") -> HeldGroup:
     return HeldGroup(group.id, group.name, keys, count, digest)
 
 
+async def held_groups(
+    names: Iterable[str], uow: "AuthUnitOfWork | None" = None
+) -> tuple[HeldGroup, ...]:
+    """The groups ``names`` names, as a command holds them: by id, with their grants.
+
+    For a grant of the project's own that names groups, such as an
+    invitation that makes staff in groups: its command holds what this
+    returns, as ``SetGroups`` holds the groups it adds, so its approval,
+    or its own act's authorization, binds each group's id, the keys it
+    grants, and its grants on single objects (their count and digest).
+    Called again when the grant is made, it reads otherwise if a group was
+    renamed, made again, or granted more since: compare the two, and
+    refuse or ask again. Sorted by name, each once. Read in ``uow``, or in
+    a unit of work of its own (since 2.8, user report A17).
+
+    Raises:
+        UnknownGroup: A name names no group.
+    """
+    from domainkit.contrib.auth import AuthUnitOfWork
+
+    wanted = sorted(set(names))
+    if uow is not None:
+        found = await uow.groups.get_many_by_name(wanted)
+        return tuple([await _held(group) for group in found])
+    async with AuthUnitOfWork() as own:
+        found = await own.groups.get_many_by_name(wanted)
+        return tuple([await _held(group) for group in found])
+
+
 def _grants_digest(grants: "Iterable[ObjectGrant]") -> tuple[int, str]:
     """How many ``grants`` there are, and the SHA-256 of them, sorted ("" for none).
 
     Each with when it ends. A grant on an object made since, or renewed to
     another date, changes the digest: the command holding it is another
-    one. Roles come as the grants of their permissions, one by one.
+    one. Roles come as the grants of their permissions, one by one. Auth's
+    ``grants_digest``, which the admin API's act binds too.
     """
-    lines = sorted(
-        "\t".join(
-            (
-                grant.permission,
-                grant.content_type,
-                str(grant.object_id),
-                "" if grant.expires_at is None else grant.expires_at.isoformat(),
-            )
-        )
-        for grant in grants
-    )
-    if not lines:
-        return 0, ""
-    return len(lines), hashlib.sha256("\n".join(lines).encode()).hexdigest()
+    from domainkit.contrib.auth.integration import grants_digest
+
+    return grants_digest(grants)
 
 
 def _held_groups(change: "AdminChange") -> tuple[HeldGroup, ...]:

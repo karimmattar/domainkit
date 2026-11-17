@@ -344,11 +344,16 @@ async def run_by_maker(guard: Guard, command: object) -> Running:
     Waiting, the act's authorization the caller confirmed for this call,
     if auth's action authorizations took one, is kept for the call made
     again once approved, until the request expires, within
-    ``AUTH.AUTHORIZATIONS.HELD_TTL`` (ADR 0174).
+    ``AUTH.AUTHORIZATIONS.HELD_TTL`` (ADR 0174). Kept for one request, it
+    serves that one alone (since 2.8, ADR 0179): a call whose command
+    changed since is refused before it spends, waits on, or submits
+    another, and asks for a new authorization.
 
     Raises:
         ApprovalRequired: No one is acting.
         MakerNotAllowed: The caller may no longer make the command.
+        ActionNotAuthorized: The act's authorization is kept for another
+            request (auth's, 403).
         ApprovalPending: None is approved: the caller's request holding
             ``command`` that waits, or else one submitted now.
     """
@@ -360,6 +365,7 @@ async def run_by_maker(guard: Guard, command: object) -> Running:
     now = clock.now()
     for request in found:
         if request.status is RequestStatus.APPROVED:
+            _kept_for(request.id)
             await _check_maker(guard, maker)
             spent = await _spend(guard, request.id, arguments)
             if spent is not None:
@@ -374,6 +380,7 @@ async def run_by_maker(guard: Guard, command: object) -> Running:
         ),
         None,
     )
+    _kept_for(None if waiting is None else waiting.id)
     if waiting is None:
         waiting = await _submit(guard, command, maker, ApprovalsUnitOfWork())
     _keep_authorizations(waiting.id, waiting.expires_at)
@@ -399,6 +406,23 @@ def _keep_authorizations(request_id: UUID, until: datetime) -> None:
         from domainkit.contrib.auth.actions import hold_authorizations
 
         hold_authorizations(until, held_for=f"{HELD_FOR}{request_id}")
+
+
+def _kept_for(request_id: UUID | None) -> None:
+    """Refuse the call if its act's authorization is kept for another request.
+
+    With ``domainkit.contrib.auth`` installed, its ``refuse_held_elsewhere``:
+    before the call spends or waits on the request ``request_id``, or
+    submits one (None), an authorization kept for another request serves
+    that one alone (ADR 0179). Without auth, there is none.
+
+    Raises:
+        ActionNotAuthorized: It is kept for another request (auth's, 403).
+    """
+    if registry.is_installed(AUTH):
+        from domainkit.contrib.auth.actions import refuse_held_elsewhere
+
+        refuse_held_elsewhere(None if request_id is None else f"{HELD_FOR}{request_id}")
 
 
 async def held_request_waits(held_for: str) -> bool | None:

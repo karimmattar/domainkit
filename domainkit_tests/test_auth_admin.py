@@ -2079,6 +2079,77 @@ def test_staff_reuses_can_count_against_the_users_own_checks(api: Api) -> None:
     assert error(reset, 429)[0] == "rate_limited"
 
 
+def test_a_value_another_user_has_is_refused_before_the_checks(api: Api) -> None:
+    """A taken username, address, or number: ``409`` before ``on_admin_change``.
+
+    The checks may hold the change for approval and spend it (approvals'
+    hold); a value the commit then refused spent the approval for nothing
+    (user report A17). The address counts in any case, where it identifies
+    users; one that does not identify users may be shared, as before.
+    """
+    from domainkit.contrib.auth.gates import AdminChange, on_admin_change
+
+    client = api(IDENTIFIERS=("username", "email", "mobile_number"))
+    headers = staff("admin", *ADMIN_PERMISSIONS)
+    create_user("carol", email="carol@example.com", mobile_number="+447700900123")
+    bob = create_user("bob")
+    checked: list[str] = []
+
+    async def recorded(actor: Any, target: Any, change: AdminChange) -> None:  # noqa: ANN401
+        checked.append(change.kind)
+
+    on_admin_change(recorded, domain="auth")
+    path = f"{ADMIN}/users/{bob}"
+    refused = [
+        client.patch(path, json={"fields": fields}, headers=headers)
+        for fields in (
+            {"email": "Carol@Example.com"},
+            {"mobile_number": "+44 7700 900123"},
+        )
+    ]
+    created = [
+        client.post(f"{ADMIN}/users", json=body, headers=headers)
+        for body in (
+            {"username": "CAROL"},
+            {"username": "dan", "fields": {"email": "carol@example.com"}},
+        )
+    ]
+    own = client.patch(
+        path, json={"fields": {"email": "bob@example.com"}}, headers=headers
+    )
+    again = client.patch(
+        path, json={"fields": {"email": "bob@example.com"}}, headers=headers
+    )
+
+    assert [error(each, 409)[0] for each in refused] == [
+        "email_taken",
+        "mobile_number_taken",
+    ]
+    assert [error(each, 409)[0] for each in created] == [
+        "username_taken",
+        "email_taken",
+    ]
+    assert own.status_code == 200, own.json()
+    assert again.status_code == 200, again.json()
+    assert checked == ["update", "update"]
+
+
+def test_an_address_that_identifies_no_one_may_be_shared(api: Api) -> None:
+    """Without ``email`` among ``AUTH.IDENTIFIERS``, staff set a shared address."""
+    client = api()
+    headers = staff("admin", *ADMIN_PERMISSIONS)
+    create_user("carol", email="carol@example.com")
+    bob = create_user("bob")
+
+    shared = client.patch(
+        f"{ADMIN}/users/{bob}",
+        json={"fields": {"email": "carol@example.com", "first_name": ""}},
+        headers=headers,
+    )
+
+    assert shared.status_code == 200, shared.json()
+
+
 def test_nothing_is_compared_while_a_check_refuses_the_change(api: Api) -> None:
     """A change the project refuses answers the same whatever the password.
 
