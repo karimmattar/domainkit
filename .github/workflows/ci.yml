@@ -33,7 +33,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  POETRY_VERSION: "2.2.1"
+  POETRY_VERSION: "2.4.3"
   POETRY_VIRTUALENVS_IN_PROJECT: "true"
   POETRY_NO_INTERACTION: "1"
 
@@ -198,12 +198,6 @@ jobs:
     if: ${{ !cancelled() && !failure() && github.event_name != 'schedule' && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
-    # Poetry 2.2.1 installs the default build's wheels (cp314) on
-    # free-threaded Python, whose extensions 3.14t cannot load (pydantic-core
-    # fails to import); 2.4.3 installs the cp314t wheels from the same lock
-    # file. The other jobs, and the lock check, keep 2.2.1.
-    env:
-      POETRY_VERSION: "2.4.3"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -241,9 +235,7 @@ jobs:
     if: ${{ !cancelled() && !failure() && github.event_name != 'schedule' && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 25
-    # As free-threaded: Poetry 2.4.3 installs the cp314t wheels.
     env:
-      POETRY_VERSION: "2.4.3"
       RUNS: "30"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

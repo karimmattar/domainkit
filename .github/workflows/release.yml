@@ -34,7 +34,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  POETRY_VERSION: "2.2.1"
+  POETRY_VERSION: "2.4.3"
 
 jobs:
   tag:
