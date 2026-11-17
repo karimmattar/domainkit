@@ -55,12 +55,21 @@ and a status.
 - `overlay_pdf` and `page_sizes` (`domainkit.documents`) decode
   `max_decoded` bytes at most, in all, 32 MiB by default: the object
   streams of each PDF, and the content of each page laid over and of its
-  overlay. Each is decoded before it is used, under pypdf's limits
-  lowered to what is left, for the call only (pypdf keeps them per
-  context), so a PDF that inflates past the budget is refused when it
-  runs out, not decoded whole: a 170 KB PDF became 168 MB in one preview.
-  A page laid over is written back deflated. A PDF that decodes past 32
-  MiB, which 2.6 laid over, is refused: raise `max_decoded` for it
+  overlay. Each is decoded before it is used, under pypdf's limits on
+  deflate, LZW, run-length, and Brotli lowered to what is left, for the
+  call only (pypdf keeps them per context), so a PDF that inflates past
+  the budget is refused when it runs out, not decoded whole: a 170 KB PDF
+  became 168 MB in one preview. pypdf bounds no other filter, and decodes
+  LZW, run-length, ASCIIHex, and ASCII85 in Python, at up to 94 MiB a MiB
+  they read: a stream's filters are read first, and it is refused unread
+  unless its filters are those a page's content uses, one of those four
+  at most, first, on a stream of `max_decoded / 64` bytes at most, with
+  no predictor (deflate then ASCII85 took a 31 KB PDF to 2.8 GB). The
+  cross-reference streams list 65,536 entries at most, or one for each
+  512 bytes of `max_decoded`, each decoded to 16 bytes an entry; a stream
+  that cannot be decoded is refused. A page laid over is written back
+  deflated. A PDF that decodes past 32 MiB, which 2.6 laid over, is
+  refused: raise `max_decoded` for it
   ([What a PDF may decode](docs/documents.md#what-a-pdf-may-decode),
   ADR 0176) (user report U6).
 

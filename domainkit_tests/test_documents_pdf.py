@@ -8,8 +8,10 @@ rotation into its content: an independent account of how the page is
 shown. So a rotated page that shifted the overlay would fail here.
 """
 
+import base64
 import io
 import struct
+import tracemalloc
 import zlib
 from typing import Any, Final, TypedDict
 
@@ -20,6 +22,7 @@ from pypdf.generic import (
     ArrayObject,
     DecodedStreamObject,
     DictionaryObject,
+    EncodedStreamObject,
     NameObject,
     NullObject,
     NumberObject,
@@ -27,6 +30,7 @@ from pypdf.generic import (
 )
 
 from domainkit.documents import DocumentError, overlay_pdf, page_sizes
+from domainkit.documents import pdf as pdf_module
 
 ROTATIONS: Final = (0, 90, 180, 270, -90, 450)
 KiB: Final = 1024
@@ -44,6 +48,11 @@ class Page(TypedDict, total=False):
     content: bytes
     deflated: bool
     """The content deflated, as most PDFs keep it: it decodes when read."""
+    stored: bytes
+    """The content as stored, decoded by ``filters``, in place of ``content``."""
+    filters: tuple[str, ...]
+    parameters: Any
+    """The content's ``/DecodeParms``."""
 
 
 def pdf(*pages: Page, password: str | None = None) -> bytes:
@@ -72,6 +81,12 @@ def pdf(*pages: Page, password: str | None = None) -> bytes:
         stream = DecodedStreamObject()
         stream.set_data(spec.get("content", b""))
         kept = stream.flate_encode(level=9) if spec.get("deflated") else stream
+        if "filters" in spec:
+            kept = EncodedStreamObject()
+            kept._data = spec["stored"]
+            kept[NameObject("/Filter")] = ArrayObject(map(NameObject, spec["filters"]))
+        if "parameters" in spec:
+            kept[NameObject("/DecodeParms")] = spec["parameters"]
         page[NameObject("/Contents")] = writer._add_object(kept)
     if password is not None:
         writer.encrypt(password, algorithm="AES-128")
@@ -111,12 +126,20 @@ def inflating(size: int, at: tuple[float, float] = (10, 10)) -> bytes:
     return text(at) + b" " * size
 
 
-def streamed(*sizes: int, broken: bool = False, stray: bool = False) -> bytes:
+def streamed(
+    *sizes: int,
+    extra: tuple[bytes, bytes] | None = None,
+    stray: bool = False,
+    entries: int = 0,
+    padding: int = 0,
+) -> bytes:
     """A PDF of one page whose object streams decode to ``sizes`` bytes each.
 
-    ``broken`` adds an object stream of a filter pypdf does not know;
+    ``extra`` adds an object stream of these filters and stored bytes;
     ``stray`` an entry whose object stream is the catalog, no stream.
-    Nothing refers to the objects the streams hold.
+    Nothing refers to the objects the streams hold. Its cross-reference
+    stream lists ``entries`` at least, and decodes to ``padding`` more
+    bytes than they take.
     """
     objects = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
@@ -135,10 +158,14 @@ def streamed(*sizes: int, broken: bool = False, stray: bool = False) -> bytes:
             + b"\nendstream"
         )
         held.append(len(objects))
-    if broken:
+    if extra is not None:
+        filters, stored = extra
         objects.append(
-            b"<< /Type /ObjStm /N 1 /First 6 /Filter /Bogus /Length 10 >>\n"
-            b"stream\n100 0 null\nendstream"
+            b"<< /Type /ObjStm /N 1 /First 6 /Filter "
+            + filters
+            + f" /Length {len(stored)} >>\nstream\n".encode()
+            + stored
+            + b"\nendstream"
         )
         held.append(len(objects))
     if stray:
@@ -154,7 +181,8 @@ def streamed(*sizes: int, broken: bool = False, stray: bool = False) -> bytes:
     rows.append(struct.pack(">BIH", 1, len(out), 0))
     rows += [struct.pack(">BIH", 0, 0, 0)] * (100 - len(rows))
     rows += [struct.pack(">BIH", 2, stream, 0) for stream in held]
-    data = zlib.compress(b"".join(rows))
+    rows += [struct.pack(">BIH", 0, 0, 0)] * (entries - len(rows))
+    data = zlib.compress(b"".join(rows) + bytes(padding))
     start = len(out)
     out += (
         f"{table} 0 obj\n<< /Type /XRef /Size {len(rows)} /W [1 4 2] /Root 1 0 R "
@@ -430,19 +458,25 @@ def test_object_streams_count_in_all_too() -> None:
     with pytest.raises(DocumentError) as refused:
         page_sizes(document, max_decoded=MiB)
     assert str(refused.value) == (
-        "The document decode to more than 1,048,576 bytes (max_decoded), or "
+        "The document decodes to more than 1,048,576 bytes (max_decoded), or "
         "past pypdf's limit on a stream."
     )
     with pytest.raises(DocumentError, match="decode to more than 1,048,576"):
         overlay_pdf(document, overlay_for(streamed()), max_decoded=MiB)
 
 
-def test_an_object_stream_pypdf_cannot_decode_fails_only_where_it_is_used() -> None:
-    """Unused, as these are, it is skipped, as before the budget."""
-    document = streamed(100, broken=True, stray=True)
+def test_an_object_stream_that_cannot_be_decoded_is_refused_though_unused() -> None:
+    """Skipped, it could cost what it decodes before it fails, again and again.
 
-    assert page_sizes(document, max_decoded=1000) == [(300.0, 400.0)]
-    assert len(overlay_pdf(document, overlay_for(document), max_decoded=1000)) > 0
+    An entry whose object stream is no stream decodes nothing, and is skipped.
+    """
+    assert page_sizes(streamed(100, stray=True), max_decoded=1000) == [(300.0, 400.0)]
+    with pytest.raises(DocumentError) as refused:
+        page_sizes(streamed(extra=(b"/ASCIIHexDecode", b"zz>")))
+    with pytest.raises(DocumentError, match="decoded with /Bogus"):
+        overlay_pdf(streamed(extra=(b"/Bogus", b"100 0 null")), pdf(Page()))
+
+    assert str(refused.value) == "A stream cannot be decoded (PdfStreamError)."
 
 
 def test_pypdfs_limits_are_lowered_for_the_call_only() -> None:
@@ -479,3 +513,143 @@ def test_max_decoded_is_more_than_nothing(bound: int) -> None:
         overlay_pdf(document, document, max_decoded=bound)
     with pytest.raises(ValueError, match="max_decoded is more than 0"):
         page_sizes(document, max_decoded=bound)
+
+
+# What is decoded, and how ------------------------------------------------------------
+
+
+def test_ascii85_after_deflate_is_refused_before_it_is_decoded() -> None:
+    """A test PDF of 31 KB: deflated ``z``s, each four bytes of ASCII85, took GBs.
+
+    pypdf bounds what deflate decodes to, and decodes ASCII85 in Python,
+    at 94 MiB of memory a MiB of ``z``: the filters are read first.
+    """
+    stored = zlib.compress(b"z" * MiB + b"~>")
+    document = pdf(Page(stored=stored, filters=("/FlateDecode", "/ASCII85Decode")))
+    assert len(document) < 8 * KiB
+
+    tracemalloc.start()
+    try:
+        with pytest.raises(DocumentError) as refused:
+            overlay_pdf(document, overlay_for(document))
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+
+    assert str(refused.value) == (
+        "A stream is decoded with /ASCII85Decode after /FlateDecode: "
+        "/ASCII85Decode decodes a stream as it is stored, first, or not at all."
+    )
+    assert peak < 4 * MiB
+    with pytest.raises(DocumentError, match="ASCII85Decode after /FlateDecode"):
+        page_sizes(
+            streamed(extra=(b"[/FlateDecode /ASCII85Decode]", stored)), max_decoded=MiB
+        )
+
+
+@pytest.mark.parametrize(
+    ("filters", "message"),
+    [
+        (("/FlateDecode", "/ASCIIHexDecode"), "/ASCIIHexDecode after /FlateDecode"),
+        (("/Fl", "/RL"), "/RunLengthDecode after /Fl"),
+        (("/FlateDecode", "/LZWDecode"), "/LZWDecode after /FlateDecode"),
+        (("/A85", "/AHx"), "/ASCIIHexDecode after /A85"),
+        (("/DCTDecode",), "decoded with /DCTDecode: a page's content"),
+        (("/JBIG2Decode",), "decoded with /JBIG2Decode"),
+        (("/Crypt",), "decoded with /Crypt"),
+    ],
+)
+def test_filters_that_could_pass_the_budget_are_refused_unread(
+    filters: tuple[str, ...], message: str
+) -> None:
+    """A filter run in Python on what another inflated, or an image's: never decoded.
+
+    The stored bytes would not decode: they are never tried.
+    """
+    document = pdf(Page(stored=b"not decoded", filters=filters))
+
+    with pytest.raises(DocumentError, match=message):
+        overlay_pdf(document, overlay_for(document))
+
+
+def test_a_stream_decoded_in_python_is_bounded_by_what_it_stores() -> None:
+    """ASCII85 alone, first as written: up to ``max_decoded / 64`` bytes stored.
+
+    pypdf decodes it in Python, at up to 94 MiB of memory a MiB stored.
+    As a generator writes it (ASCII85 over deflate), a page is laid over.
+    """
+    raw = pdf(Page(stored=b"z" * (600 * KiB) + b"~>", filters=("/ASCII85Decode",)))
+    armoured = base64.a85encode(zlib.compress(text((10, 10)))) + b"~>"
+    document = pdf(Page(stored=armoured, filters=("/ASCII85Decode", "/FlateDecode")))
+
+    with pytest.raises(DocumentError) as refused:
+        overlay_pdf(raw, overlay_for(raw))
+
+    assert str(refused.value) == (
+        "A stream decoded with /ASCII85Decode holds 614,402 bytes, more than "
+        "524,288 (max_decoded / 64): pypdf decodes it in Python."
+    )
+    assert shown(overlay_pdf(document, overlay_for(document))) == [
+        (10.0, 10.0),
+        (30.0, 40.0),
+    ]
+    assert len(overlay_pdf(raw, overlay_for(raw), max_decoded=64 * MiB)) > 0
+
+
+@pytest.mark.parametrize(
+    "parameters",
+    [
+        DictionaryObject(
+            {
+                NameObject("/Predictor"): NumberObject(12),
+                NameObject("/Columns"): NumberObject(4),
+            }
+        ),
+        ArrayObject(
+            [
+                NullObject(),
+                DictionaryObject({NameObject("/Predictor"): NumberObject(2)}),
+            ]
+        ),
+    ],
+)
+def test_a_predictor_is_refused_in_a_pages_content(parameters: Any) -> None:  # noqa: ANN401 - pypdf's.
+    """A predictor runs in Python, at up to 8 seconds a megabyte."""
+    stored = zlib.compress(text((10, 10)))
+    document = pdf(
+        Page(stored=stored, filters=("/FlateDecode",), parameters=parameters)
+    )
+    plain = DictionaryObject({NameObject("/Predictor"): NumberObject(1)})
+    unpredicted = pdf(Page(stored=stored, filters=("/FlateDecode",), parameters=plain))
+
+    with pytest.raises(DocumentError, match="decoded with a predictor"):
+        overlay_pdf(document, overlay_for(document))
+    assert shown(overlay_pdf(unpredicted, overlay_for(unpredicted)), 0, "MARK") == [
+        (10.0, 10.0),
+        (30.0, 40.0),
+    ]
+
+
+def test_cross_reference_streams_list_a_bounded_number_of_entries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """65,536 entries by default, refused before pypdf reads one: each costs 13 µs.
+
+    One for each 512 bytes of ``max_decoded`` where that is more; and each
+    stream decodes to 16 bytes an entry at most.
+    """
+    with pytest.raises(DocumentError) as refused:
+        page_sizes(streamed(entries=65_537))
+    monkeypatch.setattr(pdf_module, "XREF_ENTRIES", 1000)
+    larger = streamed(entries=1500)
+    with pytest.raises(DocumentError, match="1500 > 1000"):
+        overlay_pdf(larger, pdf(Page(width=300, height=400)), max_decoded=512_000)
+    with pytest.raises(DocumentError, match="Limit reached while decompressing"):
+        page_sizes(streamed(padding=16_000), max_decoded=512_000)
+
+    assert str(refused.value) == (
+        "The document is past a limit it is read within: Maximum XRef stream "
+        "entry limit reached: 65537 > 65536."
+    )
+    assert page_sizes(larger, max_decoded=1500 * 512) == [(300.0, 400.0)]
+    assert page_sizes(streamed(padding=8_000), max_decoded=512_000) == [(300.0, 400.0)]

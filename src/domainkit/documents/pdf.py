@@ -19,8 +19,26 @@ decoding where the budget ends: a page of a few kilobytes that would
 inflate to hundreds of megabytes is refused, not decoded. pypdf's
 limits are set for the call only, in its context (a ``ContextVar``):
 other threads, and the code around the call, keep theirs, and the call
-never raises them. The cross-reference streams pypdf reads as it opens
-a file are held to those limits each, not counted in all.
+never raises them.
+
+pypdf bounds what deflate, LZW, run-length, and Brotli decode to, not
+ASCII85 or ASCIIHex, and it decodes all but deflate and Brotli in
+Python, at up to a hundred bytes of memory a byte they read, or five
+seconds a megabyte (``IN_PYTHON``). So a stream's filters are read
+before it is decoded: only those of ``FILTERS``, one decoded in Python
+at most, first, on a stream of ``max_decoded / IN_PYTHON_SHARE`` bytes
+at most, and no predictor (one is for images and cross-reference
+streams, and runs in Python at seconds a megabyte). Anything else is
+refused, never decoded: an ASCII85 stage after deflate, as one test
+PDF had, would turn 31 KB into gigabytes.
+
+The cross-reference streams pypdf reads as it opens a file list
+``max_decoded / 512`` entries in all (``XREF_ENTRIES`` at least), and
+each decodes to ``XREF_ENTRY_BYTES`` an entry at most, not counted in
+all: a chain of them costs the time of each, and a predictor on one
+runs in Python. pypdf parses the overlay's drawing into operators, at
+far more than its bytes, and that is not counted: the overlay is the
+renderer's output from the project's HTML, never a PDF a person sent.
 """
 
 import io
@@ -30,10 +48,12 @@ from typing import Any, Final
 
 from domainkit.documents.base import DocumentError, missing
 
+MiB: Final = 1024 * 1024
+
 MISFIT: Final = 2.0
 """Points an overlay may differ from its page's shown size, either way (0.7 mm):
 a browser rounds a page's size."""
-MAX_DECODED: Final = 32 * 1024 * 1024
+MAX_DECODED: Final = 32 * MiB
 """The bytes a call decodes by default: object streams and the pages' content."""
 DECODED: Final = (
     "zlib_maximum_output_length",
@@ -43,6 +63,36 @@ DECODED: Final = (
     "jbig2_maximum_output_length",
 )
 """pypdf's limits on what one stream decodes to, by filter (``pypdf.Configuration``)."""
+FILTERS: Final[Mapping[str, str]] = {
+    "/FlateDecode": "/FlateDecode",
+    "/Fl": "/FlateDecode",
+    "/BrotliDecode": "/BrotliDecode",
+    "/LZWDecode": "/LZWDecode",
+    "/LZW": "/LZWDecode",
+    "/RunLengthDecode": "/RunLengthDecode",
+    "/RL": "/RunLengthDecode",
+    "/ASCIIHexDecode": "/ASCIIHexDecode",
+    "/AHx": "/ASCIIHexDecode",
+    "/ASCII85Decode": "/ASCII85Decode",
+    "/A85": "/ASCII85Decode",
+}
+"""The filters a page's content and a PDF's objects are decoded with, by each
+name pypdf reads; an image's (DCT, JPX, CCITT, JBIG2) or ``/Crypt`` is refused."""
+IN_PYTHON: Final = frozenset(
+    {"/LZWDecode", "/RunLengthDecode", "/ASCIIHexDecode", "/ASCII85Decode"}
+)
+"""Filters pypdf decodes in Python: ASCII85's ``z`` costs it 94 MiB a MiB read,
+random ASCII85 1.8 s a MiB, LZW 5.5 s, one-byte runs 45 MiB."""
+IN_PYTHON_SHARE: Final = 64
+"""A stream decoded in Python reads ``max_decoded`` / 64 bytes at most: at the
+default, 512 KiB, which pypdf decodes in 3 seconds and 50 MiB at worst."""
+XREF_ENTRIES: Final = 65_536
+"""Entries a PDF's cross-reference streams list in all, at least: pypdf takes
+up to about 200 bytes and 13 µs for each. One for each 512 bytes of ``max_decoded``
+where that is more."""
+XREF_ENTRY_BYTES: Final = 16
+"""Bytes a cross-reference stream decodes to for each entry it may list: wider
+than any entry and its predictor's byte."""
 type Matrix = tuple[float, float, float, float, float, float]
 """A PDF transformation ``[a b c d e f]``: x' = a x + c y + e, y' = b x + d y + f."""
 
@@ -63,7 +113,7 @@ def page_sizes(
             decodes past ``max_decoded``.
     """
     pypdf = _pypdf()
-    budget = _Budget(pypdf, max_decoded, "The document")
+    budget = _Budget(pypdf, max_decoded, "The document decodes")
     with budget.limited():
         reader = _reader(pypdf, pdf, "The document", budget)
         return [_shown(page)[1:] for page in reader.pages]
@@ -97,7 +147,7 @@ def overlay_pdf(
             decode past ``max_decoded``.
     """
     pypdf = _pypdf()
-    budget = _Budget(pypdf, max_decoded, "The document and its overlays")
+    budget = _Budget(pypdf, max_decoded, "The document and its overlays decode")
     with budget.limited():
         reader = _reader(pypdf, document, "The document", budget)
         count = len(reader.pages)
@@ -151,7 +201,7 @@ class _Budget:
     """The bytes a call may still decode, and pypdf's limits within it."""
 
     def __init__(self, pypdf: Any, max_decoded: int, what: str) -> None:  # noqa: ANN401 - the module.
-        """Allow ``max_decoded`` bytes; ``what`` names the PDFs in a refusal.
+        """Allow ``max_decoded`` bytes; ``what`` names the PDFs and a verb, to refuse.
 
         Raises:
             ValueError: ``max_decoded`` is not more than 0.
@@ -162,6 +212,8 @@ class _Budget:
         self.max_decoded = max_decoded
         self.left = max_decoded
         self.what = what
+        self.xref_entries = max(XREF_ENTRIES, max_decoded // 512)
+        self.in_python = max_decoded // IN_PYTHON_SHARE
 
     @contextmanager
     def limited(self, most: int | None = None) -> Iterator[None]:
@@ -182,42 +234,92 @@ class _Budget:
     def spend(self, stream: Any) -> None:  # noqa: ANN401 - pypdf's types.
         """Decode ``stream``, which pypdf then keeps, out of what is left.
 
-        It decodes no further than what is left (a byte at least): one
-        that would go further stops there, and is refused.
+        Its filters are checked first (``check``). It decodes no further
+        than what is left (a byte at least): one that would go further
+        stops there, and is refused, as one pypdf cannot decode is.
 
         Raises:
-            DocumentError: What is decoded passes ``max_decoded``.
+            DocumentError: Its filters are refused, it cannot be decoded,
+                or what is decoded passes ``max_decoded``.
         """
+        self.check(stream)
         try:
             with self.limited(max(self.left, 1)):
                 self.left -= len(stream.get_data())
         except self.pypdf.errors.LimitReachedError:
             self.left = -1
+        except Exception as exc:  # noqa: BLE001 - pypdf raises many kinds on a bad stream.
+            raise DocumentError(
+                f"A stream cannot be decoded ({type(exc).__name__})."
+            ) from None
         if self.left < 0:
             raise DocumentError(
-                f"{self.what} decode to more than {self.max_decoded:,} bytes "
+                f"{self.what} to more than {self.max_decoded:,} bytes "
                 "(max_decoded), or past pypdf's limit on a stream."
             )
+
+    def check(self, stream: Any) -> None:  # noqa: ANN401 - pypdf's types.
+        """Refuse ``stream`` before it is decoded, if its filters could pass the bounds.
+
+        pypdf bounds what deflate, LZW, run-length, and Brotli decode to;
+        not what ASCII85 or ASCIIHex do, nor the memory and time of a
+        filter it runs in Python. So: filters of ``FILTERS`` only; one of
+        ``IN_PYTHON`` at most, first, reading the stream as stored, which
+        is no larger than ``max_decoded / IN_PYTHON_SHARE``; no predictor.
+
+        Raises:
+            DocumentError: The stream would be decoded otherwise.
+        """
+        filters = stream.get("/Filter")
+        filters = None if filters is None else filters.get_object()
+        names = filters if isinstance(filters, list) else [filters]
+        named = [each.get_object() for each in names if each is not None]
+        for position, name in enumerate(named):
+            kind = FILTERS.get(name) if isinstance(name, str) else None
+            if kind is None:
+                raise DocumentError(
+                    f"A stream is decoded with {name}: a page's content and a "
+                    "PDF's objects are decoded with FlateDecode, LZWDecode, "
+                    "RunLengthDecode, ASCIIHexDecode, ASCII85Decode, or "
+                    "BrotliDecode only."
+                )
+            if kind in IN_PYTHON and position > 0:
+                raise DocumentError(
+                    f"A stream is decoded with {kind} after {named[0]}: "
+                    f"{kind} decodes a stream as it is stored, first, or not at all."
+                )
+        if named and FILTERS[named[0]] in IN_PYTHON:
+            stored = len(stream._data)  # As stored: what the first filter reads.
+            if stored > self.in_python:
+                raise DocumentError(
+                    f"A stream decoded with {FILTERS[named[0]]} holds {stored:,} "
+                    f"bytes, more than {self.in_python:,} (max_decoded / "
+                    f"{IN_PYTHON_SHARE}): pypdf decodes it in Python."
+                )
+        parameters = stream.get("/DecodeParms")
+        parameters = None if parameters is None else parameters.get_object()
+        for each in parameters if isinstance(parameters, list) else [parameters]:
+            given = None if each is None else each.get_object()
+            if isinstance(given, dict) and given.get("/Predictor", 1) != 1:
+                raise DocumentError(
+                    "A stream is decoded with a predictor, which is for images "
+                    "and cross-reference streams: pypdf runs it in Python, at "
+                    "seconds a megabyte."
+                )
 
     def spend_objects(self, reader: Any) -> None:  # noqa: ANN401 - pypdf's types.
         """Decode the object streams of ``reader``, every one, out of what is left.
 
-        An object stream pypdf cannot decode is left to fail where it is
-        used: unused, it fails nothing, as before.
+        An entry whose object stream is no stream decodes nothing.
 
         Raises:
-            DocumentError: What is decoded passes ``max_decoded``.
+            DocumentError: An object stream is refused, cannot be decoded,
+                or what is decoded passes ``max_decoded``.
         """
         for number in sorted({stream for stream, _ in reader.xref_objStm.values()}):
-            try:
-                stream = reader.get_object(number)
-                if not hasattr(stream, "get_data"):
-                    continue
+            stream = reader.get_object(number)
+            if hasattr(stream, "get_data"):
                 self.spend(stream)
-            except DocumentError:
-                raise
-            except Exception:  # noqa: BLE001, S112 - pypdf raises many kinds; see above.
-                continue
 
     def spend_contents(self, page: Any) -> None:  # noqa: ANN401 - pypdf's types.
         """Decode the content of ``page``, each of its streams, out of what is left.
@@ -255,7 +357,11 @@ def _reader(pypdf: Any, data: bytes, what: str, budget: _Budget) -> Any:  # noqa
             past what is left of ``budget``.
     """
     try:
-        reader = pypdf.PdfReader(io.BytesIO(data))
+        # The cross-reference streams: their entries in all, each one's bytes.
+        with budget.limited(budget.xref_entries * XREF_ENTRY_BYTES):
+            reader = pypdf.PdfReader(
+                io.BytesIO(data), xref_stream_maximum_entries=budget.xref_entries
+            )
         encrypted = reader.is_encrypted
         if not encrypted:
             budget.spend_objects(reader)
@@ -263,6 +369,11 @@ def _reader(pypdf: Any, data: bytes, what: str, budget: _Budget) -> Any:  # noqa
     except DocumentError:
         raise
     except Exception as exc:  # noqa: BLE001 - pypdf raises many kinds on a bad file.
+        limit = exc.__cause__  # pypdf wraps what stops it as it opens a file.
+        if isinstance(limit, pypdf.errors.LimitReachedError):
+            raise DocumentError(
+                f"{what} is past a limit it is read within: {limit}"
+            ) from None
         raise DocumentError(
             f"{what} is not a PDF that can be read ({type(exc).__name__})."
         ) from None

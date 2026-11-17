@@ -365,11 +365,37 @@ default. *New in 2.7.*
   overlays, and the content of each page it lays over, and of its
   overlay.
 
-Each stream is decoded before it is used, and no further than what is
-left, so a PDF that inflates past the budget is refused with a
-`DocumentError` once the budget runs out, not decoded whole. A page's
-content is written back deflated: the result is about the size of the
-document, not of what it decoded.
+Each stream is decoded before it is used, under pypdf's limits lowered
+to what is left, so a stream that deflate, LZW, run-length, or Brotli
+would inflate past the budget stops there and is refused with a
+`DocumentError`, not decoded whole. pypdf bounds what those filters
+decode to, and no other. So a stream's filters are read first, and it is
+refused, never decoded, unless:
+
+- each filter is `FlateDecode`, `LZWDecode`, `RunLengthDecode`,
+  `ASCIIHexDecode`, `ASCII85Decode`, or `BrotliDecode` (or a short name
+  pypdf reads, such as `/A85`). An image's filter (`DCTDecode`,
+  `JPXDecode`, `CCITTFaxDecode`, `JBIG2Decode`) or `/Crypt` has no place
+  in a page's content or a PDF's objects.
+- `LZWDecode`, `RunLengthDecode`, `ASCIIHexDecode`, or `ASCII85Decode`
+  comes first, if at all, and only one of them. pypdf decodes these in
+  Python: ASCII85's `z` costs it 94 MiB of memory for each MiB it reads,
+  and LZW 5 seconds. First, they read the stream as it is stored, so
+  `[/ASCII85Decode /FlateDecode]`, as ReportLab writes, is decoded; after
+  deflate, they would read what deflate inflated, so
+  `[/FlateDecode /ASCII85Decode]` is refused: a test PDF of 31 KB took
+  2.8 GB that way.
+- such a stream stores `max_decoded / 64` bytes at most: 512 KiB by
+  default, which pypdf decodes in 3 seconds and 50 MiB at worst, beside
+  what it decodes to.
+- no filter has a predictor (`/DecodeParms` with `/Predictor`). A
+  predictor is for images and cross-reference streams; pypdf runs it in
+  Python, at up to 8 seconds a megabyte.
+
+A stream that cannot be decoded is refused too, even an object stream
+nothing uses: skipped, it could cost what it decoded before it failed,
+again for each such stream. A page's content is written back deflated:
+the result is about the size of the document, not of what it decoded.
 
 ```python
 laid = await asyncio.to_thread(
@@ -379,15 +405,31 @@ laid = await asyncio.to_thread(
 
 The default holds a contract of hundreds of pages. Raise it for drawings
 or maps of many megabytes a page, and keep it as low as your documents
-allow: what is decoded is held in memory, about twice over, while the
-call runs.
+allow: while the call runs, memory peaks at about three times what it
+decodes (a page that decodes to 31 MiB peaks at 97 MiB, as Python's
+`tracemalloc` counts it).
 
 pypdf's limits are lowered for the call only. pypdf keeps them in a
 context variable, so other threads, and the code around the call, keep
 their own, and a limit lower than `max_decoded` that your code set with
-`pypdf.apply_configuration` still holds. The cross-reference streams
-pypdf reads as it opens a file are held to its limits each, not counted
-in all. A PDF a person uploads is checked before it is stored
+`pypdf.apply_configuration` still holds.
+
+Not counted in all:
+
+- **The cross-reference streams**, which pypdf reads as it opens a
+  file. They list 65,536 entries in all, or one for each 512 bytes of
+  `max_decoded` where that is more: pypdf takes about 13 µs and 200
+  bytes for each. Each decodes to 16 bytes an entry at most (1 MiB by
+  default). A chain of them costs the time of each, and a predictor on
+  one runs in Python, about 2 seconds for 1 MiB.
+- **Parsing the overlay.** pypdf reads the overlay's drawing into
+  operators to move it onto the page, at far more than its bytes: 2 MiB
+  of drawing operators took 8 seconds and 200 MiB. Its bytes count, its
+  parsing does not, since the overlay is the renderer's output from your
+  own HTML, a page of text a few kilobytes long. Never pass a PDF a
+  person sent as the overlay.
+
+A PDF a person uploads is checked before it is stored
 ([Uploads](uploads.md)); `max_decoded` bounds what is laid over later
 all the same, whether it was stored before, or converted from a Word
 document.
@@ -489,7 +531,7 @@ document, rendered by Gotenberg:
 | What you see | Why | What to do |
 | --- | --- | --- |
 | `PlaceholderError` | Placeholders and values disagree; `missing`, `unused`, and `malformed` list each problem. | Fix the template or the values. For a template a user uploaded, answer 422 with the lists. |
-| `DocumentError` | A document cannot be read (not a `.docx`, past `ArchiveLimits`, a DTD, an encrypted PDF, a PDF that decodes past `max_decoded`), or overlays do not fit their pages. The base of `PlaceholderError` and `RenderingRefused`; also a `ValueError`. | Read its message. |
+| `DocumentError` | A document cannot be read (not a `.docx`, past `ArchiveLimits`, a DTD, an encrypted PDF, a PDF that decodes past `max_decoded` or with filters it does not decode), or overlays do not fit their pages. The base of `PlaceholderError` and `RenderingRefused`; also a `ValueError`. | Read its message. |
 | `RenderingRefused` | Gotenberg refused the input: 400 (a form or a document it cannot read), 409 (a resource did not load), 413 (past its body limit). `status` and `trace` say which. | Fix the document; sending it again changes nothing. |
 | 503 `renderer_unavailable` (`RendererUnavailable`) | Gotenberg could not be reached, failed once the retries were spent, refused the login, or answered something other than a PDF. | Try again later; check Gotenberg and its login. |
 | 503 `upstream_unavailable`, 504 `upstream_timeout`, 502 `upstream_response_too_large` | The client's own: the circuit is open, `TIMEOUT` passed, or the PDF is past `MAX_RESPONSE_BYTES`. | See [outgoing calls](reference/http.md). |

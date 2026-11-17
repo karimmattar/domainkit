@@ -52,6 +52,17 @@ a project that relied on 2.6's behaviour changes.
   ([What a PDF may decode](documents.md#what-a-pdf-may-decode)). A page
   laid over is now written back deflated: the PDF looks the same, and is
   smaller.
+- **Some PDFs 2.6 read are refused unread** (security), by
+  `overlay_pdf` and `page_sizes`, where a stream they decode has an
+  image's filter, `/Crypt`, or one they do not know; an LZW, run-length,
+  ASCIIHex, or ASCII85 stage after another filter, or two of them; such a
+  stage first on a stream of more than `max_decoded / 64` bytes (512 KiB);
+  or a predictor. An object stream that cannot be decoded is refused
+  even when nothing uses it, and the cross-reference streams list 65,536
+  entries at most (one for each 512 bytes of `max_decoded` where that is
+  more). Few generators write any of these on a page's content (PDFs of
+  the early 1990s used `[/ASCII85Decode /LZWDecode]`, now refused), and
+  ReportLab's `[/ASCII85Decode /FlateDecode]` is read as before.
 - **A request that needs a renderer where none is set is answered 503.**
   `renderer()` without `DOCUMENTS["RENDERER"]` raises
   `RendererNotConfigured`, which is the `ImproperlyConfigured` it raised
