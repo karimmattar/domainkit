@@ -6,6 +6,7 @@ package when it is called, and ``missing`` says how to install it.
 
 import logging
 import re
+import threading
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar, Final, Protocol, runtime_checkable
@@ -110,8 +111,9 @@ class RendererNotConfigured(RendererUnavailable, ImproperlyConfigured):
     developer's machine, a service that only fills them): a request that
     needs one is answered 503 ``renderer_unavailable``, as when Gotenberg
     is down. Where one should be set, it is a deployment's mistake:
-    ``renderer()`` logs it as an error and sends it to ``ERROR_REPORTERS``
-    as it raises. It is an ``ImproperlyConfigured`` too, as 2.6 raised.
+    ``renderer()`` logs it as an error and sends it to ``ERROR_REPORTERS``,
+    the first time a process asks for one, and raises it every time. It
+    is an ``ImproperlyConfigured`` too, as 2.6 raised.
     """
 
     code: ClassVar[str] = "renderer_unavailable"
@@ -197,6 +199,9 @@ class Renderer(Protocol):
 
 
 _made: dict[str, tuple["RendererConfig", Renderer]] = {}
+_told: set[str] = set()
+"""What this process reported once: ``"unset"``, a missing renderer."""
+_telling = threading.Lock()
 
 
 def renderer() -> Renderer:
@@ -205,7 +210,7 @@ def renderer() -> Renderer:
     Raises:
         RendererNotConfigured: ``DOCUMENTS["RENDERER"]`` is not set (503
             ``renderer_unavailable`` in a request; an ``ImproperlyConfigured``),
-            logged as an error and sent to ``ERROR_REPORTERS``.
+            logged as an error and sent to ``ERROR_REPORTERS`` once a process.
         ImportError: ``domainkit[httpclient]``, which calls Gotenberg, is
             not installed.
     """
@@ -220,19 +225,24 @@ def renderer() -> Renderer:
             'No renderer is set: DOCUMENTS = {"RENDERER": {"URL": ...}} names '
             "the Gotenberg server (docs/documents.md)."
         )
-        logger.error("A document was to be rendered, and no renderer is set.")
-        # A 503 is never reported; a missing setting must be seen all the same.
-        request = current_request()
-        context = (
-            {}
-            if request is None
-            else {
-                "request_id": request.request_id,
-                "method": request.method,
-                "path": request.path,
-            }
-        )
-        report_error(unset, **context)
+        with _telling:
+            first = "unset" not in _told
+            _told.add("unset")
+        if first:
+            # A 503 is never reported, and a missing setting must be seen:
+            # once a process, however many callers catch it or try again.
+            logger.error("A document was to be rendered, and no renderer is set.")
+            request = current_request()
+            context = (
+                {}
+                if request is None
+                else {
+                    "request_id": request.request_id,
+                    "method": request.method,
+                    "path": request.path,
+                }
+            )
+            report_error(unset, **context)
         raise unset
     held = _made.get("renderer")
     if held is not None and held[0] == config:

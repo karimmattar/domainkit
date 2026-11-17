@@ -165,9 +165,12 @@ worked in 2.6 is refused but a PDF past the new bounds.
   that caught `ImproperlyConfigured` still does. A 503 is never sent to
   `ERROR_REPORTERS`, and a missing setting where one should be is a
   deployment's mistake someone must see, as they saw the 500: so
-  `renderer()` logs it as an error and reports it, with the request,
-  before it raises. Reporting it there rather than in the HTTP layer
-  reports it from a worker too. No check is added: a project that
+  `renderer()` logs it as an error and reports it, with the request, the
+  first time a process asks for a renderer, and raises it every time.
+  Once a process, not once a call: a caller that catches it (a preview
+  that answers without one), a worker's retries, and three calls in one
+  request would each report it again. Reporting it there rather than in
+  the HTTP layer reports it from a worker too. No check is added: a project that
   renders nowhere leaves the setting unset on purpose.
 - **`fill_docx(..., allow_missing=False, allow_malformed=False)`**: each
   leaves what it allows as written, a placeholder with no value or braces
@@ -212,15 +215,14 @@ worked in 2.6 is refused but a PDF past the new bounds.
   it decoded those of the page tree only; the work is bounded by the
   budget, and is the work `overlay_pdf` does anyway when it clones the
   file.
-- Not counted in all: the chain of cross-reference streams pypdf reads
-  as it opens a file, each bounded on its own (a predictor on one of 1
-  MiB takes about 2 seconds); and the parsing of the overlay into
-  operators, which costs far more than its bytes (2 MiB of operators
-  took 8 seconds and 200 MiB). The overlay is the renderer's output from the
-  project's own HTML; the docs say never to pass a PDF a person sent.
-  Uploads are checked whole before they are stored (ADR 0167).
-- An unset renderer is a 503 in a request, logged as an error and
-  reported each time. A project's handler for `ImproperlyConfigured`
+- Not counted in all: the parsing of the overlay into operators, which
+  costs far more than its bytes (2 MiB of operators took 8 seconds and
+  200 MiB, without a profiler). The overlay is the renderer's output
+  from the project's own HTML; the docs say never to pass a PDF a
+  person sent. Uploads are checked whole before they are stored (ADR
+  0167).
+- An unset renderer is a 503 in every request that needs one, logged as
+  an error and reported once a process. A project's handler for `ImproperlyConfigured`
   no longer sees it (`UpstreamError` comes first among its classes), and
   `except RendererUnavailable` now catches a missing setting too.
 - A draft filled with `allow_missing` or `allow_malformed` holds braces.

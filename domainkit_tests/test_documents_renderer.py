@@ -6,6 +6,7 @@ network. The fake reads the multipart form as Gotenberg would.
 
 import io
 import sys
+import threading
 from collections.abc import Iterator, Mapping
 from email import policy
 from email.parser import BytesParser
@@ -26,6 +27,7 @@ from domainkit.documents import (
     RenderingRefused,
     renderer,
 )
+from domainkit.documents import base as documents_base
 from domainkit.documents.gotenberg import (
     CHROMIUM_HTML,
     LIBREOFFICE,
@@ -269,13 +271,22 @@ def reporter(exc: BaseException, context: Mapping[str, object]) -> None:
     reported.append((type(exc).__name__, dict(context)))
 
 
+@pytest.fixture
+def untold() -> Iterator[None]:
+    """A process that has not reported a missing renderer yet, and no reports."""
+    documents_base._told.clear()
+    reported.clear()
+    yield
+    documents_base._told.clear()
+
+
+@pytest.mark.usefixtures("untold")
 def test_no_renderer_is_made_without_settings(caplog: pytest.LogCaptureFixture) -> None:
     """``renderer()`` names the setting to set, logs it as an error, and reports it.
 
     The error is an ``ImproperlyConfigured``, as in 2.6, and an unavailable
     renderer, which a request answers 503.
     """
-    reported.clear()
     with (
         override_settings(ERROR_REPORTERS=[f"{__name__}.reporter"]),
         pytest.raises(ImproperlyConfigured, match=r'DOCUMENTS = \{"RENDERER"') as unset,
@@ -298,6 +309,7 @@ def test_no_renderer_is_made_without_settings(caplog: pytest.LogCaptureFixture) 
     assert reported == [("RendererNotConfigured", {})]
 
 
+@pytest.mark.usefixtures("untold")
 def test_a_request_that_needs_a_renderer_none_is_set_for_is_answered_503() -> None:
     """Where the renderer is optional (previews, a developer's machine): not a 500.
 
@@ -317,7 +329,6 @@ def test_a_request_that_needs_a_renderer_none_is_set_for_is_answered_503() -> No
     async def preview() -> None:
         await renderer().html_to_pdf("<p>a</p>")
 
-    reported.clear()
     with override_settings(ERROR_REPORTERS=[f"{__name__}.reporter"]):
         client = TestClient(
             RequestContextMiddleware(app), raise_server_exceptions=False
@@ -334,6 +345,69 @@ def test_a_request_that_needs_a_renderer_none_is_set_for_is_answered_503() -> No
         (name, context["method"], context["path"]) for name, context in reported
     ] == [("RendererNotConfigured", "GET", "/preview")]
     assert reported[0][1]["request_id"] == answer.headers["X-Request-ID"]
+
+
+@pytest.mark.usefixtures("untold")
+def test_a_missing_renderer_is_reported_once_a_process(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Not once a call: callers that catch it, retry, or ask twice report nothing more.
+
+    A worker's attempts, a preview that answers without one, and a route
+    that asks three times: one report and one error logged in all, and
+    every caller still gets the error.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from domainkit.http.errors import install_exception_handlers
+    from domainkit.http.middleware import RequestContextMiddleware
+
+    refused: list[str] = []
+
+    def attempts() -> None:
+        for _ in range(3):
+            try:
+                renderer()
+            except RendererUnavailable as exc:
+                refused.append(type(exc).__name__)
+
+    app = FastAPI()
+    install_exception_handlers(app)
+
+    @app.get("/preview")
+    async def preview() -> dict[str, str]:
+        try:
+            await renderer().html_to_pdf("<p>a</p>")
+        except RendererUnavailable:
+            return {"preview": "unavailable"}
+        return {"preview": "made"}  # pragma: no cover - no renderer is set.
+
+    @app.get("/thrice")
+    async def thrice() -> None:
+        for _ in range(2):
+            with pytest.raises(RendererUnavailable):
+                renderer()
+        renderer()
+
+    with override_settings(ERROR_REPORTERS=[f"{__name__}.reporter"]):
+        worker = threading.Thread(target=attempts)
+        worker.start()
+        worker.join()
+        client = TestClient(
+            RequestContextMiddleware(app), raise_server_exceptions=False
+        )
+        answers = [client.get("/preview"), client.get("/thrice")]
+        flush_reports()
+
+    assert refused == ["RendererNotConfigured"] * 3
+    assert [answer.status_code for answer in answers] == [200, 503]
+    assert reported == [("RendererNotConfigured", {})]
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "domainkit.documents.base"
+    ] == ["A document was to be rendered, and no renderer is set."]
 
 
 def test_the_renderer_names_the_extra_it_needs(monkeypatch: pytest.MonkeyPatch) -> None:

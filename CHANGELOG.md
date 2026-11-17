@@ -43,8 +43,8 @@ and a status.
   `RendererNotConfigured`, an `ImproperlyConfigured` as before and a
   `RendererUnavailable`: a request that needs a renderer where none is
   set is answered 503 `renderer_unavailable`, not 500. It is still
-  logged as an error and sent to `ERROR_REPORTERS`, as the 500 was: a
-  missing setting is a deployment's mistake
+  logged as an error and sent to `ERROR_REPORTERS`, as the 500 was, once
+  a process: a missing setting is a deployment's mistake
   ([The renderer](docs/documents.md#the-renderer), ADR 0176)
   (user report U5).
 - `fill_docx` reads a document's parts in a stable order, whatever order
