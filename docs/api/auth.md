@@ -207,6 +207,7 @@ Login gates: checks every login passes before it is issued (ADR 0128).
 - `login_origin`: How the login `request` makes is made, for its gates; None: it makes none.
 - `manages_logins`: A route's dependency: the request may manage its user's logins.
 - `on_admin_change`: Register a check of every change the admin API makes to a user.
+- `on_admin_screen`: Register a check of what a change of the admin API to a user shows.
 - `on_create_staff`: Register a check of creating a user who is staff in the admin API.
 - `on_login_gate`: Register a gate every login passes (`on_login_gate(gate)` in `ready()`).
 - `on_make_superuser`: Register a check of making a superuser in the admin API.
@@ -286,6 +287,17 @@ Transactions authorized for one amount and one payee (PSD2's dynamic linking).
 - `request_authorization`: Store a transaction for `user_id` to confirm, for `AUTH.SCA.TTL`.
 - `router`: The routes: transactions authorized for one amount and one payee (PSD2's dynamic linking).
 - `sca_transaction`: The user's transaction `challenge_id`: its amount, payee, and state.
+
+## `domainkit.contrib.auth.screens`
+
+What an act shows, laid out on a phone's screen: whole, or refused (ADR 0173).
+
+- `LINES`: The most labelled lines a screen holds: 6.
+- `LINE_LENGTH`: The most characters (code points) a line, its label, or a title holds: 64.
+- `TooMuchToShow`: The act cannot be shown whole on one screen: make it in smaller steps (422).
+- `fitted`: `text` as a screen shows it: printable, at most `length` characters.
+- `laid_out`: `details` on a screen's lines: six labelled lines of 64 characters at most.
+- `named`: What an act is on, on one line: its name, cut to fit if need be, and its id.
 
 ## `domainkit.contrib.auth.signup`
 

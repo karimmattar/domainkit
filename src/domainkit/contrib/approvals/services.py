@@ -172,9 +172,16 @@ async def _submit(
     Raises:
         ApprovalNotNeeded: As for ``_prepared``.
         InvalidArguments: As for ``_prepared``.
+        TooMuchToShow: With ``APPROVE_ACTION`` and auth's
+            ``AUTHORIZATIONS.WHOLE`` on, approving it could not be shown
+            whole (auth's, 422).
     """
     policy, arguments = _prepared(guard, command, maker)
     settings = config()
+    if settings.APPROVE_ACTION:  # Never a request no approver's screen shows whole.
+        from .authorizing import check_approvable
+
+        await check_approvable(guard, command)
     request = ApprovalRequest.submit(
         guard.action,
         arguments,
@@ -208,6 +215,9 @@ async def submit_request(
         InvalidArguments: The arguments do not make its command, or are too
             large; or the maker is malformed.
         ApprovalNotNeeded: No policy of the guard applies to the command.
+        TooMuchToShow: With ``APPROVE_ACTION`` and auth's
+            ``AUTHORIZATIONS.WHOLE`` on, approving it could not be shown
+            whole on one screen (auth's, 422).
         AuthorizationRequired: With ``SUBMIT_ACTION``, no authorization of
             this submission came with the request (auth's, 401).
         ActionNotAuthorized: With ``SUBMIT_ACTION``, it is of another
@@ -242,6 +252,7 @@ async def record_submission(
         UnknownAction: As for ``submit_request``.
         InvalidArguments: As for ``submit_request``.
         ApprovalNotNeeded: As for ``submit_request``.
+        TooMuchToShow: As for ``submit_request``.
     """
     guard, made, maker = _made(command)
     return await _submit(guard, made, maker, uow)
@@ -288,6 +299,7 @@ async def submit_command(
         UnknownAction: No guard is registered as ``action``.
         InvalidArguments: ``command`` is not the guard's command, or too large.
         ApprovalNotNeeded: No policy of the guard applies to it.
+        TooMuchToShow: As for ``submit_request``.
     """
     guard = guard_for(action)
     if not isinstance(command, guard.command):

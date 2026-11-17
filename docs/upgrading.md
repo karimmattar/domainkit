@@ -41,6 +41,31 @@ never published), with each section below.
 2.7 follows up 2.6. Each item of this list says what a project that
 relied on 2.6's behaviour changes, and what to run.
 
+- **The framework's acts word their screens for people.** The admin
+  API's act names flags and fields as a person reads them ("Staff: no",
+  "Email", "Display name"), and approvals' screens show a list's items,
+  over as many lines as it takes ("added", "added (2)"), where 2.6 showed
+  `is_staff: false` and a list as JSON cut at 64 characters. A user or a
+  group shows by name and the end of its id ("ann (…123456789abc)"), the
+  name cut past 48 characters; an empty list shows as nothing, where 2.6 wrote `[]`; an
+  approval's empty "Takes away" is left out; a backslash shows doubled.
+  The digest of each act is unchanged; a client or a test that matched
+  the old labels or values reads the new ones
+  ([What a screen shows](auth/actions.md#what-a-screen-shows)).
+- **To show acts whole, or refuse them**, set
+  `AUTH = {"AUTHORIZATIONS": {"WHOLE": True}}`. The admin API's twins,
+  and approvals' submit and approve twins, then answer `422
+  too_much_to_show` for a change their screen cannot show whole: a value
+  longer than 64 characters (a long impersonation reason), more than six
+  lines (a change padded with fields), a list longer than the screen.
+  With `APPROVE_ACTION` on, so is a held change of the admin API that
+  the approver's screen could not show whole, at its twin, and
+  submitting such a request. A user's or a group's name, however long,
+  never is.
+  Clients make those changes in smaller steps. A guard of the project's
+  whose arguments do not fit gives `guard(show=...)`; accounting's
+  postings have no `show` yet, and their lines do not fit.
+
 ### Make and apply auth's migration for bound and held authorizations
 
 The action authorizations table (`domainkit_authorizations`) gains three

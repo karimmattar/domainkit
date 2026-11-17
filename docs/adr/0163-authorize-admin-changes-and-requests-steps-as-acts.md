@@ -1,6 +1,6 @@
 # 0163. Authorize admin changes, and a request's steps, as acts
 
-- Status: Accepted; amended 2026-11-17 (at the end); amended by [0174](0174-bind-an-act-to-the-record-it-decides-on-and-keep-a-held-acts-authorization.md)
+- Status: Accepted; amended 2026-11-17 (at the end); amended by [0173](0173-show-an-act-whole-or-refuse-it.md) and [0174](0174-bind-an-act-to-the-record-it-decides-on-and-keep-a-held-acts-authorization.md)
 - Date: 2026-11-16
 - Amends: [0144](0144-authorize-one-act-not-a-window-of-time.md),
   [0154](0154-hold-admin-changes-for-approval-and-show-requests-to-those-they-concern.md)
