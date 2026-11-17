@@ -471,6 +471,7 @@ products.command_route(DeleteProduct, service=delete_product, method="DELETE")
 | `body_limit` | the resource's | The most bytes a body may have ([uploads](uploads.md#body-limits-per-route)). |
 | `retry` | `None` | `Retry()`: run the service again, whole, when its transaction loses a race. |
 | `dependencies` | `()` | FastAPI dependencies of the route's own, such as a limit, `Depends(Throttle("50/day"))`. They run after the route's rules, so a request the rules refuse is not counted; but before the route reaches the aggregate (`404`, and `403` from a rule on it) and reads the body (`422`) and `If-Match` (`412`), so one refused there is. Its [twin](#authorizations-for-one-act) runs none of them. *New in 2.5.* |
+| `before_rules` | `()` | FastAPI dependencies that run before the route's rules ([Dependencies before the rules](#dependencies-before-the-rules)). Its twin runs them too. *New in 2.8.* |
 
 **Body limits.** `body_limit=` holds the route's bodies to that many
 bytes, above or below `MAX_REQUEST_BODY_SIZE`, as they arrive.
@@ -484,6 +485,36 @@ The reach check and `If-Match` are made again in each run's transaction.
 Without it, a lost race answers 503 `database_busy`. Declare it for
 services that change nothing outside their unit of work. It costs no
 statement until a race is lost.
+
+### Dependencies before the rules
+
+*New in 2.8.* `dependencies` run
+after the route's rules, so a limit there cannot count a request before
+a rule reads its body: `DeviceSigned` reads it once the request names a
+device of the caller's, where `DEVICES["CONTENT_DIGEST"]` is
+`"optional"` and the request sends no digest, and a stolen session can
+list the caller's devices. `before_rules` run first, in order, after the
+resource's own and its tenant's, and count every request, those the
+rules refuse included:
+
+```python
+phones.upload_route(
+    AttachScan,
+    service=attach_scan,
+    field="scan",
+    types=(CHECKED_PDF,),
+    max_size=10_000_000,
+    rule=DeviceSigned(),
+    before_rules=[Depends(Throttle("30/hour"))],
+)
+```
+
+The route's [twin](#authorizations-for-one-act) runs them too, where it
+runs none of `dependencies`: it runs the rules they come before, and a
+rule there may read the body as the act's does. A limit of acts alone
+skips a twin's request with `asking_authorization(request)`. Nothing
+that decides who may act goes there: a refusal there comes before the
+rules, `429` before `401` ([ADR 0181](adr/0181-decide-a-body-limit-per-request-count-before-the-rules-hand-over-the-file-received-and-bound-the-xml-parsed.md)).
 
 ### Authorizations for one act
 
@@ -644,12 +675,15 @@ Content-Type: application/pdf
   again in it. If the request fails and its unit of work did not commit,
   the file is deleted. Once it committed, a row may name the file, and
   it is kept, whatever fails after.
+- The service may read the file as it was received
+  ([The file received](#the-file-received)), not from the storage.
 - The other options are `command_route`'s: `returns`, `method` (`POST`,
   `PUT`, or `PATCH`), `path`, `action`, `rule`, `status_code`, `name`,
-  `summary`, `provide`, `body_limit`, `retry`, and `dependencies` (*new
-  in 2.7*), which run on the act, never on its twin: a limit there counts
-  acts, not asks. A `POST` on the collection answers `201` with
-  `Location`.
+  `summary`, `provide`, `body_limit`, `retry`, `dependencies` (*new in
+  2.7*), which run on the act, never on its twin: a limit there counts
+  acts, not asks; and `before_rules` (*new in 2.8*), which run before the
+  rules, on the act and its twin. A `POST` on the collection answers
+  `201` with `Location`.
 - A route whose rule asks for an authorization gets its twin,
   `POST <path>/authorization`, which takes the same body. It checks the
   reach first, as the act does, then receives and checks the file,
@@ -709,6 +743,38 @@ templates.upload_route(
 - A `max_size` decided per request needs `body_limit`: the most any
   request may send, file and form, held while the body arrives. Without
   it the route is refused when it is declared (`TypeError`).
+- `body_limit` may be decided per request too (*new in 2.8*), so a bound
+  that is a setting is read once, when the request comes, for the body
+  and the file alike:
+
+  ```python
+  def upload_body(request: Request, template: Template) -> int:
+      return settings.TEMPLATES_MAX_SIZE + 64 * 1024  # the file, and a form
+
+
+  templates.upload_route(
+      AttachFile,
+      service=attach_file,
+      field="file",
+      types=template_types,
+      max_size=lambda request, template: settings.TEMPLATES_MAX_SIZE,
+      body_limit=upload_body,
+      method="PUT",
+      path="/file",
+  )
+  ```
+
+  It is decided with the other bounds, before the route reads the body,
+  and holds the body from then on: a `Content-Length` over it is 413
+  before a byte is read, and a body sent without one is 413 as soon as
+  it passes it. The file is never more than it, whatever `max_size`
+  says. It is a whole number of bytes from 1 to 1 GiB, a route's most
+  (`ValueError` otherwise, a 500). What reads the body before the route
+  decides, a rule such as `DeviceSigned`, a dependency of
+  `before_rules`, or `IdempotencyMiddleware`, reads it within the limit
+  of a command route without `body_limit`: the resource's
+  `body_limits["command"]`, or `MAX_REQUEST_BODY_SIZE`. Give a route that
+  reads its body there a number instead, the most a request may send.
 - What a callable decides is checked as a value given when declaring:
   no type, a size that is not a whole number of bytes, or a directory a
   storage refuses (`..`, `/root`), is a `ValueError`; a storage that is
@@ -722,6 +788,39 @@ templates.upload_route(
   its argument (`PdfCheck(max_pages=...)`).
 - A twin's verdict is remembered with the checks it ran: an act whose
   callable decides other types checks the file again.
+
+#### The file received
+
+*New in 2.8.* The command holds the file as stored. A service that reads
+what the file holds, a PDF's pages or a Word document's placeholders,
+names a `received` parameter, and is given the file as the route
+received it, a `ReceivedUpload` ([uploads](uploads.md#bytes-and-streams)),
+so it reads no storage in its transaction:
+
+```python
+from domainkit.documents import placeholders
+from domainkit.http.uploads import ReceivedUpload
+
+
+async def attach_template(
+    command: AttachTemplate, uow: TemplatesUnitOfWork, *, received: ReceivedUpload
+) -> Template:
+    found = await asyncio.to_thread(placeholders, received.file.read())
+    async with uow:
+        template = await uow.templates.get(command.template_id)
+        template.attach(command.file, found.names)
+        await uow.commit()
+    return template
+```
+
+- Its `file` is open at its start, each time the service runs, a
+  run again by `retry` included. A file of more than 1 MiB is on disk:
+  read it in a thread, as above.
+- The route closes it once the service returns or raises. A task the
+  service starts and leaves running finds it closed.
+- It is the file the route stored: never store it again.
+- A service without the parameter is called as before, with the command
+  and the unit of work. The twin runs no service, and keeps nothing.
 
 ### Generic writes for reference data
 

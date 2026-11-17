@@ -22,8 +22,9 @@ Where routes of one path ask by several methods (a ``PATCH`` and a
 ``DELETE`` of one item), each twin's path names its route's method:
 ``<path>/authorization/patch``, ``<path>/authorization/delete`` (ADR 0162).
 A twin runs none of its route's ``dependencies``: a limit there counts
-acts, not asks. What runs on both (the rules, ``provide``) tells a twin's
-request apart with ``asking_authorization``.
+acts, not asks. It runs its route's ``before_rules``, which come before
+the rules it runs too. What runs on both (``before_rules``, the rules,
+``provide``) tells a twin's request apart with ``asking_authorization``.
 """
 
 import copy
@@ -73,7 +74,8 @@ def asking_authorization(connection: HTTPConnection) -> bool:
     A twin makes no act. Its route's rules and ``provide`` run on it as on
     the act, so code among them that counts acts (a limit, a quota) skips
     the request where this is true. Its route's ``dependencies`` never run
-    on it. Known once the request is routed: false in a middleware.
+    on it; its ``before_rules`` do. Known once the request is routed: false
+    in a middleware.
     """
     return hasattr(connection.scope.get("endpoint"), TWIN)
 
@@ -120,7 +122,9 @@ class AuthorizationRoute:
             status_code=status.HTTP_201_CREATED,
             provided=spec.provided,
             body_limit=spec.body_limit,
+            body_limit_per_request=spec.body_limit_per_request,
             rules=rules,
+            before_rules=spec.before_rules,
         )
 
     @classmethod

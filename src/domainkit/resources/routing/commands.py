@@ -58,6 +58,8 @@ class CommandRoute:
         body_limit: int | None = None,
         retry: "Retry | None" = None,
         dependencies: Sequence[params.Depends] = (),
+        before_rules: Sequence[params.Depends] = (),
+        body_limit_per_request: bool = False,
     ) -> None:
         """Check the command against what gives its fields.
 
@@ -109,7 +111,9 @@ class CommandRoute:
             writes=True,
             provided=self.provided,
             body_limit=router.body_limit_of(COMMAND, body_limit),
+            body_limit_per_request=body_limit_per_request,
             dependencies=tuple(dependencies),
+            before_rules=tuple(before_rules),
         )
         self.twin = AuthorizationRoute.of(self)
         """``POST <path>/authorization``, if a rule asks for an authorization."""

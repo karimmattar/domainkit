@@ -9,6 +9,31 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `command_route` and `upload_route` take `before_rules=`: FastAPI
+  dependencies that run before the route's rules, on the act and on its
+  twin, so a limit counts a request before a rule reads its body
+  (`DeviceSigned` does), the requests the rules refuse included.
+  `dependencies=` keep their place, after the rules, on the act alone
+  ([Dependencies before the rules](docs/resources.md#dependencies-before-the-rules),
+  ADR 0181) (user report U7).
+- `upload_route(body_limit=...)` may be decided per request, a callable
+  of the request and the aggregate as `max_size` is, decided before the
+  body is read, on the act and on its twin: a bound that is a setting is
+  read once, when the request comes. The body is held to it as it
+  arrives, and the file to it too; what reads the body before the route
+  decides is held as on a command route without `body_limit`
+  ([Bounds decided per request](docs/resources.md#bounds-decided-per-request))
+  (user report U7).
+- An `upload_route`'s service that names a `received` parameter is given
+  the file as received, a `ReceivedUpload` open at its start, to read
+  what it holds without reading the storage again; the route closes it
+  once the service is done, however it ends. `ReceivedUpload.store`
+  takes `keep=True`, which leaves the temporary file open once stored
+  ([The file received](docs/resources.md#the-file-received)) (user report
+  U7).
+
 ## [2.7.0] - 2026-11-17
 
 2.7 answers thirteen of a project's fourteen notes on 2.6 (the last,

@@ -20,7 +20,7 @@ from pydantic import BaseModel
 from domainkit.ddd.uow import UnitOfWork
 from domainkit.http.access import Require, Rule
 from domainkit.http.errors import error_responses
-from domainkit.http.middleware import body_limit
+from domainkit.http.middleware import body_limit, decides_body_limit
 from domainkit.http.openapi import REQUIRED_HEADERS
 from domainkit.http.pagination import PageRequest
 
@@ -75,6 +75,8 @@ def add_route(router: "ResourceRouter", spec: RouteSpec, handle: Handle) -> "API
     endpoint = _endpoint(router, spec, handle, name)
     if spec.body_limit is not None:
         body_limit(spec.body_limit)(endpoint)
+    if spec.body_limit_per_request:
+        decides_body_limit(endpoint)
     served = router.serves_tenant(spec.path)  # The router puts it first.
     router.add_api_route(
         spec.path,
@@ -88,6 +90,7 @@ def add_route(router: "ResourceRouter", spec: RouteSpec, handle: Handle) -> "API
         ),
         responses=_responses(router, spec, rules, served=served),
         dependencies=[
+            *spec.before_rules,
             *([Depends(Require(*rules))] if rules else []),
             *spec.dependencies,
         ]

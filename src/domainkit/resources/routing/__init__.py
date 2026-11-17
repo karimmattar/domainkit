@@ -129,7 +129,7 @@ if TYPE_CHECKING:
     from domainkit.http.uploads import FileType
     from domainkit.storage.base import Storage
 
-    from .uploading import Decided
+    from .uploading import Decided, Receiving
 
 
 class ResourceRouter(APIRouter):
@@ -560,6 +560,7 @@ class ResourceRouter(APIRouter):
         body_limit: int | None = None,
         retry: Retry | None = None,
         dependencies: Sequence[params.Depends] = (),
+        before_rules: Sequence[params.Depends] = (),
     ) -> None:
         """Add a route that runs ``command`` through ``service(command, uow)``.
 
@@ -587,13 +588,20 @@ class ResourceRouter(APIRouter):
         as a limit, ``Depends(Throttle("50/day"))``: run after its rules
         (a request they refuse is not counted), before the aggregate is
         reached and the body and ``If-Match`` are checked.
+        ``before_rules`` (New in 2.8) are FastAPI dependencies that run
+        before its rules: a limit there counts a request before a rule reads
+        its body (``DeviceSigned`` does), the requests the rules refuse
+        included.
 
         A route whose rules ask for an authorization of the act gets a twin,
         ``POST <path>/authorization`` (``/authorization/<method>`` where
         routes of one path ask by several methods). The twin asks the
         route's rules and builds the command with ``provide``, but runs none
         of ``dependencies``: a limit there counts acts, not asks. So a check
-        of who may act goes in ``rule``, never in ``dependencies``.
+        of who may act goes in ``rule``, never in ``dependencies``. The twin
+        runs ``before_rules``, as it runs the rules they come before; one
+        that counts acts alone skips a twin's request
+        (``asking_authorization``).
 
         ``retry`` runs the service again, whole, when its transaction loses
         a race (``UnitOfWork.run``): the check that the caller may reach the
@@ -623,6 +631,7 @@ class ResourceRouter(APIRouter):
             body_limit=body_limit,
             retry=retry,
             dependencies=dependencies,
+            before_rules=before_rules,
         ).declare()
 
     def use_case(
@@ -781,7 +790,7 @@ class ResourceRouter(APIRouter):
         self,
         command: type[Command],
         *,
-        service: Service,
+        service: "Service | Receiving",
         field: str,
         types: "Iterable[FileType] | Decided[Iterable[FileType]]",
         max_size: "int | Decided[int]",
@@ -797,9 +806,10 @@ class ResourceRouter(APIRouter):
         name: str | None = None,
         summary: str | None = None,
         provide: Mapping[str, Callable[..., object]] | None = None,
-        body_limit: int | None = None,
+        body_limit: "int | Decided[int] | None" = None,
         retry: Retry | None = None,
         dependencies: Sequence[params.Depends] = (),
+        before_rules: Sequence[params.Depends] = (),
     ) -> None:
         """Add a route that stores the file sent and runs ``command`` with it.
 
@@ -811,24 +821,32 @@ class ResourceRouter(APIRouter):
         ``Storage``), under ``directory``, and the command's ``field`` gets
         the ``StoredUpload``; ``digest`` names a field that gets its
         SHA-256, in hex. A request that fails before the service returns
-        deletes the file (New in 2.5).
+        deletes the file (New in 2.5). A service that names a ``received``
+        parameter (New in 2.8) is given the file as received, a
+        ``ReceivedUpload`` whose temporary file is open at its start, to
+        read what it holds without reading the storage again; the route
+        closes it once the service is done.
 
         ``types``, ``max_size``, ``storage`` and ``directory`` may each be
-        decided per request (New in 2.7): a callable given the request and
-        the aggregate the route reached (None on the collection), sync or
-        async, run once the reach is checked and before the body is read.
-        A ``max_size`` so decided needs ``body_limit``, the most a request
-        may send.
+        decided per request (New in 2.7), and ``body_limit`` too (New in
+        2.8): a callable given the request and the aggregate the route
+        reached (None on the collection), sync or async, run once the reach
+        is checked and before the body is read. A ``max_size`` so decided
+        needs ``body_limit``, the most a request may send. A body limit so
+        decided holds the body from then on, and the file to it; what reads
+        the body before (a rule such as ``DeviceSigned``, ``before_rules``,
+        ``IdempotencyMiddleware``) is held as on a command route without
+        ``body_limit``.
 
         The rest is ``command_route``'s: the path's ids, ``provide``, the
         aggregate within the caller's reach, ``If-Match``, ``returns``,
-        ``retry``, ``dependencies`` (New in 2.7), and a twin that asks for
-        an authorization of the act when a rule asks for one; the twin
-        takes the same body, stores nothing, gives ``field`` an upload
-        whose name is empty, and runs none of ``dependencies``. The act
-        does not check again a file of the content its twin checked for
-        the same caller. ``body_limit`` defaults to ``max_size`` and 64 KiB
-        for a form.
+        ``retry``, ``dependencies`` (New in 2.7), ``before_rules`` (New in
+        2.8), and a twin that asks for an authorization of the act when a
+        rule asks for one; the twin takes the same body, stores nothing,
+        gives ``field`` an upload whose name is empty, runs none of
+        ``dependencies``, and runs ``before_rules``. The act does not check
+        again a file of the content its twin checked for the same caller.
+        ``body_limit`` defaults to ``max_size`` and 64 KiB for a form.
 
         Raises:
             TypeError: The command lacks ``field`` or ``digest``, ``provide``
@@ -862,6 +880,7 @@ class ResourceRouter(APIRouter):
             body_limit=body_limit,
             retry=retry,
             dependencies=dependencies,
+            before_rules=before_rules,
         ).declare()
 
     def before_items(self, route: BaseRoute) -> None:
