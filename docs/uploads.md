@@ -484,12 +484,23 @@ A rule that read the body first leaves it whole for the route. A
 `ResourceRouter` does this for you with `upload_route`
 ([resources.md](resources.md#files)).
 
-`receive_upload(upload, *, types, max_size, filename=None)` receives the
-file and checks it as `save_upload` does, but stores nothing. It returns
-a `ReceivedUpload`, held in a temporary file: `store(storage,
-directory=)` stores it, drops the temporary file, and returns the
-`StoredUpload`; `unstored()` says what `store` would return but its
-name; and `close()` drops it without storing. Store it, or close it.
+`receive_upload(upload, *, types, max_size, filename=None,
+remember=None)` receives the file and checks it as `save_upload` does,
+but stores nothing. It returns a `ReceivedUpload`, held in a temporary
+file: `store(storage, directory=)` stores it, drops the temporary file,
+and returns the `StoredUpload`; `unstored()` says what `store` would
+return but its name; and `close()` drops it without storing. Store it,
+or close it.
+
+`remember=` names who receives the file, a route and its caller (*new in
+2.7*). A file its checks took under that name in the last 30 minutes,
+of the same content (its SHA-256) and with the same checks, is not
+checked again; one they take now is remembered. The verdict is kept in
+the default cache, signed with `SECRET_KEY`: a cache that is down, or
+holds anything else under its key, has the file checked. An act's twin
+and the act do this ([resources.md](resources.md#files)). Name the
+caller in it: a verdict shared between callers answers one of them
+sooner when another sent the same file, which tells of that file.
 
 A gateway of the infrastructure layer may call `save_upload` with the
 bytes its route hands it: the [layer rules](reference/settings.md#layer-rules)
@@ -628,7 +639,14 @@ A Word document with macros, sent as `contract.docx`:
   that launches a program, opens another file or sends data, a link to
   anything but `http`, `https` or `mailto`, media from a URL, an embedded
   file, rich media, and an XFA form. Names are decoded (`/J#61vaScript`
-  is `/JavaScript`).
+  is `/JavaScript`). *New in 2.7:* it decodes each page's content, as a
+  viewer does to draw it and a program that lays text over the page
+  does to write it again, and refuses a PDF whose pages' contents decode
+  to more than `max_content` (64 MiB) in all: a content stream drawn on
+  two pages counts twice. A 170 KB file of twenty pages, each 8 MiB of
+  spaces deflated, is refused ("The file is too large or too complex to
+  check."). The content is counted as it inflates, 64 KiB at a time, and
+  never held whole.
 - **`DOCX`, `XLSX`, `PPTX`** (`OfficeCheck`) refuse a document whose main
   part is macro-enabled (a `.docm` named `.docx`), macros (`vbaProject.bin`,
   Excel 4.0 macro sheets), OLE objects, ActiveX controls, chunks imported
@@ -638,9 +656,14 @@ A Word document with macros, sent as `contract.docx`:
   whatever its `TargetMode` says, a Word field that pulls content in or
   runs a program (`INCLUDEPICTURE`, `INCLUDETEXT`, `INCLUDE`, `IMPORT`,
   `LINK`, `DATABASE`, `DDE`, `DDEAUTO`) or whose instruction starts with
-  another field, OLE objects and controls written in the XML itself
-  (`w:object`, `o:OLEObject`, `w:control`), a picture or an object that
-  names a hyperlink's relationship, Excel's links to other workbooks,
+  another field (*since 2.7*, one never ended too, and one whose
+  instruction, or part of it, is a tracked deletion, `w:delInstrText`:
+  read with and without the deletion), OLE objects and controls written
+  in the XML itself (`w:object`, `o:OLEObject`, `w:control`), a picture
+  or an object that names a hyperlink's relationship (by `r:id`, or, since
+  2.7, VML's `o:relid`), a VML picture or fill that names a source of its
+  own (`src`; a picture's `o:href` or `o:althref`; *new in 2.7*), Excel's
+  links to other workbooks,
   data connections, query tables, formulas anywhere in a sheet (cells,
   names, conditional formats, validations, tables, charts) that call
   `WEBSERVICE`, `RTD`, `IMAGE` or DDE (`cmd|'...'!A0`), and an XML part
@@ -658,14 +681,15 @@ A Word document with macros, sent as `contract.docx`:
   ZIP is read from its directory before a byte is inflated: at most 2,000
   parts, 50 times the upload's size inflated in all and never more than
   200 MiB, and no part over 1 MiB inflating more than 200 times. A PDF's
-  streams decode to 16 MiB each and its object streams to 64 MiB in all;
+  streams decode to 16 MiB each, its object streams to 64 MiB in all, and
+  its pages' contents to 64 MiB in all (`max_content`, *new in 2.7*);
   its tables declare at most 200,000 objects; the check reads at most a
   million values; a PDF pypdf read only in part is refused. Each check
   stops at its own deadline, 10 seconds, looked at per object or part.
   XML is parsed without entities, a DTD, or the network.
 - **Limits of your own.** `FileType(DOCX.content_type, ".docx",
   DOCX.matches, OfficeCheck("docx", max_expansion=100))`, or
-  `PdfCheck(max_pages=50, max_seconds=5)`.
+  `PdfCheck(max_pages=50, max_seconds=5, max_content=16 * 1024 * 1024)`.
 - `PDF` and `ZIP` read the first bytes, as before 2.5. A route that keeps
   them takes PDFs with scripts and Word documents with macros.
 - Without pypdf or lxml, a check raises `ImproperlyConfigured`, naming

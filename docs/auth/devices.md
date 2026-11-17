@@ -104,6 +104,7 @@ a user (`UserDeleted`) removes their passkeys, devices, and push tokens.
 | `PUSH_TOKEN_CHECK` | off | Ask the token's push service, when a token is registered, whether it knows it (`422 push_token_refused` if not): `{"ENABLED": True, "TIMEOUT": 3.0}`, `TIMEOUT` at most 10 seconds ([Checking a token](#checking-a-token)). Needs `domainkit.contrib.notifications`. |
 | `SIGNATURE_WINDOW` | 2 minutes (at most 10) | How far a signed request's time may be from the server's. |
 | `SIGNATURE_STORE` | `"database"` | Where the signed requests seen within the window are kept: `"database"`, or `"cache"` (the default cache, shared by every process) ([Bound devices](#bound-devices)). |
+| `CONTENT_DIGEST` | `"optional"` | Whether a signed request must say its body's SHA-256 in `Content-Digest`, so that its signature is checked before its body is read: `"optional"`, or `"required"` (*new in 2.7*, [The body, read last](#the-body-read-last)). |
 | `BOUND_NOTICE` | `True` | Mail the user when a device is bound to their account ([The user is told](#the-user-is-told)). |
 | `DEVICE_LOGIN` | `False` | `POST /devices/login`: a bound device logs its user in by its signature alone ([Sign-in approvals](ciba.md#the-mobile-app-as-identity)). |
 | `ENROLLMENT` | `False` | `POST /devices/enroll/code` and `POST /devices/enroll`: a user with no bound device binds the first one with no login first ([Enrolling a first device](#enrolling-a-first-device)). Needs `domainkit.contrib.messaging`. |
@@ -263,6 +264,32 @@ a signed request writes to no database:
 A device's `last_used_at` is written at most once a minute. `DeviceSigned`
 is a rule like any other: combine it with `&`, `|`, and `~`, and give it
 to a `ResourceRouter`'s `rule=`.
+
+### The body, read last
+
+*New in 2.7.* A signature covers the body, so it can only be checked
+once the body is read. `DeviceSigned` reads it last: it looks the device
+up from `X-Device-Id` first, and refuses a request that names no device
+of the caller's, or whose time or signature is malformed, before a byte
+of the body is read. Before 2.7 it read the whole body first, up to the
+route's limit, for any session.
+
+A session thief can list the user's devices (`GET /devices`), and name
+one. So a phone may also say the body's SHA-256 in `Content-Digest`
+([RFC 9530](https://www.rfc-editor.org/rfc/rfc9530.html)): the signature
+is then checked with that digest, before the body is read, and the body
+is read only if it holds, and must have that digest. The signed message
+is the same: its last line is that digest, in base64url.
+
+```text
+Content-Digest: sha-256=:<the body's SHA-256, base64, padded>:
+```
+
+`CONTENT_DIGEST = "required"` refuses a request that sends no
+`Content-Digest` of SHA-256, or one the signature does not hold for, with
+its body unread: `401 device_signature_refused`. With `"optional"`, the
+default, such a request is checked as before 2.7, once its body is read.
+Set `"required"` once every version of the app in use sends the header.
 
 A device's step-up proves `hwk`: a key in the device's hardware, a
 possession factor as the authenticator app is. So it stands for the code

@@ -646,8 +646,10 @@ Content-Type: application/pdf
   it is kept, whatever fails after.
 - The other options are `command_route`'s: `returns`, `method` (`POST`,
   `PUT`, or `PATCH`), `path`, `action`, `rule`, `status_code`, `name`,
-  `summary`, `provide`, `body_limit`, `retry`. A `POST` on the
-  collection answers `201` with `Location`.
+  `summary`, `provide`, `body_limit`, `retry`, and `dependencies` (*new
+  in 2.7*), which run on the act, never on its twin: a limit there counts
+  acts, not asks. A `POST` on the collection answers `201` with
+  `Location`.
 - A route whose rule asks for an authorization gets its twin,
   `POST <path>/authorization`, which takes the same body. It checks the
   reach first, as the act does, then receives and checks the file,
@@ -661,8 +663,63 @@ Content-Type: application/pdf
   way. Declare
   nothing about the upload; an `Action` that ignores its field binds no
   file at all.
+- The act does not check again a file its twin's check took for the same
+  caller (*new in 2.7*): the twin remembers the verdict, by the file's
+  SHA-256 and its types' checks, for 30 minutes, in the default cache,
+  signed (`receive_upload(remember=...)`,
+  [uploads](uploads.md#bytes-and-streams)). A file checked once costs
+  one process, not two. The file is still sent twice: the act stores the
+  bytes it receives, which a phone signs.
 - OpenAPI shows the body as `application/octet-stream` or a form, with
   the `X-Filename` header, on the route and its twin.
+
+#### Bounds decided per request
+
+*New in 2.7.* `types`, `max_size`, `storage` and `directory` may each be
+a callable in place of a value, given the request and the aggregate the
+route reached (`None` on the collection), sync or async. It runs once
+the caller's reach and the rules on the aggregate hold, before a byte of
+the body is read, on the act and on its twin alike:
+
+```python
+from domainkit.http.uploads import CHECKED_PDF, DOCX
+
+
+def template_types(request: Request, template: Template) -> tuple[FileType, ...]:
+    return (CHECKED_PDF,) if template.kind == "pdf" else (DOCX,)
+
+
+async def template_size(request: Request, template: Template) -> int:
+    return 20_000_000 if template.kind == "pdf" else 5_000_000
+
+
+templates.upload_route(
+    AttachFile,
+    service=attach_file,
+    field="file",
+    types=template_types,
+    max_size=template_size,
+    body_limit=20_100_000,
+    storage=lambda request, template: f"templates-{template.kind}",
+    method="PUT",
+    path="/file",
+)
+```
+
+- A `max_size` decided per request needs `body_limit`: the most any
+  request may send, file and form, held while the body arrives. Without
+  it the route is refused when it is declared (`TypeError`).
+- What a callable decides is checked as a value given when declaring:
+  no type, or a size under 1 byte, is a `ValueError`; a storage that is
+  neither a `Storage` nor an alias, or a directory that is not text, a
+  `TypeError`. Either is a 500: a mistake of the route's, not the
+  client's.
+- A type's check runs in a process of its own, without the settings
+  ([Checks of your own](uploads.md#checks-of-your-own)): decide a limit
+  that is a setting when the request comes, and give it to the check as
+  its argument (`PdfCheck(max_pages=...)`).
+- A twin's verdict is remembered with the checks it ran: an act whose
+  callable decides other types checks the file again.
 
 ### Generic writes for reference data
 

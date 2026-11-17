@@ -182,6 +182,7 @@ statuses, and the amendments they name.
 | [0169](0169-granians-http-versions-failed-starts-fcm-dry-runs-write-once-probes-clamd-over-tls-and-dropped-files.md) | Granian's HTTP versions and failed starts, FCM's dry runs, write-once probes, clamd over TLS, and dropped files | Accepted |
 | [0170](0170-let-a-resources-items-be-tenants-count-members-keys-alone-and-let-lists-name-what-they-refer-to.md) | Let a resource's items be tenants, count members' keys alone, and let lists name what they refer to | Accepted |
 | [0171](0171-prove-a-number-given-at-signup-by-its-own-code.md) | Prove a number given at signup by its own code | Accepted |
+| [0175](0175-bound-page-content-check-an-acts-upload-once-and-read-a-signed-body-last.md) | Bound a PDF's page content, check an act's upload once, and read a signed body last | Accepted |
 
 ### Decisions still without a record
 

@@ -36,6 +36,34 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.6 to 2.7
+
+2.7 answers the project's notes still open against 2.6. Each item of
+this list says what a project that relied on 2.6's behaviour changes.
+
+- **A PDF's page content is bounded.** `CHECKED_PDF` refuses a PDF whose
+  pages' contents decode to more than 64 MiB in all, 422 `unsafe_file`
+  ("The file is too large or too complex to check."), and one whose
+  content uses a filter pypdf does not know, 422 `unreadable_file`
+  ([Checking documents](uploads.md#checking-documents), ADR 0175). A
+  project that takes larger drawings gives its type a bound of its own:
+  `FileType("application/pdf", ".pdf", PDF.matches,
+  PdfCheck(max_content=256 * 1024 * 1024))`, and `UPLOAD_CHECKS.SECONDS`
+  room to decode it.
+- **Office documents with an unended or deleted field, or a VML picture
+  from elsewhere, are refused.** A Word field that pulls content in and
+  never ends, or whose instruction is a tracked deletion, and a VML
+  picture or fill whose `src`, `o:href` or `o:althref` names a source,
+  or whose `o:relid` names a hyperlink, are 422 `unsafe_file`. Accept or
+  reject the tracked changes and save the document again.
+- **`DeviceSigned` reads a body last.** A request naming no device of the
+  caller's is refused before its body is read, and with
+  `DEVICES.SIGNATURE_STORE = "database"` a signed request takes two
+  short transactions, the device's lookup and the request's record,
+  where it took one. Nothing to change; once every app in use sends
+  `Content-Digest`, set `DEVICES.CONTENT_DIGEST = "required"`
+  ([The body, read last](auth/devices.md#the-body-read-last)).
+
 ## 2.5 to 2.6
 
 2.6 follows up 2.5. No table changes. Each item of this list says what a

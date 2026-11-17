@@ -9,6 +9,32 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `upload_route` decides its `types`, `max_size`, `storage` and
+  `directory` per request: each may be a callable of the request and the
+  aggregate the route reached (`None` on the collection), sync or async,
+  run once the reach holds and before the body is read, on the act and
+  its twin. A `max_size` so decided needs `body_limit`. `upload_route`
+  takes `dependencies=` as `command_route` does, run on the act and never
+  on its twin
+  ([Bounds decided per request](docs/resources.md#bounds-decided-per-request),
+  ADR 0175) (user report U3).
+- `receive_upload(remember=...)` names who receives a file: a file its
+  checks took under that name in the last 30 minutes, of the same content
+  and checks, is not checked again. The verdict is kept in the default
+  cache, signed with `SECRET_KEY`. The act of an `upload_route` whose
+  rule asks for an authorization takes the verdict its twin's check gave
+  the same caller: one check process per confirmed upload, not two
+  ([uploads.md](docs/uploads.md#bytes-and-streams), ADR 0175) (user
+  report U5).
+- `DEVICES.CONTENT_DIGEST`: a signed request may say its body's SHA-256
+  in `Content-Digest` (RFC 9530), and its signature is then checked
+  before its body is read. `"required"` refuses a request that does not,
+  its body unread; `"optional"`, the default, checks it as before
+  ([The body, read last](docs/auth/devices.md#the-body-read-last),
+  ADR 0175) (user report U5).
+
 ### Changed
 
 - The `kafka` extra accepts aiokafka up to 0.15 (`>=0.12.0,<0.16.0`),
@@ -19,6 +45,31 @@ and a status.
   Poetry 2.4): 2.2.1 wrote a crafted wheel's files outside its target
   (CVE-2026-34591), and its dulwich had nine advisories. CI audits the
   build's hash-pinned tools too.
+
+### Security
+
+- `CHECKED_PDF` (`PdfCheck`) decodes each page's content in the check's
+  process and refuses a PDF whose pages' contents decode to more than
+  `max_content` (64 MiB, new) in all, a stream drawn twice counted
+  twice. A 170 KB file of twenty pages, each 8 MiB of spaces deflated,
+  passed, and laying text over it made 168 MB. The content is counted as
+  it inflates and never held. A PDF of more content, which 2.6 took, is
+  refused: give `PdfCheck(max_content=...)` a bound of your own
+  ([Checking documents](docs/uploads.md#checking-documents), ADR 0175)
+  (user report U6).
+- `DOCX`, `XLSX` and `PPTX` (`OfficeCheck`) refuse a Word field that
+  pulls content in or runs a program when it never ends, or when its
+  instruction, or part of it, is a tracked deletion (`w:delInstrText`),
+  read with and without the deletion; and a VML picture or fill whose
+  `src`, `o:href` or `o:althref` names a source, or whose `o:relid` names
+  a hyperlink's relationship. Each passed, and a converter may fetch it
+  ([Checking documents](docs/uploads.md#checking-documents), ADR 0175)
+  (user report U5).
+- `DeviceSigned` looks the signing device up from the headers before it
+  reads the body, and refuses a request that names no device of the
+  caller's unread. It read the whole body first, up to the route's
+  limit, for any session ([The body, read last](docs/auth/devices.md#the-body-read-last),
+  ADR 0175) (user report U5).
 
 ## [2.6.0] - 2026-11-17
 
