@@ -474,7 +474,12 @@ what.
   impersonation; never a password). Raise `PermissionDenied` to refuse it
   ("nobody edits their own account here", "making staff needs another
   permission"). `admin.may_grant` and `admin.may_hold`, the ceilings
-  below, are public for your own routes.
+  below, are public for your own routes. With `AUTH.ADMIN_ACTION` on,
+  `on_admin_screen(check)` (since 2.7) is called in the change's twin
+  instead, with the user and the `AdminChange`, before an authorization
+  is stored: it reads, and raises to refuse the change there (approvals
+  refuses a change it would hold that its approver's screen could not
+  show whole).
 - **Each change can ask for an authorization of its own** (since 2.5,
   `AUTH.ADMIN_ACTION`), confirmed on the staff member's phone, with a
   code, or with a passkey
@@ -568,12 +573,13 @@ PUT  /admin/auth/users/6f1c.../groups {"groups": ["auditors"]}
   user, is refused (`403 action_not_authorized`), and voids it. A user
   created active and one created inactive are two acts.
 - **The screen says which user and what change**: "Change a user's
-  groups", then "User: alice@example.com (6f1c…)" (the user's first
-  identifier and, since 2.7, their id; a name too long is cut beside the
-  id, which the act binds) or the group's name and id, the flags that
-  grant or take access ("Superuser", "Staff", "Active": yes or no),
-  "Adds: auditors", "Takes away: clerks", the reason of an impersonation,
-  then the other fields set, by name ("Email", "Display name"). A list
+  groups", then "User: alice@example.com (…123456789abc)" (the user's
+  first identifier and, since 2.7, the end of their id; a name too long
+  is cut beside it, as the act binds the id) or the group's name and id,
+  the flags that grant or take access ("Superuser", "Staff", "Active":
+  yes or no), "Adds: auditors", "Takes away: clerks", the reason of an
+  impersonation, then the other fields set, by name ("Email", "Display
+  name"). A list
   goes over as many lines as it takes ("Adds", "Adds (2)"). Six lines at
   most: with `AUTH["AUTHORIZATIONS"]["WHOLE"]` on (since 2.7), a change
   whose values or lists do not fit whole is refused at the twin (`422

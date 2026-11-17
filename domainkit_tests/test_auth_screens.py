@@ -193,16 +193,24 @@ def test_json_values_and_items_show_as_compact_json() -> None:
 
 
 def test_what_an_act_is_on_shows_its_id_whole_and_its_name_cut_to_fit() -> None:
-    """Never too much to show: the act binds the id; an empty name is "erased"."""
+    """Never too much to show: the act binds the id, and its end shows.
+
+    The name has the 48 characters the id's last 12 leave, so most
+    addresses show whole; no name shows as "(erased)" (review of ADR 0173).
+    """
     user_id = UUID(int=42)
     short = named("ann", user_id)
     long = named("u" * 150, user_id)
     erased = named("", user_id)
 
-    assert short == f"ann ({user_id})"
-    assert long == f"{'u' * 24}… ({user_id})"
+    assert short == "ann (…00000000002a)"
+    assert named("firstname.lastname@company-example.com", user_id) == (
+        "firstname.lastname@company-example.com (…00000000002a)"
+    )
+    assert named("x", 7) == "x (7)"
+    assert long == f"{'u' * 47}… (…00000000002a)"
     assert len(long) == 64
-    assert erased == f"erased ({user_id})"
+    assert erased == "(erased) (…00000000002a)"
     assert laid_out({"User": long}) == [("User", long)]
     with override("ar"):
-        assert named("", user_id) == f"مُزال ({user_id})"
+        assert named("", user_id) == "(مُزال) (…00000000002a)"

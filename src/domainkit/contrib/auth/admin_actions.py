@@ -186,8 +186,9 @@ async def show(act: AdminAct) -> Shown:
     """Which user or group, and what changes, read from the stored one.
 
     The title says the kind of change; then the user or group, by its
-    first identifier or name and its id ("ann@example.com (6f1c…)", the
-    name cut to fit if need be: the act binds the id), the name given, the
+    first identifier or name and the end of its id ("ann@example.com
+    (…123456789abc)", the name cut past 48 characters: the act binds the
+    id), the name given, the
     flags that grant or take access ("Superuser", "Staff", "Active": yes or
     no), the reason of an impersonation, what is added and taken away (a
     list over as many lines as it takes: "Adds", "Adds (2)"), whether a new

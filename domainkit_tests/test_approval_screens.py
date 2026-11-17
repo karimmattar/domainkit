@@ -32,6 +32,7 @@ from domainkit_tests.support.auth import create_user
 from domainkit_tests.test_admin_actions import (
     ACTS,
     Staff,
+    end_of,
     held_requests,
     problem,
     stored,
@@ -115,7 +116,7 @@ def test_an_approver_sees_the_user_by_name_and_every_group_added(
 
     assert pairs(asked) == [
         ("Action", "auth.set_groups"),
-        ("User", f"target ({target})"),
+        ("User", f"target ({end_of(target)})"),
         ("Adds", "aaa_harmless_0, aaa_harmless_1, aaa_harmless_2, aaa_harmless_3"),
         ("Adds (2)", "aaa_harmless_4, zz_admins"),
     ]
@@ -145,13 +146,13 @@ def test_an_impersonation_shows_who_and_why(
 
     assert pairs(asked) == [
         ("Action", "auth.impersonate"),
-        ("User", f"target ({target})"),
+        ("User", f"target ({end_of(target)})"),
         ("Stated reason", "Ticket 42"),
     ]
     assert pairs(rejecting) == [
         ("Action", "auth.impersonate"),
         ("Reason", "Not this one"),
-        ("User", f"target ({target})"),
+        ("User", f"target ({end_of(target)})"),
         ("Stated reason", "Ticket 42"),
     ]
 
@@ -249,8 +250,8 @@ def test_with_whole_on_a_long_name_never_locks_a_user_or_a_group(
     target = create_user(long)
     group = make_group("g" * 150)
     make_group("readers")
-    user_line = ("User", f"{'u' * 24}… ({target})")
-    group_line = ("Group", f"{'g' * 24}… ({group})")
+    user_line = ("User", f"{'u' * 47}… ({end_of(target)})")
+    group_line = ("Group", f"{'g' * 47}… ({end_of(group)})")
 
     with override_settings(AUTH=WHOLE):
         asked = [
@@ -337,4 +338,4 @@ def test_a_request_about_a_user_gone_shows_their_id_and_every_field(
 
     shown = run_async(show_about_user(Note(user_id=gone, removed=(), note="n")))
 
-    assert shown == [("User", f"erased ({gone})"), ("note", "n")]
+    assert shown == [("User", f"(erased) ({end_of(gone)})"), ("note", "n")]

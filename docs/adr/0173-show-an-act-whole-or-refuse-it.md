@@ -110,7 +110,10 @@ approver's screen would not show them whole.
   `TypeError`. A text item that holds a comma or a double quote, spaces
   around it, or nothing is quoted, so two items never read as one. A
   character that is not printable is escaped as Python writes it, and a
-  backslash is doubled: two different values never show alike. With
+  backslash is doubled: laid out whole, two different texts never show
+  alike, nor two different lists of texts (a text and the JSON it spells
+  do, `1` and `"1"`, as in 2.6; counted, "and 4 more" is words an item
+  could spell). With
   `whole`, a text, an item, or a label longer than a line, a label twice,
   or more than six lines raise `TooMuchToShow` (`422 too_much_to_show`).
   Otherwise what does not fit is cut and counted: a text ends with `…`, a
@@ -118,12 +121,22 @@ approver's screen would not show them whole.
   values are not shown. Every value gets a line before a list gets more.
   `Shown` itself is unchanged.
 - **What the act is on shows by name and id** (`named(name, id)`):
-  "ann@example.com (6f1c…)", the id whole and the name cut to the room
-  left, "erased" when it is empty. The act binds the id, and a name can
+  "ann@example.com (…123456789abc)". The act binds the id, and a name can
   be changed to read like another's (a user's address, through a change
   that is not held), so the name alone never names the subject, and a
   long one is never a reason to refuse: a username or a group name of 150
-  characters must not lock its user or group.
+  characters must not lock its user or group. The whole id, 36
+  characters, would leave the name 25 and cut ordinary addresses, so the
+  screen shows its last 12 characters, the UUID's last group: the
+  authorization binds the full id, and what is shown of it is a check,
+  as the name is. Users and groups have UUIDs of version 4 (`uuid4()`),
+  random but for 6 bits, none of them in the last group; in a UUID of
+  version 7, the leading 48 bits are a time that users made together
+  share, and the last group is random still. So the last group stays
+  distinctive (48 random bits) whichever version a project's ids take.
+  The name has the 48 characters left. A name erased shows as
+  `(erased)`, which no username (letters, digits, `@.+-_`), address, or
+  number can be.
 - **`AUTH.AUTHORIZATIONS.WHOLE`** (off): the framework's acts show what
   they set, add, and take away whole, or are refused when asked for:
   `auth.admin_change`, `approvals.submit`, and `approvals.approve`. With

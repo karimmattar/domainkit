@@ -631,10 +631,10 @@ PATCH /admin/auth/users/6f1c... {"is_staff": true}                       200: th
   user, then make them staff."). Since 2.5 the refusal is auth's
   `on_create_staff` check, which the creation's twin asks too.
 - **The approver's screen names the user** (since 2.7): "User:
-  alice@example.com (6f1c…)", their first identifier, cut to fit if need
-  be, and their id, which the request binds; the name is read when the
-  screen is built and never stored with the request ("erased" once it is
-  gone). Then "Adds" and "Takes away", each group or permission on as
+  alice@example.com (…123456789abc)", their first identifier, cut to fit
+  if need be, and the end of their id, which the request binds whole;
+  the name is read when the screen is built and never stored with the
+  request ("(erased)" once it is gone). Then "Adds" and "Takes away", each group or permission on as
   many lines as it takes, and left out when empty, or an impersonation's
   "Stated reason" (a rejection's own "Reason" shows beside it). With
   auth's `AUTHORIZATIONS.WHOLE` and `APPROVE_ACTION` on, a change that

@@ -108,6 +108,11 @@ STAFF: Final = (
 type Headers = dict[str, str]
 
 
+def end_of(value: object) -> str:
+    """What a screen shows of an id: ``…`` and its last 12 characters."""
+    return "…" + str(value)[-12:]
+
+
 @pytest.fixture
 def frozen() -> Iterator[FrozenClock]:
     """One clock for codes and authorizations."""
@@ -298,7 +303,7 @@ def test_staff_ask_confirm_and_change_once(
     assert asked.json()["shown"] == {
         "title": "Change a user's groups",
         "details": [
-            {"label": "User", "value": f"target ({target})"},
+            {"label": "User", "value": f"target ({end_of(target)})"},
             {"label": "Adds", "value": "auditors, clerks"},
         ],
     }
@@ -493,7 +498,7 @@ def test_the_screen_names_the_user_or_group_and_the_change(
         "/groups/authorization", {"name": "made", "permissions": ["auth.view_user"]}
     )
 
-    who = ("User", f"target ({target})")
+    who = ("User", f"target ({end_of(target)})")
     assert unusable["title"] == "Make a user's password unusable"
     assert pairs(unusable) == [who]
     assert reason["title"] == "Act as a user"
@@ -513,7 +518,7 @@ def test_the_screen_names_the_user_or_group_and_the_change(
         ("Active", "yes"),
         ("Password", "set"),
     ]
-    group = ("Group", f"crew ({crew})")
+    group = ("Group", f"crew ({end_of(crew)})")
     assert renamed["title"] == "Rename a group"
     assert pairs(renamed) == [group, ("New name", "team")]
     assert (deleted["title"], pairs(deleted)) == ("Delete a group", [group])

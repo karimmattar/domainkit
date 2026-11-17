@@ -24,11 +24,12 @@ and a status.
   ADR 0173) (user reports A22, A23).
 - `domainkit.contrib.auth.screens`: `laid_out(details)` lays out an act's
   labelled values on a screen's six lines, a list over as many lines as it
-  takes ("Adds", "Adds (2)"), each value one way only (a backslash
-  doubled, a text item with a comma quoted), and refuses what does not fit
-  whole (`TooMuchToShow`, `422 too_much_to_show`), or with `whole=False`
-  cuts it and counts it. `named(name, id)` shows what an act is on by its
-  name, cut to fit, and its id, whole (user report A22).
+  takes ("Adds", "Adds (2)"), so that two different texts never show
+  alike (a backslash doubled, a text item with a comma quoted), and
+  refuses what does not fit whole (`TooMuchToShow`, `422
+  too_much_to_show`), or with `whole=False` cuts it and counts it.
+  `named(name, id)` shows what an act is on by its name, cut to fit, and
+  the end of its id (user report A22).
 - `guard(show=...)` (and `Guard.show`): what a person deciding a request
   is shown of its command, in place of its arguments by name, a plain or
   `async` function that may read the database. The holds of users

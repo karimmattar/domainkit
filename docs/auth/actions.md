@@ -135,7 +135,7 @@ holds a title and six lines of 64 characters. `laid_out(details)`, in
 `domainkit.contrib.auth.screens`, puts an act's labelled values on those
 lines: a text on one line, a list over as many as it takes, the next
 lines numbered. `named(name, id)` names what the act is on: its name, cut
-to fit, and its id, whole.
+to fit, and the end of its id.
 
 ```python
 from domainkit.contrib.auth.actions import Shown
@@ -150,21 +150,27 @@ async def show_grant(command: GrantKeys, uow: AccountsUnitOfWork) -> Shown:
 
 ```text
 Grant permissions
-Member    Ada Lovelace (6f1c9c1e-8a2b-4c3d-9e0f-123456789abc)
+Member    Ada Lovelace (…123456789abc)
 Adds      accounts.add_user, accounts.change_user, accounts.view_user
 Adds (2)  accounts.delete_user
 ```
 
 - **What the act is on is never too much to show.** The act binds its
-  id; its name is a hint, which a person may have changed (a user's
-  address). `named` keeps the id whole and cuts the name to the room
-  left, "ada.lovelace@exam… (6f1c…)"; an empty name shows as "erased".
-- **Each value shows one way.** A list's items are joined with `, `; an
-  item that holds a comma or a double quote, has spaces around it, or is
-  empty is quoted (`"readers, admins"`). A character that is not
-  printable is escaped as Python writes it (a new line as `\n`, a
-  zero-width space as `\u200b`), and a backslash is doubled, so a new
-  line and a backslash followed by `n` never show alike.
+  whole id; its name is a hint, which a person may have changed (a
+  user's address). `named` shows the id's last 12 characters, the last
+  group of a UUID (`6f1c9c1e-8a2b-4c3d-9e0f-123456789abc` shows as
+  `…123456789abc`), and the name in the 48 characters left, cut with `…`
+  where it does not fit. A user whose name was erased shows as
+  `(erased)`, which no username, address, or number can be; the id tells
+  two users apart either way.
+- **Two different texts never show alike**, nor two different lists of
+  texts, laid out whole. A list's items are joined with `, `; an item that
+  holds a comma or a double quote, has spaces around it, or is empty is
+  quoted (`"readers, admins"`). A character that is not printable is
+  escaped as Python writes it (a new line as `\n`, a zero-width space as
+  `\u200b`), and a backslash is doubled, so a new line and a backslash
+  followed by `n` never show alike. Counted (`whole=False`), a list's
+  last line ends with words, "and 4 more", that an item could spell.
 - **Values are text or JSON.** A dict, a number, `True`, or `None` shows
   as compact JSON on one line; a list or a tuple goes over lines item by
   item, an item that is not text as compact JSON (`{"a":1}, ["b"], 3`). A

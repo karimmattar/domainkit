@@ -38,9 +38,9 @@ once (a guard ``by_maker``). The approvers are superusers (or the holders
 of ``ADMIN_APPROVERS``), never the user the change is about.
 
 What a person deciding a request about a user is shown names the user,
-read when shown, with their id (``show_about_user``): "User:
-alice@example.com (6f1c…)", then the groups or permissions it adds and
-takes away, each list over as many lines as it takes, and an
+read when shown, with the end of their id (``show_about_user``): "User:
+alice@example.com (…123456789abc)", then the groups or permissions it
+adds and takes away, each list over as many lines as it takes, and an
 impersonation's stated reason (ADR 0173). With ``APPROVE_ACTION`` on, the
 admin API's twin refuses a change held here that the approver's screen
 could not show whole (``check_admin_screen``).
@@ -335,7 +335,7 @@ async def show_about_user(command: Any) -> list[tuple[str, object]]:  # noqa: AN
     ``user_id`` is shown as the user's first identifier
     (``get_username()``), read now and never stored with the request, cut
     to fit beside the id, which the request binds: a user erased or gone
-    meanwhile shows as "erased". ``added`` and ``removed`` are lists
+    meanwhile shows as "(erased)". ``added`` and ``removed`` are lists
     ("Adds", "Takes away"), left out when empty; ``reason`` is "Stated
     reason"; any other field shows by its name. A command with no
     ``user_id`` shows its fields alone.

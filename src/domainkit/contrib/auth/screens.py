@@ -14,8 +14,9 @@ line says how many more ("auditors, clerks and 4 more"), and a last line
 ("…") says how many values are not shown.
 
 What the act is on is named by ``named(name, id)``: its name, cut to fit
-if need be, and its id, whole. The act binds the id; the name is a hint,
-and never a reason to refuse it.
+if need be, and the end of its id. The act binds the whole id; what is
+shown of it, as the name, is a check for the person, and never a reason
+to refuse the act.
 
     from domainkit.contrib.auth.actions import Shown
     from domainkit.contrib.auth.screens import laid_out, named
@@ -39,6 +40,8 @@ LINE_LENGTH: Final = DETAIL_MAX_LENGTH
 """The most characters (code points) a line, its label, or a title holds: 64."""
 LINES: Final = MAX_DETAILS
 """The most labelled lines a screen holds: 6."""
+SHOWN_ID: Final = 12
+"""How many of an id's last characters ``named`` shows: a UUID's last group."""
 SEPARATOR: Final = ", "
 """What joins a list's items on a line."""
 MORE_LABEL: Final = "…"
@@ -83,8 +86,11 @@ def laid_out(
     quoted if it holds a comma or a double quote, has spaces around it,
     or is empty; any other item as compact JSON. A character that is not
     printable, and a backslash, are shown escaped as Python writes them (a
-    new line as a backslash and ``n``, a backslash as two), so two values
-    never show alike.
+    new line as a backslash and ``n``, a backslash as two). So, laid out
+    whole, two different texts never show alike, nor two different lists
+    of texts. A text and the JSON value it spells do: ``1`` and ``"1"``,
+    ``true`` and ``"true"``, a dict and its JSON as a string. Counted, a
+    list's last line ends with words ("and 4 more") an item could spell.
 
     ``whole``: what would be cut or left out is refused. Otherwise a text
     longer than a line is cut and ends with ``…``; a list given fewer
@@ -112,14 +118,18 @@ def laid_out(
 def named(name: str | None, subject_id: object) -> str:
     """What an act is on, on one line: its name, cut to fit if need be, and its id.
 
-    "ann@example.com (6f1c9c1e-…)": the id whole, the name cut and ended
-    with ``…`` where both do not fit. An empty name (a user erased) shows
-    as "erased". The act binds the id: whatever the name, this is never
-    too much to show.
+    "ann@example.com (…123456789abc)": the id's last 12 characters (a
+    UUID's last group, random in UUIDs of version 4 and 7 alike), and the
+    name in the 48 characters left, cut and ended with ``…`` where it does
+    not fit. An empty name (a user erased) shows as "(erased)", which no
+    username, address, or number can be. The act binds the whole id:
+    whatever the name, this is never too much to show.
     """
-    shown = name or pgettext("subject", "erased")
+    shown = name or pgettext("subject", "(erased)")
     line = pgettext("subject", "{name} ({id})")
     ident = _printable(str(subject_id))
+    if len(ident) > SHOWN_ID:
+        ident = CUT + ident[-SHOWN_ID:]
     room = LINE_LENGTH - len(line.format(name="", id=ident))
     return line.format(name=fitted(shown, room), id=ident)
 
