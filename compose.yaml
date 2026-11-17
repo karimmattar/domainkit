@@ -16,7 +16,7 @@ name: domainkit
 services:
   certs:
     # Any image with openssl; RabbitMQ's is pulled anyway.
-    image: rabbitmq:4.3.5-management-alpine@sha256:b3b8b7f95f5382a19f9ea33540e604f30aad081d37ad9aba72255135765373a1
+    image: rabbitmq:4.3.6-management-alpine@sha256:3505b6096cdbc083bcc363e74366f575ecd0c1a55be4dadcbc60fa08e34647e1
     user: "0"
     entrypoint: ["sh", "-ec"]
     command:
@@ -100,7 +100,7 @@ services:
         condition: service_completed_successfully
 
   redis:
-    image: redis:8.8.3-alpine@sha256:0b2b77d3ea5078274795e3177cdbdada8b96316684a38911d528534ed679b5ec
+    image: redis:8.8.3-alpine@sha256:cc9d0aecc235bda23e80287b5ef7c131cae443045b9a332d45932feb71a1e70e
     command:
       - redis-server
       - --port
@@ -130,7 +130,7 @@ services:
         condition: service_completed_successfully
 
   valkey:
-    image: valkey/valkey:9.1.2-alpine@sha256:48332870af354a799964c0012ae1194a0bf2bf894eb508f945810596dc2d8d11
+    image: valkey/valkey:9.1.3-alpine@sha256:bf09d58e96d6b4524a15396b65b242bbe18beebbcc15a04d8ee75ddac62fae0b
     ports:
       - 127.0.0.1:6381:6379
     healthcheck:
@@ -140,7 +140,7 @@ services:
       retries: 30
 
   rabbitmq:
-    image: rabbitmq:4.3.5-management-alpine@sha256:b3b8b7f95f5382a19f9ea33540e604f30aad081d37ad9aba72255135765373a1
+    image: rabbitmq:4.3.6-management-alpine@sha256:3505b6096cdbc083bcc363e74366f575ecd0c1a55be4dadcbc60fa08e34647e1
     environment:
       RABBITMQ_DEFAULT_USER: domainkit
       RABBITMQ_DEFAULT_PASS: domainkit
