@@ -485,8 +485,9 @@ phone confirms each act as it confirms any other.
 The admin API spends its act in its own code, with the change's
 transaction, after the `on_admin_change` checks, and checks that it binds
 the change before them. A password the user had before spends it too
-(since 2.7): the act binds only that a password is set, so each
-confirmation is one guess at the user's history
+(since 2.7), once the change is about to be made: the act binds only
+that a password is set, so each confirmation is one guess at the user's
+history
 ([Each change, authorized as one act](routes.md#each-change-authorized-as-one-act)). Approvals spends each in its services, as
 `approve_request` does ([Submitting, rejecting, and cancelling with an
 authorization](../contrib/approvals.md#submitting-rejecting-and-cancelling-with-an-authorization)).

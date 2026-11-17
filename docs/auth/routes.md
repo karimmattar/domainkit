@@ -424,7 +424,7 @@ action: `view`, `add`, `change`, or `delete` on the user model
 | `GET /users/{id}` | | The user. |
 | `PATCH /users/{id}` | `{"is_active", "is_staff", "is_superuser", "fields"}` | The user; what you leave out stays. A new email or mobile number is set at once, unproved, and drops one the user held ([Changing an address or a number](users.md#changing-an-address-or-a-number)). |
 | `DELETE /users/{id}` | | `204`; the user's tokens, second factor (secret and recovery codes), and object permissions go too. |
-| `POST /users/{id}/password` | `{"password"}` | `204`; `null` makes it unusable. Every session of the user ends. A password among the user's last ones (`AUTH.PASSWORD_HISTORY`) is refused, and counts as a wrong password of theirs (since 2.7; `429` past `AUTH.LOGIN_RATE`). |
+| `POST /users/{id}/password` | `{"password"}` | `204`; `null` makes it unusable. Every session of the user ends. A password among the user's last ones (`AUTH.PASSWORD_HISTORY`) is refused (`422`); past `AUTH.LOGIN_RATE` of those from one staff member for one user, `429` for a while (since 2.7). |
 | `POST /users/{id}/logout` | | `204`: every session of the user ends. |
 | `POST /users/{id}/impersonate` | `{"reason"}` | `201` and a token that acts as the user for `AUTH.IMPERSONATION_TTL` ([Impersonation](#impersonation)). |
 | `PUT /users/{id}/groups` | `{"groups": [names]}` | The user, in exactly those groups. |
@@ -461,7 +461,9 @@ what.
 
 ### Staff hand out only what they have
 
-- **Only superusers make, unmake, or change superusers.**
+- **Only superusers make, unmake, or change superusers.** Making a
+  deactivated superuser active again is making one (since 2.7): where
+  approvals hold that, it is refused here too.
 - **With `domainkit.contrib.approvals` guarding it**
   (`APPROVALS.SUPERUSER_APPROVALS`), no one makes a superuser here
   (`approval_required`): an approved `auth.grant_superuser` request does
@@ -475,14 +477,19 @@ what.
   `on_admin_change(check)` (`domainkit.contrib.auth.gates`) is called
   with the staff member, the user (None when creating one), and an
   `AdminChange`, once the admin API's own checks passed (the bounds below,
-  the fields, a password's validators and, since 2.7, the user's
-  password history) and right before the change: its
+  the fields, a password's validators) and right before the change: its
   `kind` (`create`, `update`, `delete`, `password`, `logout`,
   `impersonate`, `groups`, `permissions`), the `fields` and flags it
   sets, the groups or permissions it `added` and `removed`, since
   2.4 the `values` it sets (`{"is_staff": True}`, the `reason` of an
   impersonation; never a password), and since 2.7 the `groups` it adds,
-  each an `AddedGroup` (its id, name, and permissions as read). Raise
+  each an `AddedGroup` (its id, name, permissions, and grants on objects
+  as read), and its `last_check`: the admin API's own check that only
+  the change makes (a password the user had before), which runs once,
+  when the change is about to be made. A check of yours that lets the
+  change go on by spending something (approvals' hold spends an
+  approval) awaits it first, so a change it refuses spends nothing;
+  otherwise the admin API runs it after every check. Raise
   `PermissionDenied` to refuse it
   ("nobody edits their own account here", "making staff needs another
   permission"). `admin.may_grant` and `admin.may_hold`, the ceilings
@@ -621,13 +628,22 @@ PUT  /admin/auth/users/6f1c.../groups {"groups": ["auditors"]}
 - **A reused password spends the authorization** (since 2.7). The act
   binds only that a password is set, so before 2.7 one confirmation
   tested password after password against the user's history, refused
-  each time and spending nothing (user report A17). Now a password among
-  the user's last ones is refused before the `on_admin_change` checks,
-  spends the authorization, and counts as a wrong password of the
-  user's (`AUTH.LOGIN_RATE` and `ACCOUNT_LOGIN_RATE`, as a password the
-  user types does; `429 rate_limited` past them). One confirmation is
-  one guess. A password that will do gives its count back. The count
-  holds with `AUTH.ADMIN_ACTION` off too.
+  each time and spending nothing (user report A17). The history is
+  compared only when the change is about to be made: after the
+  `on_admin_change` checks, and, where approvals hold setting a
+  password, once the approved request is found and before it is spent.
+  While a check refuses the change or its request waits, nothing is
+  compared, and every password gets the same answer. A password among
+  the user's last ones is then refused (`422 invalid_password`), spends
+  the authorization, and leaves the approval unspent: one confirmation
+  is one guess, and a password that will do makes the change.
+- **Reuses are counted for the staff member and the user together**
+  (since 2.7): `AUTH.LOGIN_RATE`, and `ACCOUNT_LOGIN_RATE` over the day,
+  of reuses refused; past them, that staff member's password changes of
+  that user answer `429 rate_limited` for a while. A password that will
+  do gives its count back. The user's own counts of wrong passwords
+  (their logins, their password checks) are apart: neither holds the
+  other back. The count holds with `AUTH.ADMIN_ACTION` off too.
 - **Checked before the project's checks, spent with the change.** The
   authorization must bind the change before the `on_admin_change` checks
   run, so a change it does not bind is never held for approval. It is

@@ -84,7 +84,7 @@ approvals for nothing (user reports A21, A20, A19, and two rows of A17).
 | --- | --- |
 | Refuse renaming or deleting a group that a pending or approved request names (the project's `409 group_in_use`) | The group routes would read approvals' requests (auth would know approvals, ADR 0140), groups stay stuck while a request waits, and a group made again elsewhere still passes. |
 | The groups' ids | A group granted more since the approval still passes. |
-| **Each group's id and the permissions it grants, beside the names (`SetGroups.groups`, `HeldGroup`)** | Requests of 2.6 not yet made are approved again. The admin API hands the groups it read to the checks (`AdminChange.groups`). |
+| **Each group's id, the permissions it grants, and its grants on single objects (how many, and a SHA-256 of them, sorted), beside the names (`SetGroups.groups`, `HeldGroup`)** | Requests of 2.6 not yet made are approved again. The admin API hands the groups it read to the checks (`AdminChange.groups`), with what every backend's `object_grants` says of each: approvals reads no object permissions app's tables, and stays within the apps' public names. An approver sees a count of the grants, not which. |
 
 **How a changed group is refused.** The maker's call finds the approved
 request by the fingerprint of the command it builds now. A group that
@@ -102,19 +102,34 @@ for. No new code is needed.
 | Hold every reactivation | Holds the return of every customer account that holds nothing. |
 | **`auth.reactivate`, for a user who holds access once the change is made: staff, a superuser, a member of a group, or granted a permission, directly or on an object** | What a backend grants only an active user (a tenant member's keys) is not known here; the docs say to guard it. |
 
+`Reactivate` holds what the user comes back with, as the change leaves
+it: the flags, each group (`HeldGroup`), their own permissions, and their
+grants on objects (count and digest). Holding the user alone let the
+maker, while the user waited inactive, make them a superuser or add a
+group no hold covered, and the approval of a reader's return brought
+back more (found in review).
+
 Without `auth.reactivate`, `auth.set_staff` holds a staff member's
 return, as making staff: the return gives staff back. With both held, a
 call that makes a user staff and active again is refused (`403
 approval_required`): one request for both would spend one hold's
-approvals, possibly fewer, on the other's change.
+approvals, possibly fewer, on the other's change. A superuser's return
+is a superuser made: with `SUPERUSER_APPROVALS`, the admin API refuses
+it (`approval_required`) as it refuses making one, whatever
+`ADMIN_APPROVALS` holds; the superuser is demoted while inactive, made
+active, and promoted by an approved `auth.grant_superuser`.
 
 **A group's permissions.** `auth.set_group_permissions`, held when the
 call grants a group a permission. Its parties are the group's members as
 stored when the request is decided (`GroupRepository.member_ids`): each
 gains what it grants. Taking away, renaming, deleting, and creating a
 group (it has no members) are not held: none grants anyone more, now
-that `auth.set_groups` binds ids. Grants made outside the admin API need
-guards of the project's own: the docs say so.
+that `auth.set_groups` binds ids. Alone it is bypassed: a group made
+with the permissions, then joined, grants them. So it is to be held with
+`auth.set_groups`, and `check` warns where it is not (`approvals.W001`,
+in staging and production: a minor release may add a warning). Grants
+made outside the admin API need guards of the project's own: the docs
+say so.
 
 **The order of the checks.**
 
@@ -146,17 +161,32 @@ guess.
 | The docs saying so | The footgun stays on the admin API. |
 | **The admin API declares each route's rule among its `dependencies`, and takes the staff member from the same `Depends`; the docs say what a parameter rule means elsewhere** | Twenty-five decorators name their rule twice. |
 
-**A reused password.** Checked before the `on_admin_change` checks, with
-the validators' care, so no approval is spent on a password that will
-be refused (A19). Each check counts as a wrong password of the user's
-(`password_throttle`), given back when the password is not reused; a
-reuse spends the change's authorization in a transaction of its own,
-committed before the refusal. One confirmation, one guess.
+**A reused password.** Where the history is compared decides what it
+tells.
+
+| Option | What it costs |
+| --- | --- |
+| After every check, at the change (2.6) | An approval is spent first, then the change is refused (A19). |
+| Before the checks, with the validators (the first form of this record) | An oracle: while a held change waited, or a project's check refused, each guess was answered, and only a hit cost anything (found in review). |
+| **When the change is about to be made: after the checks; where a hold applies, once it finds the approved request and before it spends it (`AdminChange.last_check`, run once)** | A field more on `AdminChange`, and one read of the requests before the spend. |
+
+While a check refuses the change or its approval waits, nothing is
+compared: every password gets the same answer. A reuse then spends the
+change's authorization in a transaction of its own, committed before
+the refusal (one confirmation, one guess), and leaves the approval for a
+password that will do. It counts against a key of the staff member and
+the user together, at `AUTH.LOGIN_RATE` and `ACCOUNT_LOGIN_RATE`, given
+back when the password will do: the user's own counts of wrong
+passwords (`password_throttle`, which the first form used) are apart,
+so a hijacked session's wrong checks never hold back a staff reset, and
+a staff member's reuses never refuse the user's login. Past the rate,
+that staff member's password changes of that user wait (`429`), a new
+password too: a hit answered past the rate would still be an answer.
 
 ## Decision
 
 - `SetGroups` holds `groups`: each group added, as `HeldGroup(id, name,
-  permissions)`, sorted. The admin API gives the checks the groups it
+  permissions, object_grants, object_grants_digest)`, sorted. The admin API gives the checks the groups it
   read (`AdminChange.groups`, `AddedGroup`). A change of groups that does
   not name each group it adds is refused (`ImproperlyConfigured`).
 - `ADMIN_APPROVALS` takes `auth.reactivate` (`Reactivate`, policy
@@ -168,8 +198,12 @@ committed before the refusal. One confirmation, one guess.
 - The group routes call `on_admin_group_change`. The twins call the
   checks with `asking`. Each admin route declares its rule among its
   `dependencies`.
-- A reused password is refused before the checks, counts, and spends the
-  authorization.
+- A reused password is compared when the change is about to be made
+  (`last_check`), refused, counted for the staff member and the user,
+  and spends the authorization, not the approval.
+- `Reactivate` holds what the user comes back with; a superuser's return
+  asks `on_make_superuser`; `approvals.W001` warns of
+  `auth.set_group_permissions` held without `auth.set_groups`.
 
 ## Consequences
 
@@ -187,9 +221,15 @@ committed before the refusal. One confirmation, one guess.
 - Not done here: a `Policy` whose count and approvers follow the settings
   as they change (A20's last proposal), and a taken address refused
   before the checks (A19): `refuse_taken_emails` runs with the commit.
+- A staff member who sends many of one user's old passwords waits
+  (`429`) before setting that user's password again.
+- `order=` places a hook among all domains' hooks where the point runs
+  them one after another; the lifespan and `/ready` run each domain's
+  hooks apart, and there it sorts a domain's own.
 - New names: `HookPoint`'s `order=`; `AddedGroup`, `GroupChange`,
-  `on_admin_group_change` (`auth.gates`); `AdminChange.groups` and
-  `.asking`; `REACTIVATE`, `SET_GROUP_PERMISSIONS`, `HOLD_ORDER`,
+  `on_admin_group_change` (`auth.gates`); `AdminChange.groups`,
+  `.asking`, and `.last_check`; `approvals.W001`; `REACTIVATE`,
+  `SET_GROUP_PERMISSIONS`, `HOLD_ORDER`,
   `HeldGroup`, `Reactivate`, `SetGroupPermissions` (approvals);
   `GroupRepository.member_ids`; `UserRepository.set_password(...,
   reuse_checked=)`. No table changes.

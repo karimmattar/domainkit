@@ -530,6 +530,12 @@ with `{"user_id": ...}` (`GrantSuperuser`) instead, under the policy
 `auth.superuser`. Only a superuser may
 submit one, as only a superuser makes one without approvals.
 
+A superuser made active again is a superuser made (since 2.7): with
+`SUPERUSER_APPROVALS` above 0, `PATCH /users/{id}` with `"is_active":
+true` for a deactivated superuser is refused (`approval_required`), as
+making one is. Take superuser away while they are inactive, make them
+active, then submit `auth.grant_superuser`.
+
 `SUPERUSER_APPROVALS` other superusers approve it (or, with
 `SUPERUSER_APPROVERS` set, holders of that permission), never the user
 it promotes. The run checks that its maker is still an active
@@ -596,7 +602,7 @@ APPROVALS = {
 | `auth.set_permissions` (`SET_PERMISSIONS`) | grants a user a permission: `PUT /users/{id}/permissions` | `{"user_id", "added", "removed"}`, permission keys (`SetPermissions`) | `auth.permissions` |
 | `auth.set_password` (`SET_PASSWORD`) | sets a password, or makes it unusable: `POST /users/{id}/password` | `{"user_id"}` (`SetPassword`) | `auth.password` |
 | `auth.impersonate` (`IMPERSONATE`) | acts as a user: `POST /users/{id}/impersonate` | `{"user_id", "reason"}` (`Impersonate`) | `auth.impersonation` |
-| `auth.reactivate` (`REACTIVATE`, since 2.7) | makes a user who holds access active again: `PATCH /users/{id}` with `"is_active": true` | `{"user_id"}` (`Reactivate`) | `auth.reactivation` |
+| `auth.reactivate` (`REACTIVATE`, since 2.7) | makes a user who holds access active again: `PATCH /users/{id}` with `"is_active": true` | `{"user_id", "is_staff", "is_superuser", "groups", "permissions", "object_grants", "object_grants_digest"}`: what they come back with (`Reactivate`) | `auth.reactivation` |
 | `auth.set_group_permissions` (`SET_GROUP_PERMISSIONS`, since 2.7) | grants a group a permission: `PUT /groups/{id}/permissions` | `{"group_id", "name", "added", "removed"}`, permission keys (`SetGroupPermissions`) | `auth.group_permissions` |
 
 The staff member's client goes round once per change:
@@ -609,12 +615,17 @@ PATCH /admin/auth/users/6f1c... {"is_staff": true}                       200: th
 
 - **The admin API's own checks come first**: the staff member's bounds
   (a group or a permission they lack), the fields, the password's
-  validators, and, since 2.7, the user's password history
-  (`AUTH.PASSWORD_HISTORY`), so a password that would be refused spends
-  no approval. Then the project's own checks, then the change is
+  validators. Then the project's own checks, then the change is
   submitted as the staff member's request, and the call answers `403
   approval_pending` with its id. The same call made while the request
-  waits answers the same id.
+  waits answers the same id, whatever password it sends.
+- **A password the user had before is refused once the request is
+  approved, and spends no approval** (since 2.7). The user's password
+  history (`AUTH.PASSWORD_HISTORY`) is compared when the change is about
+  to be made: the hold finds the approved request, has the admin API
+  compare the password (`AdminChange.last_check`), and spends the
+  approval only if it is not refused. While the request waits, nothing
+  is compared ([Each change, authorized as one act](../auth/routes.md#each-change-authorized-as-one-act)).
 - **Once approved, the same call by the same staff member makes the
   change, once.** The guards run by their maker
   ([Run by its maker](#run-by-its-maker)): the worker runs nothing, an
@@ -627,8 +638,10 @@ PATCH /admin/auth/users/6f1c... {"is_staff": true}                       200: th
   submits a request of its own.
 - **A group is held by its id and what it grants, not by its name**
   (since 2.7, [ADR 0172](../adr/0172-hold-admin-changes-by-what-they-grant-and-check-before-the-hold.md)).
-  Each group a request adds is in its `groups`: the id, the name, and the
-  permissions the group grants as the call found it. Before 2.7 an
+  Each group a request adds is in its `groups`: the id, the name, the
+  permissions the group grants as the call found it, and its grants on
+  single objects (`object_grants`, how many, and `object_grants_digest`,
+  a SHA-256 of them). Before 2.7 an
   approval for "readers" made the user a member of whatever group was
   called "readers" when the call came back, so a group renamed to it, or
   deleted and made again, passed the second person's check (user report
@@ -642,6 +655,10 @@ PATCH /admin/auth/users/6f1c... {"is_staff": true}                       200: th
   staff or a superuser (as the change leaves them), belongs to a group,
   or holds a permission, directly or on an object (every backend's
   `object_grants`). A user who holds none of these comes back at once.
+  The request holds what they come back with: the flags, each group (as
+  `SetGroups` holds one), their own permissions, and their grants on
+  objects (how many, and a digest). Anything granted to them while they
+  wait is another request.
   What a backend grants only an active user, such as a member's keys in
   a tenant (`MembershipBackend`), is not known here: guard it yourself
   ([Grants made elsewhere](#grants-made-elsewhere)). Without
@@ -655,7 +672,10 @@ PATCH /admin/auth/users/6f1c... {"is_staff": true}                       200: th
   since 2.7): every member gains them. The members of the group, as
   stored when a decision is made, do not decide it (`interested_party`).
   Taking permissions away, renaming, deleting, and creating a group (it
-  has no members yet) wait for no one.
+  has no members yet) wait for no one. So hold it with `auth.set_groups`:
+  alone, a group made with the permissions, then joined, grants them
+  unheld. `check` warns where it is held alone (`approvals.W001`, in
+  staging and production).
 - **A password is never stored**, in the request or anywhere else:
   `SetPassword` names the user alone. Approvers could not judge a
   password; they approve setting one, and the call made once it is
@@ -700,7 +720,9 @@ member's approval of a change that a check of a domain installed after
 approvals then refused (user report A19). A check that must see the
 hold's outcome registers with a higher order. At a change's twin
 (`AUTH.ADMIN_ACTION`), the hold submits and spends nothing: it is only
-asked (`AdminChange.asking`).
+asked (`AdminChange.asking`). A check of your own that calls a guard
+`by_maker`, as the hold does, should return while `asking`: at a twin it
+would submit a request.
 
 ### Grants made elsewhere
 

@@ -26,11 +26,18 @@ and a status.
 - `APPROVALS.ADMIN_APPROVALS` holds two more changes: `auth.reactivate`,
   making a user who holds access active again (staff, a superuser, a
   member of a group, or granted a permission, directly or on an object),
-  and `auth.set_group_permissions`, granting a group a permission, which
-  the group's members do not decide. Grants made outside the admin API
-  need guards of the project's own, as the page now says
+  whose request holds what they come back with, and
+  `auth.set_group_permissions`, granting a group a permission, which the
+  group's members do not decide. Hold the latter with `auth.set_groups`:
+  `check` warns where it is held alone (`approvals.W001`, in staging and
+  production). Grants made outside the admin API need guards of the
+  project's own, as the page now says
   ([Changes of the admin API](docs/contrib/approvals.md#changes-of-the-admin-api))
   (user reports A20, A21).
+- `AdminChange.last_check`: the admin API's own check that only the
+  change makes (a password the user had before), which a check that
+  spends something to let the change go on awaits first; approvals' hold
+  does, once it finds an approved request (user report A19).
 
 ### Changed
 
@@ -53,9 +60,10 @@ and a status.
 
 - Approvals' hold of an admin change runs after the project's
   `on_admin_change` checks (`HOLD_ORDER`, 100), whatever the domains'
-  order, and the admin API compares a password with the user's history
-  (`AUTH.PASSWORD_HISTORY`) before the checks: a change refused there no
-  longer spends the staff member's approval (user report A19).
+  order, and compares a password with the user's history
+  (`AUTH.PASSWORD_HISTORY`) once it finds the approved request, before
+  spending it: a change refused there no longer spends the staff
+  member's approval (user report A19).
 - The admin API declares each route's staff rule among its route
   dependencies, so a check a project adds with `select_routes` runs after
   the admin API's rules, not for anyone before them; the page says where
@@ -70,21 +78,30 @@ and a status.
   approved joined whatever group had the name then: a powerful group
   renamed to the approved name, or a group deleted and made again,
   passed the second person's check. `SetGroups` holds each group added
-  by id with the permissions it grants (`groups`, `HeldGroup`); a group
-  renamed, made again, or granted other permissions since makes another
-  request, which shows what it grants. A request of 2.6 approved and not
-  yet made is approved again ([upgrading.md](docs/upgrading.md#26-to-27),
-  ADR 0172) (user report A21).
+  by id with the permissions it grants and its grants on single objects
+  (`groups`, `HeldGroup`); a group renamed, made again, or granted other
+  permissions or objects since makes another request, which shows what
+  it grants. A request of 2.6 approved and not yet made is approved
+  again ([upgrading.md](docs/upgrading.md#26-to-27), ADR 0172) (user
+  report A21).
 - `auth.set_staff` holds making a deactivated staff member active again
   where `auth.reactivate` is not held: `{"is_active": true}` gave staff
   back with no approval. With both held, a call that makes a user staff
   and active again is refused (`403 approval_required`) (user report A21).
-- A password the admin API refuses as one of the user's last ones counts
-  as a wrong password of theirs (`AUTH.LOGIN_RATE`,
-  `ACCOUNT_LOGIN_RATE`; `429 rate_limited` past them) and, with
-  `AUTH.ADMIN_ACTION`, spends the change's authorization. One
-  confirmation tested guess after guess against the user's history, at
-  no rate (user report A17).
+- A deactivated superuser made active again through the admin API is a
+  superuser made: with `APPROVALS.SUPERUSER_APPROVALS`, it is refused
+  (`403 approval_required`), and it passed with no approval (user report
+  A21).
+- The admin API compares a password with the user's history only when
+  the change is about to be made, and a reuse costs a try. One
+  confirmation tested guess after guess against the history at no rate.
+  Now nothing is compared while a check refuses the change or its
+  approval waits, so every password gets the same answer; once compared,
+  a reuse is refused, spends the change's authorization
+  (`AUTH.ADMIN_ACTION`), and counts against the staff member's guesses
+  at that user's passwords (`AUTH.LOGIN_RATE`, `ACCOUNT_LOGIN_RATE`;
+  `429 rate_limited` past them), apart from the user's own login counts
+  (user report A17).
 
 ## [2.6.0] - 2026-11-17
 

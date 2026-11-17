@@ -51,6 +51,14 @@ project that relied on 2.6's behaviour changes.
   made again, or granted other permissions since the request was made
   makes another request. A `409 group_in_use` of your own, which kept a
   named group from changing, can go.
+- **A deactivated superuser comes back as one is made.** With
+  `APPROVALS.SUPERUSER_APPROVALS` above 0, `PATCH /admin/auth/users/{id}`
+  with `"is_active": true` for an inactive superuser answers `403
+  approval_required`. Take superuser away while they are inactive, make
+  them active, then submit `auth.grant_superuser`.
+- **An `auth.reactivate` request holds what the user comes back with**:
+  their flags, groups, permissions, and grants on objects. Grant them
+  anything while it waits, and the same call submits a new request.
 - **`auth.set_staff` holds a staff member's return.** Where
   `ADMIN_APPROVALS` holds `auth.set_staff` and not `auth.reactivate`,
   `PATCH /users/{id}` with `"is_active": true` for an inactive staff
@@ -62,17 +70,26 @@ project that relied on 2.6's behaviour changes.
   `change.asking` true (a group's twins run the `on_admin_group_change`
   checks). A check that only refuses needs nothing; one that writes (an
   audit row of its own, a count) should write nothing while `asking`, or
-  it writes once at the twin and once at the change.
+  it writes once at the twin and once at the change. A check that calls
+  a guard `by_maker` (approvals' hold does) would submit a request at
+  the twin: return while `asking`.
 - **Approvals' hold runs after your checks.** It registers at
   `order=100`; a check you registered for `auth` to run before it can be
   registered for its own domain again. A check that must see the hold's
   outcome registers with an order above 100.
-- **A reused password costs a try.** `POST /admin/auth/users/{id}/password`
-  compares the password with the user's history before the
-  `on_admin_change` checks; a reuse counts as a wrong password of the
-  user's (`AUTH.LOGIN_RATE`, `ACCOUNT_LOGIN_RATE`: `429 rate_limited`
-  past them), and, with `AUTH.ADMIN_ACTION`, spends the change's
-  authorization: confirm again to try another password.
+- **A reused password costs a try, and can now answer `429`.**
+  `POST /admin/auth/users/{id}/password` compares the password with the
+  user's history when the change is about to be made (after your
+  checks; with `auth.set_password` held, once the approval is found). A
+  reuse is refused, spends the change's authorization with
+  `AUTH.ADMIN_ACTION` (confirm again to try another password), and
+  counts for that staff member and that user: past `AUTH.LOGIN_RATE`
+  of them (or `ACCOUNT_LOGIN_RATE` over the day), that staff member's
+  password changes of that user answer `429 rate_limited` for a while,
+  a new password too. Nothing else a staff member does newly answers
+  `429`, and the user's own wrong passwords never count here.
+- **`AdminChange` has `last_check`.** A check of yours that spends
+  something to let a change go on should await it first.
 - **A check added to an admin route with `select_routes` runs after the
   admin API's rules.** It no longer sees requests the rules refuse
   (anonymous, not staff, without the model permission or the

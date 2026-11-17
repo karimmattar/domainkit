@@ -1186,7 +1186,9 @@ def test_an_approval_binds_a_groups_grants_on_objects(client: TestClient) -> Non
     assert read(client, approved, ann)["status"] == "executed"
 
 
-def test_a_group_permissions_hold_alone_is_warned_about(client: TestClient) -> None:
+def test_a_group_permissions_hold_alone_is_warned_about(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """``approvals.W001``: a new group made with the permissions, then joined, passes.
 
     Where deployed, ``auth.set_group_permissions`` held without
@@ -1198,18 +1200,15 @@ def test_a_group_permissions_hold_alone_is_warned_about(client: TestClient) -> N
     alone = {"auth.set_group_permissions": 1}
     both = {**alone, "auth.set_groups": 1}
 
-    with override_settings(
-        ENVIRONMENT="production", APPROVALS={"ADMIN_APPROVALS": alone}
-    ):
-        warned = config.weak_settings()
-    with override_settings(
-        ENVIRONMENT="production", APPROVALS={"ADMIN_APPROVALS": both}
-    ):
-        paired = config.weak_settings()
-    with override_settings(
-        ENVIRONMENT="local", APPROVALS={"ADMIN_APPROVALS": alone}
-    ):
+    with override_settings(APPROVALS={"ADMIN_APPROVALS": alone}):
         local = config.weak_settings()
+    monkeypatch.setattr(
+        "domainkit.contrib.approvals.apps.DEPLOYED_ENVIRONMENTS", frozenset({"test"})
+    )
+    with override_settings(APPROVALS={"ADMIN_APPROVALS": alone}):
+        warned = config.weak_settings()
+    with override_settings(APPROVALS={"ADMIN_APPROVALS": both}):
+        paired = config.weak_settings()
 
     assert [each.id for each in warned if isinstance(each, CheckMessage)] == [
         "approvals.W001"
