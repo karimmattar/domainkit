@@ -6,7 +6,7 @@ network. The fake reads the multipart form as Gotenberg would.
 
 import io
 import sys
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from email import policy
 from email.parser import BytesParser
 from typing import Any, Final, cast
@@ -39,6 +39,7 @@ from domainkit.http.errors import upstream_refusal
 from domainkit.i18n import gettext, override
 from domainkit.management import call_command
 from domainkit.management.base import CommandError
+from domainkit.reporting import flush_reports
 
 pytestmark = pytest.mark.anyio
 
@@ -260,16 +261,27 @@ def test_check_deploy_fails_on_a_renderer_without_a_login() -> None:
 # The configured renderer --------------------------------------------------------------
 
 
+reported: list[tuple[str, dict[str, object]]] = []
+
+
+def reporter(exc: BaseException, context: Mapping[str, object]) -> None:
+    """An ``ERROR_REPORTERS`` entry: keeps what it is given."""
+    reported.append((type(exc).__name__, dict(context)))
+
+
 def test_no_renderer_is_made_without_settings(caplog: pytest.LogCaptureFixture) -> None:
-    """``renderer()`` names the setting to set, and logs that none is.
+    """``renderer()`` names the setting to set, logs it as an error, and reports it.
 
     The error is an ``ImproperlyConfigured``, as in 2.6, and an unavailable
     renderer, which a request answers 503.
     """
-    with pytest.raises(
-        ImproperlyConfigured, match=r'DOCUMENTS = \{"RENDERER"'
-    ) as unset:
+    reported.clear()
+    with (
+        override_settings(ERROR_REPORTERS=[f"{__name__}.reporter"]),
+        pytest.raises(ImproperlyConfigured, match=r'DOCUMENTS = \{"RENDERER"') as unset,
+    ):
         renderer()
+    flush_reports()
 
     assert isinstance(unset.value, RendererNotConfigured)
     assert isinstance(unset.value, RendererUnavailable)
@@ -279,18 +291,24 @@ def test_no_renderer_is_made_without_settings(caplog: pytest.LogCaptureFixture) 
     ] == [
         (
             "domainkit.documents.base",
-            "WARNING",
+            "ERROR",
             "A document was to be rendered, and no renderer is set.",
         )
     ]
+    assert reported == [("RendererNotConfigured", {})]
 
 
 def test_a_request_that_needs_a_renderer_none_is_set_for_is_answered_503() -> None:
-    """Where the renderer is optional (previews, a developer's machine): not a 500."""
+    """Where the renderer is optional (previews, a developer's machine): not a 500.
+
+    The missing setting still reaches ``ERROR_REPORTERS``, once, with the
+    request, though a 503 is never reported.
+    """
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
     from domainkit.http.errors import install_exception_handlers
+    from domainkit.http.middleware import RequestContextMiddleware
 
     app = FastAPI()
     install_exception_handlers(app)
@@ -299,13 +317,23 @@ def test_a_request_that_needs_a_renderer_none_is_set_for_is_answered_503() -> No
     async def preview() -> None:
         await renderer().html_to_pdf("<p>a</p>")
 
-    answer = TestClient(app, raise_server_exceptions=False).get("/preview")
+    reported.clear()
+    with override_settings(ERROR_REPORTERS=[f"{__name__}.reporter"]):
+        client = TestClient(
+            RequestContextMiddleware(app), raise_server_exceptions=False
+        )
+        answer = client.get("/preview")
+        flush_reports()
 
     assert answer.status_code == 503
     assert answer.json()["code"] == "renderer_unavailable"
     assert answer.json()["detail"] == (
         "Documents cannot be rendered now; try again later."
     )
+    assert [
+        (name, context["method"], context["path"]) for name, context in reported
+    ] == [("RendererNotConfigured", "GET", "/preview")]
+    assert reported[0][1]["request_id"] == answer.headers["X-Request-ID"]
 
 
 def test_the_renderer_names_the_extra_it_needs(monkeypatch: pytest.MonkeyPatch) -> None:

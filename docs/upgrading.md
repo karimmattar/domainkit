@@ -67,8 +67,19 @@ a project that relied on 2.6's behaviour changes.
   `renderer()` without `DOCUMENTS["RENDERER"]` raises
   `RendererNotConfigured`, which is the `ImproperlyConfigured` it raised
   in 2.6 and a `RendererUnavailable`: the HTTP layer answers it
-  `503 renderer_unavailable`, where 2.6 answered 500, and logs a warning.
-  Code that catches `ImproperlyConfigured` still catches it.
+  `503 renderer_unavailable`, where 2.6 answered 500. It is still logged
+  as an error and sent to `ERROR_REPORTERS`. Code that catches
+  `ImproperlyConfigured` still catches it, but an exception handler of
+  the project's own for `ImproperlyConfigured` no longer sees it, since
+  `UpstreamError` comes first in its classes (the handler for the
+  nearest class answers). Code that catches `RendererUnavailable`, to
+  answer Gotenberg being down, now catches a missing setting too.
+- **`PlaceholderError.malformed` lists the braces in another order.**
+  `fill_docx` reads the body, then the headers, footers, footnotes, and
+  endnotes, each kind by part name, where 2.6 read the parts in the order
+  the document's content types listed them. A test that compares the
+  whole tuple may need its order changed; `missing` and `unused` were
+  sorted and stay so.
 
 ## 2.5 to 2.6
 

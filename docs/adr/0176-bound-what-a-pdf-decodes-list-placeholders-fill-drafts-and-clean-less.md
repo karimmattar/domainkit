@@ -29,6 +29,22 @@ project.
   same budget. `page_sizes`, called on the same file first, reads its
   object streams, where a PDF keeps its objects compressed, with the
   same per-stream bound only.
+- **pypdf bounds four filters, and runs four in Python.** In the pypdf
+  this release locks (6.21.4), a limit bounds what deflate, LZW,
+  run-length, and Brotli decode to [1]; nothing bounds ASCIIHex (half
+  what it reads), ASCII85 (four times, through `z`), or the image
+  filters, which return what they read (DCT, JPX, CCITT) or run the
+  `jbig2dec` program (JBIG2). LZW, run-length, ASCIIHex, ASCII85, and the
+  predictors run in Python. Measured here, per MiB read: ASCII85 of `z`
+  94 MiB of memory, random ASCII85 1.8 s, LZW 5.5 s, one-byte runs 45 MiB,
+  a Paeth predictor 8.5 s. A review found that a budget on what a stream
+  decodes to misses them: a 31 KB PDF whose content was deflate, then
+  ASCII85, decoded 30 MiB of `z`s within the budget and took 2.8 GB and
+  5 seconds before it was refused. ASCII85 is no attack's alone:
+  ReportLab, a common generator, armours its streams with it by default
+  (its `useA85` setting), first, over deflate. A cross-reference stream
+  listing 1.99 million entries took pypdf 26 seconds and 389 MiB as it
+  opened a 20 KB file; pypdf's default allows 2 million [16].
 - **pypdf's limits are per context.** pypdf keeps its configuration in a
   `ContextVar`, and `apply_configuration` sets it for a `with` block,
   resetting it on the way out [1], [6]. Each thread has its own context,
@@ -83,6 +99,11 @@ Options considered for U6:
    decoded before any code of the caller runs, and stay bounded per
    stream.
 
+For the filters pypdf does not bound, or runs in Python: refuse ASCII85
+everywhere, as the review allowed, which refuses ReportLab's PDFs; or
+read the filters before decoding and allow each where its input is
+bounded. The second keeps what generators write.
+
 Options considered for the draft: one flag, `draft=True`, that lets both
 through; or one flag for each kind, beside `allow_unused`. One flag per
 kind keeps the existing pattern, and lets a project allow stray braces
@@ -91,9 +112,9 @@ placeholder.
 
 ## Decision
 
-Option 3 for PDFs, and four additions to `domainkit.documents`, all
-keyword arguments or new names: nothing that worked in 2.6 is refused
-but a PDF that decodes past the new default.
+Option 3 for PDFs, with the filters read first, and four additions to
+`domainkit.documents`, all keyword arguments or new names: nothing that
+worked in 2.6 is refused but a PDF past the new bounds.
 
 - **`overlay_pdf(..., max_decoded=MAX_DECODED)`** and
   **`page_sizes(..., max_decoded=MAX_DECODED)`**, 32 MiB by default, the
@@ -105,16 +126,37 @@ but a PDF that decodes past the new default.
   used, each object stream of each PDF read, and the content of each page
   laid over and of its overlay, is decoded under the limits lowered again
   to what is left of the budget, and counted. Past it, the call is
-  refused (`DocumentError`). An object stream pypdf cannot decode is
-  skipped, to fail only where it is used, as before. A page laid over is
-  written back deflated (pypdf's `compress_content_streams` [15]), so the
-  result is about the size of the document, not of what was decoded.
+  refused (`DocumentError`), as is a stream pypdf cannot decode, even an
+  object stream nothing uses: skipped, each could cost what it decoded
+  before it failed. A page laid over is written back deflated (pypdf's
+  `compress_content_streams` [15]), so the result is about the size of
+  the document, not of what was decoded. Memory peaks at about three
+  times what is decoded: a page of 31 MiB peaked at 97 MiB.
+- **A stream's `/Filter` and `/DecodeParms` are read before it is
+  decoded**, and it is refused unread unless: each filter is deflate,
+  LZW, run-length, ASCIIHex, ASCII85, or Brotli; one of the four run in
+  Python at most, first, so that it reads the stream as stored, never
+  what another filter inflated; such a stream stores `max_decoded / 64`
+  bytes at most (512 KiB, at most 3 seconds and 50 MiB beside its
+  output, measured); and no filter has a predictor, which belongs to
+  images and cross-reference streams. `[/ASCII85Decode /FlateDecode]` is
+  read; `[/FlateDecode /ASCII85Decode]` is refused in a millisecond.
+- **The cross-reference streams** list 65,536 entries in all, or one for
+  each 512 bytes of `max_decoded` where that is more
+  (`xref_stream_maximum_entries`, checked before pypdf reads one), and
+  each decodes to 16 bytes an entry at most while the file is opened,
+  wider than an entry and its predictor's byte. A file past either is
+  refused at once.
 - **`renderer()` with no renderer raises `RendererNotConfigured`**, a
   `RendererUnavailable` and an `ImproperlyConfigured`: the HTTP layer
   answers it 503 `renderer_unavailable`, with the same detail, and code
-  that caught `ImproperlyConfigured` still does. It logs a warning, as
-  the adapter logs Gotenberg's failures. No check is added: a project
-  that renders nowhere leaves the setting unset on purpose.
+  that caught `ImproperlyConfigured` still does. A 503 is never sent to
+  `ERROR_REPORTERS`, and a missing setting where one should be is a
+  deployment's mistake someone must see, as they saw the 500: so
+  `renderer()` logs it as an error and reports it, with the request,
+  before it raises. Reporting it there rather than in the HTTP layer
+  reports it from a worker too. No check is added: a project that
+  renders nowhere leaves the setting unset on purpose.
 - **`fill_docx(..., allow_missing=False, allow_malformed=False)`**: each
   leaves what it allows as written, a placeholder with no value or braces
   that make none. The defaults stay strict, and the docs say a draft is
@@ -123,15 +165,20 @@ but a PDF that decodes past the new default.
   each once, in the order written, and `malformed`, the braces that make
   none as `PlaceholderError.malformed` quotes them. It runs the reading
   of `fill_docx` with no values: the same parts, paragraphs, grammar,
-  XML parser, and `ArchiveLimits`. Both read the body first, then the
-  other parts in the order their content types list them. A typed pair
+  XML parser, and `ArchiveLimits`. Both read the parts in a stable
+  order: the body, the headers, the footers, the footnotes, then the
+  endnotes, each kind by part name (`header2` before `header10`), not
+  in the order the content types list them, which is the writer's (Word
+  lists the notes before the headers). A typed pair
   rather than one tuple of names and stray text, so a caller never tells
   them apart by looking for braces.
 - **`clean_html(..., styles=True, images=True, classes=None)`**: `styles`
   is True, False, or a set of the properties kept, which must be among
-  those the cleaner keeps (a `ValueError` otherwise); `images=False` drops
+  those the cleaner keeps (a `ValueError` otherwise, and a `TypeError`
+  for one string, whose letters would be read as names); `images=False` drops
   images; `classes` maps tags kept (or `*`) to the class names kept on
-  them, plain CSS identifiers, and drops every other. The only thing it
+  them, plain CSS identifiers (a set, never one string), and drops every
+  other. The only thing it
   adds is a class name the project listed: it loads and runs nothing, and
   means what the project's style sheet says.
 
@@ -143,19 +190,30 @@ but a PDF that decodes past the new default.
 - A PDF whose object streams, or whose pages laid over, decode past 32
   MiB is refused where 2.6 laid it. Drawings and maps of many megabytes
   a page need `max_decoded` raised; the upgrade notes say so.
+- PDFs whose content or objects use an image's filter, a stage run in
+  Python after another filter, such a stage on more than 512 KiB, or a
+  predictor are refused, as are object streams that cannot be decoded
+  and files of more than 65,536 cross-reference entries. PDFs of the
+  early 1990s used `[/ASCII85Decode /LZWDecode]`: they are refused too.
 - `page_sizes` decodes every object stream of the file up front, where
   it decoded those of the page tree only; the work is bounded by the
   budget, and is the work `overlay_pdf` does anyway when it clones the
   file.
-- The chain of cross-reference streams pypdf reads as it opens a file is
-  bounded per stream only. Uploads are checked whole before they are
-  stored (ADR 0167).
-- An unset renderer is a 503 in a request, logged as a warning each
-  time.
+- Not counted in all: the chain of cross-reference streams pypdf reads
+  as it opens a file, each bounded on its own (a predictor on one of 1
+  MiB takes about 2 seconds); and the parsing of the overlay into
+  operators, which costs far more than its bytes (2 MiB of operators
+  took 8 seconds and 200 MiB). The overlay is the renderer's output from the
+  project's own HTML; the docs say never to pass a PDF a person sent.
+  Uploads are checked whole before they are stored (ADR 0167).
+- An unset renderer is a 503 in a request, logged as an error and
+  reported each time. A project's handler for `ImproperlyConfigured`
+  no longer sees it (`UpstreamError` comes first among its classes), and
+  `except RendererUnavailable` now catches a missing setting too.
 - A draft filled with `allow_missing` or `allow_malformed` holds braces.
   Nothing marks it as a draft: the project keeps it from being sent.
-- `PlaceholderError.malformed` lists the body's braces first, where it
-  followed the content types' order.
+- `PlaceholderError.malformed` lists the braces in the stable order of
+  the parts, where it followed the content types' order.
 
 ## References
 
@@ -190,3 +248,5 @@ but a PDF that decodes past the new default.
     <https://docs.rs/ammonia/latest/ammonia/struct.Builder.html#method.allowed_classes>
 15. pypdf, "Reduce file size":
     <https://pypdf.readthedocs.io/en/stable/user/file-size.html>
+16. pypdf, `PdfReader` (`xref_stream_maximum_entries`, 2,000,000 by
+    default): <https://pypdf.readthedocs.io/en/stable/modules/PdfReader.html>

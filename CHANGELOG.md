@@ -42,12 +42,15 @@ and a status.
 - `renderer()` with no `DOCUMENTS["RENDERER"]` raises
   `RendererNotConfigured`, an `ImproperlyConfigured` as before and a
   `RendererUnavailable`: a request that needs a renderer where none is
-  set is answered 503 `renderer_unavailable`, not 500, and a warning is
-  logged ([The renderer](docs/documents.md#the-renderer), ADR 0176)
+  set is answered 503 `renderer_unavailable`, not 500. It is still
+  logged as an error and sent to `ERROR_REPORTERS`, as the 500 was: a
+  missing setting is a deployment's mistake
+  ([The renderer](docs/documents.md#the-renderer), ADR 0176)
   (user report U5).
-- `fill_docx` reads a document's body before its headers, footers, and
-  notes, whatever order its content types list them in, so
-  `PlaceholderError.malformed` lists the body's braces first, as
+- `fill_docx` reads a document's parts in a stable order, whatever order
+  its content types list them in: the body, the headers, the footers,
+  the footnotes, then the endnotes, each kind by part name. So
+  `PlaceholderError.malformed` lists the braces in that order, as
   `placeholders` does (ADR 0176) (user report U2).
 
 ### Security

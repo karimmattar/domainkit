@@ -894,6 +894,56 @@ def test_placeholders_are_listed_as_fill_docx_reads_them() -> None:
     )
 
 
+def test_parts_are_read_in_a_stable_order_whatever_the_content_types_say() -> None:
+    """The body, headers, footers, footnotes, endnotes; each kind by name.
+
+    Word lists the notes before the headers; another writer lists anything
+    anyhow. ``header2`` comes before ``header10``. The errors of
+    ``fill_docx`` follow the same order.
+    """
+    parts = {
+        "word/endnotes.xml": (
+            "endnotes",
+            "<w:endnote>" + runs("{{e}}") + "</w:endnote>",
+        ),
+        "word/footnotes.xml": (
+            "footnotes",
+            "<w:footnote>" + runs("{{f}} }}") + "</w:footnote>",
+        ),
+        "word/footer1.xml": ("ftr", runs("{{ft}}")),
+        "word/header10.xml": ("hdr", runs("{{h10}}")),
+        "word/header2.xml": ("hdr", runs("{{h2}} {{ x y }}")),
+        "word/document.xml": (
+            "document",
+            "<w:body>" + runs("{{body}} {{ b c }}") + "</w:body>",
+        ),
+    }
+    kinds = {"ftr": "footer", "hdr": "header", "document": "document.main"}
+    overrides = "".join(
+        f'<Override PartName="/{name}" '
+        f'ContentType="{WORDML}.{kinds.get(root, root)}+xml"/>'
+        for name, (root, _) in parts.items()
+    )
+    types = (
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        f"{overrides}</Types>"
+    )
+    template = zip_of(
+        {
+            "[Content_Types].xml": types.encode(),
+            **{name: part(root, text).encode() for name, (root, text) in parts.items()},
+        }
+    )
+
+    listed = placeholders(template)
+    with pytest.raises(PlaceholderError) as refused:
+        fill_docx(template, {})
+
+    assert listed.names == ("body", "h2", "h10", "ft", "f", "e")
+    assert listed.malformed == ("{{ b c }}", "{{ x y }}", "{{f}} }}")
+    assert refused.value.malformed == listed.malformed
+
+
 def test_placeholders_are_read_within_the_archives_limits() -> None:
     """What ``fill_docx`` refuses to read, ``placeholders`` refuses too."""
     template = docx(runs("{{a}}"), extra={"word/media/image1.png": PNG})

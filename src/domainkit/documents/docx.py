@@ -66,18 +66,17 @@ OVERRIDE: Final = (
 WORDML: Final = "application/vnd.openxmlformats-officedocument.wordprocessingml"
 MAIN: Final = f"{WORDML}.document.main+xml"
 """The content type of a Word document's body (.docx)."""
-FILLED: Final = frozenset(
-    {
-        MAIN,
-        f"{WORDML}.header+xml",
-        f"{WORDML}.footer+xml",
-        f"{WORDML}.footnotes+xml",
-        f"{WORDML}.endnotes+xml",
-    }
+FILLED: Final = (
+    MAIN,
+    f"{WORDML}.header+xml",
+    f"{WORDML}.footer+xml",
+    f"{WORDML}.footnotes+xml",
+    f"{WORDML}.endnotes+xml",
 )
-"""The parts whose text is filled."""
+"""The parts whose text is filled, in the order they are read."""
 PLACEHOLDER: Final = re.compile(r"\{\{\s*([^\W\d]\w*(?:\.[^\W\d]\w*)*)\s*\}\}")
 BRACES: Final = re.compile(r"\{\{|\}\}")
+NUMBERS: Final = re.compile(r"([0-9]+)")
 DECLARATION: Final = re.compile(rb"<!(?:DOCTYPE|ENTITY)", re.IGNORECASE)
 """What declares a DTD or an entity: refused before the XML is parsed."""
 END: Final = b"PK\x05\x06"
@@ -110,7 +109,8 @@ class Placeholders:
 
     names: tuple[str, ...]
     """Each placeholder's name, once, in the order written: the body first,
-    then the headers, footers, footnotes, and endnotes."""
+    then the headers, footers, footnotes, and endnotes, each kind by part
+    name (``header2`` before ``header10``)."""
     malformed: tuple[str, ...]
     """Text of braces that make no placeholder, in that order, as
     ``PlaceholderError.malformed`` quotes it: ``fill_docx`` refuses it unless
@@ -379,7 +379,9 @@ def _plain(name: str) -> bool:
 def _filled_parts(etree: Any, parts: Mapping[str, bytes]) -> list[str]:  # noqa: ANN401 - lxml has no types.
     """The names of the parts whose text is filled, from ``[Content_Types].xml``.
 
-    The body first, then the others in the order the content types list them.
+    In a stable order, not the content types', which is the writer's: the
+    body, the headers, the footers, the footnotes, then the endnotes, each
+    kind by name, numbers as numbers (``header2`` before ``header10``).
 
     Raises:
         DocumentError: The archive is no .docx: it has no content types, or
@@ -400,10 +402,20 @@ def _filled_parts(etree: Any, parts: Mapping[str, bytes]) -> list[str]:  # noqa:
             "The document is not a Word document (.docx): save it as one, not "
             "as a template or with macros."
         )
+    filled = [(kind, name) for name, kind in typed.items() if kind in FILLED]
     return [
         by_lower[name]
-        for name, kind in sorted(typed.items(), key=lambda item: item[1] != MAIN)
-        if kind in FILLED and name in by_lower
+        for kind, name in sorted(filled, key=_read_before)
+        if name in by_lower
+    ]
+
+
+def _read_before(part: tuple[str, str]) -> tuple[int, list[str | int]]:
+    """Where a filled part of ``(kind, name)`` is read: by kind, then by name."""
+    kind, name = part
+    pieces = NUMBERS.split(name)
+    return FILLED.index(kind), [
+        int(piece) if index % 2 else piece for index, piece in enumerate(pieces)
     ]
 
 

@@ -91,10 +91,12 @@ methods:
 
 `DOCUMENTS["RENDERER"]` may be left unset where documents are rendered
 only sometimes: for previews, or on a developer's machine. `renderer()`
-then raises `RendererNotConfigured` and logs a warning; a request that
-lets it go is answered `503 renderer_unavailable`, as when Gotenberg is
-down. It is an `ImproperlyConfigured` too. *New in 2.7*: 2.6 raised a
-plain `ImproperlyConfigured`, a 500.
+then raises `RendererNotConfigured`; a request that lets it go is
+answered `503 renderer_unavailable`, as when Gotenberg is down. Where a
+renderer should be set, that is a deployment's mistake, so it is logged
+as an error and sent to `ERROR_REPORTERS` all the same, though a 503 is
+otherwise never reported. It is an `ImproperlyConfigured` too. *New in
+2.7*: 2.6 raised a plain `ImproperlyConfigured`, a 500.
 
 ```python
 from domainkit.documents import PageOptions, renderer
@@ -287,7 +289,9 @@ found.malformed  # ("{{ tenant name }}",)
 ```
 
 `names` holds each placeholder once, in the order written: the body
-first, then the headers, footers, footnotes, and endnotes. `malformed`
+first, then the headers, footers, footnotes, and endnotes, each kind by
+part name (`header2` before `header10`), whatever order the document's
+content types list them in. `malformed`
 holds the text of braces that make no placeholder, as
 `PlaceholderError.malformed` quotes it. It reads the document as
 `fill_docx` does, the same parts, paragraphs, and grammar, within the
@@ -535,7 +539,7 @@ document, rendered by Gotenberg:
 | `RenderingRefused` | Gotenberg refused the input: 400 (a form or a document it cannot read), 409 (a resource did not load), 413 (past its body limit). `status` and `trace` say which. | Fix the document; sending it again changes nothing. |
 | 503 `renderer_unavailable` (`RendererUnavailable`) | Gotenberg could not be reached, failed once the retries were spent, refused the login, or answered something other than a PDF. | Try again later; check Gotenberg and its login. |
 | 503 `upstream_unavailable`, 504 `upstream_timeout`, 502 `upstream_response_too_large` | The client's own: the circuit is open, `TIMEOUT` passed, or the PDF is past `MAX_RESPONSE_BYTES`. | See [outgoing calls](reference/http.md). |
-| 503 `renderer_unavailable` (`RendererNotConfigured`) | `renderer()` with no `DOCUMENTS["RENDERER"]`; also an `ImproperlyConfigured`. A warning is logged. | Set it, or leave it unset where nothing is rendered. |
+| 503 `renderer_unavailable` (`RendererNotConfigured`) | `renderer()` with no `DOCUMENTS["RENDERER"]`; also an `ImproperlyConfigured`. It is logged as an error and sent to `ERROR_REPORTERS`. | Set it, or leave it unset where nothing is rendered. |
 | `ImportError` | The `documents` extra is not installed. | `pip install "domainkit[documents]"`. |
 
 ## Testing

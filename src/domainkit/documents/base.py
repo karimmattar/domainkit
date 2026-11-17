@@ -109,13 +109,13 @@ class RendererNotConfigured(RendererUnavailable, ImproperlyConfigured):
     A renderer may be left unset where documents are not rendered (a
     developer's machine, a service that only fills them): a request that
     needs one is answered 503 ``renderer_unavailable``, as when Gotenberg
-    is down, and the reason is logged. It is an ``ImproperlyConfigured``
-    too, as 2.6 raised.
+    is down. Where one should be set, it is a deployment's mistake:
+    ``renderer()`` logs it as an error and sends it to ``ERROR_REPORTERS``
+    as it raises. It is an ``ImproperlyConfigured`` too, as 2.6 raised.
     """
 
-    status_code: ClassVar[int] = 503
     code: ClassVar[str] = "renderer_unavailable"
-    detail: ClassVar[str] = "Documents cannot be rendered now; try again later."
+    """The parent's: every error class names its own (``test_problem_codes``)."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -204,7 +204,8 @@ def renderer() -> Renderer:
 
     Raises:
         RendererNotConfigured: ``DOCUMENTS["RENDERER"]`` is not set (503
-            ``renderer_unavailable`` in a request; an ``ImproperlyConfigured``).
+            ``renderer_unavailable`` in a request; an ``ImproperlyConfigured``),
+            logged as an error and sent to ``ERROR_REPORTERS``.
         ImportError: ``domainkit[httpclient]``, which calls Gotenberg, is
             not installed.
     """
@@ -212,11 +213,27 @@ def renderer() -> Renderer:
 
     config = settings.DOCUMENTS.RENDERER
     if config is None:
-        logger.warning("A document was to be rendered, and no renderer is set.")
-        raise RendererNotConfigured(
+        from domainkit.context import current_request
+        from domainkit.reporting import report_error
+
+        unset = RendererNotConfigured(
             'No renderer is set: DOCUMENTS = {"RENDERER": {"URL": ...}} names '
             "the Gotenberg server (docs/documents.md)."
         )
+        logger.error("A document was to be rendered, and no renderer is set.")
+        # A 503 is never reported; a missing setting must be seen all the same.
+        request = current_request()
+        context = (
+            {}
+            if request is None
+            else {
+                "request_id": request.request_id,
+                "method": request.method,
+                "path": request.path,
+            }
+        )
+        report_error(unset, **context)
+        raise unset
     held = _made.get("renderer")
     if held is not None and held[0] == config:
         return held[1]

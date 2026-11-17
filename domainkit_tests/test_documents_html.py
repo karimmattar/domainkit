@@ -1,5 +1,6 @@
 """``clean_html``: rich text kept to what loads and runs nothing when printed."""
 
+import re
 from typing import Any, Final
 
 import pytest
@@ -196,3 +197,18 @@ def test_a_class_is_kept_on_a_link_only_when_links_are() -> None:
     assert clean_html(html, links=True, classes={"a": {"mention"}}) == (
         '<a class="mention" href="https://example.com" rel="noopener noreferrer">t</a>'
     )
+
+
+@pytest.mark.parametrize(
+    ("narrower", "message"),
+    [
+        ({"styles": "color"}, "not the string 'color': write {'color'}"),
+        ({"classes": {"p": "abc"}}, "not the string 'abc': write {'p': {'abc'}}"),
+    ],
+)
+def test_one_string_is_not_a_set_of_names(
+    narrower: dict[str, Any], message: str
+) -> None:
+    """Its letters would be read as names: ``a``, ``b``, and ``c`` kept as classes."""
+    with pytest.raises(TypeError, match=re.escape(message)):
+        clean_html('<p class="a b c abc">a</p>', **narrower)

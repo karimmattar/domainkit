@@ -139,6 +139,7 @@ def clean_html(
 
     Raises:
         ImportError: ``domainkit[documents]`` is not installed.
+        TypeError: ``styles``, or a tag's ``classes``, is one string, not a set.
         ValueError: ``styles`` names a property beyond ``STYLE_PROPERTIES``,
             or ``classes`` a tag not kept or a name that is no CSS identifier.
     """
@@ -183,10 +184,16 @@ def _properties(styles: bool | AbstractSet[str]) -> frozenset[str]:
     """The style properties kept.
 
     Raises:
+        TypeError: ``styles`` is one string, whose letters would be read.
         ValueError: ``styles`` names one beyond ``STYLE_PROPERTIES``.
     """
     if isinstance(styles, bool):
         return STYLE_PROPERTIES if styles else frozenset()
+    if isinstance(styles, str):
+        raise TypeError(
+            f"styles is True, False, or a set of properties, not the string "
+            f"{styles!r}: write {{{styles!r}}}."
+        )
     asked = frozenset(prop.strip().lower() for prop in styles)
     if beyond := asked - STYLE_PROPERTIES:
         raise ValueError(
@@ -202,8 +209,15 @@ def _classes(
     """The class names kept by tag, ``*`` spread over every tag kept.
 
     Raises:
+        TypeError: A tag's names are one string, whose letters would be read.
         ValueError: A tag is not kept, or a name is no CSS identifier.
     """
+    for tag, names in classes.items():
+        if isinstance(names, str):
+            raise TypeError(
+                f"classes maps a tag to a set of names, not the string {names!r}: "
+                f"write {{{tag!r}: {{{names!r}}}}}."
+            )
     if unknown := set(classes) - set(tags) - {"*"}:
         raise ValueError(
             f"classes names tags that are not kept: {', '.join(sorted(unknown))}."
