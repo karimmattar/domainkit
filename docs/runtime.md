@@ -1358,17 +1358,20 @@ timers that cancel work run on the event loop's own clock.
   that wait too), and the other drivers' connections are closed instead,
   and the pool replaces them. The framework's own short writes, such as
   an idempotency key's claim, run that way too, within
-  `STATEMENT_TIMEOUT`. When a connection is closed while asyncpg still
-  opens the one that sends its cancel request, asyncpg may log
+  `STATEMENT_TIMEOUT`. The `asyncio` logger may then log, at `ERROR`,
   `Future exception was never retrieved`, with
-  `ConnectionError('unexpected connection_lost() call')`, at `ERROR`
-  under the `asyncio` logger. It is harmless: the connection was being
-  closed, and the pool replaces it. It is asyncpg's
-  [issue 1397](https://github.com/MagicStack/asyncpg/issues/1397): a
-  connection attempt cancelled while it connects leaves that report when
-  it asks the server for TLS first, as it does with `SSLMODE` unset,
-  `prefer`, `require`, `verify-ca`, or `verify-full`. Under anyio's
-  pytest plugin, the report fails the test that is running then.
+  `ConnectionError('unexpected connection_lost() call')`, in two cases: a
+  connection is closed while asyncpg still opens the one that sends its
+  cancel request, or a new connection is cut off while it connects (by
+  the deadline or `CONNECT_TIMEOUT`). It is harmless: the connection is
+  closed, and the pool replaces it. As with any connection closed before
+  its cancel request is sent, the server runs the statement on until it
+  ends or reaches `statement_timeout`. It is asyncpg's
+  [issue 1397](https://github.com/MagicStack/asyncpg/issues/1397), met
+  when asyncpg asks the server for TLS first: with every `SSLMODE` but
+  `disable`, and with `SSLMODE` unset over TCP, unless `PGSSLMODE` says
+  otherwise. Under anyio's pytest plugin, the report fails the test or
+  fixture running then.
 - **Outgoing HTTP calls** through `domainkit.http.client` are bounded by
   the deadline ([below](#outgoing-http-calls)).
 - **Worker tasks.** The messaging worker runs each message under a
