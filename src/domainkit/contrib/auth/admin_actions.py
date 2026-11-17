@@ -26,8 +26,15 @@ from domainkit.utils.decimals import jsonable
 
 from .actions import Action, Shown, spent_in_code
 from .exceptions import GroupNotFound, UserNotFound
-from .gates import AdminChange, AdminKind, on_admin_screen
-from .models import AbstractBaseUser, GroupId, UserId
+from .gates import (
+    AdminChange,
+    AdminKind,
+    GroupChange,
+    GroupKind,
+    on_admin_group_screen,
+    on_admin_screen,
+)
+from .models import AbstractBaseUser, Group, GroupId, UserId
 from .screens import Value, fitted, laid_out, named
 from .settings import auth_settings
 from .uow import AuthUnitOfWork
@@ -197,8 +204,10 @@ async def show(act: AdminAct) -> Shown:
     ``AUTH.AUTHORIZATIONS.WHOLE`` on, what the change sets, adds, or takes
     away that does not fit whole is refused; off, it is cut and counted,
     the first lines kept for what comes first. Then the ``on_admin_screen``
-    checks of a change to a user run: approvals refuses there a change it
-    would hold that its approver's screen could not show whole.
+    checks of a change to a user run, or the ``on_admin_group_screen``
+    checks of a change to a stored group (since 2.7): approvals refuses
+    there a change it would hold that its approver's screen could not show
+    whole.
 
     Raises:
         UserNotFound: The user is gone.
@@ -212,9 +221,9 @@ async def show(act: AdminAct) -> Shown:
     user = None if act.user_id is None else await _user(act.user_id)
     if user is not None:
         details.append((gettext(USER), named(user.get_username(), user.id)))
-    if act.group_id is not None:
-        name = await _group_named(act.group_id)
-        details.append((gettext(GROUP), named(name, act.group_id)))
+    group = None if act.group_id is None else await _group(act.group_id)
+    if group is not None:
+        details.append((gettext(GROUP), named(group.name, group.id)))
     if act.name is not None:
         label = {"group_create": GROUP, "group_rename": NEW_NAME}.get(
             act.kind, USERNAME
@@ -247,6 +256,15 @@ async def show(act: AdminAct) -> Shown:
         change = _change_of(act)
         for hook in on_admin_screen:
             await hook.call(user, change)
+    if group is not None:
+        group_change = GroupChange(
+            cast("GroupKind", act.kind),
+            name=act.name,
+            added=frozenset(act.added),
+            removed=frozenset(act.removed),
+        )
+        for group_hook in on_admin_group_screen:
+            await group_hook.call(group, group_change)
     return shown
 
 
@@ -295,8 +313,8 @@ async def _user(user_id: UUID) -> AbstractBaseUser:
     return user
 
 
-async def _group_named(group_id: UUID) -> str:
-    """The group's name.
+async def _group(group_id: UUID) -> Group:
+    """The group the change is to, as stored.
 
     Raises:
         GroupNotFound: There is none.
@@ -305,7 +323,7 @@ async def _group_named(group_id: UUID) -> str:
         group = await uow.groups.find(GroupId(group_id))
     if group is None:
         raise GroupNotFound("No such group.")
-    return group.name
+    return group
 
 
 ADMIN_CHANGE: Final = spent_in_code(

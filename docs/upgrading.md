@@ -73,6 +73,64 @@ relied on 2.6's behaviour changes, and what to run.
   counts. Nothing counts differently: `per_tenant=True` keeps each
   tenant's count, as before, and `SILENCED_CHECKS` may name the warning
   ([tenancy.md](tenancy.md#caches-limits-and-logs)).
+- **An approval of `auth.set_groups` grants the groups it held**
+  ([ADR 0172](adr/0172-hold-admin-changes-by-what-they-grant-and-check-before-the-hold.md)).
+  The request's arguments hold `groups` beside the names: each group
+  added, by id, with the permissions it grants. A request approved under
+  2.6 and not yet made holds no `groups`: the staff member's call submits
+  a new request (`403 approval_pending`), which is approved again. Code
+  that reads a request's arguments finds the new key; a group renamed,
+  made again, or granted other permissions since the request was made
+  makes another request. A `409 group_in_use` of your own, which kept a
+  named group from changing, can go.
+- **A deactivated superuser comes back as one is made.** With
+  `APPROVALS.SUPERUSER_APPROVALS` above 0, `PATCH /admin/auth/users/{id}`
+  with `"is_active": true` for an inactive superuser answers `403
+  approval_required`. Take superuser away while they are inactive, make
+  them active, then submit `auth.grant_superuser`.
+- **An `auth.reactivate` request holds what the user comes back with**:
+  their flags, groups, permissions, and grants on objects. Grant them
+  anything while it waits, and the same call submits a new request.
+- **`auth.set_staff` holds a staff member's return.** Where
+  `ADMIN_APPROVALS` holds `auth.set_staff` and not `auth.reactivate`,
+  `PATCH /users/{id}` with `"is_active": true` for an inactive staff
+  member waits for approval, as making staff does. Hold
+  `auth.reactivate` too to hold the return of anyone who holds access;
+  a call that then makes a user staff and active again is refused (`403
+  approval_required`): send two.
+- **The admin API's twins run your `on_admin_change` checks**, with
+  `change.asking` true (a group's twins run the `on_admin_group_change`
+  checks). A check that only refuses needs nothing; one that writes (an
+  audit row of its own, a count) should write nothing while `asking`, or
+  it writes once at the twin and once at the change. A check that calls
+  a guard `by_maker` (approvals' hold does) would submit a request at
+  the twin: return while `asking`.
+- **Approvals' hold runs after your checks.** It registers at
+  `order=100`; a check you registered for `auth` to run before it can be
+  registered for its own domain again. A check that must see the hold's
+  outcome registers with an order above 100.
+- **A reused password costs a try, and can now answer `429`.**
+  `POST /admin/auth/users/{id}/password` compares the password with the
+  user's history when the change is about to be made (after your
+  checks; with `auth.set_password` held, once the approval is found). A
+  reuse is refused, spends the change's authorization with
+  `AUTH.ADMIN_ACTION` (confirm again to try another password; with the
+  history on, every call spends its authorization before the checks, one
+  that waits for approval too: confirm each), and
+  counts for that staff member and that user: past `AUTH.LOGIN_RATE`
+  of them (or `ACCOUNT_LOGIN_RATE` over the day), that staff member's
+  password changes of that user answer `429 rate_limited` for a while,
+  a new password too. Nothing else a staff member does newly answers
+  `429`, and the user's own wrong passwords never count here.
+- **`AdminChange` has `last_check`.** The admin API's comparison of a
+  password with the history; approvals' hold runs it. Await it from a
+  check of yours only once the change will surely be made, after every
+  check that may refuse it. A check ordered after approvals' hold (above
+  100) sees the approval spent: refuse password changes before it.
+- **A check added to an admin route with `select_routes` runs after the
+  admin API's rules.** It no longer sees requests the rules refuse
+  (anonymous, not staff, without the model permission or the
+  authorization); rules you put in front of it for that can go.
 - **A PDF that decodes past 32 MiB is not laid over** (security).
   `overlay_pdf` and `page_sizes` decode `max_decoded` bytes at most, in
   all: the object streams of each PDF, and the content of each page laid

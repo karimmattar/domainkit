@@ -75,6 +75,11 @@ def pairs(response: Any) -> list[tuple[str, str]]:  # noqa: ANN401 - a response.
     return [(each["label"], each["value"]) for each in shown["details"]]
 
 
+def end4(value: object) -> str:
+    """What a group's item shows of its id: ``…`` and its last 4 characters."""
+    return "…" + str(value)[-4:]
+
+
 def held(maker: Staff, target: str, names: tuple[str, ...]) -> Any:  # noqa: ANN401 - a response.
     """``maker``'s authorized call that adds ``target`` to ``names``."""
     body = {"groups": list(names)}
@@ -100,13 +105,19 @@ def fingerprint_of(person: Staff, request_id: str) -> str:
 def test_an_approver_sees_the_user_by_name_and_every_group_added(
     client: TestClient, frozen: FrozenClock
 ) -> None:
-    """The user by name and id, and each group, on as many lines as needed."""
+    """The user by name and id, and each group, on as many lines as needed.
+
+    Each group in a few words: its name, the end of its id, and what it
+    grants (user report A21: the request holds them).
+    """
     root = Staff(client, frozen, "root", superuser=True)
     boss = Staff(client, frozen, "boss", superuser=True)
     target = create_user("target")
     names = (*(f"aaa_harmless_{each}" for each in range(5)), "zz_admins")
-    for name in names:
-        make_group(name)
+    ids = [make_group(name) for name in names]
+    items = [
+        f"{name} ({end4(each)}) 0 perms" for name, each in zip(names, ids, strict=True)
+    ]
 
     request_id = held(root, str(target), names).json()["approval_request_id"]
     fingerprint = fingerprint_of(boss, request_id)
@@ -117,13 +128,15 @@ def test_an_approver_sees_the_user_by_name_and_every_group_added(
     assert pairs(asked) == [
         ("Action", "auth.set_groups"),
         ("User", f"target ({end_of(target)})"),
-        ("Adds", "aaa_harmless_0, aaa_harmless_1, aaa_harmless_2, aaa_harmless_3"),
-        ("Adds (2)", "aaa_harmless_4, zz_admins"),
+        ("Adds", ", ".join(items[:2])),
+        ("Adds (2)", ", ".join(items[2:4])),
+        ("Adds (3)", ", ".join(items[4:])),
     ]
     assert [label for label, _ in pairs(arabic)][1:] == [
         "User",
         "Adds",
         "Adds (2)",
+        "Adds (3)",
     ]
 
 
@@ -189,7 +202,8 @@ def test_a_grant_longer_than_the_screen_says_how_many_more(
         "Adds (3)",
         "Adds (4)",
     ]
-    assert counted[-1][1] == f"{LONG_NAMES[6]} and 23 more"
+    assert counted[-1][1].startswith(f"{LONG_NAMES[3]} (…")
+    assert counted[-1][1].endswith(" 0 perms and 26 more")  # One to a line.
     assert all(len(value) <= 64 for _, value in counted)
     problem(approving, 422, "too_much_to_show")
     assert [label for label, _ in pairs(rejecting)][:4] == [
@@ -206,11 +220,12 @@ def test_with_whole_on_a_grant_no_approver_could_see_whole_is_never_submitted(
 ) -> None:
     """The maker's screen holds the change; the approver's, a line longer, does not.
 
-    Ten groups take five lines: the maker's screen would show the user and
-    them. The approver's would show the action too, seven lines: the
-    maker's twin refuses the change before an authorization is stored.
-    Without the act (``ADMIN_ACTION`` off), the change is refused when it
-    is submitted. Either way no request is stored; eight groups wait.
+    Ten groups take five lines on the maker's screen, with the user. The
+    approver's shows the action too, and each group with the end of its id
+    and what it grants, one of these names to a line: the maker's twin
+    refuses the change before an authorization is stored. Without the act
+    (``ADMIN_ACTION`` off), the change is refused when it is submitted.
+    Either way no request is stored; four groups wait.
     """
     root = Staff(client, frozen, "root", superuser=True)
     target = create_user("target")
@@ -223,7 +238,7 @@ def test_with_whole_on_a_grant_no_approver_could_see_whole_is_never_submitted(
         before = len(stored())
         asked = root.ask(f"/users/{target}/groups/authorization", body)
         unasked = len(stored()) - before
-        fewer = held(root, str(target), names[:8])
+        fewer = held(root, str(target), names[:4])
     with override_settings(AUTH={**WHOLE, "ADMIN_ACTION": False}):
         submitted = root.call("PUT", f"/users/{target}/groups", body)
 
@@ -249,7 +264,7 @@ def test_with_whole_on_a_long_name_never_locks_a_user_or_a_group(
     long = "u" * 150
     target = create_user(long)
     group = make_group("g" * 150)
-    make_group("readers")
+    readers = make_group("readers")
     user_line = ("User", f"{'u' * 47}… ({end_of(target)})")
     group_line = ("Group", f"{'g' * 47}… ({end_of(group)})")
 
@@ -276,7 +291,7 @@ def test_with_whole_on_a_long_name_never_locks_a_user_or_a_group(
     assert pairs(approving) == [
         ("Action", "auth.set_groups"),
         user_line,
-        ("Adds", "readers"),
+        ("Adds", f"readers ({end4(readers)}) 0 perms"),
     ]
 
 

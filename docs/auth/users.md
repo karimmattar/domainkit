@@ -609,7 +609,8 @@ AUTH = {
 The admin API needs to know what each backend grants on single objects,
 so that staff cannot change a user who holds more than they do. A
 backend says it in `object_grants(holder)`: a frozenset of
-`ObjectGrant(permission, content_type, object_id)` for a user (with their
+`ObjectGrant(permission, content_type, object_id, expires_at)` (the last,
+when the grant ends, since 2.7, and not compared) for a user (with their
 groups' grants, active or not) or for a group. `object_grants(holder)` in
 `domainkit.contrib.auth.backends` asks every backend.
 

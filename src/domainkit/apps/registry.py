@@ -275,7 +275,10 @@ class _ValidatedSettings(NamedTuple):
 
 
 async def _stop(registry: DomainRegistry, config: DomainConfig) -> None:
-    """Run the domain's ``on_shutdown`` hooks, in the order it registered them."""
+    """Run the domain's ``on_shutdown`` hooks: by their order, then as registered.
+
+    A domain stops as a whole, so an ``order`` sorts its own hooks only.
+    """
     for hook in on_shutdown.of(config.label, registry):
         await hook.call()
 

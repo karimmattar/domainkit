@@ -8,6 +8,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from fastapi import APIRouter, Depends
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.engine import Engine
@@ -33,16 +34,19 @@ from domainkit.contrib.auth.tables import mfa_devices, recovery_codes
 from domainkit.db import connections
 from domainkit.ddd import PermissionDenied, SoftDeletable
 from domainkit.http import ErrorResponse, encode_cursor, get_asgi_application
+from domainkit.http.routers import route_names, select_routes
 from domainkit.management import call_command
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import (
     ALPHA,
+    API,
     AUTH,
     CONTENTTYPES,
     FAST_HASHER,
     MIDDLEWARE,
     SHOP,
     Api,
+    Migrated,
     UseAuth,
     domain_warnings,
 )
@@ -1759,3 +1763,332 @@ def test_the_project_checks_every_admin_change(api: Api) -> None:
         ("bob", AdminChange("groups", added=frozenset({"viewers"}))),
         ("bob", AdminChange("logout")),
     ]
+
+
+def test_the_project_checks_every_group_change(api: Api) -> None:
+    """``on_admin_group_change`` sees each change of a group; it may refuse.
+
+    Before 2.7 the group routes called no check (user report A19): a
+    project's check of a group's change could only be a dependency of its
+    route, and approvals could hold none of them.
+    """
+    from domainkit.contrib.auth.gates import GroupChange, on_admin_group_change
+
+    client = api()
+    headers = staff(
+        "admin", *ADMIN_PERMISSIONS, "shop.view_product", "shop.change_product"
+    )
+    seen: list[tuple[str | None, GroupChange]] = []
+
+    async def recorded(actor: Any, group: Any, change: GroupChange) -> None:  # noqa: ANN401
+        seen.append((None if group is None else group.name, change))
+
+    async def no_admins(actor: Any, group: Any, change: GroupChange) -> None:  # noqa: ANN401
+        if change.name == "admins":
+            raise PermissionDenied("No group is called admins here.")
+
+    on_admin_group_change(recorded, domain="auth")
+    on_admin_group_change(no_admins, domain="auth")
+
+    created = client.post(
+        f"{ADMIN}/groups",
+        json={"name": "viewers", "permissions": ["shop.view_product"]},
+        headers=headers,
+    )
+    group = created.json()["id"]
+    refused = client.patch(
+        f"{ADMIN}/groups/{group}", json={"name": "admins"}, headers=headers
+    )
+    renamed = client.patch(
+        f"{ADMIN}/groups/{group}", json={"name": "readers"}, headers=headers
+    )
+    granted = client.put(
+        f"{ADMIN}/groups/{group}/permissions",
+        json={"permissions": ["shop.change_product"]},
+        headers=headers,
+    )
+    deleted = client.delete(f"{ADMIN}/groups/{group}", headers=headers)
+
+    assert created.status_code == 201, created.json()
+    assert error(refused, 403) == (
+        "permission_denied",
+        "No group is called admins here.",
+    )
+    assert renamed.json()["name"] == "readers"
+    assert granted.json()["permissions"] == ["shop.change_product"]
+    assert deleted.status_code == 204
+    assert seen == [
+        (
+            None,
+            GroupChange(
+                "group_create", name="viewers", added=frozenset({"shop.view_product"})
+            ),
+        ),
+        ("viewers", GroupChange("group_rename", name="admins")),
+        ("viewers", GroupChange("group_rename", name="readers")),
+        (
+            "readers",
+            GroupChange(
+                "group_permissions",
+                added=frozenset({"shop.change_product"}),
+                removed=frozenset({"shop.view_product"}),
+            ),
+        ),
+        ("readers", GroupChange("group_delete")),
+    ]
+
+
+def test_a_changed_groups_ids_and_permissions_reach_the_checks(api: Api) -> None:
+    """``AdminChange.groups`` holds each group added: its id and its permissions.
+
+    A check, approvals' hold among them, can bind the groups a change adds,
+    not their names, which a rename gives another group (user report A21).
+    """
+    from domainkit.contrib.auth.gates import AddedGroup, AdminChange, on_admin_change
+
+    client = api()
+    headers = staff("admin", *ADMIN_PERMISSIONS, "shop.view_product")
+    bob = create_user("bob")
+    viewers = make_group("viewers", "shop.view_product")
+    empty = make_group("empty")
+    seen: list[AdminChange] = []
+
+    async def recorded(actor: Any, target: Any, change: AdminChange) -> None:  # noqa: ANN401
+        seen.append(change)
+
+    on_admin_change(recorded, domain="auth")
+    joined = client.put(
+        f"{ADMIN}/users/{bob}/groups",
+        json={"groups": ["viewers", "empty"]},
+        headers=headers,
+    )
+
+    assert joined.status_code == 200, joined.json()
+    assert [change.groups for change in seen] == [
+        (
+            AddedGroup(empty, "empty", frozenset()),
+            AddedGroup(viewers, "viewers", frozenset({"shop.view_product"})),
+        )
+    ]
+
+
+CHECKED: list[str] = []
+"""What ``counted_check`` saw, in order."""
+
+
+async def counted_check() -> None:
+    """A project's check of a route of the admin API, added with ``select_routes``."""
+    CHECKED.append("checked")
+
+
+selected = APIRouter()
+selected.include_router(
+    select_routes(
+        admin.router,
+        dependencies={
+            "PATCH /users/{user_id}": [Depends(counted_check)],
+            "PUT /groups/{group_id}/permissions": [Depends(counted_check)],
+        },
+    ),
+    prefix=ADMIN,
+)
+"""The admin API with a check of the project's on two routes."""
+
+
+def test_a_check_added_with_select_routes_runs_after_the_admin_rules(
+    migrated: Migrated,
+) -> None:
+    """The admin API's rules are its routes' dependencies, so they answer first.
+
+    Before 2.7 they were its endpoints' parameters, which FastAPI solves
+    after a route's dependencies: a project's check added with
+    ``select_routes`` ran for anyone, signed in or not, staff or not, before
+    the admin API refused them (user report A17).
+    """
+    CHECKED.clear()
+    with (
+        migrated(API),
+        override_settings(ROOT_ROUTER=f"{__name__}.selected"),
+        TestClient(get_asgi_application()) as client,
+    ):
+        bob = create_user("bob")
+        group = make_group("viewers")
+        plain = staff("plain", is_staff=False)
+        lacking = staff("lacking")
+        allowed = staff("admin", *ADMIN_PERMISSIONS)
+        user_path = f"{ADMIN}/users/{bob}"
+        group_path = f"{ADMIN}/groups/{group}/permissions"
+        body = {"fields": {"last_name": "B"}}
+        refused = [
+            client.patch(user_path, json=body),
+            client.patch(user_path, json=body, headers=plain),
+            client.patch(user_path, json=body, headers=lacking),
+            client.put(group_path, json={"permissions": []}, headers=lacking),
+        ]
+        before = list(CHECKED)
+        made = client.patch(user_path, json=body, headers=allowed)
+        granted = client.put(group_path, json={"permissions": []}, headers=allowed)
+
+    assert [each.status_code for each in refused] == [401, 403, 403, 403]
+    assert before == []
+    assert made.status_code == 200, made.json()
+    assert granted.status_code == 200, granted.json()
+    assert CHECKED == ["checked", "checked"]
+
+
+def test_a_reused_password_counts_as_a_wrong_one(api: Api) -> None:
+    """Each reuse refused is a guess at the user's history: ``LOGIN_RATE`` bounds it.
+
+    Counted for the staff member and the user together; a password that is
+    not reused gives its count back. Before 2.7 the refusals counted
+    nowhere: staff could test the user's old passwords at no rate (user
+    report A17).
+    """
+    client = api(PASSWORD_HISTORY=2, LOGIN_RATE="3/minute")
+    headers = staff("admin", *ADMIN_PERMISSIONS)
+    bob = create_user("bob")
+    path = f"{ADMIN}/users/{bob}/password"
+
+    first = client.post(path, json={"password": NEW_PASSWORD}, headers=headers)
+    reused = [
+        client.post(path, json={"password": NEW_PASSWORD}, headers=headers)
+        for _ in range(3)
+    ]
+    throttled = client.post(
+        path, json={"password": NEW_PASSWORD + "!"}, headers=headers
+    )
+
+    assert first.status_code == 204, first.json()
+    assert [error(each, 422)[0] for each in reused] == ["invalid_password"] * 3
+    assert error(throttled, 429)[0] == "rate_limited"
+
+
+def test_the_users_counts_and_a_staff_members_reuses_hold_neither_back(
+    api: Api,
+) -> None:
+    """A staff member's reuses are counted apart from the user's wrong passwords.
+
+    The user's own wrong checks (a hijacked session), or a stranger's
+    failed logins (``PASSWORD_CHECKS_COUNT_AS_LOGINS``), never keep staff
+    from setting a new password; staff sending a password the user had
+    never keeps the user from logging in (found in review of user report
+    A17).
+    """
+    client = api(
+        PASSWORD_HISTORY=2,
+        LOGIN_RATE="3/minute",
+        PASSWORD_CHECKS_COUNT_AS_LOGINS=True,
+    )
+    headers = staff("admin", *ADMIN_PERMISSIONS)
+    bob = create_user("bob", password=NEW_PASSWORD)
+    carol = create_user("carol", password=NEW_PASSWORD)
+    hijacked = token_for("bob")
+    wrong = {
+        "old_password": "nope-nope-1",
+        "new_password": "Another-pass-77",
+    }
+
+    checks = [
+        client.post("/auth/password", json=wrong, headers=hijacked).status_code
+        for _ in range(4)
+    ]
+    stranger = api(client=("198.51.100.7", 50000))  # Another address.
+    strangers = [
+        stranger.post(
+            "/auth/login", json={"username": "carol", "password": "wrong-pass-1"}
+        ).status_code
+        for _ in range(4)
+    ]
+    reset = [
+        client.post(
+            f"{ADMIN}/users/{user}/password",
+            json={"password": "Brand-new-pass-99"},
+            headers=headers,
+        ).status_code
+        for user in (bob, carol)
+    ]
+    dave = create_user("dave", password=NEW_PASSWORD)
+    reused = [
+        client.post(
+            f"{ADMIN}/users/{dave}/password",
+            json={"password": NEW_PASSWORD},
+            headers=headers,
+        ).status_code
+        for _ in range(4)
+    ]
+    logged_in = client.post(
+        "/auth/login", json={"username": "dave", "password": NEW_PASSWORD}
+    )
+
+    assert checks[-1] == 429
+    assert strangers[-1] == 429
+    assert reset == [204, 204]
+    assert reused == [422, 422, 422, 429]
+    assert logged_in.status_code == 200, logged_in.json()
+
+
+def test_nothing_is_compared_while_a_check_refuses_the_change(api: Api) -> None:
+    """A change the project refuses answers the same whatever the password.
+
+    The history is compared only when the change is about to be made; a
+    comparison before the checks answered a guess even where the change
+    was refused (found in review of user report A17).
+    """
+    from domainkit.contrib.auth.gates import AdminChange, on_admin_change
+
+    client = api(PASSWORD_HISTORY=2)
+    headers = staff("admin", *ADMIN_PERMISSIONS)
+    bob = create_user("bob", password=NEW_PASSWORD)
+    seen: list[bool] = []
+
+    async def hr_only(actor: Any, user: Any, change: AdminChange) -> None:  # noqa: ANN401
+        seen.append(change.last_check is not None)
+        if change.kind == "password":
+            raise PermissionDenied("Only HR sets passwords here.")
+
+    on_admin_change(hr_only, domain="auth")
+    path = f"{ADMIN}/users/{bob}/password"
+    miss = client.post(path, json={"password": "Some-other-pass-1"}, headers=headers)
+    hit = client.post(path, json={"password": NEW_PASSWORD}, headers=headers)
+
+    assert error(miss, 403) == error(hit, 403)
+    assert error(hit, 403)[0] == "permission_denied"
+    assert seen == [True, True]
+
+
+ROUTES_EVERYWHERE = APIRouter()
+ROUTES_EVERYWHERE.include_router(
+    select_routes(
+        admin.router,
+        dependencies={
+            name: [Depends(counted_check)] for name in route_names(admin.router)
+        },
+    ),
+    prefix=ADMIN,
+)
+"""The admin API with a check of the project's on every route."""
+
+
+def test_no_check_added_with_select_routes_runs_for_a_caller_refused(
+    migrated: Migrated,
+) -> None:
+    """On every route of the admin API, its rules answer before a project's check."""
+    CHECKED.clear()
+    with (
+        migrated(API),
+        override_settings(ROOT_ROUTER=f"{__name__}.ROUTES_EVERYWHERE"),
+        TestClient(get_asgi_application()) as client,
+    ):
+        bob = create_user("bob")
+        group = make_group("viewers")
+        callers = [{}, staff("plain", is_staff=False), staff("lacking")]
+        statuses = set()
+        for name in route_names(admin.router):
+            method, path = name.split(" ", 1)
+            path = path.replace("{user_id}", str(bob)).replace("{group_id}", str(group))
+            for headers in callers:
+                answer = client.request(method, ADMIN + path, json={}, headers=headers)
+                statuses.add(answer.status_code)
+
+    assert CHECKED == []
+    assert statuses == {401, 403}
