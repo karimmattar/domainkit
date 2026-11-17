@@ -37,6 +37,7 @@ from domainkit.contrib.approvals.authorizing import MAX_TEXT, details_of, fitted
 from domainkit.contrib.approvals.tables import requests
 from domainkit.contrib.auth import StepUp
 from domainkit.contrib.auth.actions import AuthorizationRequired, action_for
+from domainkit.contrib.auth.screens import TooMuchToShow
 from domainkit.contrib.auth.tables import authorizations
 from domainkit.db import connections
 from domainkit.ddd import fingerprint
@@ -484,7 +485,7 @@ def test_details_are_printable_cut_to_fit_and_six_at_most() -> None:
         ("Action", "tests.act"),
         ("kind", "a"),
         ("n", "2"),
-        ("flags", "[1]"),
+        ("flags", "1"),
     ]
     assert details_of("tests.act", {"Action": "x", "kind": {"b": 1, "a": None}}) == [
         ("Action", "tests.act"),
@@ -496,6 +497,41 @@ def test_details_are_printable_cut_to_fit_and_six_at_most() -> None:
     assert many[0] == ("Action", "a" * (MAX_TEXT - 1) + "…")
     assert many[-1] == ("…", "3 more arguments")
     assert all(len(value) <= MAX_TEXT for _, value in many)
+
+
+def test_a_list_argument_goes_over_lines_or_says_how_many_more() -> None:
+    """A grant's keys, each shown, or counted; never cut unsaid (user report A23).
+
+    A list of strings goes over as many lines as it takes ("added (2)");
+    past the screen, its last line says how many more. With ``whole``, it
+    is refused instead. A list of objects stays compact JSON.
+    """
+    keys = [f"accounts.permission_{each:02}" for each in range(30)]
+
+    fits = details_of("auth.set_permissions", {"user_id": "u", "added": keys[:4]})
+    counted = details_of("auth.set_permissions", {"user_id": "u", "added": keys})
+    with pytest.raises(TooMuchToShow):
+        details_of("auth.set_permissions", {"added": keys}, whole=True)
+    lines = details_of("tests.act", {"lines": [{"a": 1}]}, whole=True)
+
+    assert fits == [
+        ("Action", "auth.set_permissions"),
+        ("user_id", "u"),
+        ("added", "accounts.permission_00, accounts.permission_01"),
+        ("added (2)", "accounts.permission_02, accounts.permission_03"),
+    ]
+    assert [label for label, _ in counted] == [
+        "Action",
+        "user_id",
+        "added",
+        "added (2)",
+        "added (3)",
+        "added (4)",
+    ]
+    assert (
+        counted[-1][1] == "accounts.permission_06, accounts.permission_07 and 22 more"
+    )
+    assert lines == [("Action", "tests.act"), ("lines", '[{"a":1}]')]
 
 
 def test_other_approve_rules_still_apply_beside_the_action(

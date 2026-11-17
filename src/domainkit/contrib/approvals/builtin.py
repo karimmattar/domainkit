@@ -36,15 +36,23 @@ as the staff member's request and refused (``approval_pending``), and the
 same call, made again by them once the request is approved, makes it,
 once (a guard ``by_maker``). The approvers are superusers (or the holders
 of ``ADMIN_APPROVERS``), never the user the change is about.
+
+What a person deciding a request about a user is shown names the user,
+read when shown (``show_about_user``): "User: alice@example.com", then
+the groups or permissions it adds and takes away, each list whole over
+as many lines as it takes, and an impersonation's reason (ADR 0173).
 """
 
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID
 
+from pydantic import TypeAdapter
+
 from domainkit.apps import registry
 from domainkit.context import current_request
 from domainkit.ddd import Command, PermissionDenied
+from domainkit.i18n import gettext, gettext_noop
 
 from .exceptions import ApprovalRequired, MakerNotAllowed
 from .guards import (
@@ -91,6 +99,14 @@ SET_PASSWORD: Final = "auth.set_password"  # noqa: S105 - an action, not a secre
 """The guarded action of setting a user's password in the admin API."""
 IMPERSONATE: Final = "auth.impersonate"
 """The guarded action of acting as a user in the admin API."""
+USER: Final = gettext_noop("User")
+"""The label of the user a request is about, shown by name."""
+SHOWN_LABELS: Final = {
+    "added": gettext_noop("Adds"),
+    "removed": gettext_noop("Takes away"),
+    "reason": gettext_noop("Reason"),
+}
+"""The labels of what a request about a user changes, as the admin API's own."""
 
 
 @requires_approval(POST_ENTRY)
@@ -306,6 +322,35 @@ def _user_id(text: str) -> Any:  # noqa: ANN401 - a user's id, or None.
         return None
 
 
+async def show_about_user(command: Any) -> list[tuple[str, object]]:  # noqa: ANN401 - a command about a user.
+    """What a request about a user shows: the user by name, then what changes.
+
+    ``user_id`` is shown as the user's first identifier
+    (``get_username()``), read now and never stored with the request: a
+    user erased meanwhile shows by id. ``added`` and ``removed`` are lists
+    ("Adds", "Takes away"), left out when empty; ``reason`` is "Reason";
+    any other field shows by its name.
+    """
+    from domainkit.contrib.auth import AuthUnitOfWork, UserId
+
+    shown: list[tuple[str, object]] = []
+    dumped = TypeAdapter(type(command)).dump_python(command, mode="json")
+    for name, value in dumped.items():
+        if name == "user_id":
+            async with AuthUnitOfWork() as uow:
+                user = await uow.users.find(UserId(command.user_id))
+            named = str(value) if user is None else user.get_username()
+            shown.append((gettext(USER), named))
+        elif name in ("added", "removed"):
+            if value:
+                shown.append((gettext(SHOWN_LABELS[name]), value))
+        elif name in SHOWN_LABELS:
+            shown.append((gettext(SHOWN_LABELS[name]), value))
+        else:
+            shown.append((name, value))
+    return shown
+
+
 def _promoted(command: GrantSuperuser) -> list[str]:
     """The user a grant promotes: they do not decide it."""
     return [str(command.user_id)]
@@ -339,6 +384,7 @@ def guard_superusers(config: ApprovalsSettings) -> None:
             ),
             maker_rule=IsSuperuser(),
             parties=_promoted,
+            show=show_about_user,
         )
     )
 
@@ -486,6 +532,7 @@ def guard_admin_changes(config: ApprovalsSettings) -> None:
                 parties=_about_user,
                 http=False,
                 by_maker=True,
+                show=show_about_user,
             )
         )
 

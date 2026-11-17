@@ -14,16 +14,23 @@ for submitting at ``POST /requests`` (``approvals.submit``, on
 cancelling (``approvals.cancel``), each showing the request's action and
 arguments, and the reason given (ADR 0163).
 
+What a request shows is its guard's ``show``, or its arguments by name,
+laid out on a phone's screen, a list over as many lines as it takes. With
+``AUTH.AUTHORIZATIONS.WHOLE`` on, submitting and approving refuse what
+does not fit whole (ADR 0173); rejecting and cancelling cut and count it.
+
 Only imported with one of them on, and so with ``domainkit.contrib.auth``
 installed (``ApprovalsConfig.ready`` refuses it otherwise).
 """
 
 import json
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any, Final
 
 from starlette.requests import HTTPConnection
 
+from domainkit.apps import registry
+from domainkit.contrib.auth import AuthSettings
 from domainkit.contrib.auth.actions import (
     Action,
     ActionAuthorizationOut,
@@ -32,9 +39,10 @@ from domainkit.contrib.auth.actions import (
     request_action_authorization,
     requires_authorization,
 )
+from domainkit.contrib.auth.screens import laid_out
 from domainkit.i18n import gettext, gettext_noop, ngettext
 
-from .guards import policy_of
+from .guards import Guard, guard_for, policy_of
 from .models import ApprovalRequest
 from .services import (
     ApproveRequest,
@@ -72,10 +80,6 @@ ACTION_LABEL: Final = gettext_noop("Action")
 """The label of the request's action, the first value shown."""
 REASON_LABEL: Final = gettext_noop("Reason")
 """The label of the reason of a rejection or a cancellation, shown second."""
-MORE_LABEL: Final = "…"
-"""The label of the line that says how many arguments are not shown."""
-MAX_DETAILS: Final = 6
-"""The most labelled values an act shows (auth's ``Shown``)."""
 MAX_TEXT: Final = 64
 """The longest title, label, and value an act shows (auth's ``Shown``)."""
 CUT: Final = "…"
@@ -97,20 +101,27 @@ async def show(command: ApproveRequest) -> Shown:
 
     Asking is refused as approving would be: a request no longer pending,
     the maker, a party to the command, someone who decided it already, and
-    a fingerprint that is not the request's.
+    a fingerprint that is not the request's. With
+    ``AUTH.AUTHORIZATIONS.WHOLE`` on, a request that cannot be shown whole
+    is refused too (``TooMuchToShow``).
     """
     request = await check_approval(command)
-    return Shown(fitted(gettext(TITLE)), details_of(request.action, _shown(request)))
+    details = details_of(request.action, await _shown(request), whole=whole())
+    return Shown(fitted(gettext(TITLE)), details)
 
 
 async def show_submission(command: SubmitRequest) -> Shown:
     """The action and the arguments it would be stored with, maker included.
 
     Asking is refused as submitting would be: an unknown action, arguments
-    that do not make its command, a command no policy holds.
+    that do not make its command, a command no policy holds; and with
+    ``AUTH.AUTHORIZATIONS.WHOLE`` on, one that cannot be shown whole.
     """
     arguments = check_submission(command)
-    return Shown(fitted(gettext(SUBMIT_TITLE)), details_of(command.action, arguments))
+    guard = guard_for(command.action)
+    shown = await shown_of(guard, guard.load(arguments))
+    details = details_of(command.action, shown, whole=whole())
+    return Shown(fitted(gettext(SUBMIT_TITLE)), details)
 
 
 async def show_rejection(command: RejectRequest) -> Shown:
@@ -118,9 +129,12 @@ async def show_rejection(command: RejectRequest) -> Shown:
 
     Asking is refused as rejecting would be: a request no longer pending,
     the maker, a party to the command, someone who decided it already.
+    Never for what it shows: stopping a request does nothing it does not
+    show, so what does not fit is cut and counted.
     """
     request = await check_rejection(command)
-    details = details_of(request.action, _shown(request), reason=command.reason)
+    shown = await _shown(request)
+    details = details_of(request.action, shown, reason=command.reason)
     return Shown(fitted(gettext(REJECT_TITLE)), details)
 
 
@@ -128,49 +142,87 @@ async def show_cancellation(command: CancelRequest) -> Shown:
     """The request's action, the reason if any, and the arguments, stored.
 
     Asking is refused as cancelling would be: a request no longer pending,
-    or someone other than its maker.
+    or someone other than its maker. Never for what it shows, as for a
+    rejection.
     """
     request = await check_cancellation(command)
-    details = details_of(request.action, _shown(request), reason=command.reason)
+    shown = await _shown(request)
+    details = details_of(request.action, shown, reason=command.reason)
     return Shown(fitted(gettext(CANCEL_TITLE)), details)
 
 
-def _shown(request: ApprovalRequest) -> Any:  # noqa: ANN401 - JSON.
-    """The request's arguments, in its command's order.
+async def check_approvable(guard: Guard, command: object) -> None:
+    """Refuse a command its approvers could not be shown whole, if they must be.
+
+    ``submit`` asks it with ``APPROVE_ACTION`` on: under
+    ``AUTH.AUTHORIZATIONS.WHOLE``, a request no approver's screen shows
+    whole could never be approved, so it is never stored.
+
+    Raises:
+        TooMuchToShow: ``WHOLE`` is on, and approving it would not fit.
+    """
+    if whole():
+        details_of(guard.action, await shown_of(guard, command), whole=True)
+
+
+def whole() -> bool:
+    """Whether acts show what they do whole, or are refused (auth's ``WHOLE``)."""
+    return registry.settings(AuthSettings).AUTHORIZATIONS.WHOLE
+
+
+async def _shown(request: ApprovalRequest) -> Iterable[tuple[str, object]]:
+    """What the request shows: its guard's ``show``, or its arguments by name.
 
     Raises:
         PolicyRemoved: Its guard or policy no longer exists.
     """
     guard, _ = policy_of(request)
-    return guard.dump(guard.load(request.arguments))
+    return await shown_of(guard, guard.load(request.arguments))
+
+
+async def shown_of(guard: Guard, command: object) -> Iterable[tuple[str, object]]:
+    """What ``command`` shows: ``guard.show``'s values, or its arguments in order."""
+    shown = await guard.shown(command)
+    return guard.dump(command).items() if shown is None else shown
 
 
 def details_of(
-    action: str, arguments: Mapping[str, Any], *, reason: str = ""
+    action: str,
+    arguments: Mapping[str, Any] | Iterable[tuple[str, Any]],
+    *,
+    reason: str = "",
+    whole: bool = False,
 ) -> list[tuple[str, str]]:
-    """The action, the reason if any, then the arguments by name: six at most.
+    """The action, the reason if any, then the arguments by name, on a screen.
 
-    Each value is compact JSON (a string as itself), made printable and cut
-    to 64 characters. With more arguments than fit, all but one of the
-    room left are shown, and a last line says how many more.
+    Each value is a line: a string as itself, anything else as compact
+    JSON; a list of strings, numbers, or booleans goes over as many lines
+    as it takes ("added", "added (2)"), as ``laid_out`` lays it out. With
+    ``whole``, what does not fit whole is refused (``TooMuchToShow``);
+    otherwise a value is cut to 64 characters, a list's last line says how
+    many more, and with more than fit, a last line how many arguments.
     """
-    details = [(fitted(gettext(ACTION_LABEL)), fitted(action))]
+    pairs = arguments.items() if isinstance(arguments, Mapping) else arguments
+    details: list[tuple[str, str | list[str]]] = [(gettext(ACTION_LABEL), action)]
     if reason:
-        details.append((fitted(gettext(REASON_LABEL)), fitted(reason)))
-    labels = {label for label, _ in details} | {MORE_LABEL}
-    named = []
-    for name, value in arguments.items():
-        label = fitted(str(name))
-        if label and label not in labels:
-            labels.add(label)
-            named.append((label, fitted(_text(value))))
-    room = MAX_DETAILS - len(details)
-    if len(named) == len(arguments) and len(named) <= room:
-        return [*details, *named]
-    kept = named[: room - 1]
-    hidden = len(arguments) - len(kept)
+        details.append((gettext(REASON_LABEL), reason))
+    details.extend((str(name), _value(value)) for name, value in pairs)
+    return laid_out(details, whole=whole, more=_more_arguments)
+
+
+def _value(value: object) -> str | list[str]:
+    """``value`` as a screen shows it: a text, or a list's items."""
+    if isinstance(value, list | tuple) and not any(
+        isinstance(each, list | tuple | dict) for each in value
+    ):
+        return [_text(each) for each in value]
+    return _text(value)
+
+
+def _more_arguments(hidden: int) -> str:
+    """The last line's words: how many arguments are not shown."""
     more = ngettext("{count} more argument", "{count} more arguments", hidden)
-    return [*details, *kept, (MORE_LABEL, fitted(more.format(count=hidden)))]
+    return more.format(count=hidden)
 
 
 def _text(value: object) -> str:
