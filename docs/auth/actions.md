@@ -244,30 +244,48 @@ AUTH = {"ADMIN_ACTION": True, "AUTHORIZATIONS": {"TYPED_LINKS": "refused"}}
   new name at the change too, with or without `ADMIN_ACTION`: approvers'
   screens show it later. A request whose approval would refuse what it
   typed is refused when it is submitted, with `APPROVE_ACTION` on.
-- **What it never marks**: what the act is on (`named`). A name stored
-  was checked where it was typed, and never locks its user or group.
-  Rejecting and cancelling check their own reason, never the request's,
-  so a request stored before the setting can always be stopped.
+- **What it never marks**: what the act is on (`named`), which never
+  locks its user or group. A group's name is checked where it is typed,
+  as a screen may show it cut; a user's username, address, or number is
+  an identifier, set as one, and never checked. A field sent as it is
+  stored (a form saved whole) is not typed anew. Rejecting and cancelling
+  check their own reason, never the request's, so a request stored before
+  the setting can always be stopped.
 - **A guard's `show`** marks what its maker typed:
   `guard(..., show=lambda c: [("Payee", c.payee), ("Memo", Typed(c.memo))])`.
   Arguments shown by name are not marked: an IBAN or an amount would read
   as a number.
+- **What is checked is what the phone shows too.** A line cut to 63
+  characters and `…`, an escaped character, or a list's first items
+  "and 4 more" may read as a link the text did not hold: `evil.corporate`
+  cut to `evil.co…`. Each line that shows typed text is checked as shown.
 - **`holds_link(text)`** reads text as a person reads it: full-width forms
   as their letters, characters drawn as nothing (zero-width spaces)
-  dropped, the dots that look like one (`。`, `．`, a middle dot) as a dot,
-  `example[.]com` and `ann[at]example` as what they spell. It finds a
-  scheme (`https://`, `tel:`, `mailto:`), an at sign before a letter or a
-  digit, an IP address, a name ending in a top-level domain IANA lists or
-  one kept for special use (`evil.example`, also with Cyrillic letters
-  that read as Latin), `www.` anything, or seven digits or more written as
-  one number (`+1 (555) 010-0100`). Not a date, an amount with its cents,
-  or a code whose letters touch its digits: `v1.2`, `Q3 report`,
-  `readers`, `INC0012345`, `2026-11-17`, and `invoice.pdf` hold none.
-  Text that reads as a link holds one: `notes.md` and `Q3.report` end in
-  top-level domains.
+  dropped, the dots that look like one (`。`, `．`, a middle dot, a bullet)
+  as a dot, `example[.]com` and `ann[at]example` as what they spell. It
+  finds a scheme (`https://`, `tel:`, `mailto:`), an at sign before a
+  letter or a digit, an IP address, a name ending in a top-level domain
+  IANA lists or one kept for special use (`evil.example`, also with
+  Cyrillic letters that read as Latin), `www.` anything, or seven digits
+  or more written as one number (`+1 (555) 010-0100`). Not a date, an
+  amount (with its cents, in groups of three, or beside a currency's code
+  or sign: `1.234.567,89`, `12 500 000 EUR`), or a code whose letters
+  touch its digits or join them with a hyphen: `v1.2`, `Q3 report`,
+  `readers`, `INC0012345`, `JIRA-1234567`, `2026-11-17`, and
+  `invoice.pdf` hold none.
+- **Known false positives** read as links to a reader too, and are
+  written otherwise: a file or a group named with a top-level domain after
+  a dot (`notes.md`, `team.legal`, `Q3.report`), an account number or a
+  postal code in groups (`GB29 NWBK 6016 1331 9268 19`, `100-0001`,
+  `01310-100`), and seven digits or more alone (`build 1234567`). Digits
+  grouped in threes by spaces alone (`612 345 678`) are read as a number to
+  call unless cents or a currency follow.
 - **`on_typed_text`** runs a project's own check on each typed text, as
-  typed, whatever the setting: raise to refuse the act. `check_typed(text)`
-  runs the checks where text is typed and shown later.
+  typed, whatever the setting: raise to refuse the act. One text may be
+  checked more than once (at a twin's two screens, then at the act), so a
+  check reads and has no side effect. `check_typed(text)` runs the checks
+  where text is typed and shown later, each cut past its twentieth
+  character included.
 
 ```python
 from domainkit.apps import DomainConfig

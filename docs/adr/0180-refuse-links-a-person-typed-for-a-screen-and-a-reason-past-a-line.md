@@ -100,16 +100,23 @@ service on the framework reported two gaps (user report A17):
   item first, whole or not: the `on_typed_text` hooks run on it, and with
   `AUTH.AUTHORIZATIONS.TYPED_LINKS` set to `"refused"` one that holds a
   link is refused (`LinkNotShown`, `422 link_not_shown`), when the act is
-  asked for, before an authorization is stored. `check_typed(text)` runs
-  the same checks where text is typed and shown later.
+  asked for, before an authorization is stored. Each line that shows it
+  is checked as shown too: cut to 63 characters and `…`, escaped, or the
+  first of a list's items "and 4 more" (`evil.corporate` cut reads
+  `evil.co…`). `check_typed(text)` runs the same checks where text is
+  typed and shown later, with each cut a screen may make of it, past its
+  twentieth character. A check may run more than once for one text, and
+  has no side effect.
 - **What the framework marks**: an impersonation's reason, on the admin
   API's screen and as the "Stated reason" of a held impersonation; a
   group's new name (`group_create`, `group_rename`); each text a change
   sets on a user but its identifiers (the username, the email,
-  `IDENTIFIER_FIELDS`, `AUTH.IDENTIFIERS`: an address set is what is set);
-  a rejection's and a cancellation's reason. What an act is on (`named`)
-  is never marked. The admin API checks a group's new name at the change
-  too, with or without `ADMIN_ACTION`.
+  `IDENTIFIER_FIELDS`, `AUTH.IDENTIFIERS`: an address set is what is set)
+  and those sent as stored (a form saved whole); a rejection's and a
+  cancellation's reason. What an act is on (`named`) is never marked: a
+  group's name is checked where it is typed, a user's username or address
+  is an identifier, never checked. The admin API checks a group's new
+  name at the change too, with or without `ADMIN_ACTION`.
 - **Approvals**: submitting and approving check what a guard's `show`
   marks `Typed`; a request no approver could approve so is refused when
   submitted, with `APPROVE_ACTION` on, as for `WHOLE`. Rejecting and
@@ -125,10 +132,15 @@ service on the framework reported two gaps (user report A17):
   by dots, a name whose last label is in IANA's list or is special-use
   (read through UTS #39's look-alike letters, and `0` and `1` as `o`, `l`,
   `i` beside letters; an IDN label as its A-label), `www.` anything, or
-  seven digits or more written as one number. Not a date, an amount with
-  its cents, or a code whose letters touch its digits (`INC0012345`).
-  The package keeps IANA's list as published and the look-alike letters
-  derived from `confusables.txt`, with Unicode's notice.
+  seven digits or more written as one number. Not a date, an amount (with
+  its cents, in groups of three by dots or with cents by the other mark,
+  or beside a currency's code in capitals or its sign), or a code whose
+  letters touch its digits or join them with a hyphen or an underscore
+  (`INC0012345`, `JIRA-1234567`). The package keeps IANA's list as
+  published and the look-alike letters derived from `confusables.txt`,
+  with Unicode's notice; `.github/scripts/screen_data.py` rebuilds both,
+  and each release runs it (`docs/versioning.md`). The package's license
+  reads `MIT AND Unicode-3.0`.
 - **Under `WHOLE`**, a rejection's or a cancellation's reason longer than
   a line, as shown, is refused at its twin (`422 too_much_to_show`). The
   rest of a decision's screen is still cut and counted.
@@ -146,12 +158,17 @@ service on the framework reported two gaps (user report A17):
 - **False positives** are text that is a link to a reader too: a file
   whose extension is a top-level domain (`notes.md`, `setup.zip`), a word
   joined to the next by a dot (`Q3.report`), a group name like
-  `team.legal`, an account number in groups (`GB29 NWBK 6016 1331 9268
-  19`), a seven-digit number alone.
-  The person writes it otherwise.
+  `team.legal`, an account number or a postal code in groups (`GB29 NWBK
+  6016 1331 9268 19`, `100-0001`, `01310-100`), seven digits or more
+  alone (`build 1234567`). Digits grouped in threes by spaces alone
+  (`612 345 678`, a Spanish number to call) are read as a number, unless
+  cents or a currency follow. The person writes it otherwise.
+- **A group's long name** is refused where a cut of it, as a screen may
+  show it, reads as a link, though the whole does not: checking each cut
+  past the twentieth character costs a long dotted name.
 - **The list of top-level domains is a copy**, version on its first
-  line. A release refreshes it from IANA; a domain delegated since passes
-  until then.
+  line. A release refreshes it from IANA (`screen_data.py`); a domain
+  delegated since passes until then.
 - **Off, nothing changes**: `"shown"` keeps 2.7's screens, and the setting
   is read only where a screen holds typed text. `WHOLE` refuses a long
   reason where 2.7 cut it: a client of the reject and cancel twins sends

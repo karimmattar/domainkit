@@ -635,7 +635,7 @@ PUT  /admin/auth/users/6f1c.../groups {"groups": ["auditors"]}
   what staff typed that holds a link, an email address, or a number to
   call is refused at the twin (`422 link_not_shown`): an impersonation's
   reason, a group's new name (at the change too, without the act), and
-  the fields set but those that identify the user ([Text a person
+  the fields set anew but those that identify the user ([Text a person
   typed](actions.md#text-a-person-typed)).
 - **The twin checks what the change checks**: the staff member's bounds,
   the fields, a password's validators, impersonation's rules, a user or

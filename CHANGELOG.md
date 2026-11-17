@@ -15,9 +15,9 @@ and a status.
   the framework's acts refuse, when asked for, text a person typed that
   holds a link, an email address, or a number to call (`422
   link_not_shown`): an impersonation's reason, a group's new name, the
-  text fields a change sets on a user but those that identify them, a
-  rejection's or a cancellation's reason, and what a guard's `show` marks
-  `Typed`. A held impersonation whose reason holds one is refused when it
+  text fields a change sets anew on a user but those that identify them,
+  a rejection's or a cancellation's reason, and what a guard's `show`
+  marks `Typed`, as typed and as the phone shows it, cut or escaped. A held impersonation whose reason holds one is refused when it
   is submitted, and approving a request whose typed text holds one is
   refused; the admin API refuses a group named so, with or without its
   act; rejecting and cancelling check their own reason only ([Text a
@@ -28,8 +28,10 @@ and a status.
   an address, or a number, read as a person reads it (full-width and
   look-alike dots, characters drawn as nothing, `example[.]com`, letters
   of other scripts that read as Latin); `check_typed(text)` checks text
-  where it is typed; a project's own checks register on `on_typed_text`
-  (user report A17).
+  where it is typed; a project's own checks register on `on_typed_text`.
+  `.github/scripts/screen_data.py` refreshes the top-level domains and the
+  letters from IANA and Unicode at each release, and the package's license
+  reads `MIT AND Unicode-3.0` (user report A17).
 
 ### Security
 
