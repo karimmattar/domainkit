@@ -172,20 +172,31 @@ For naming users:
   default, needing `MEMBER_TENANTS`. `tenants_beyond(actor, user, held)`
   counts a tenant `actor` does not belong to as beyond them unless `held`
   (what they hold everywhere: no tenant-scoped backend) holds the key and
-  every key the user holds there. A tenant no hook answers for, among
-  those, stays beyond. Shared tenants are counted as before.
+  every key the user holds there. A tenant `MEMBER_PERMISSIONS` (or
+  `MEMBERSHIP`) does not answer for, among those, stays beyond, whatever
+  `MEMBER_GRANTS` answers. Shared tenants are counted as before. The
+  admin API's impersonation asks the same rule (`may_change`), so the
+  key's holder may act as every such member: under `MEMBERSHIP` alone,
+  where members hold no keys, every member of every tenant. That reach is
+  the decision, stated in the docs, not a side effect.
 - **`TENANCY.MEMBER_GRANTS`**: a function of the user and a tenant id
   (async or not), needing `MEMBER_PERMISSIONS` and `MEMBER_TENANTS`, that
   answers the keys the user's roles grant there whatever the tenant's
-  state, or None. `tenants_beyond` counts them with `MEMBER_PERMISSIONS`'
-  answer in what the user holds; the staff member's own keys in a shared
-  tenant stay what they hold now. A string or a bool answered is refused
+  state, or None. `tenants_beyond` adds them to `MEMBER_PERMISSIONS`'
+  answer in what the user holds; they never stand for a membership it
+  does not answer for (fail closed), so the hook must answer every key a
+  role grants. The staff member's own keys in a shared tenant stay what
+  they hold now. A string or a bool answered is refused
   (`ImproperlyConfigured`).
 - **`ModelActions(model, *rules, keys=None)` and `MemberActions(model,
   *rules, outside=None, keys=None)`**: `keys` maps an action to its key,
   asked whole (`HasModelPermission(action, model, key=...)`); other
   actions keep their model's key. A key that is not `<domain>.<codename>`
-  is refused (`ValueError`).
+  is refused (`ValueError`). Once `keys` is given, a route of an action
+  other than `view`, `add`, `change` or `delete` it does not name is
+  refused when declared (`ImproperlyConfigured`): a misspelling fails at
+  import, not as a 403. An `outside` given as `Actions` names its own
+  keys, as it names its own rules.
 - **`Throttle(per_tenant=None)`**: None counts per tenant, as `True` did;
   `per_tenant_said` says whether it was given. `check` warns, in every
   environment, of each throttle that leaves it unsaid on a route served
@@ -200,7 +211,11 @@ For naming users:
 - **`GET /users/names`** on the admin API: `UserNamePage` of
   `UserNameOut` (`id`, `username`, `name`, `identifiers`), with
   `search`, `id`, and the page's `limit` and `cursor`, under
-  `auth.view_user`.
+  `auth.view_user`. It shows nothing `/users` hides: `name` joins
+  `first_name` and `last_name` only where the model's `admin_fields()`
+  holds both (never `get_full_name`, which may read hidden fields), and
+  `identifiers` are those `/users` shows. Its search is `/users`' own:
+  the username and the identifiers, never a name.
 
 ## Consequences
 
@@ -212,14 +227,18 @@ For naming users:
   tenant's members who hold no more than the grantee: the admin API's
   ceilings bound who may grant it, as for any key.
 - With `MEMBER_GRANTS`, a change asks one more hook per tenant of the
-  user's that is counted; without it, nothing more is asked.
+  user's that is counted, and so does every request of an impersonation
+  token, which runs `may_change` again; without it, nothing more is
+  asked.
 - A route of a domain's own action under `MemberActions` needs no
   subclass; routes keep plain action names.
 - Projects with throttles on tenants' routes get `tenancy.W001` until
   each says `per_tenant=True` or `False`; `check --deploy` fails on it
   until then, or until `SILENCED_CHECKS` names it.
 - `EveryWord` costs one more call per finder and search, only for
-  searches of two words or more where a word reached the bound.
+  searches of two words or more where a word reached the bound. It does
+  not help a search that mixes a word of the row's own fields with a
+  word cut by the bound ("owner ada"), and its own answer is bound too.
 - `GET /users/names` is declared before the resource's `/users/{id}`, so
   `names` is never read as an id.
 - Per request, `resource-list`, `resource-read`, `resource-command`,
