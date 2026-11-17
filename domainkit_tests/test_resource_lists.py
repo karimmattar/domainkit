@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 from pydantic import BaseModel
 from starlette.requests import HTTPConnection
 
+from domainkit.contrib.auth import get_user_model
 from domainkit.ddd import AggregateRoot, InMemoryRepository, MaxLength, UnitOfWork
 from domainkit.ddd.fields import UnknownField
 from domainkit.http import EveryWord, Filter, FilterSet
@@ -510,6 +511,44 @@ def test_the_admin_names_users_without_what_they_hold(api: Api) -> None:
     assert [each["username"] for each in first["items"]] == ["admin"]
     assert [each["username"] for each in after["items"]] == ["ann"]
     assert refused.status_code == 403
+
+
+def test_the_names_show_no_field_the_user_list_hides(
+    api: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A project that shows staff no names gets none from ``/users/names`` either.
+
+    ``EDITABLE_FIELDS`` without ``first_name`` and ``last_name`` hides them
+    from ``/users``' ``fields``; the names view gives no ``name`` then, and
+    its search, ``/users``' own, matches the username and the identifiers,
+    never a hidden name (review of user report D2).
+    """
+    client = api(IDENTIFIERS=("username", "email"))
+    headers = staff("admin", "auth.view_user")
+    ann = create_user(
+        "ann", email="ann@example.com", first_name="Ann", last_name="Secret"
+    )
+    model = get_user_model()
+    monkeypatch.setattr(model, "EDITABLE_FIELDS", frozenset({"email"}))
+    url = f"{ADMIN}/users"
+
+    def answer(path: str, **params: Any) -> Any:  # noqa: ANN401 - a body.
+        found = client.get(path, params=params, headers=headers)
+        assert found.status_code == 200, found.text
+        return found.json()
+
+    (whole,) = answer(url, id=str(ann))["items"]
+    (named,) = answer(f"{url}/names", id=str(ann))["items"]
+
+    assert {"first_name", "last_name"} & set(whole["fields"]) == set()
+    assert named == {
+        "id": str(ann),
+        "username": "ann",
+        "name": None,
+        "identifiers": {"email": "ann@example.com"},
+    }
+    assert answer(f"{url}/names", search="Secret")["items"] == []
+    assert answer(url, search="Secret")["items"] == []
 
 
 CROWD: Final = {

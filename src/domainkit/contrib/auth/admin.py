@@ -121,6 +121,8 @@ HIDDEN_FIELDS: Final = frozenset(
 """Fields ``/users`` never shows among ``fields`` (``last_login`` has its own key)."""
 IDENTIFIED: Final = ("email", "mobile_number")
 """Fields a user changes by proving the new value first (ADR 0153)."""
+NAME_FIELDS: Final = ("first_name", "last_name")
+"""The fields ``/users/names`` joins into a name, where ``/users`` shows both."""
 
 router = APIRouter(tags=["auth admin"])
 pages = Pagination(default_limit=PAGE_SIZE, max_limit=MAX_PAGE_SIZE)
@@ -305,20 +307,26 @@ class UserNameOut(BaseModel):
     id: UUID
     username: str
     name: str | None
-    """The full name, where the user model has one (``get_full_name``)."""
+    """``first_name`` and ``last_name``, joined, where ``/users`` shows both
+    (``admin_fields``); else null."""
     identifiers: dict[str, JsonValue]
     """The fields of ``AUTH.IDENTIFIERS`` among those ``/users`` shows, by name."""
 
     @classmethod
     def of(cls, user: AbstractBaseUser) -> Self:
-        """Name ``user``."""
+        """Name ``user`` by what ``/users`` shows of them, and nothing more.
+
+        The name is built from ``NAME_FIELDS``, never from a model's
+        ``get_full_name``, which may read fields staff are not shown.
+        """
         model = type(user)
         shown = model.admin_fields() - HIDDEN_FIELDS
-        full_name = getattr(user, "get_full_name", None)
+        parts = (str(getattr(user, name) or "") for name in NAME_FIELDS)
+        name = " ".join(filter(None, parts)) if shown >= set(NAME_FIELDS) else ""
         return cls(
             id=user.id,
             username=user.get_username(),
-            name=(full_name() or None) if callable(full_name) else None,
+            name=name or None,
             identifiers={
                 name: jsonable(getattr(user, name))
                 for name in identifier_fields(model)
@@ -539,9 +547,10 @@ async def list_user_names(
 
     ``search`` and ``id`` keep the users they name, in the same order, so a
     cursor of either list reads the next page of both. Each user is their
-    id, ``username``, full name, and identifiers: a page of rows that refer
-    to users names them without their groups and permissions (user report
-    D2).
+    id, ``username``, name, and identifiers, each only where ``/users``
+    shows it: a page of rows that refer to users names them without their
+    groups and permissions (user report D2). ``search`` matches the
+    username and the identifiers, as on ``/users``, never a name.
     """
     async with AuthUnitOfWork() as uow:
         found = await page.fetch(uow.users, listing)
