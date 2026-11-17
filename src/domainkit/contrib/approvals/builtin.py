@@ -101,9 +101,10 @@ REACTIVATE: Final = "auth.reactivate"
 SET_GROUP_PERMISSIONS: Final = "auth.set_group_permissions"
 """The guarded action of granting a group permissions in the admin API (since 2.7)."""
 HOLD_ORDER: Final = 100
-"""The ``order`` approvals' checks of admin changes register with: after the
-checks registered without one, so a change a project refuses spends no
-approval (user report A19)."""
+"""The ``order`` approvals' checks of admin changes register with (since 2.7).
+
+After the checks registered without one, so a change a project refuses
+spends no approval (user report A19)."""
 
 
 @requires_approval(POST_ENTRY)

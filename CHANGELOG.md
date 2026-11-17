@@ -9,6 +9,29 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- A hook takes an order: `on_x(function, order=...)` runs it before
+  (below 0) or after (above 0) the hooks registered without one,
+  whatever their domains; those of one order keep `INSTALLED_DOMAINS`
+  order ([extension-points.md](docs/reference/extension-points.md#lifecycle-readiness-and-checks),
+  ADR 0172) (user report A19).
+- `on_admin_group_change` (`domainkit.contrib.auth.gates`): the admin
+  API's group routes and their twins call it with the staff member, the
+  group, and a `GroupChange` (`group_create`, `group_rename`,
+  `group_permissions`, `group_delete`; the name given, the permissions
+  added and taken away), so a project can refuse a group's change as it
+  refuses a user's ([the admin API](docs/auth/routes.md#staff-hand-out-only-what-they-have))
+  (user report A19).
+- `APPROVALS.ADMIN_APPROVALS` holds two more changes: `auth.reactivate`,
+  making a user who holds access active again (staff, a superuser, a
+  member of a group, or granted a permission, directly or on an object),
+  and `auth.set_group_permissions`, granting a group a permission, which
+  the group's members do not decide. Grants made outside the admin API
+  need guards of the project's own, as the page now says
+  ([Changes of the admin API](docs/contrib/approvals.md#changes-of-the-admin-api))
+  (user reports A20, A21).
+
 ### Changed
 
 - The `kafka` extra accepts aiokafka up to 0.15 (`>=0.12.0,<0.16.0`),
@@ -19,6 +42,49 @@ and a status.
   Poetry 2.4): 2.2.1 wrote a crafted wheel's files outside its target
   (CVE-2026-34591), and its dulwich had nine advisories. CI audits the
   build's hash-pinned tools too.
+- The admin API's twins run the `on_admin_change` checks (a group's
+  twins, the `on_admin_group_change` checks) with `AdminChange.asking`
+  true, so a change the project refuses is refused before the staff
+  member confirms it; approvals' hold submits and spends nothing there.
+  A check that writes should write nothing while `asking`
+  ([upgrading.md](docs/upgrading.md#26-to-27)) (user report A17).
+
+### Fixed
+
+- Approvals' hold of an admin change runs after the project's
+  `on_admin_change` checks (`HOLD_ORDER`, 100), whatever the domains'
+  order, and the admin API compares a password with the user's history
+  (`AUTH.PASSWORD_HISTORY`) before the checks: a change refused there no
+  longer spends the staff member's approval (user report A19).
+- The admin API declares each route's staff rule among its route
+  dependencies, so a check a project adds with `select_routes` runs after
+  the admin API's rules, not for anyone before them; the page says where
+  a rule taken as an endpoint's parameter runs
+  ([Rules on the framework's routes](docs/auth/routes.md#rules-on-the-frameworks-routes))
+  (user report A17).
+
+### Security
+
+- An approved `auth.set_groups` request grants the groups it held, not
+  their names. It held the names alone, and the call made once it was
+  approved joined whatever group had the name then: a powerful group
+  renamed to the approved name, or a group deleted and made again,
+  passed the second person's check. `SetGroups` holds each group added
+  by id with the permissions it grants (`groups`, `HeldGroup`); a group
+  renamed, made again, or granted other permissions since makes another
+  request, which shows what it grants. A request of 2.6 approved and not
+  yet made is approved again ([upgrading.md](docs/upgrading.md#26-to-27),
+  ADR 0172) (user report A21).
+- `auth.set_staff` holds making a deactivated staff member active again
+  where `auth.reactivate` is not held: `{"is_active": true}` gave staff
+  back with no approval. With both held, a call that makes a user staff
+  and active again is refused (`403 approval_required`) (user report A21).
+- A password the admin API refuses as one of the user's last ones counts
+  as a wrong password of theirs (`AUTH.LOGIN_RATE`,
+  `ACCOUNT_LOGIN_RATE`; `429 rate_limited` past them) and, with
+  `AUTH.ADMIN_ACTION`, spends the change's authorization. One
+  confirmation tested guess after guess against the user's history, at
+  no rate (user report A17).
 
 ## [2.6.0] - 2026-11-17
 

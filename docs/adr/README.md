@@ -164,7 +164,7 @@ statuses, and the amendments they name.
 | [0151](0151-object-grants-that-expire-roles-and-owners-a-caller-administers.md) | Object grants that expire, roles, and owners a caller administers | Accepted |
 | [0152](0152-link-the-pages-the-code-names-to-the-releases-tag.md) | Link the pages the code names to the release's tag | Accepted |
 | [0153](0153-hold-a-new-address-or-number-until-its-code-proves-it.md) | Hold a new address or number until its code proves it | Accepted |
-| [0154](0154-hold-admin-changes-for-approval-and-show-requests-to-those-they-concern.md) | Hold admin changes for approval, and show requests to those they concern | Accepted; amended 2026-11-16 (at the end); amended by [0163](0163-authorize-admin-changes-and-requests-steps-as-acts.md) |
+| [0154](0154-hold-admin-changes-for-approval-and-show-requests-to-those-they-concern.md) | Hold admin changes for approval, and show requests to those they concern | Accepted; amended 2026-11-16 (at the end); amended by [0163](0163-authorize-admin-changes-and-requests-steps-as-acts.md) and [0172](0172-hold-admin-changes-by-what-they-grant-and-check-before-the-hold.md) |
 | [0155](0155-choose-number-matching-and-the-same-network-per-page.md) | Choose number matching and the same network per page | Accepted |
 | [0156](0156-refusals-that-last-push-tokens-checked-and-commands-that-start-the-domains.md) | Refusals that last, push tokens checked when registered, and commands that start the domains | Accepted |
 | [0157](0157-priorities-on-rabbitmq-an-unpartitioned-outbox-and-audit-trail-and-live-routes-in-several-processes.md) | Priorities on RabbitMQ, an unpartitioned outbox and audit trail, and live routes in several processes | Accepted |
@@ -173,7 +173,7 @@ statuses, and the amendments they name.
 | [0160](0160-serve-in-production-from-the-settings.md) | Serve in production from the settings | Accepted |
 | [0161](0161-authorize-a-use-case-as-a-copy-and-read-what-is-shown-in-its-unit-of-work.md) | Authorize a use case as a copy, and read what is shown in its unit of work | Accepted |
 | [0162](0162-twins-name-their-method-and-skip-the-acts-own-dependencies.md) | Let twins name their method where a path is shared, and skip the act's own dependencies | Accepted |
-| [0163](0163-authorize-admin-changes-and-requests-steps-as-acts.md) | Authorize admin changes, and a request's steps, as acts | Accepted; amended 2026-11-17 (at the end) |
+| [0163](0163-authorize-admin-changes-and-requests-steps-as-acts.md) | Authorize admin changes, and a request's steps, as acts | Accepted; amended 2026-11-17 (at the end); amended by [0172](0172-hold-admin-changes-by-what-they-grant-and-check-before-the-hold.md) |
 | [0164](0164-let-the-asker-withdraw-a-phone-request-count-sessions-per-user-and-word-each-kind.md) | Let the asker withdraw a phone request, count sessions per user, and word each kind | Accepted |
 | [0165](0165-let-an-operator-prove-a-superusers-address-or-promote-a-proved-account.md) | Let an operator prove a superuser's address, or promote a proved account | Accepted |
 | [0166](0166-let-a-domain-layer-mark-its-texts-extract-the-projects-own-and-add-a-translation-alone.md) | Let a domain layer mark its texts, extract the project's own, and add a translation alone | Accepted |
@@ -182,6 +182,7 @@ statuses, and the amendments they name.
 | [0169](0169-granians-http-versions-failed-starts-fcm-dry-runs-write-once-probes-clamd-over-tls-and-dropped-files.md) | Granian's HTTP versions and failed starts, FCM's dry runs, write-once probes, clamd over TLS, and dropped files | Accepted |
 | [0170](0170-let-a-resources-items-be-tenants-count-members-keys-alone-and-let-lists-name-what-they-refer-to.md) | Let a resource's items be tenants, count members' keys alone, and let lists name what they refer to | Accepted |
 | [0171](0171-prove-a-number-given-at-signup-by-its-own-code.md) | Prove a number given at signup by its own code | Accepted |
+| [0172](0172-hold-admin-changes-by-what-they-grant-and-check-before-the-hold.md) | Hold admin changes by what they grant, and check before the hold | Accepted |
 
 ### Decisions still without a record
 

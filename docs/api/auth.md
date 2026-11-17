@@ -188,7 +188,9 @@ Device proofs: a client that logged in keeps a count of its own (SEC-r1-2).
 Login gates: checks every login passes before it is issued (ADR 0128).
 
 - `MANAGES_LOGINS`: `dependencies=[MANAGES_LOGINS]`: the route passes `on_manage_logins`.
+- `AddedGroup`: A group a change adds a user to, as the admin API read it (since 2.7).
 - `AdminChange`: What a staff member is about to do to a user through the admin API.
+- `GroupChange`: What a staff member is about to do to a group through the admin API.
 - `LoginGate`: A check of a login: return to let it through, raise to refuse it.
 - `LoginNotGated`: A login was issued without passing the gates: a route forgot them (500).
 - `LoginOrigin`: How a login was made: its method, what it proved, when, and its device.
@@ -204,6 +206,7 @@ Login gates: checks every login passes before it is issued (ADR 0128).
 - `login_origin`: How the login `request` makes is made, for its gates; None: it makes none.
 - `manages_logins`: A route's dependency: the request may manage its user's logins.
 - `on_admin_change`: Register a check of every change the admin API makes to a user.
+- `on_admin_group_change`: Register a check of every change the admin API makes to a group (since 2.7).
 - `on_create_staff`: Register a check of creating a user who is staff in the admin API.
 - `on_login_gate`: Register a gate every login passes (`on_login_gate(gate)` in `ready()`).
 - `on_make_superuser`: Register a check of making a superuser in the admin API.

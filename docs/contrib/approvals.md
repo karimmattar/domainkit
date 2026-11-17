@@ -17,7 +17,7 @@ On this page you learn how to:
 - submit, approve, reject, and cancel requests, in code and over HTTP;
 - guard large ledger postings and the making of superusers;
 - hold changes of the admin API for approval: making staff, groups,
-  permissions, passwords, impersonation;
+  permissions, passwords, impersonation, a return, a group's permissions;
 - ask approvers for a step-up, or to authorize each approval once;
 - have makers and approvers authorize each submission, rejection, and
   cancellation once;
@@ -583,17 +583,21 @@ APPROVALS = {
         "auth.set_permissions": 1,
         "auth.set_password": 1,
         "auth.impersonate": 2,
+        "auth.reactivate": 1,
+        "auth.set_group_permissions": 1,
     },
 }
 ```
 
 | Action (constant) | Held when the admin API | The request's arguments | Policy |
 | --- | --- | --- | --- |
-| `auth.set_staff` (`SET_STAFF`) | makes a user staff: `PATCH /users/{id}` with `"is_staff": true`, for a user who is not | `{"user_id"}` (`SetStaff`) | `auth.staff` |
-| `auth.set_groups` (`SET_GROUPS`) | adds a user to a group: `PUT /users/{id}/groups` | `{"user_id", "added", "removed"}`, group names (`SetGroups`) | `auth.groups` |
+| `auth.set_staff` (`SET_STAFF`) | makes a user staff: `PATCH /users/{id}` with `"is_staff": true`, for a user who is not; without `auth.reactivate`, also `"is_active": true` for a staff member who is inactive | `{"user_id"}` (`SetStaff`) | `auth.staff` |
+| `auth.set_groups` (`SET_GROUPS`) | adds a user to a group: `PUT /users/{id}/groups` | `{"user_id", "added", "removed", "groups"}`: names, and each group added by id with its permissions (`SetGroups`, `HeldGroup`) | `auth.groups` |
 | `auth.set_permissions` (`SET_PERMISSIONS`) | grants a user a permission: `PUT /users/{id}/permissions` | `{"user_id", "added", "removed"}`, permission keys (`SetPermissions`) | `auth.permissions` |
 | `auth.set_password` (`SET_PASSWORD`) | sets a password, or makes it unusable: `POST /users/{id}/password` | `{"user_id"}` (`SetPassword`) | `auth.password` |
 | `auth.impersonate` (`IMPERSONATE`) | acts as a user: `POST /users/{id}/impersonate` | `{"user_id", "reason"}` (`Impersonate`) | `auth.impersonation` |
+| `auth.reactivate` (`REACTIVATE`, since 2.7) | makes a user who holds access active again: `PATCH /users/{id}` with `"is_active": true` | `{"user_id"}` (`Reactivate`) | `auth.reactivation` |
+| `auth.set_group_permissions` (`SET_GROUP_PERMISSIONS`, since 2.7) | grants a group a permission: `PUT /groups/{id}/permissions` | `{"group_id", "name", "added", "removed"}`, permission keys (`SetGroupPermissions`) | `auth.group_permissions` |
 
 The staff member's client goes round once per change:
 
@@ -605,9 +609,12 @@ PATCH /admin/auth/users/6f1c... {"is_staff": true}                       200: th
 
 - **The admin API's own checks come first**: the staff member's bounds
   (a group or a permission they lack), the fields, the password's
-  validators. Then the change is submitted as the staff member's request,
-  and the call answers `403 approval_pending` with its id. The same call
-  made while the request waits answers the same id.
+  validators, and, since 2.7, the user's password history
+  (`AUTH.PASSWORD_HISTORY`), so a password that would be refused spends
+  no approval. Then the project's own checks, then the change is
+  submitted as the staff member's request, and the call answers `403
+  approval_pending` with its id. The same call made while the request
+  waits answers the same id.
 - **Once approved, the same call by the same staff member makes the
   change, once.** The guards run by their maker
   ([Run by its maker](#run-by-its-maker)): the worker runs nothing, an
@@ -618,6 +625,37 @@ PATCH /admin/auth/users/6f1c... {"is_staff": true}                       200: th
   the list sent. The fingerprint binds it: a call that would add or take
   away anything else, because the user's groups changed meanwhile,
   submits a request of its own.
+- **A group is held by its id and what it grants, not by its name**
+  (since 2.7, [ADR 0172](../adr/0172-hold-admin-changes-by-what-they-grant-and-check-before-the-hold.md)).
+  Each group a request adds is in its `groups`: the id, the name, and the
+  permissions the group grants as the call found it. Before 2.7 an
+  approval for "readers" made the user a member of whatever group was
+  called "readers" when the call came back, so a group renamed to it, or
+  deleted and made again, passed the second person's check (user report
+  A21). Now a group renamed, made again, or granted other permissions
+  since is another command: the call submits a request of its own,
+  which shows what that group grants, and the approved one is never
+  spent.
+- **A user who holds access comes back with an approval**
+  (`auth.reactivate`, since 2.7). Making a user active again gives back
+  everything they hold, so `"is_active": true` waits when the user is
+  staff or a superuser (as the change leaves them), belongs to a group,
+  or holds a permission, directly or on an object (every backend's
+  `object_grants`). A user who holds none of these comes back at once.
+  What a backend grants only an active user, such as a member's keys in
+  a tenant (`MembershipBackend`), is not known here: guard it yourself
+  ([Grants made elsewhere](#grants-made-elsewhere)). Without
+  `auth.reactivate`, `auth.set_staff` holds a staff member's return, as
+  it holds making staff. With both held, a call that makes a user staff
+  and active again is refused (`403 approval_required`, "Make the user
+  staff and active again in two changes: each waits for its own
+  approval."): one request for both would spend one hold's approvals on
+  the other's change.
+- **Granting a group permissions waits too** (`auth.set_group_permissions`,
+  since 2.7): every member gains them. The members of the group, as
+  stored when a decision is made, do not decide it (`interested_party`).
+  Taking permissions away, renaming, deleting, and creating a group (it
+  has no members yet) wait for no one.
 - **A password is never stored**, in the request or anywhere else:
   `SetPassword` names the user alone. Approvers could not judge a
   password; they approve setting one, and the call made once it is
@@ -645,13 +683,37 @@ PATCH /admin/auth/users/6f1c... {"is_staff": true}                       200: th
   it lives (`AUTH.AUTHORIZATIONS.TTL`) or a new one
   ([Each change, authorized as one act](../auth/routes.md#each-change-authorized-as-one-act)).
 
-The admin API asks through auth's `on_admin_change` hook, which approvals
-registers a check with while `ADMIN_APPROVALS` names a change: auth
+The admin API asks through auth's `on_admin_change` hook, and, for a
+group's changes, `on_admin_group_change` (since 2.7), which approvals
+registers its checks with while `ADMIN_APPROVALS` names a change: auth
 imports nothing of approvals ([ADR 0140](../adr/0140-auth-asks-other-apps-through-hooks.md)).
 Each `AdminChange` carries the values it sets (`values`), such as
 `is_staff` true or false and the reason of an impersonation, so a check of
 your own can tell making staff from unmaking them
 ([the admin API](../auth/routes.md#staff-hand-out-only-what-they-have)).
+
+**Your checks run before the hold.** Approvals registers its checks with
+`order=HOLD_ORDER` (100), and a hook registered without an order runs
+before them, whatever the place of its domain in `INSTALLED_DOMAINS`
+(since 2.7). Before, the hold ran in domain order, and spent the staff
+member's approval of a change that a check of a domain installed after
+approvals then refused (user report A19). A check that must see the
+hold's outcome registers with a higher order. At a change's twin
+(`AUTH.ADMIN_ACTION`), the hold submits and spends nothing: it is only
+asked (`AdminChange.asking`).
+
+### Grants made elsewhere
+
+`ADMIN_APPROVALS` holds the admin API's routes, and nothing else. Code of
+your own that grants the same access goes around it: an invitation that
+makes a user staff, or puts them in a group, when it is accepted; a
+command that grants a permission; a backend of your own, or a tenant's
+roles (`TENANCY.MEMBER_PERMISSIONS`), that give a user keys. Guard each
+such path with a guard of its own ([Guarding a use case](#guarding-a-use-case)),
+`by_maker` where the person's own call should make the change once it is
+approved, as the admin API's holds are. A guard that a setting turns on
+must be registered whenever its service can be called: a service
+decorated `requires_approval` with no guard refuses every call.
 
 ## Who may approve: step-up
 
@@ -1185,7 +1247,7 @@ other settings.
 | `ENTRY_APPROVERS` | `"accounting.add_entry"` | The permission whoever approves a posting holds. |
 | `SUPERUSER_APPROVALS` | `0` | Approvals that making a superuser needs (at most 10); 0: it is not guarded. |
 | `SUPERUSER_APPROVERS` | `None` | The permission whoever approves making a superuser holds; `None`: superusers approve, and only they. An empty text is `None` too (an unset variable in a compose file). Set, it lets a superuser approve through a second account ([Making superusers](#making-superusers)). |
-| `ADMIN_APPROVALS` | `{}` | The changes of the admin API held for approval, each with the approvals it needs (1 to 10): `"auth.set_staff"`, `"auth.set_groups"`, `"auth.set_permissions"`, `"auth.set_password"`, `"auth.impersonate"`. Empty: none is ([Changes of the admin API](#changes-of-the-admin-api)). It needs `domainkit.contrib.auth` (`setup()` fails without it). |
+| `ADMIN_APPROVALS` | `{}` | The changes of the admin API held for approval, each with the approvals it needs (1 to 10): `"auth.set_staff"`, `"auth.set_groups"`, `"auth.set_permissions"`, `"auth.set_password"`, `"auth.impersonate"`, and, since 2.7, `"auth.reactivate"` and `"auth.set_group_permissions"`. Empty: none is ([Changes of the admin API](#changes-of-the-admin-api)). It needs `domainkit.contrib.auth` (`setup()` fails without it). |
 | `ADMIN_APPROVERS` | `None` | The permission whoever approves those changes holds; `None`: superusers approve, and only they. An empty text is `None` too. |
 
 ## On PostgreSQL and SQLite
@@ -1241,6 +1303,9 @@ So do submitting, rejecting, and cancelling with `SUBMIT_ACTION`,
 - **Waiting for the worker to make a change of the admin API.** It never
   does: the staff member sends the same call again once the request is
   approved.
+- **Holding the admin API's grants and not your own.** An invitation, a
+  command, or a backend that grants access goes around `ADMIN_APPROVALS`:
+  guard it too ([Grants made elsewhere](#grants-made-elsewhere)).
 - **Removing `SECRET_KEY` while requests wait.** Their seals no longer
   hold. Keep the old key in `SECRET_KEY_FALLBACKS`.
 

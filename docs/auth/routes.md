@@ -351,9 +351,18 @@ router.include_router(
 - `without=[...]` leaves out the routes it names.
 - `dependencies={name: [Depends(...)]}` adds dependencies to a route: a
   rule, as here, or a check of your own, which may read the request's
-  body. They run after its routers' dependencies and the route's own,
-  before its endpoint. OpenAPI shows them as it shows the route's other
-  dependencies.
+  body. They run after its routers' dependencies and the route's own
+  `dependencies=[...]`, before its endpoint. OpenAPI shows them as it
+  shows the route's other dependencies.
+- **A rule a route takes as its endpoint's parameter runs after them.**
+  FastAPI solves a route's `dependencies=[...]` first, then its
+  endpoint's parameters (`user: AuthenticatedUser`), so a check you add
+  answers before such a rule refuses. The admin API declares each
+  route's staff rule among its dependencies, and takes the staff member
+  from the same one, which FastAPI runs once (since 2.7): its rules
+  answer first. Before, a check added to an admin route ran for anyone,
+  signed in or not (user report A17). On another route, put the rule in
+  front of your check: `[Depends(Require(rule)), Depends(check)]`.
 
 A route's name is `METHOD /path`, as its router declares it: the path
 has the prefixes of the routers it is included through, but not the
@@ -415,7 +424,7 @@ action: `view`, `add`, `change`, or `delete` on the user model
 | `GET /users/{id}` | | The user. |
 | `PATCH /users/{id}` | `{"is_active", "is_staff", "is_superuser", "fields"}` | The user; what you leave out stays. A new email or mobile number is set at once, unproved, and drops one the user held ([Changing an address or a number](users.md#changing-an-address-or-a-number)). |
 | `DELETE /users/{id}` | | `204`; the user's tokens, second factor (secret and recovery codes), and object permissions go too. |
-| `POST /users/{id}/password` | `{"password"}` | `204`; `null` makes it unusable. Every session of the user ends. |
+| `POST /users/{id}/password` | `{"password"}` | `204`; `null` makes it unusable. Every session of the user ends. A password among the user's last ones (`AUTH.PASSWORD_HISTORY`) is refused, and counts as a wrong password of theirs (since 2.7; `429` past `AUTH.LOGIN_RATE`). |
 | `POST /users/{id}/logout` | | `204`: every session of the user ends. |
 | `POST /users/{id}/impersonate` | `{"reason"}` | `201` and a token that acts as the user for `AUTH.IMPERSONATION_TTL` ([Impersonation](#impersonation)). |
 | `PUT /users/{id}/groups` | `{"groups": [names]}` | The user, in exactly those groups. |
@@ -466,15 +475,32 @@ what.
   `on_admin_change(check)` (`domainkit.contrib.auth.gates`) is called
   with the staff member, the user (None when creating one), and an
   `AdminChange`, once the admin API's own checks passed (the bounds below,
-  the fields, a password's validators) and right before the change: its
+  the fields, a password's validators and, since 2.7, the user's
+  password history) and right before the change: its
   `kind` (`create`, `update`, `delete`, `password`, `logout`,
   `impersonate`, `groups`, `permissions`), the `fields` and flags it
-  sets, the groups or permissions it `added` and `removed`, and, since
-  2.4, the `values` it sets (`{"is_staff": True}`, the `reason` of an
-  impersonation; never a password). Raise `PermissionDenied` to refuse it
+  sets, the groups or permissions it `added` and `removed`, since
+  2.4 the `values` it sets (`{"is_staff": True}`, the `reason` of an
+  impersonation; never a password), and since 2.7 the `groups` it adds,
+  each an `AddedGroup` (its id, name, and permissions as read). Raise
+  `PermissionDenied` to refuse it
   ("nobody edits their own account here", "making staff needs another
   permission"). `admin.may_grant` and `admin.may_hold`, the ceilings
   below, are public for your own routes.
+- **Every change to a group passes them too** (since 2.7):
+  `on_admin_group_change(check)` is called with the staff member, the
+  group as stored (None when creating one), and a `GroupChange`: its
+  `kind` (`group_create`, `group_rename`, `group_permissions`,
+  `group_delete`), the `name` it gives, and the permissions it `added`
+  and `removed`. Before 2.7 the group routes called no check, so a check
+  of a group's change could only be a dependency of its route (user
+  report A19). A group's checks are a point of their own: a check written
+  for a user's changes is never given a group.
+- **Checks run in an order.** Hooks run by the `order` they registered
+  with, lowest first (0 by default), then in `INSTALLED_DOMAINS` order
+  (since 2.7). Approvals registers its hold at `order=100`, so your
+  checks refuse a change before an approval is spent on it
+  ([approvals](../contrib/approvals.md#changes-of-the-admin-api)).
 - **Each change can ask for an authorization of its own** (since 2.5,
   `AUTH.ADMIN_ACTION`), confirmed on the staff member's phone, with a
   code, or with a passkey
@@ -582,11 +608,26 @@ PUT  /admin/auth/users/6f1c.../groups {"groups": ["auditors"]}
   group that is not there, the last active superuser deleted or
   deactivated (`409 last_superuser`), and the `on_create_staff` checks (a
   user created staff while approvals hold making staff, `403
-  approval_required`). It runs no `on_admin_change` check, and changes
-  nothing. What only the change finds is refused then, after the
-  confirmation: a username or a group name taken, a password the user
-  had before (`AUTH.PASSWORD_HISTORY`), and the project's
-  `on_admin_change` checks.
+  approval_required`). Since 2.7 it runs the `on_admin_change` checks
+  (a group's twin, the `on_admin_group_change` checks) with `asking`
+  true: a change your checks refuse is refused before the staff member
+  confirms it (user report A17), and approvals' hold submits and spends
+  nothing there. A check that writes should write nothing while
+  `asking`. The twin changes nothing. What only the change finds is
+  refused then, after the confirmation: a username or a group name
+  taken, and a password the user had before (`AUTH.PASSWORD_HISTORY`),
+  which the twin does not compare, as it would answer that guess
+  unconfirmed.
+- **A reused password spends the authorization** (since 2.7). The act
+  binds only that a password is set, so before 2.7 one confirmation
+  tested password after password against the user's history, refused
+  each time and spending nothing (user report A17). Now a password among
+  the user's last ones is refused before the `on_admin_change` checks,
+  spends the authorization, and counts as a wrong password of the
+  user's (`AUTH.LOGIN_RATE` and `ACCOUNT_LOGIN_RATE`, as a password the
+  user types does; `429 rate_limited` past them). One confirmation is
+  one guess. A password that will do gives its count back. The count
+  holds with `AUTH.ADMIN_ACTION` off too.
 - **Checked before the project's checks, spent with the change.** The
   authorization must bind the change before the `on_admin_change` checks
   run, so a change it does not bind is never held for approval. It is

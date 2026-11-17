@@ -744,9 +744,11 @@ def test_an_approval_does_not_reach_a_group_made_again(client: TestClient) -> No
     assert user_of(bob).groups == set()
 
 
-def deactivated(name: str, **flags: bool) -> UUID:
-    """A user ``name``, made with ``flags``, then made inactive."""
-    user_id = create_user(name, **flags)
+def deactivated(
+    name: str, *, is_staff: bool = False, is_superuser: bool = False
+) -> UUID:
+    """A user ``name``, staff or a superuser as asked, then made inactive."""
+    user_id = create_user(name, is_staff=is_staff, is_superuser=is_superuser)
 
     async def deactivate() -> None:
         async with AuthUnitOfWork() as uow:

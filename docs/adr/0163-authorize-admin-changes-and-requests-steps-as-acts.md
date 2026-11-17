@@ -1,6 +1,6 @@
 # 0163. Authorize admin changes, and a request's steps, as acts
 
-- Status: Accepted; amended 2026-11-17 (at the end)
+- Status: Accepted; amended 2026-11-17 (at the end); amended by [0172](0172-hold-admin-changes-by-what-they-grant-and-check-before-the-hold.md)
 - Date: 2026-11-16
 - Amends: [0144](0144-authorize-one-act-not-a-window-of-time.md),
   [0154](0154-hold-admin-changes-for-approval-and-show-requests-to-those-they-concern.md)

@@ -36,6 +36,48 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.6 to 2.7
+
+2.7 follows up 2.6. No table changes. Each item of this list says what a
+project that relied on 2.6's behaviour changes.
+
+- **An approval of `auth.set_groups` grants the groups it held**
+  ([ADR 0172](adr/0172-hold-admin-changes-by-what-they-grant-and-check-before-the-hold.md)).
+  The request's arguments hold `groups` beside the names: each group
+  added, by id, with the permissions it grants. A request approved under
+  2.6 and not yet made holds no `groups`: the staff member's call submits
+  a new request (`403 approval_pending`), which is approved again. Code
+  that reads a request's arguments finds the new key; a group renamed,
+  made again, or granted other permissions since the request was made
+  makes another request. A `409 group_in_use` of your own, which kept a
+  named group from changing, can go.
+- **`auth.set_staff` holds a staff member's return.** Where
+  `ADMIN_APPROVALS` holds `auth.set_staff` and not `auth.reactivate`,
+  `PATCH /users/{id}` with `"is_active": true` for an inactive staff
+  member waits for approval, as making staff does. Hold
+  `auth.reactivate` too to hold the return of anyone who holds access;
+  a call that then makes a user staff and active again is refused (`403
+  approval_required`): send two.
+- **The admin API's twins run your `on_admin_change` checks**, with
+  `change.asking` true (a group's twins run the `on_admin_group_change`
+  checks). A check that only refuses needs nothing; one that writes (an
+  audit row of its own, a count) should write nothing while `asking`, or
+  it writes once at the twin and once at the change.
+- **Approvals' hold runs after your checks.** It registers at
+  `order=100`; a check you registered for `auth` to run before it can be
+  registered for its own domain again. A check that must see the hold's
+  outcome registers with an order above 100.
+- **A reused password costs a try.** `POST /admin/auth/users/{id}/password`
+  compares the password with the user's history before the
+  `on_admin_change` checks; a reuse counts as a wrong password of the
+  user's (`AUTH.LOGIN_RATE`, `ACCOUNT_LOGIN_RATE`: `429 rate_limited`
+  past them), and, with `AUTH.ADMIN_ACTION`, spends the change's
+  authorization: confirm again to try another password.
+- **A check added to an admin route with `select_routes` runs after the
+  admin API's rules.** It no longer sees requests the rules refuse
+  (anonymous, not staff, without the model permission or the
+  authorization); rules you put in front of it for that can go.
+
 ## 2.5 to 2.6
 
 2.6 follows up 2.5. No table changes. Each item of this list says what a
