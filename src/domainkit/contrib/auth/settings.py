@@ -101,6 +101,10 @@ MAX_HELD_TTL: Final = timedelta(days=7)
 """The longest an act held for approval keeps its authorization (``HELD_TTL``)."""
 ACTION_PURPOSE: Final = r"^[a-z][a-z0-9_.:-]*$"
 """An act's purpose, as ``AUTHORIZATIONS.ACTIONS`` names it (``auth.access``)."""
+MAX_NAMED_PERMISSIONS: Final = 20
+"""The most permission keys ``AUTHORIZATIONS.NAMED_PERMISSIONS`` names."""
+NamedPermission = Annotated[str, Field(pattern=r"^\w+\.\w+$", max_length=64)]
+"""A permission key a screen names: ``<domain>.<codename>``, on one line."""
 
 
 class PasswordValidatorConfig(BaseModel):
@@ -366,13 +370,22 @@ class AuthorizationsSettings(BaseModel):
     a project's own): its ``TTL`` and ``METHODS``, in place of what its
     ``Action`` declares and of the two settings above. ``check`` refuses a
     purpose no registered action has (``auth.E112``)."""
+    NAMED_PERMISSIONS: tuple[NamedPermission, ...] | None = Field(
+        default=None, max_length=MAX_NAMED_PERMISSIONS
+    )
+    """Permission keys a screen names wherever it would count them (since
+    2.8): beside the groups a change adds, with what a user made active
+    again holds, and first in a list of keys, on the admin API's act and on
+    approvals' holds of its changes. None: ``TENANCY.ALL_TENANTS_PERMISSION``,
+    where it is set; ``()``: none."""
 
     _check_methods = field_validator("METHODS")(with_a_second_factor)
 
     def __hash__(self) -> int:
         """Hash every key, ``ACTIONS`` as its items: the settings are cached."""
         actions = tuple(sorted(self.ACTIONS.items()))
-        return hash((self.TTL, self.METHODS, self.HELD_TTL, actions))
+        named = self.NAMED_PERMISSIONS
+        return hash((self.TTL, self.METHODS, self.HELD_TTL, actions, named))
 
 
 class ClientCertSettings(BaseModel):
@@ -613,6 +626,14 @@ class AuthSettings(BaseModel):
     logins too, so ``LOGIN_RATE`` bounds every guess at the account's
     password. False, the default, counts them apart, so others' wrong
     logins never keep a signed-in user from changing the password."""
+    STAFF_REUSES_COUNT_AS_PASSWORD_CHECKS: bool = False
+    """Count a staff member's reuses of a user's old passwords (the admin
+    API's password change, with ``PASSWORD_HISTORY``) against that user's
+    own counts of wrong passwords too, at ``LOGIN_RATE`` and
+    ``ACCOUNT_LOGIN_RATE`` (since 2.8): staff acting together share the
+    user's count. False, the default, counts them for that staff member
+    and that user alone, so the user's wrong passwords never hold back a
+    staff reset, and staff reuses never refuse the user's checks."""
     DEVICE_TTL: timedelta | None = Field(
         default=timedelta(days=30),
         ge=timedelta(hours=1),

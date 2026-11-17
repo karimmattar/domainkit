@@ -43,6 +43,21 @@ async def password_throttle(request: Request, user: AbstractBaseUser) -> Attempt
     flood of attempts writes no rows to the append-only trail. Give the
     result ``succeeded()`` once the password holds: only wrong ones count.
     """
+    return await attempt(
+        request,
+        password_limits(user),
+        action="auth.login",
+        detail=LOGIN_THROTTLED,
+    )
+
+
+def password_limits(user: AbstractBaseUser) -> list[Limit]:
+    """The user's own counts of wrong passwords, which ``password_throttle`` takes.
+
+    Per user, at ``LOGIN_RATE`` and each day at ``ACCOUNT_LOGIN_RATE``;
+    with ``PASSWORD_CHECKS_COUNT_AS_LOGINS``, the account's counts of
+    wrong logins too.
+    """
     config = auth_settings()
     daily = daily_window(config.ACCOUNT_LOGIN_RATE)
     limits: list[Limit] = [
@@ -55,12 +70,7 @@ async def password_throttle(request: Request, user: AbstractBaseUser) -> Attempt
             (account_key("login", username), config.LOGIN_RATE),
             (account_key(DAILY, username), daily),
         ]
-    return await attempt(
-        request,
-        limits,
-        action="auth.login",
-        detail=LOGIN_THROTTLED,
-    )
+    return limits
 
 
 def daily_window(rate: str | None) -> Window | None:
