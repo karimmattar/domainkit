@@ -209,7 +209,8 @@ holds only while it reads the same:
 
 ```python
 async def bound_document(command, uow: DocumentsUnitOfWork) -> int:
-    document = await uow.documents.get(DocumentId(command.document_id))
+    # Locked until the act commits (PostgreSQL); see "Races" below.
+    document = await uow.documents.get_for_update(DocumentId(command.document_id))
     return document.version
 
 
@@ -225,11 +226,13 @@ APPROVE_DOCUMENT = Action(
 - **Read where `show` reads, then again where the act runs.** Asking
   reads it in the act's unit of work, the one `show(command, uow)` is
   lent, first: what is bound is what the screen was built from. The act
-  reads it again when its service opens its unit of work (`async with
-  uow`), before the service reads anything, in the same transaction as
-  the decision; a service that commits without opening it reads it as
-  it commits. `spend_authorization(uow, ...)` reads it in `uow`, open:
-  call it before the act changes what it binds.
+  reads it again each time its service opens its unit of work (`async
+  with uow`), before the service reads anything, in the transaction of
+  the decision: a run that `uow.run(...)` retries after a lost race, or a
+  second transaction after a first that read, reads it again. A service
+  that commits with no block open reads it as it commits.
+  `spend_authorization(uow, ...)` reads it in `uow`, open: call it
+  before the act changes what it binds.
 - **The digest covers it.** The row keeps the SHA-256 of the value, as
   canonical JSON, and the act's digest is of the command and that: the
   phone signs the record as it was shown, and the trail's digest names
@@ -239,19 +242,39 @@ APPROVE_DOCUMENT = Action(
   the screen shows the record as it is now. On another database than
   auth's, the authorization was spent just before the act, as for any
   act there.
+- **A record gone**: a `binds` that raises `NotFound` voids the
+  authorization too, which could never be spent rightly, and the act
+  answers the `NotFound` (`404`). Any other error of `binds` is answered
+  as it is, and voids nothing.
 - **What to bind.** An aggregate's `version`, which every stored change
   raises, binds every field at once. A record without one binds the
   fields the act decides on (`{"sha256": file.sha256, "number":
   file.number}`), or a digest of them; any value pydantic writes as JSON.
-  Bind what the user was shown, and what the act reads to decide.
-- **Races.** The act's repository hands the service the aggregate
-  `binds` loaded in that transaction. An act that writes it is held to
-  its version as it saves; one that decides on a record it does not
-  write reads it for update in `binds` (`get_for_update`), which locks
-  it until the act commits.
+  A set is read sorted, as the command's are, so a twin and an act on
+  two workers agree. Bind what the user was shown, and what the act
+  reads to decide.
+- **Races.** Between the check and the act's commit, another request may
+  change the record. What holds it off depends on the database:
+  - **PostgreSQL**: `binds` reads it with `get_for_update`, as above. The
+    row stays locked until the act's transaction ends: a writer waits,
+    and the service, reading it any way, decides on what was bound.
+  - **SQLite has no row locks**: `get_for_update` locks nothing there,
+    and another connection may change the record meanwhile. What remains
+    is the aggregate's `version`, for an act that writes the record: the
+    repository hands the service the aggregate `binds` loaded, and the
+    save of a version that no longer holds fails. An act that does not
+    write the record has no guard against such a change on SQLite.
+  - **A race the version catches** answers `409 concurrent_update`, as
+    any lost race does: nothing commits, and the authorization is not
+    spent, nor voided. Sent again (or run again by `uow.run`), `binds`
+    reads the changed record: `409 action_record_changed`, voided.
+  - **A service that reads it again with `get_for_update`**, after a
+    `binds` that read it without a lock, loads the newest row and
+    decides on it, past the check: lock it in `binds` instead.
 - **Mistakes refused**: a `binds` that is not callable
   (`ImproperlyConfigured` when declared), that answers what JSON cannot
-  hold, or that commits; asking without the act's unit of work
+  hold (bytes that are not UTF-8, a lone surrogate, NaN, an infinity),
+  or that commits; asking without the act's unit of work
   (`unit_of_work=`); a service that takes none, or never opens it.
 
 ## The route asks: `StepUp(for_=...)`
@@ -499,24 +522,38 @@ expired with its `TTL`, five minutes, long before the approver came, so
 the maker confirmed the change a second time.
 
 With `AUTH.AUTHORIZATIONS.HELD_TTL` set (`timedelta(days=1)`, a week at
-most), approvals keeps it instead: until the request expires, and at most
-`HELD_TTL` past its own expiry. The maker's call, once approved, spends it
-as any act does, once.
+most), approvals keeps it instead, for that request. The maker's call,
+once the request is approved, spends it as any act does, once.
 
+- **For that request, while it waits.** The authorization works while
+  the request is pending, or approved and not yet carried out, and
+  within its time; at most `HELD_TTL` past the authorization's own
+  expiry. Once the request is rejected, withdrawn, expired, failed, or
+  carried out, the hold is over, and the authorization with it, its own
+  five minutes left or not: it never submits another request. The row
+  keeps what it is held for (`held_for`, `approvals.request:<id>`) and
+  until when (`held_until`).
 - **Only what an act took, and did not spend**: the authorization the
-  held call carried, checked against that change. The row keeps when it
-  is held until (`held_until`); its code still covers its own expiry, and
-  the hold counts only within `HELD_TTL` of it, so a lowered setting
-  shortens the holds made before.
+  held call carried, checked against that change. Its code still covers
+  its own expiry, and the hold counts only within `HELD_TTL` of it, so a
+  lowered setting shortens the holds made before.
+- **Where it holds**: the admin API's changes (`ADMIN_APPROVALS`), and a
+  service of the project's decorated `requires_authorization` outside
+  `requires_approval(by_maker=True)`, its act on auth's database. On
+  another database the authorization is spent before the act, and a
+  guard outside `requires_authorization` refuses before the act takes
+  it: as in 2.6, the maker confirms again.
 - **Confirming is as short as ever.** `TTL` still bounds the time from
   asking to confirming, as OWASP's transaction authorization asks; only
   a confirmed authorization of an act that waits is kept.
 - **`None`, the default**, keeps 2.6's behaviour: the maker confirms
   again, once approved, with a new authorization.
 - Code that holds an act of its own for approval says so with
-  `hold_authorizations(until)`, from `domainkit.contrib.auth.actions`,
-  in the request of the held call: it is written as the response
-  starts.
+  `hold_authorizations(until, held_for="<app>.<kind>:<id>")`, from
+  `domainkit.contrib.auth.actions`, in the request of the held call (it
+  is written as the response starts), and registers an `on_held_act`
+  hook, `async (held_for) -> bool | None`, that answers whether it still
+  waits (None for another app's). A hold no hook answers for is over.
 
 ## The trail, privacy, and the purge
 
@@ -609,7 +646,9 @@ AUTH = {
 ```
 
 It takes any registered act, a project's own too, where one deployment
-asks more than another. `check` refuses a purpose no registered action
+asks more than another. An entry's `METHODS` replace an action's own,
+even stricter ones: the deployment's word about one act is the last. Name
+in it no less than the act needs. `check` refuses a purpose no registered action
 has (`auth.E112`): a name mistyped, or an act whose setting is off,
 would hold for nothing. Methods that no installed way to confirm proves
 are `auth.E108`, as for an action's own.

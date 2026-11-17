@@ -75,11 +75,17 @@ reported four gaps against 2.6 (user reports A24 and A17).
 | A version column read by the framework | Needs a convention every record follows; records without one (a file in storage, a row of another service) cannot. |
 | **`Action(binds=...)`: a function of the command and the unit of work, read at the twin and at the act; its value's SHA-256 kept on the row, and covered by the digest** | One column (`bound`). A project names what to bind; an aggregate's `version` serves most. |
 
-Where the act reads it: before the service reads (when it opens its unit
-of work), in the act's own transaction, so the decision and the check
-see one state. Reading it at the commit would read the record after the
-act changed it. Reading it before the service, in a unit of work of its
-own, leaves a window between the check and the decision.
+Where the act reads it: before the service reads, each time it opens
+its unit of work, in the act's own transaction, so the decision and the
+check see one state. Reading it at the commit would read the record after
+the act changed it. Reading it before the service, in a unit of work of
+its own, leaves a window between the check and the decision. Reading it
+once per act, at the first block, left the next ones unchecked: a run
+`uow.run` retries after a lost race, or a decision in a second
+transaction, went on with the record renamed meanwhile (found in
+review). What keeps a writer off between the check and the commit is
+the database's: a row lock taken in `binds` on PostgreSQL; on SQLite,
+which has no row locks, only the version of an aggregate the act writes.
 
 How the twin's value is kept: the digest, which the HMAC code covers and
 the phone signs, is of the command and what was bound; the row keeps the
@@ -93,7 +99,8 @@ action_record_changed`), which the client answers by asking again.
 | --- | --- |
 | A longer `TTL` for `auth.admin_change` (above 30 minutes) | Every admin change could be confirmed hours after it was asked, against OWASP 2.9, held or not. |
 | Two lifetimes, to confirm and to use | Every confirmed authorization lives the longer one, held or not. |
-| **Kept when held: approvals, which holds the act, says so; the row keeps `held_until`, at most `HELD_TTL` past its own expiry, and at most the request's expiry** | One column. The code covers the expiry, not the hold; the hold counts only within `HELD_TTL` of the expiry, so a row changed to hold longer gains nothing past the setting. |
+| Kept when held, until the request's expiry | A rejected or withdrawn request leaves it working: the same header submitted a new request hours later, with no new confirmation (found in review). |
+| **Kept when held, for that request: approvals, which holds the act, says so and names the request; the row keeps `held_until` and `held_for`; it works while a hook of the holder says the request still waits, and at most `HELD_TTL` past its own expiry** | Two columns, and a hook auth asks for a held authorization. The code covers the expiry, not the hold; the hold counts only within `HELD_TTL` of the expiry, so a row changed to hold longer gains nothing past the setting. |
 
 A setting, off by default: keeping an authorization longer changes what
 a 2.6 project relies on, so it is a project's choice, as Entra PIM's is
@@ -118,8 +125,11 @@ an administrator's.
 ### `Action(binds=...)`
 
 - `binds(command, uow)`, a coroutine or a plain function, reads the
-  record the act decides on and answers a value pydantic writes as JSON.
-  It is lent the unit of work as `show` is, which refuses a commit.
+  record the act decides on and answers a value pydantic writes as JSON:
+  a set is read sorted, as the command's are, so processes of other hash
+  seeds agree; bytes that are not UTF-8, a lone surrogate, NaN and the
+  infinities are refused. It is lent the unit of work as `show` is,
+  which refuses a commit.
 - **Asked**: `request_action_authorization` reads it first, then `show`,
   in one unit of work the act's factory makes (a `ResourceRouter`'s twin
   gives its route's). The row keeps the SHA-256 of the value as
@@ -128,11 +138,15 @@ an administrator's.
   carry it, the code covers it.
 - **At the act**: `requires_authorization` checks the command against the
   digest with the stored `bound`, as before (`403`, voided), then reads
-  `binds` when the service opens its unit of work (`async with uow`), or
-  commits without opening it. Another value: the unit of work is left,
-  the authorization voided, the trail told `record_changed`, and the act
-  refused `409 action_record_changed` (`ActionRecordChanged`).
+  `binds` each time the service opens its unit of work (`async with
+  uow`, the outermost block), or commits with none open. Another value:
+  the unit of work is left, the authorization voided, the trail told
+  `record_changed`, and the act refused `409 action_record_changed`
+  (`ActionRecordChanged`). A `binds` that raises `NotFound` voids it too
+  and the act answers the `NotFound`; any other error voids nothing.
   `spend_authorization(uow, ...)` reads it in `uow`, open, first.
+- A race the version check catches is `409 concurrent_update`, and
+  spends and voids nothing; the next attempt meets the check.
 - `ImproperlyConfigured`: `binds` not callable, a value JSON cannot
   hold, a `binds` that commits, asking without the act's unit of work,
   a service that takes none or never opens it.
@@ -141,29 +155,49 @@ an administrator's.
 
 - `AUTH.AUTHORIZATIONS.HELD_TTL`, a `timedelta` of at most 7 days, None
   by default.
-- `hold_authorizations(until)` (`auth.actions`): the request's
-  authorizations that an act took (`requires_authorization`,
-  `check_authorization`) and did not spend are kept until `until`, at
-  most `HELD_TTL` past their own expiry, written in a transaction of
-  their own as the response starts. Approvals calls it where a guard
-  `by_maker` refuses with `ApprovalPending`, with the request's expiry.
-- The row's `held_until` keeps it. An authorization works before its
-  expiry, or before `held_until` and within `HELD_TTL` of its expiry.
-  The purge keeps it while it is held.
+- `hold_authorizations(until, *, held_for)` (`auth.actions`): the
+  request's authorizations that an act took (`requires_authorization`,
+  `check_authorization`) and did not spend are kept for `held_for` until
+  `until`, at most `HELD_TTL` past their own expiry, written in a
+  transaction of their own as the response starts; never for another
+  `held_for` once held. Approvals calls it where a guard `by_maker`
+  refuses with `ApprovalPending`, with the request's expiry and
+  `approvals.request:<id>`.
+- `on_held_act` (`auth.actions`): hooks answer whether a `held_for`
+  still waits (True), is over (False), or is another app's (None).
+  Approvals answers for its requests: pending, or approved and not run,
+  within their time. A held authorization works only while a hook
+  answers True and none False, its own expiry left or not; past its
+  expiry, before `held_until` and within `HELD_TTL` of its expiry. The
+  purge keeps it while `held_until` is ahead.
+- It holds where the act takes the authorization and leaves it unspent
+  when the guard refuses: the admin API, and `requires_authorization`
+  outside `requires_approval`, on auth's database. Elsewhere it is spent
+  or never taken, as in 2.6.
 
 ### Each act its own methods and lifetime
 
 - `AUTH.AUTHORIZATIONS.ACTIONS`: per purpose, `TTL` (30 minutes at
   most) and `METHODS` (holding `otp` or `phone`), each optional, in place
   of the `Action`'s `ttl` and `methods` and of `TTL` and `METHODS`.
-- `auth.E112`: a purpose there that no registered action has.
+- An entry's `METHODS` replace the action's own, even stricter ones: the
+  deployment's word about one act is the last, as `METHODS` is for an
+  action that names none.
+- `auth.E112`, an error: a purpose there that no registered action has.
+  [versioning.md](../versioning.md) adds checks in a minor release as
+  warnings, so a project that passed `check` keeps passing. This one
+  reads only `ACTIONS`, new in 2.7: no project of 2.6 can trip it, and a
+  purpose mistyped there would leave an act asking less than the
+  deployment meant, silently.
 
 ### The phone's list
 
 - `GET /app-sign-in/requests?withdrawn=true` lists, among those waiting,
   the pushes asked within `REQUEST_TTL` that ended unanswered, each
-  `"withdrawn": true`: what a session withdrew. Approving it and a plain
-  deny stay `404`; `deny` with `report` takes it, as since 2.5.
+  `"withdrawn": true`, and the others `"withdrawn": false`: what a
+  session withdrew. Without the parameter the answer is 2.6's, without
+  the field. Approving it and a plain deny stay `404`; `deny` with
+  `report` takes it, as since 2.5.
 
 ## Consequences
 
@@ -173,18 +207,23 @@ an administrator's.
   asked before a deploy that adds `binds` has no bound value, and is
   refused once.
 - **A record the act does not write** is read for update in `binds`, so
-  that no writer changes it between the check and the commit; one the
-  act writes is held to its version as it saves. The docs say so.
-- **Two nullable columns** on `domainkit_authorizations`, `bound` and
-  `held_until`: `makemigrations`, then `migrate` (the upgrading notes).
-  Rows of 2.6 bind no record and are held by nothing.
+  that no writer changes it between the check and the commit, on
+  PostgreSQL; SQLite has no row locks, and holds only an aggregate the
+  act writes to its version. A service that reads the record again with
+  `get_for_update` after an unlocked `binds` decides on the newest row:
+  the docs say to lock in `binds`.
+- **Three nullable columns** on `domainkit_authorizations`, `bound`,
+  `held_until`, and `held_for`: `makemigrations`, then `migrate` (the
+  upgrading notes); before it, every use of the table is a `500`. Rows
+  of 2.6 bind no record and are held by nothing.
 - **A held change is made without a second confirmation** where a
   project sets `HELD_TTL`; its maker's login must still be the one that
   asked, and the change the one confirmed.
 - **Each act asks what its entry names**; a project that asks the phone
   of the back office alone sets two or five entries, not the default.
 - **New names**: `Action(binds=...)`, `Action.read`, `Action.bound_in`,
-  `ActionRecordChanged`, `hold_authorizations`; settings `HELD_TTL` and
+  `ActionRecordChanged`, `hold_authorizations`, `on_held_act`; settings
+  `HELD_TTL` and
   `ACTIONS`; the check `auth.E112`; the problem code
   `action_record_changed`; the list's `withdrawn` parameter and field.
   Nothing is renamed or removed: a minor release (2.7).

@@ -92,13 +92,17 @@ class ApprovalsConfig(DomainConfig):
                 f"APPROVALS.ADMIN_APPROVALS guards the admin API of {AUTH}: install it."
             )
         if registry.is_installed(AUTH):
+            from domainkit.contrib.auth.actions import on_held_act
             from domainkit.contrib.auth.gates import (
                 on_admin_change,
                 on_create_staff,
                 on_make_superuser,
             )
 
+            from .services import held_request_waits
+
             on_make_superuser(refuse_ungoverned_superusers, domain=self.label)
+            on_held_act(held_request_waits, domain=self.label)
             if config.SUPERUSER_APPROVALS:
                 guard_superusers(config)
             if config.ADMIN_APPROVALS:

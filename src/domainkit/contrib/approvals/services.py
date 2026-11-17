@@ -364,23 +364,51 @@ async def run_by_maker(guard: Guard, command: object) -> Running:
     )
     if waiting is None:
         waiting = await _submit(guard, command, maker, ApprovalsUnitOfWork())
-    _keep_authorizations(waiting.expires_at)
+    _keep_authorizations(waiting.id, waiting.expires_at)
     raise ApprovalPending(
         "This command needs approval: it was submitted for approval.", waiting.id
     )
 
 
-def _keep_authorizations(until: datetime) -> None:
-    """Keep the action authorization of the maker's held call until ``until``.
+HELD_FOR: Final = "approvals.request:"
+"""What auth is told a maker's held call waits on: the request, by id."""
+
+
+def _keep_authorizations(request_id: UUID, until: datetime) -> None:
+    """Keep the action authorization of the maker's held call for the request.
 
     With ``domainkit.contrib.auth`` installed, its ``hold_authorizations``:
-    the call made again once approved spends it, within
-    ``AUTH.AUTHORIZATIONS.HELD_TTL`` (ADR 0174). Without, there is none.
+    the call made again once the request ``request_id`` is approved spends
+    it, within ``AUTH.AUTHORIZATIONS.HELD_TTL``, while the request still
+    waits (``held_request_waits``), until ``until``, its expiry (ADR 0174).
+    Without auth, there is none.
     """
     if registry.is_installed(AUTH):
         from domainkit.contrib.auth.actions import hold_authorizations
 
-        hold_authorizations(until)
+        hold_authorizations(until, held_for=f"{HELD_FOR}{request_id}")
+
+
+async def held_request_waits(held_for: str) -> bool | None:
+    """Whether the request an authorization is held for waits still (auth's hook).
+
+    Pending or approved, unrun, and its time not up: True. Rejected,
+    cancelled, expired, failed, carried out, or gone: False, and the hold
+    is over. None for what is not a request of approvals'.
+    """
+    if not held_for.startswith(HELD_FOR):
+        return None
+    try:
+        request_id = RequestId(UUID(held_for.removeprefix(HELD_FOR)))
+    except ValueError:
+        return False
+    async with ApprovalsUnitOfWork() as uow:
+        request = await uow.requests.find(request_id)
+    return (
+        request is not None
+        and request.status in {RequestStatus.PENDING, RequestStatus.APPROVED}
+        and not request.expired(clock.now())
+    )
 
 
 async def _spend(

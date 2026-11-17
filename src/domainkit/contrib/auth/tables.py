@@ -464,8 +464,10 @@ authorizations = Table(
     # asked; the digest covers it (ADR 0174).
     Column("bound", String(64)),
     # While its act waits for approval: kept past ``expires_at`` until then,
-    # within ``AUTHORIZATIONS.HELD_TTL`` of it (ADR 0174).
+    # within ``AUTHORIZATIONS.HELD_TTL`` of it, while what it is held for
+    # (``approvals.request:<id>``) still waits (ADR 0174).
     Column("held_until", UTCDateTime),
+    Column("held_for", String(SUBJECT_MAX_LENGTH)),
     Index("ix_domainkit_authorizations_user_id", "user_id"),
     Index("ix_domainkit_authorizations_login", "login"),
     Index("ix_domainkit_authorizations_expires_at", "expires_at"),

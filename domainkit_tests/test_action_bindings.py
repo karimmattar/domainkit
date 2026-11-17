@@ -11,6 +11,9 @@ the authorization.
 """
 
 import io
+import os
+import subprocess
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -38,7 +41,15 @@ from domainkit.management import call_command
 from domainkit.management.base import run_async
 from domainkit_tests import sample_action_resources as shop
 from domainkit_tests import sample_bound_action_routes as pages
-from domainkit_tests.conftest import ALPHA, AUTH, CONTENTTYPES, FAST_HASHER, Api
+from domainkit_tests import sample_bound_race_routes as races
+from domainkit_tests.conftest import (
+    ALPHA,
+    AUTH,
+    CONTENTTYPES,
+    FAST_HASHER,
+    POSTGRES_VARIABLE,
+    Api,
+)
 from domainkit_tests.sample_domains.shop.models import ProductId
 from domainkit_tests.support.auth import audited, bearer, create_user, grant, login
 from domainkit_tests.test_action_authorisations import rows
@@ -55,6 +66,8 @@ from domainkit_tests.test_auth_stepup import enrol, now_code
 __all__ = ["frozen"]  # The fixture the tests take.
 
 PAGES: Final = "domainkit_tests.sample_bound_action_routes.router"
+RACES: Final = "domainkit_tests.sample_bound_race_routes.router"
+ON_POSTGRES: Final = bool(os.environ.get(POSTGRES_VARIABLE))
 
 
 class Publisher(Shopper):
@@ -216,6 +229,111 @@ def test_a_bound_value_changed_in_the_row_fails_its_code(alice: Publisher) -> No
     assert shop.PUBLISHED == []
 
 
+# Someone renames the product while the act runs -----------------------------
+
+
+class Approver(Shopper):
+    """Alice, who approves products, and asks for an authorization of it."""
+
+    def approving(self, product: UUID) -> str:
+        """``<id>.<code>``: a confirmed authorization of approving ``product``."""
+        asked = self.client.post(
+            f"/approve-authorization/{product}", headers=self.headers
+        )
+        assert asked.status_code == 201, asked.json()
+        confirmed = self.confirm(asked.json()["id"])
+        assert confirmed.status_code == 200, confirmed.json()
+        authorization: str = confirmed.json()["authorization"]
+        return authorization
+
+    def approve(self, way: str, product: UUID, authorization: str) -> Any:  # noqa: ANN401
+        """Approve ``product`` through the service ``way`` names."""
+        return self.client.post(
+            f"/approve/{way}/{product}",
+            headers={**self.headers, "Action-Authorization": authorization},
+        )
+
+
+@pytest.fixture
+def approver(identity: Api, frozen: FrozenClock) -> Iterator[Approver]:
+    """Alice's session at the products, the approval registered."""
+    races.APPROVED.clear()
+    races.EVENTS.clear()
+    races.LOCKING[0] = False
+    with override_settings(ROOT_ROUTER=RACES):
+        register_action(races.APPROVE, domain="shop")
+        create_user("alice")
+        grant("alice", "shop.view_product", "shop.change_product")
+        yield Approver(identity(), frozen)
+    races.APPROVED.clear()
+    races.EVENTS.clear()
+    races.LOCKING[0] = False
+
+
+@pytest.mark.parametrize("way", ["retrying", "in-two"])
+def test_each_transaction_of_the_act_reads_its_record_again(
+    approver: Approver, way: str
+) -> None:
+    """Run again after a lost race, or a second transaction: read again, refused.
+
+    Read once per unit of work, a run that ``uow.run`` retried, or a
+    decision in a second transaction, went on with no check and decided
+    on the product renamed meanwhile (found in review).
+    """
+    lamp = stock("Lamp")
+    authorization = approver.approving(lamp)
+
+    refused = approver.approve(way, lamp, authorization)
+
+    assert code_of(refused) == (409, "action_record_changed")
+    assert list(races.APPROVED) == []
+    assert races.EVENTS == ["renamed to Lava lamp"]
+    assert ended(authorization)
+
+
+def test_a_race_the_version_catches_is_a_conflict_then_a_changed_record(
+    approver: Approver,
+) -> None:
+    """Renamed between the check and the save: ``409 concurrent_update``, kept.
+
+    The act decided on the product ``binds`` loaded, whose version no
+    longer holds: nothing commits, and the authorization is not spent. Sent
+    again, it reads the product renamed: refused, and voided.
+    """
+    lamp = stock("Lamp")
+    authorization = approver.approving(lamp)
+
+    raced = approver.approve("written", lamp, authorization)
+    kept = not ended(authorization)
+    again = approver.approve("written", lamp, authorization)
+
+    assert code_of(raced) == (409, "concurrent_update")
+    assert kept
+    assert code_of(again) == (409, "action_record_changed")
+    assert ended(authorization)
+    assert list(races.APPROVED) == []
+
+
+@pytest.mark.skipif(not ON_POSTGRES, reason=f"set {POSTGRES_VARIABLE}")
+def test_binds_that_locks_the_row_holds_off_a_rename_until_the_act_commits(
+    approver: Approver,
+) -> None:
+    """PostgreSQL: ``get_for_update`` in ``binds`` locks it for the act's transaction.
+
+    An act that does not write the product decides on the product as
+    shown: the rename waits. SQLite has no row locks.
+    """
+    races.LOCKING[0] = True
+    lamp = stock("Lamp")
+    authorization = approver.approving(lamp)
+
+    approved = approver.approve("unwritten", lamp, authorization)
+
+    assert approved.status_code == 204, approved.text
+    assert races.EVENTS == ["the rename waited for the lock"]
+    assert list(races.APPROVED) == [(lamp, "Lamp")]
+
+
 # Kept elsewhere: spent before the act, read when the act opens its unit of work.
 
 
@@ -295,6 +413,25 @@ def test_an_act_elsewhere_reads_its_record_in_its_own_unit_of_work(
     assert list(pages.PUBLISHED) == [(final, "Final")]
     assert ended(stale)
     assert ended(fresh)
+    assert reasons() == ["record_changed"]
+
+
+def test_a_record_gone_since_the_screen_voids_the_authorization(
+    editor: Editor,
+) -> None:
+    """``binds`` raises ``NotFound``: the act answers it, and the authorization ends.
+
+    It could never read as it did: kept, it would wait for nothing (found
+    in review).
+    """
+    draft = page("Draft")
+    authorization = editor.authorized(draft)
+    del pages.PAGES[draft]
+
+    gone = editor.publish(draft, authorization)
+
+    assert code_of(gone) == (404, "not_found")
+    assert ended(authorization)
     assert reasons() == ["record_changed"]
 
 
@@ -389,8 +526,12 @@ def test_binds_is_a_function_that_reads_what_json_holds_and_never_commits() -> N
 
 @contextmanager
 def at_2_6() -> Iterator[None]:
-    """The authorizations table as 2.6 had it: no ``bound``, no ``held_until``."""
-    added = [authorizations.c.bound, authorizations.c.held_until]
+    """The authorizations table as 2.6 had it: no ``bound``, nothing held."""
+    added = [
+        authorizations.c.bound,
+        authorizations.c.held_until,
+        authorizations.c.held_for,
+    ]
     for column in added:
         authorizations._columns.remove(column)
     try:
@@ -400,10 +541,10 @@ def at_2_6() -> Iterator[None]:
             authorizations._columns.add(column)
 
 
-def test_a_2_6_authorizations_table_gets_its_two_columns_from_the_next_revision(
+def test_a_2_6_authorizations_table_gets_its_columns_from_the_next_revision(
     database_url: str, tmp_path: Path
 ) -> None:
-    """``makemigrations`` adds the two nullable columns, nothing else."""
+    """``makemigrations`` adds the three nullable columns, nothing else."""
     registry.clear()
     with override_settings(
         INSTALLED_DOMAINS=[CONTENTTYPES, AUTH, ALPHA],
@@ -424,8 +565,70 @@ def test_a_2_6_authorizations_table_gets_its_two_columns_from_the_next_revision(
     registry.clear()
 
     upgrade = revision.read_text(encoding="utf-8").split("def downgrade")[0]
-    assert upgrade.count("add_column(") == 2
+    assert upgrade.count("add_column(") == 3
     assert '"bound"' in upgrade
     assert '"held_until"' in upgrade
+    assert '"held_for"' in upgrade
     assert "drop_" not in upgrade
     assert checked.getvalue() == "No changes detected.\n"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [b"\xff\xfe", "\ud800", float("nan"), float("inf"), {"price": float("-inf")}],
+    ids=["bytes", "surrogate", "nan", "infinity", "nested"],
+)
+def test_binds_answers_only_what_json_writes(value: object) -> None:
+    """Bytes that are not UTF-8, a lone surrogate, NaN, an infinity: refused.
+
+    Each was a bare 500 (found in review).
+    """
+    with pytest.raises(ImproperlyConfigured, match="must answer what JSON holds"):
+        run_async(
+            noting(lambda command, uow: value).bound_in(Note(note_id=NOTE), Notes())
+        )
+
+
+SEEDED: Final = """
+import asyncio, sys
+from uuid import UUID
+from domainkit.contrib.auth.actions import Action, Shown
+from domainkit.ddd import Command
+
+class Note(Command):
+    note_id: UUID
+
+def binds(command, uow):
+    return {"tags": frozenset(f"tag-{n}" for n in range(12)), "ids": {3, 1, 2}}
+
+action = Action(
+    "notes.publish", command=Note, subject=lambda command: "notes.note:1",
+    show=lambda command: Shown("Publish a note"), binds=binds,
+)
+note = Note(note_id=UUID(int=1))
+print(asyncio.run(action.bound_in(note, object())))
+"""
+"""Prints what ``binds`` binds of a set, in a process of its own."""
+
+
+def test_a_set_is_bound_alike_whatever_the_hash_seed() -> None:
+    """Sorted as ``arguments`` sorts one: the twin and the act may run apart.
+
+    A set's order follows its items' hashes, which differ from one process
+    to the next: a twin on one worker and the act on another read other
+    values (found in review).
+    """
+    source = str(Path(__file__).parents[1] / "src")
+    bound = {
+        subprocess.run(  # noqa: S603 - the test interpreter and a fixed script.
+            [sys.executable, "-c", SEEDED],
+            env={**os.environ, "PYTHONHASHSEED": str(seed), "PYTHONPATH": source},
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        for seed in range(6)
+    }
+
+    assert len(bound) == 1
+    assert len(bound.pop()) == 64

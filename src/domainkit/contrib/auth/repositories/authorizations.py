@@ -145,6 +145,8 @@ class ActionAuthorization:
     decides on, when it was asked; the digest covers it (ADR 0174)."""
     held_until: datetime | None = None
     """Kept past ``expires_at`` until then, while its act waits for approval."""
+    held_for: str | None = None
+    """What its act waits on (``approvals.request:<id>``): it ends the hold."""
 
     @property
     def methods(self) -> frozenset[str]:
@@ -271,12 +273,13 @@ class AuthorizationStore:
         return changed_rows(result) == 1
 
     async def hold(
-        self, authorization_id: UUID, until: datetime, when: datetime
+        self, authorization_id: UUID, until: datetime, when: datetime, *, held_for: str
     ) -> bool:
-        """Keep it until ``until`` while its act waits for approval, if it is live.
+        """Keep it until ``until`` while ``held_for`` waits, if it is live.
 
-        Confirmed, unspent, and live at ``when``; a later ``until`` than the
-        one it holds only.
+        Confirmed, unspent, and live at ``when``; held for nothing yet, or
+        for ``held_for`` already, never for another; a later ``until`` than
+        the one it holds only.
         """
         columns = authorizations.c
         result = await self.session.execute(
@@ -286,9 +289,10 @@ class AuthorizationStore:
                 columns.confirmed_at.is_not(None),
                 columns.consumed_at.is_(None),
                 self._live(when),
+                or_(columns.held_for.is_(None), columns.held_for == held_for),
                 or_(columns.held_until.is_(None), columns.held_until < until),
             )
-            .values(held_until=until)
+            .values(held_until=until, held_for=held_for)
         )
         return changed_rows(result) == 1
 

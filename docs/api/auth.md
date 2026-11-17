@@ -104,6 +104,7 @@ Authorize one act, with its arguments, once (ADR 0144).
 - `linked_action_authorization`: The user's authorization the phone's request `sign_in_request_id` confirms.
 - `login_digest`: The login's digest: the SHA-256 of its scheme and token, as the phone keeps it.
 - `on_action_confirmation`: Register a way to confirm action authorizations (an `ActionConfirmation`).
+- `on_held_act`: Say whether what a held authorization's act waits on still waits.
 - `register_action`: Register an `Action` (`register_action(END_MEMBERSHIP)` in `ready()`).
 - `registered_actions`: Every registered action, by purpose.
 - `request_action_authorization`: Store an authorization of `command` for the request's user and login.

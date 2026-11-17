@@ -28,7 +28,7 @@ from domainkit.contrib.auth.actions import (
 from domainkit.contrib.auth.actions import router as actions_router
 from domainkit.contrib.auth.api import router as auth_router
 from domainkit.contrib.auth.mfa import router as mfa_router
-from domainkit.ddd import Command, UnitOfWork
+from domainkit.ddd import Command, NotFound, UnitOfWork
 from domainkit.http.access import Require
 
 __all__ = ["PAGES", "PUBLISHED", "PUBLISH_PAGE", "router"]
@@ -61,7 +61,13 @@ class PagesUnitOfWork(UnitOfWork):
 
 
 def bound_text(command: PublishPage, uow: PagesUnitOfWork) -> str:
-    """What publishing decides on: the page's text, as stored."""
+    """What publishing decides on: the page's text, as stored.
+
+    Raises:
+        NotFound: The page is gone.
+    """
+    if command.page_id not in uow.texts:
+        raise NotFound("No such page.")
     return uow.texts[command.page_id]
 
 

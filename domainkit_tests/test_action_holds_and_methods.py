@@ -13,7 +13,7 @@ project's, its own.
 
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -22,6 +22,14 @@ from pydantic import ValidationError
 
 from domainkit.clock import FrozenClock
 from domainkit.conf import override_settings
+from domainkit.contrib.approvals import ApprovalsUnitOfWork
+from domainkit.contrib.approvals.services import (
+    CancelRequest,
+    RejectRequest,
+    held_request_waits,
+    record_cancellation,
+    record_rejection,
+)
 from domainkit.contrib.auth.actions import (
     ActionAuthorization,
     Kept,
@@ -33,12 +41,14 @@ from domainkit.contrib.auth.actions import (
 )
 from domainkit.contrib.auth.apps import action_problems
 from domainkit.contrib.auth.settings import AuthorizationsSettings
+from domainkit.management.base import run_async
 from domainkit_tests.support.auth import PASSWORD, create_user
 from domainkit_tests.test_admin_actions import (
     ACTS,
     Staff,
     client,
     frozen,
+    held_requests,
     problem,
     row,
 )
@@ -147,11 +157,78 @@ def test_a_hold_ends_with_the_request_and_within_held_ttl_of_its_expiry(
     assert made.status_code == 200, made.json()
 
 
-def test_only_what_an_act_took_and_left_unspent_is_held() -> None:
-    """Outside a request nothing is; within one, an act's untaken or spent stay.
+def end_request(request_id: UUID, ending: str, maker: str, approver: UUID) -> None:
+    """Reject the request ``request_id``, or let its maker withdraw it."""
+    if ending == "reject":
+        rejected = RejectRequest(
+            request_id=request_id, approver=str(approver), reason="Not now"
+        )
+        run_async(record_rejection(rejected, ApprovalsUnitOfWork()))
+    else:
+        cancelled = CancelRequest(request_id=request_id, maker=maker)
+        run_async(record_cancellation(cancelled, ApprovalsUnitOfWork()))
 
-    Two holds keep the later time.
+
+@pytest.mark.parametrize("ending", ["reject", "cancel"])
+def test_a_hold_ends_with_its_request_rejected_or_withdrawn(
+    client: TestClient, frozen: FrozenClock, ending: str
+) -> None:
+    """The request ended: the held authorization works no more, for it or a new one.
+
+    Held until the request's expiry alone, the same header submitted a new
+    request hours after a rejection or the maker's withdrawal, with no new
+    confirmation, and made the change once that was approved (found in
+    review). Within its own five minutes too, it serves no other request.
     """
+    ann, root, path, making = making_staff(client, frozen)
+    with held_for(7 * DAY):
+        authorization = ann.authorized(f"{path}/authorization/patch", making)
+        waiting = ann.call("PATCH", path, making, authorization)
+        request_id = UUID(waiting.json()["approval_request_id"])
+        held = row(authorization)
+        maker = client.get(
+            f"/approvals/requests/{request_id}", headers=root.headers
+        ).json()["maker"]
+        end_request(request_id, ending, maker, root.id)
+        at_once = ann.call("PATCH", path, making, authorization)
+        frozen.tick(timedelta(hours=20))
+        later = ann.call("PATCH", path, making, authorization)
+
+    problem(waiting, 403, "approval_pending")
+    assert held["held_for"] == f"approvals.request:{request_id}"
+    problem(at_once, 403, "action_not_authorized")
+    problem(later, 403, "action_not_authorized")
+    assert held_requests() == 1  # None submitted with it since.
+    assert row(authorization)["consumed_at"] is None
+
+
+def test_a_hold_ends_when_its_request_expires(
+    client: TestClient, frozen: FrozenClock
+) -> None:
+    """Three days, ``EXPIRES_AFTER``: the request's time is up, and the hold's."""
+    ann, _, path, making = making_staff(client, frozen)
+    with held_for(7 * DAY):
+        authorization = ann.authorized(f"{path}/authorization/patch", making)
+        waiting = ann.call("PATCH", path, making, authorization)
+        frozen.tick(timedelta(days=3, minutes=10))
+        late = ann.call("PATCH", path, making, authorization)
+
+    problem(waiting, 403, "approval_pending")
+    problem(late, 403, "action_not_authorized")
+    assert held_requests() == 1
+
+
+def test_a_hold_counts_only_what_approvals_says_of_its_own_requests(
+    client: TestClient,
+) -> None:
+    """Another app's reference: no answer; a malformed or unknown request: over."""
+    assert run_async(held_request_waits("billing.invoice:7")) is None
+    assert run_async(held_request_waits("approvals.request:seven")) is False
+    assert run_async(held_request_waits(f"approvals.request:{uuid4()}")) is False
+
+
+def test_only_what_an_act_took_and_left_unspent_is_held() -> None:
+    """Outside a request nothing is; within one, an act's untaken or spent stay."""
     soon = datetime(2027, 1, 5, tzinfo=UTC)
     later = soon + DAY
     stored = ActionAuthorization(
@@ -165,7 +242,8 @@ def test_only_what_an_act_took_and_left_unspent_is_held() -> None:
         created_at=soon,
         expires_at=soon,
     )
-    hold_authorizations(soon)  # No request: nothing to hold.
+    request = "approvals.request:7"
+    hold_authorizations(soon, held_for=request)  # No request: nothing to hold.
     kept = Kept()
     untaken = _Accepted(stored, "code", "POST /")
     spent = _Accepted(stored, "code", "POST /", taken=True, consumed=True)
@@ -173,12 +251,11 @@ def test_only_what_an_act_took_and_left_unspent_is_held() -> None:
     kept.accepted = {"a": untaken, "b": spent, "c": taken}
     token = _kept.set(kept)
     try:
-        hold_authorizations(later)
-        hold_authorizations(soon)
+        hold_authorizations(later, held_for=request)
     finally:
         _kept.reset(token)
 
-    assert (untaken.held, spent.held, taken.held) == (None, None, later)
+    assert (untaken.held, spent.held, taken.held) == (None, None, (later, request))
 
 
 # Each act its own methods and lifetime ---------------------------------------
@@ -266,4 +343,4 @@ def test_without_auth_a_held_call_keeps_no_authorization(installed: None) -> Non
     """Approvals keeps the held call's authorization only where auth is installed."""
     from domainkit.contrib.approvals.services import _keep_authorizations
 
-    _keep_authorizations(datetime(2027, 1, 5, tzinfo=UTC))  # Nothing to keep.
+    _keep_authorizations(uuid4(), datetime(2027, 1, 5, tzinfo=UTC))  # Nothing kept.

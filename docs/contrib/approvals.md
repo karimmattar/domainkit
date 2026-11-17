@@ -207,8 +207,9 @@ own (since 2.4):
 3. The maker makes the same call again. The service runs as the approved
    request (`current_run()` names it), and the request is `executed`.
    An action authorization the first call carried and did not spend is
-   kept for this one where `AUTH.AUTHORIZATIONS.HELD_TTL` is set (since
-   2.7, [Held for approval](../auth/actions.md#held-for-approval)).
+   kept for this one where `AUTH.AUTHORIZATIONS.HELD_TTL` is set, while
+   the request waits (since 2.7,
+   [Held for approval](../auth/actions.md#held-for-approval)).
 4. A later call submits a new request.
 
 The call finds the request by its maker and its fingerprint: the oldest
@@ -648,8 +649,11 @@ PATCH /admin/auth/users/6f1c... {"is_staff": true}                       200: th
   it lives (`AUTH.AUTHORIZATIONS.TTL`) or a new one
   ([Each change, authorized as one act](../auth/routes.md#each-change-authorized-as-one-act)).
   With `AUTH.AUTHORIZATIONS.HELD_TTL` set (since 2.7), the first one is
-  kept while the request waits, until it expires and within `HELD_TTL`
-  of its own expiry, so the staff member confirms the change once
+  kept for that request while it waits or is approved and not yet run,
+  within its time and within `HELD_TTL` of the authorization's own
+  expiry, so the staff member confirms the change once. Rejected,
+  withdrawn, or expired, the request ends the hold, and the
+  authorization with it
   ([Held for approval](../auth/actions.md#held-for-approval)).
 
 The admin API asks through auth's `on_admin_change` hook, which approvals

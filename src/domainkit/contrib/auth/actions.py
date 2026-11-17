@@ -160,6 +160,7 @@ __all__ = [
     "linked_action_authorization",
     "login_digest",
     "on_action_confirmation",
+    "on_held_act",
     "register_action",
     "registered_actions",
     "request_action_authorization",
@@ -492,22 +493,25 @@ class Action:
         """The SHA-256 of what ``binds(command, uow)`` reads, as canonical JSON.
 
         ``uow`` is the act's unit of work, open: it is lent as one that
-        cannot commit.
+        cannot commit. A set is read sorted, as ``arguments`` reads one, so
+        two processes agree whatever their hash seeds.
 
         Raises:
             ImproperlyConfigured: The action binds nothing, or ``binds``
-                answered what JSON cannot hold.
+                answered what JSON cannot hold: bytes that are not UTF-8,
+                a lone surrogate, NaN or an infinity, an object pydantic
+                cannot write.
         """
         if self.binds is None:
             raise ImproperlyConfigured(f"Action {self.purpose!r} binds nothing.")
         read = _Reading(uow, self.purpose, "binds(command, uow)")
         value = await _awaited(self.binds(command, read))
         try:
-            return _sha256(to_jsonable_python(value))
-        except PydanticSerializationError:
+            return _sha256(_by_content(value, to_jsonable_python(value)), strict=True)
+        except (PydanticSerializationError, ValueError):
             raise ImproperlyConfigured(
                 f"Action {self.purpose!r}: binds(command, uow) must answer what "
-                f"JSON holds, not a {type(value).__name__}."
+                f"JSON holds, not this {type(value).__name__}."
             ) from None
 
     def subject_of(self, command: object) -> str:
@@ -696,9 +700,22 @@ def _by_content(value: object, dumped: Any) -> Any:  # noqa: ANN401 - JSON value
     return dumped
 
 
-def _sha256(value: object) -> str:
-    """The SHA-256 of ``value`` as canonical JSON, keys sorted: 64 hex digits."""
-    text = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+def _sha256(value: object, *, strict: bool = False) -> str:
+    """The SHA-256 of ``value`` as canonical JSON, keys sorted: 64 hex digits.
+
+    ``strict`` refuses NaN and the infinities, which JSON has no words for.
+
+    Raises:
+        ValueError: ``strict``, and ``value`` holds NaN or an infinity; or
+            text that UTF-8 cannot write (a lone surrogate).
+    """
+    text = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=not strict,
+    )
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
@@ -1026,8 +1043,8 @@ class _Accepted:
     """Whether a decorated service took it: spent, or tried to."""
     consumed: bool = False
     """Whether a transaction spent it, committed or not: it is held no more."""
-    held: datetime | None = None
-    """Until when its act waits for approval (``hold_authorizations``)."""
+    held: tuple[datetime, str] | None = None
+    """Until when its act waits for approval, and on what (``hold_authorizations``)."""
     unheard: str | None = None
     """A refusal the trail is told of at the end of the request: one made in
     a transaction still open, where telling it then could wait on itself."""
@@ -1096,7 +1113,7 @@ async def accepted_authorization(
         or found.purpose != purpose
         or found.confirmed_at is None
         or found.consumed_at is not None
-        or not _live(found)
+        or not await _live(found)
         or not _matches(code, found)
     ):
         await audit_refusal(ACTION, "invalid_authorization")
@@ -1108,14 +1125,22 @@ async def accepted_authorization(
     return found
 
 
-def _live(authorization: ActionAuthorization, now: datetime | None = None) -> bool:
-    """Whether it works at ``now``: before its expiry, or held for approval.
+async def _live(authorization: ActionAuthorization) -> bool:
+    """Whether it works now: before its expiry, or held for approval.
 
-    Held: until ``held_until``, and never past ``AUTHORIZATIONS.HELD_TTL``
+    One held for an act that waits on something (``held_for``) works only
+    while that still waits, as the ``on_held_act`` hooks answer: rejected,
+    cancelled, expired, or carried out, the hold is over, and the
+    authorization with it, its own expiry or not. Past its expiry, it is
+    held until ``held_until``, and never past ``AUTHORIZATIONS.HELD_TTL``
     after its expiry, which its code covers; with ``HELD_TTL`` None, a hold
     counts no more.
     """
-    moment = now or utc_now()
+    if authorization.held_for is not None and not await _still_waits(
+        authorization.held_for
+    ):
+        return False
+    moment = utc_now()
     if not authorization.expired(moment):
         return True
     held = authorization.held_until
@@ -1125,6 +1150,25 @@ def _live(authorization: ActionAuthorization, now: datetime | None = None) -> bo
         and longest is not None
         and moment < min(held, authorization.expires_at + longest)
     )
+
+
+on_held_act: Final[HookPoint[Callable[[str], Awaitable[bool | None]]]] = HookPoint(
+    "held act", arguments=1, awaited=True
+)
+"""Say whether what a held authorization's act waits on still waits.
+
+A hook takes the reference ``hold_authorizations`` was given
+(``approvals.request:<id>``), and answers True while it waits, or is
+approved and not yet carried out; False once it is over; None for a
+reference of another app's. A hold that no hook answers True for, or one
+answers False for, is over. Approvals registers one for its requests.
+"""
+
+
+async def _still_waits(held_for: str) -> bool:
+    """Whether a hook says ``held_for`` still waits, and none says it is over."""
+    answers = {await hook.call(held_for) for hook in on_held_act}
+    return True in answers and False not in answers
 
 
 def authorization_refusal(connection: HTTPConnection, purpose: str) -> Exception:
@@ -1233,15 +1277,15 @@ def _spending(action: Action, service: Service) -> Service:
         except _Spent:  # The transaction that found it spent is over.
             await audit_refusal(ACTION, "used")
             raise
-        except _Changed:  # The act's transaction is over.
-            await _refuse_changed(accepted)
+        except _Changed as changed:  # The act's transaction is over.
+            await _refuse_changed(accepted, changed)
         if check is None:
             return await service(command, uow, *args, **kwargs)
         bound = _Acting(uow, accepted, check)
         try:
             return bound.opened(await service(command, bound, *args, **kwargs))
-        except _Changed:
-            await _refuse_changed(accepted)
+        except _Changed as changed:
+            await _refuse_changed(accepted, changed)
 
     setattr(spending, SPENDS, action.purpose)
     _spending_purposes.add(action.purpose)
@@ -1298,8 +1342,8 @@ async def spend_authorization(
     if check is not None:
         try:
             await check(uow)
-        except _Changed:
-            await _refuse_changed(accepted)
+        except _Changed as changed:
+            await _refuse_changed(accepted, changed)
     if held is not None and _on_auth_database(held):
         session = getattr(held, "session", None)
         if session is None:
@@ -1391,7 +1435,10 @@ def _binding(
     stored = accepted.authorization.bound or ""
 
     async def check(uow: object) -> None:
-        bound = await action.bound_in(command, uow)
+        try:
+            bound = await action.bound_in(command, uow)
+        except NotFound as gone:  # It will never read as it did: void it.
+            raise _Changed(gone) from gone
         if not hmac.compare_digest(bound.encode(), stored.encode()):
             raise _Changed
 
@@ -1399,20 +1446,30 @@ def _binding(
 
 
 class _Changed(ActionRecordChanged):
-    """What the act binds reads otherwise than when its authorization was asked for."""
+    """What the act binds reads otherwise than when its authorization was asked for.
+
+    Or no longer exists (``binds`` raised ``NotFound``): ``answer`` is what
+    the act is refused with, once the authorization is voided.
+    """
+
+    def __init__(self, answer: Exception | None = None) -> None:
+        """Answer ``answer``, or ``409 action_record_changed``."""
+        super().__init__()
+        self.answer = answer or ActionRecordChanged()
 
 
-async def _refuse_changed(accepted: _Accepted) -> NoReturn:
+async def _refuse_changed(accepted: _Accepted, changed: _Changed) -> NoReturn:
     """Void ``accepted``, in a transaction of its own; refuse the act.
 
     Raises:
-        ActionRecordChanged: Always.
+        Exception: What ``changed`` answers: ``ActionRecordChanged``, or
+            the record's ``NotFound``.
     """
     async with AuthUnitOfWork() as uow:
         await uow.authorizations.void(accepted.authorization.id, utc_now())
         await uow.commit()
     await audit_refusal(ACTION, "record_changed")
-    raise ActionRecordChanged
+    raise changed.answer
 
 
 def _unit_of_work_of(uow: object) -> UnitOfWork | None:
@@ -1496,12 +1553,13 @@ def _used(authorization: ActionAuthorization) -> ActionAuthorizationUsed:
 
 
 class _Acting:
-    """A service's unit of work, which reads the record its act binds once it opens.
+    """A service's unit of work, which reads the record its act binds as it opens.
 
-    Entered, it reads what the action ``binds`` before the service reads
-    anything, and refuses the act if it reads otherwise (ADR 0174); a
-    commit before that reads it first. Everything else is the unit of
-    work's own.
+    Each time it is opened, it reads what the action ``binds`` in the new
+    transaction, before the service reads anything, and refuses the act if
+    it reads otherwise (ADR 0174): a run ``uow.run`` retries, and a second
+    transaction after a first, read it again. A commit made with no block
+    open reads it first. Everything else is the unit of work's own.
     """
 
     def __init__(self, uow: object, accepted: _Accepted, check: Check | None) -> None:
@@ -1510,7 +1568,9 @@ class _Acting:
         self._accepted = accepted
         self._check = check
         self.checked = check is None
-        """Whether the record was read, if the act binds one."""
+        """Whether the record was read once at least, if the act binds one."""
+        self._open = 0
+        """How many blocks are open: the outermost one reads the record."""
 
     def __getattr__(self, name: str) -> Any:  # noqa: ANN401 - the unit of work's.
         """The wrapped unit of work's attribute (its repositories, ``run``, ...)."""
@@ -1524,26 +1584,38 @@ class _Acting:
         """
         await self._uow.__aenter__()  # type: ignore[attr-defined]
         try:
-            await self._bound()
+            if not self._open:
+                await self._bound()
         except BaseException as exc:
             await self._uow.__aexit__(type(exc), exc, exc.__traceback__)  # type: ignore[attr-defined]
             raise
+        self._open += 1
         return self
 
     async def __aexit__(self, *exc: object) -> None:
-        """Leave the unit of work as it leaves."""
+        """Leave the unit of work as it leaves; the next block reads again."""
+        self._open -= 1
         await self._uow.__aexit__(*exc)  # type: ignore[attr-defined]
 
     async def _bound(self) -> None:
-        """Read what the act binds in the unit of work, unless it was read.
+        """Read what the act binds, in the unit of work's transaction now.
 
         Raises:
             _Changed: It reads otherwise.
         """
-        if self.checked:
+        if self._check is None:
             return
         self.checked = True
-        await cast(Check, self._check)(self._uow)
+        await self._check(self._uow)
+
+    async def _before_commit(self) -> None:
+        """Read what the act binds, unless a block open read it.
+
+        Raises:
+            _Changed: It reads otherwise.
+        """
+        if not self._open:
+            await self._bound()
 
     async def commit(self) -> None:
         """Commit, having read what the act binds.
@@ -1551,7 +1623,7 @@ class _Acting:
         Raises:
             _Changed: It reads otherwise: nothing commits.
         """
-        await self._bound()
+        await self._before_commit()
         await self._uow.commit()  # type: ignore[attr-defined]
 
     def opened(self, result: object) -> Any:  # noqa: ANN401 - what the service returns.
@@ -1597,7 +1669,7 @@ class _Spending(_Acting):
         if self.spent:
             await self._uow.commit()  # type: ignore[attr-defined]
             return
-        await self._bound()
+        await self._before_commit()
         users = UserRepository(getattr(self._held, "session"))  # noqa: B009
         await _consume(self._held, users, self._accepted)
         setattr(self._held, USERS, users)
@@ -1693,24 +1765,26 @@ async def settle(kept: Kept, status_code: int) -> bool:
     return bool(settings.DEBUG) or settings.ENVIRONMENT == "test"
 
 
-def hold_authorizations(until: datetime) -> None:
+def hold_authorizations(until: datetime, *, held_for: str) -> None:
     """Keep the authorization of the request's act, which now waits for approval.
 
     For the app that holds the act (approvals, for a guard ``by_maker``,
     whose maker's own call makes it once approved): each authorization of
     the request that an act took (``requires_authorization``,
-    ``check_authorization``) and did not spend is kept until ``until``,
-    the request's expiry, and within ``AUTH.AUTHORIZATIONS.HELD_TTL`` of
-    its own expiry (ADR 0174). Written as the response starts, whatever it
-    is; nothing while ``HELD_TTL`` is None, the default, nor outside a
-    request.
+    ``check_authorization``) and did not spend is kept for ``held_for``,
+    what the act waits on (``approvals.request:<id>``), until ``until``,
+    its expiry, and within ``AUTH.AUTHORIZATIONS.HELD_TTL`` of its own
+    (ADR 0174). It works only while an ``on_held_act`` hook says
+    ``held_for`` still waits, and is never held for another. Written as
+    the response starts, whatever it is; nothing while ``HELD_TTL`` is
+    None, the default, nor outside a request.
     """
     kept = _kept.get()
     if kept is None:
         return
     for accepted in kept.accepted.values():
         if accepted.taken and not accepted.consumed:
-            accepted.held = max(accepted.held or until, until)
+            accepted.held = (until, held_for)
 
 
 async def _hold(kept: Kept) -> None:
@@ -1718,13 +1792,15 @@ async def _hold(kept: Kept) -> None:
     longest = auth_settings().AUTHORIZATIONS.HELD_TTL
     now = utc_now()
     for accepted in kept.accepted.values():
-        until, accepted.held = accepted.held, None
-        if until is None or longest is None:
+        held, accepted.held = accepted.held, None
+        if held is None or longest is None:
             continue
         authorization = accepted.authorization
-        until = min(until, authorization.expires_at + longest)
+        until = min(held[0], authorization.expires_at + longest)
         async with AuthUnitOfWork() as uow:
-            await uow.authorizations.hold(authorization.id, until, now)
+            await uow.authorizations.hold(
+                authorization.id, until, now, held_for=held[1]
+            )
             await uow.commit()
 
 
