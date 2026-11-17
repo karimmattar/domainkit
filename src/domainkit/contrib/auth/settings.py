@@ -350,7 +350,13 @@ class AuthorizationsSettings(BaseModel):
     """The framework's acts show what they do whole, or are refused when
     asked for (``422 too_much_to_show``, ADR 0173): ``auth.admin_change``,
     ``approvals.submit``, and ``approvals.approve``, and a request that
-    could not be approved so. Off: what does not fit is cut and counted."""
+    could not be approved so; since 2.8, a rejection's or a cancellation's
+    reason too (ADR 0180). Off: what does not fit is cut and counted."""
+    TYPED_LINKS: Literal["shown", "refused"] = "shown"
+    """What a screen does with text a person typed for the act (``Typed``)
+    that holds a link, an email address, or a number to call: shows it as
+    typed, as before 2.8, or refuses the act when it is asked for (``422
+    link_not_shown``, ADR 0180)."""
     HELD_TTL: timedelta | None = Field(default=None, gt=timedelta(0), le=MAX_HELD_TTL)
     """How long past its expiry a confirmed authorization is kept while its
     act waits for approval (approvals' ``approval_pending``, a guard

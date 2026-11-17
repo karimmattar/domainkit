@@ -5,6 +5,11 @@ A screen holds a title and six labelled lines of 64 characters
 text on one, a list over as many as it takes ("Adds", "Adds (2)"). With
 ``whole`` (the default), what would be cut or left out is refused
 (``TooMuchToShow``, 422); otherwise it is cut and counted (ADR 0173).
+
+Text a person typed (``Typed``) is checked first: with
+``AUTH.AUTHORIZATIONS.TYPED_LINKS`` refused, one that holds a link, an
+email address, or a number to call is refused (``LinkNotShown``, 422),
+read as a person reads it (user report A17, ADR 0180).
 """
 
 from decimal import Decimal
@@ -14,9 +19,20 @@ from uuid import UUID
 import pytest
 
 from domainkit.contrib.auth.actions import Shown
-from domainkit.contrib.auth.screens import Details, TooMuchToShow, laid_out, named
+from domainkit.contrib.auth.screens import (
+    Details,
+    LinkNotShown,
+    TooMuchToShow,
+    Typed,
+    check_typed,
+    holds_link,
+    laid_out,
+    named,
+    on_typed_text,
+)
 from domainkit.http.errors import status_code_for
 from domainkit.i18n import override
+from domainkit_tests.conftest import UseAuth
 
 GROUPS: Final = tuple(f"group_{each:02}" for each in range(9))
 """Nine items of eight characters: six fit on a line, with their commas."""
@@ -214,3 +230,166 @@ def test_what_an_act_is_on_shows_its_id_whole_and_its_name_cut_to_fit() -> None:
     assert laid_out({"User": long}) == [("User", long)]
     with override("ar"):
         assert named("", user_id) == "(مُزال) (…00000000002a)"
+
+
+LINKS: Final = (
+    "visit evil.example.com",
+    "visit evil.example",
+    "x.onion",
+    "wiki.internal",
+    "evil.com/path",
+    "Evil.COM.",
+    "https://x",
+    "hxxp://evil",
+    "hxxps[:]//evil",
+    "example[.]com",
+    "example [dot] com",
+    "x {.} com",
+    "name(at)example(dot)com",
+    "ann@example.com",
+    "ann [at] example",
+    "contact @support",
+    "www.anything",
+    "203.0.113.7",
+    "mailto:ann",
+    "tel:+15550100",
+    "evil.zip",
+    "Q3.report",
+    "evil.c0m",
+    "x.xn--p1ai",
+    "\u0441\u0430\u0439\u0442.\u0440\u0444",
+    "\u0e01.\u0e44\u0e17\u0e22",
+    "evil.\u0441\u043em",
+    "evil.c\u0335om",
+    "\U0001d41e\U0001d42f\U0001d422\U0001d425.\U0001d41c\U0001d428\U0001d426",
+    "\uff45\uff56\uff49\uff4c\uff0e\uff43\uff4f\uff4d",
+    "evil\uff0ecom",
+    "evil\u3002com",
+    "evil\uff61com",
+    "evil\ufe52com",
+    "evil\u2024com",
+    "evil\u00b7com",
+    "evil\u30fbcom",
+    "abc\u0660com",
+    "evil\u200b.com",
+    "e\u200bvil.c\u200dom",
+    "evil\u2060.com",
+    "evil\u00ad.com",
+    "evil\ufeff.com",
+)
+"""Links, as written and as written to pass for something else."""
+NUMBERS: Final = (
+    "Call +1 555 010 0100 to confirm",
+    "Call (555) 010-0100",
+    "Call 555-010-0100",
+    "Call 555.010.0100",
+    "Call 555/010/0100",
+    "Call 555\u2013010\u20130100",
+    "Call 555\t010\t0100",
+    "Call 18005550100",
+    "Call 5550-10-01",
+    "Call+15550100123",
+    "1-800-555-0100",
+    "555\u200b0100\u200b123",
+    "\uff0b\uff11 \uff15\uff15\uff15 \uff10\uff11\uff10\uff10 \uff10\uff11\uff12",
+    "Call \u2460\u2461\u2462\u2463\u2464\u2465\u2466",
+    "+\u0662\u0660 \u0661\u0660\u0660 \u0661\u0662\u0663 \u0664\u0665\u0666\u0667",
+)
+"""Numbers to call, in groups or not, in other digits, split by invisible marks."""
+PLAIN: Final = (
+    "v1.2",
+    "Q3 report",
+    "readers",
+    "",
+    "Not this one",
+    "Ticket 42",
+    "Ticket INC0012345",
+    "GB29NWBK60161331926819",
+    "Duplicate of the 2026-11-17 posting",
+    "on 17.11.2026 at 10:30",
+    "Duplicate of 2026/11/17",
+    "Amount 1250000.00 is over the limit",
+    "Wrong amount: 1,250,000.00",
+    "invoice.pdf",
+    "Mr.Smith",
+    "e.g. this, i.e. that",
+    "U.S.A.",
+    "Ph.D.",
+    "v1.10",
+    "version 1.2.3",
+    "accounts.add_user",
+    "finance.readers",
+    "Node.js",
+    "col\u00b7legi",
+    "price @ 5",
+    "Vienna (AT) team",
+    "Hotel: Hilton",
+    "SMS: not delivered",
+    "Call 911",
+    "O'Brien-Smith",
+    "Z\u00fcrich team",
+    "\u0644\u0627 \u064a\u0648\u062c\u062f",
+    "\u0661\u0660\u0660 \u062c\u0646\u064a\u0647",
+)
+"""Reasons and names that hold no link: versions, codes, dates, amounts, files."""
+
+
+@pytest.mark.parametrize("text", LINKS + NUMBERS)
+def test_a_link_an_address_or_a_number_is_read_as_a_person_reads_it(text: str) -> None:
+    """Full-width, look-alike, and written-out dots; invisible marks; other scripts."""
+    assert holds_link(text)
+
+
+@pytest.mark.parametrize("text", PLAIN)
+def test_text_without_one_holds_no_link(text: str) -> None:
+    """A version, a code touching its letters, a date, an amount, a file's name."""
+    assert not holds_link(text)
+
+
+def test_typed_text_with_a_link_is_refused_as_the_setting_says(
+    use_auth: UseAuth,
+) -> None:
+    """Shown as typed by default; refused when asked, as a value or an item.
+
+    Text not marked ``Typed``, and the name of what the act is on, never
+    is: a name stored was checked where it was typed (user report A17).
+    """
+    use_auth()
+    typed = {"Reason": Typed("Call +1 555 010 0100"), "Adds": ("a", Typed("x.com"))}
+    shown = laid_out(typed)
+    check_typed("x.com")
+    use_auth(AUTHORIZATIONS={"TYPED_LINKS": "refused"})
+
+    assert shown == [("Reason", "Call +1 555 010 0100"), ("Adds", "a, x.com")]
+    for details in ({"Reason": typed["Reason"]}, {"Adds": typed["Adds"]}):
+        with pytest.raises(LinkNotShown):
+            laid_out(details, whole=False)
+    assert laid_out({"Reason": "x.com", "User": named("ann@example.com", 1)}) == [
+        ("Reason", "x.com"),
+        ("User", "ann@example.com (1)"),
+    ]
+    assert laid_out({"Reason": Typed("Ticket 42")}) == [("Reason", "Ticket 42")]
+    with pytest.raises(LinkNotShown):
+        check_typed("x.com")
+    assert LinkNotShown().code == "link_not_shown"
+    assert status_code_for(LinkNotShown()) == 422
+
+
+def test_a_project_checks_what_was_typed_its_own_way(use_auth: UseAuth) -> None:
+    """``on_typed_text`` gets each typed text, as typed, whatever the setting."""
+    use_auth()
+    seen: list[object] = []
+
+    def no_shouting(text: str) -> None:
+        seen.append(text)
+        if text.isupper():
+            raise TooMuchToShow
+
+    on_typed_text(no_shouting, domain="auth")
+    calm = laid_out({"Reason": Typed("Ticket 42"), "Note": "LOUD"})
+    with pytest.raises(TooMuchToShow):
+        laid_out({"Adds": ("a", Typed("LOUD"))})
+
+    assert calm == [("Reason", "Ticket 42"), ("Note", "LOUD")]
+    assert seen == ["Ticket 42", "LOUD"]
+    assert all(type(each) is str for each in seen)
