@@ -27,6 +27,7 @@ On this page you find:
 | `AUTH["ADMIN_ACTION"]`, and `APPROVALS["SUBMIT_ACTION"]`, `["REJECT_ACTION"]`, and `["CANCEL_ACTION"]`: the admin API's changes and a request's steps, each authorized as one act | [auth.md](../auth.md#settings), [approvals.md](../contrib/approvals.md#settings) |
 | `AUTH["AUTHORIZATIONS"]["WHOLE"]`: the framework's acts shown whole on a phone's screen, or refused (new in 2.7) | [auth.md](../auth.md#settings), [actions.md](../auth/actions.md#what-a-screen-shows) |
 | `AUTH["AUTHORIZATIONS"]["HELD_TTL"]` (an act held for approval keeps its authorization) and `["ACTIONS"]` (each act its own `TTL` and `METHODS`), new in 2.7 | [auth.md](../auth.md#settings) |
+| `AUTH["NAME_FIELDS"]`: the fields the admin API's `GET /users/names` names a user by, among those `GET /users` shows (new in 2.8) | [auth.md](../auth.md#settings), [routes.md](../auth/routes.md#the-admin-api) |
 | `DEVICES`'s keys, `DEVICES["PUSH_TOKEN_CHECK"]` (push tokens checked with their service when registered) among them | [devices.md](../auth/devices.md#settings) |
 | `CIBA`'s keys, `CIBA["PUSH_TEXTS"]` (each kind of request's push text) among them | [ciba.md](../auth/ciba.md#settings) |
 
@@ -235,7 +236,11 @@ domains' own models keep those keys as secrets.
   and the uploads' checks and storing (`domainkit.http.uploads`), which
   a file gateway runs on the bytes its route hands it (*New in 2.5*),
   typed as `domainkit.http.uploads.Upload` rather than Starlette's
-  `UploadFile` (*New in 2.7*);
+  `UploadFile` (*New in 2.7*), and the problems a route raises
+  (`domainkit.http.problems`: `APIError` and `FieldError`), so that a
+  file gateway refuses a file with the status and code a route would
+  (*New in 2.8*), and only the names its `__all__` lists; the rest of
+  `domainkit.http.errors`, which builds responses, stays out;
 - another domain is reached only through its `application` or
   `domain.events`.
 

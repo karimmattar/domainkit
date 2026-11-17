@@ -51,7 +51,7 @@ from starlette.background import BackgroundTask
 from starlette.datastructures import UploadFile
 
 from domainkit.conf import settings
-from domainkit.http.errors import APIError
+from domainkit.http.problems import APIError
 from domainkit.i18n.lazy import LazyString
 from domainkit.inspection import (
     FileRefused,
