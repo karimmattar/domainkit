@@ -9,6 +9,25 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `domainkit.http.problems`: `APIError` and `FieldError`, the problems a
+  route raises, in a module of their own that builds no response.
+  `domainkit.http.errors` and `domainkit.http` re-export them, so every
+  import of 2.7 works and the classes are the same. The infrastructure
+  layer may import it: a file gateway refuses a file with the status,
+  code, and field error a route would, with no layer of its own
+  ([Bytes and streams](docs/uploads.md#bytes-and-streams), ADR 0182)
+  (user report D2).
+
+### Changed
+
+- The layer rules let the infrastructure layer import
+  `domainkit.http.problems` (`domainkit.architecture.ALLOWED_MODULES`);
+  the rest of `domainkit.http.errors` stays forbidden there, and the
+  application and domain layers import neither (ADR 0003's amendment of
+  2026-11-17) (user report D2).
+
 ## [2.7.0] - 2026-11-17
 
 2.7 answers thirteen of a project's fourteen notes on 2.6 (the last,

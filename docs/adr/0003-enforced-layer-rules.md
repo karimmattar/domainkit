@@ -1,6 +1,6 @@
 # 0003. Layer rules enforced by `check`
 
-- Status: Accepted; amended by [0037](0037-one-clock-frozen-per-context.md), [0166](0166-let-a-domain-layer-mark-its-texts-extract-the-projects-own-and-add-a-translation-alone.md), [0167](0167-check-an-upload-whole-and-let-a-resource-take-one.md), and 2026-10-25, 2026-11-15 and 2026-11-16 (at the end)
+- Status: Accepted; amended by [0037](0037-one-clock-frozen-per-context.md), [0166](0166-let-a-domain-layer-mark-its-texts-extract-the-projects-own-and-add-a-translation-alone.md), [0167](0167-check-an-upload-whole-and-let-a-resource-take-one.md), [0182](0182-let-a-gateway-raise-a-routes-problems-and-name-users-by-the-fields-a-project-chooses.md), and 2026-10-25, 2026-11-15, 2026-11-16 and 2026-11-17 (at the end)
 - Date: 2026-10-14
 
 ## Context
@@ -68,3 +68,12 @@ packages are exempt from the cross-domain rule.
   forbidden there: a gateway raises domain errors, which the HTTP layer
   maps, and the route turns the request into bytes. A project had added
   a layer of its own only to hold its file gateways.
+
+## Amendment (2026-11-17, 2.8)
+
+- The infrastructure layer may import `domainkit.http.problems` too
+  ([0182](0182-let-a-gateway-raise-a-routes-problems-and-name-users-by-the-fields-a-project-chooses.md)): `APIError` and `FieldError`, moved there from
+  `domainkit.http.errors`, which re-exports them. A file gateway refuses
+  a file with the status, code, and field error a route would. The rest
+  of `domainkit.http.errors`, which reads requests and builds responses,
+  stays forbidden there, and a business refusal stays a domain error.

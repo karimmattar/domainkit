@@ -3,10 +3,13 @@
 from typing import Any
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
+from starlette.exceptions import HTTPException
 
 import domainkit.conf
-from domainkit import architecture
+from domainkit import architecture, http
 from domainkit.architecture import (
     LayerRules,
     Violation,
@@ -18,7 +21,8 @@ from domainkit.architecture import (
 from domainkit.conf import override_settings
 from domainkit.conf.global_settings import ArchitectureConfig, Settings
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.http import uploads
+from domainkit.http import errors, problems, uploads
+from domainkit.http.errors import install_exception_handlers
 from domainkit_tests.conftest import MakePackage
 
 
@@ -605,6 +609,120 @@ def test_a_file_gateway_takes_its_routes_file_as_an_upload(
         ("domain.model", "domainkit.http.uploads.Upload"),
     }
     assert "Upload" in uploads.__all__
+
+
+def test_a_file_gateway_raises_the_problems_a_route_raises(
+    make_package: MakePackage,
+) -> None:
+    """``domainkit.http.problems`` is an adapter's; the rest of the errors are not.
+
+    A gateway refuses a file with a coded ``APIError`` and its
+    ``FieldError``, imported from ``domainkit.http.problems``. The module
+    that builds responses (``domainkit.http.errors``) stays out of the
+    layer, and the application and domain layers import neither (user
+    report D2, 2.7). A project that forbids the module by name forbids it.
+    """
+    make_package(
+        "arch.deeds",
+        {
+            "infrastructure/files.py": """
+                import domainkit.http.problems
+                from domainkit.http.problems import APIError, FieldError
+                from domainkit.http.errors import APIError as Answered
+            """,
+            "application/commands.py": (
+                "from domainkit.http.problems import APIError\n"
+            ),
+            "domain/model.py": "from domainkit.http.problems import FieldError\n",
+        },
+    )
+    found = {
+        (v.module.removeprefix("arch.deeds."), v.imported)
+        for v in check_domains(["arch.deeds"], LayerRules())
+    }
+    extra = {"FORBIDDEN_LIBRARIES": {"infrastructure": ["domainkit.http.problems"]}}
+    with override_settings(ARCHITECTURE=extra):
+        forbidden = {v.imported for v in check_domain("arch.deeds")}
+
+    assert found == {
+        ("infrastructure.files", "domainkit.http.errors"),
+        ("infrastructure.files", "domainkit.http.errors.APIError"),
+        ("application.commands", "domainkit.http.problems"),
+        ("application.commands", "domainkit.http.problems.APIError"),
+        ("domain.model", "domainkit.http.problems"),
+        ("domain.model", "domainkit.http.problems.FieldError"),
+    }
+    assert "domainkit.http.problems" in architecture.ALLOWED_MODULES["infrastructure"]
+    assert {
+        "domainkit.http.problems",
+        "domainkit.http.problems.APIError",
+        "domainkit.http.problems.FieldError",
+    } <= forbidden
+
+
+@pytest.mark.reads_own_source
+def test_the_problems_module_builds_no_response() -> None:
+    """``domainkit.http.problems`` holds the two problems and imports nothing more.
+
+    Allowing it lets the infrastructure layer import what it imports by
+    name: no FastAPI, no responses, no settings, no database, and none of
+    ``domainkit.http``'s other modules (ADR 0182).
+    """
+    imported = {
+        name
+        for module, name in iter_imports("domainkit.http")
+        if module == "domainkit.http.problems"
+    }
+
+    assert problems.__all__ == ["APIError", "FieldError"]
+    assert imported == {
+        "collections.abc",
+        "collections.abc.Mapping",
+        "collections.abc.Sequence",
+        "typing",
+        "typing.TYPE_CHECKING",
+        "pydantic",
+        "pydantic.BaseModel",
+        "starlette.exceptions",
+        "starlette.exceptions.HTTPException",
+        "domainkit.exceptions",
+        "domainkit.exceptions.DomainkitError",
+        "domainkit.i18n.lazy",
+        "domainkit.i18n.lazy.LazyString",
+    }
+
+
+def test_the_errors_module_still_answers_the_problems() -> None:
+    """``domainkit.http.errors`` and ``domainkit.http`` re-export the same classes.
+
+    Code that imports ``APIError`` or ``FieldError`` from either keeps
+    working, and a gateway's problem is answered as a route's (2.8).
+    """
+    app = FastAPI()
+    install_exception_handlers(app)
+
+    @app.post("/deeds")
+    async def take() -> None:
+        raise problems.APIError(
+            413,
+            "The deed is too large.",
+            code="deed_too_large",
+            errors=[
+                problems.FieldError(loc=["body", "file"], msg="Too large.", type="size")
+            ],
+        )
+
+    answer = TestClient(app).post("/deeds")
+
+    assert errors.APIError is problems.APIError is http.APIError
+    assert errors.FieldError is problems.FieldError is http.FieldError
+    assert issubclass(problems.APIError, HTTPException)
+    assert answer.status_code == 413
+    assert answer.json() == {
+        "detail": "The deed is too large.",
+        "code": "deed_too_large",
+        "errors": [{"loc": ["body", "file"], "msg": "Too large.", "type": "size"}],
+    }
 
 
 def test_a_project_that_forbids_the_client_by_name_forbids_it(gateway: str) -> None:

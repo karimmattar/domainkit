@@ -235,7 +235,11 @@ domains' own models keep those keys as secrets.
   and the uploads' checks and storing (`domainkit.http.uploads`), which
   a file gateway runs on the bytes its route hands it (*New in 2.5*),
   typed as `domainkit.http.uploads.Upload` rather than Starlette's
-  `UploadFile` (*New in 2.7*);
+  `UploadFile` (*New in 2.7*), and the problems a route raises
+  (`domainkit.http.problems`: `APIError` and `FieldError`), so that a
+  file gateway refuses a file with the status and code a route would
+  (*New in 2.8*); the rest of `domainkit.http.errors`, which builds
+  responses, stays out;
 - another domain is reached only through its `application` or
   `domain.events`.
 

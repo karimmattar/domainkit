@@ -24,12 +24,16 @@ Details and validation messages are translated into the request's language
 here, as the body is built (``gettext`` and ``validation_message``, see
 ``domainkit.i18n``): pass English text, and add its translations to the
 catalogs.
+
+``APIError`` and ``FieldError`` are defined in ``domainkit.http.problems``,
+which the infrastructure layer may import (since 2.8, ADR 0182); this module
+re-exports them.
 """
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from http import HTTPStatus
-from typing import TYPE_CHECKING, Final
+from typing import Final
 from urllib.parse import quote
 
 from fastapi import FastAPI, Request, status
@@ -59,13 +63,12 @@ from domainkit.ddd.exceptions import (
     PermissionDenied,
     PreconditionFailed,
 )
-from domainkit.exceptions import DomainkitError, ServiceBusy, UpstreamError
+from domainkit.exceptions import ServiceBusy, UpstreamError
+from domainkit.http.problems import APIError as APIError
+from domainkit.http.problems import FieldError as FieldError
 from domainkit.http.responses import BuiltJSONResponse, JSONResponse
 from domainkit.i18n import gettext, validation_message
 from domainkit.money import MoneyError
-
-if TYPE_CHECKING:
-    from domainkit.i18n.lazy import LazyString
 
 STATUS_CODES: Final[tuple[tuple[type[DomainError], int], ...]] = (
     (PreconditionFailed, status.HTTP_412_PRECONDITION_FAILED),
@@ -98,14 +101,6 @@ ABOUT_BLANK: Final = "about:blank"
 """The problem type that adds nothing to the status (RFC 9457, section 4.2.1)."""
 _PATH_SAFE: Final = "/:@!$&'()*+,;=-._~"
 """Characters a URI path keeps as they are; ``instance`` escapes the rest."""
-
-
-class FieldError(BaseModel):
-    """One invalid part of a request; the submitted value is left out."""
-
-    loc: list[str | int]
-    msg: str
-    type: str
 
 
 class ErrorResponse(BaseModel):
@@ -142,34 +137,6 @@ _BODY_MEMBERS: Final = frozenset(ErrorResponse.model_fields) | frozenset(
     ProblemDetails.model_fields
 )
 """The members of an error body, in either format: no extension replaces one."""
-
-
-class APIError(HTTPException, DomainkitError):
-    """An HTTP error outside the domain (a bad cursor, an oversized body).
-
-    ``detail`` is text, translated when it is answered, or a lazy string
-    (``gettext_lazy``), answered as its text in the caller's language. It
-    is kept as given: a lazy one compares and formats as its text, and
-    ``str()`` makes it text.
-    """
-
-    def __init__(
-        self,
-        status_code: int,
-        detail: "str | LazyString",
-        *,
-        code: str,
-        headers: Mapping[str, str] | None = None,
-        errors: Sequence[FieldError] | None = None,
-    ) -> None:
-        """Carry a machine-readable ``code``, and any field ``errors``."""
-        super().__init__(
-            status_code=status_code,
-            detail=detail,  # type: ignore[arg-type]  # Kept lazy: see the class.
-            headers=dict(headers) if headers else None,
-        )
-        self.code = code
-        self.errors = list(errors) if errors else None
 
 
 def error_response(

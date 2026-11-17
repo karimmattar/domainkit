@@ -20,7 +20,10 @@ domain layer), ``controllers.py`` (application), ``models.py``
   service is what an adapter does; and the checks and storing of uploads
   (``domainkit.http.uploads``), which a file gateway runs on what its
   route hands it, typed as ``Upload`` rather than Starlette's
-  ``UploadFile`` (ADR 0177).
+  ``UploadFile`` (ADR 0177); and the problems a route raises
+  (``domainkit.http.problems``: ``APIError``, ``FieldError``), so a file
+  gateway refuses a file with the code a route would (ADR 0182). The
+  rest of ``domainkit.http.errors``, which builds responses, stays out.
 - Another domain may be used only through its ``application`` layer or its
   ``domain.events`` (bounded contexts stay decoupled).
 
@@ -91,7 +94,11 @@ FORBIDDEN_LIBRARIES: Final = {
 """Libraries each layer must not import."""
 
 ALLOWED_MODULES: Final = {
-    "infrastructure": ("domainkit.http.client", "domainkit.http.uploads")
+    "infrastructure": (
+        "domainkit.http.client",
+        "domainkit.http.uploads",
+        "domainkit.http.problems",
+    )
 }
 """Modules a layer may import although a library it must not use holds them.
 
