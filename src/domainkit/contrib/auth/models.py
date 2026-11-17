@@ -255,6 +255,11 @@ Credentials, status flags, and grants change through their own methods,
 which the admin API guards (only superusers make superusers) and which
 record their own events.
 """
+HIDDEN_FIELDS: Final = frozenset(
+    {"id", "version", "password", "groups", "user_permissions", "last_login"}
+)
+"""Fields the admin API's ``/users`` never shows among ``fields`` (``last_login``
+has its own key), whatever ``admin_fields()`` holds."""
 
 
 class AbstractBaseUser(AggregateRoot[UserId]):

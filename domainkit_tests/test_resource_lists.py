@@ -10,16 +10,19 @@ list answered each user whole to a page that shows a name (ADR 0177).
 """
 
 from collections.abc import Iterator, Mapping, Sequence
-from typing import Annotated, Any, ClassVar, Final, NewType
+from typing import Annotated, Any, ClassVar, Final, NewType, cast
 from uuid import UUID, uuid4
 
 import pytest
 from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from starlette.requests import HTTPConnection
 
-from domainkit.contrib.auth import get_user_model
+from domainkit.checks import CheckFailed
+from domainkit.contrib.auth import PasswordHash, get_user_model
+from domainkit.contrib.auth.admin import UserNameOut
+from domainkit.contrib.auth.settings import AuthSettings, auth_settings
 from domainkit.ddd import AggregateRoot, InMemoryRepository, MaxLength, UnitOfWork
 from domainkit.ddd.fields import UnknownField
 from domainkit.http import EveryWord, Filter, FilterSet
@@ -27,9 +30,11 @@ from domainkit.http.access import IsAuthenticated
 from domainkit.http.errors import install_exception_handlers
 from domainkit.http.filters import Finder
 from domainkit.resources import FieldPolicy, ResourceRouter
-from domainkit_tests.conftest import Api, UseAuth
+from domainkit_tests.conftest import ALPHA, AUTH, CONTENTTYPES, SHOP, Api, UseAuth
 from domainkit_tests.gadgets import Gadget, InMemoryGadgets, make_gadget
+from domainkit_tests.sample_domains.accounts.models import Account
 from domainkit_tests.support.auth import create_user, grant
+from domainkit_tests.test_admin import ACCOUNTS
 from domainkit_tests.test_auth_admin import ADMIN, staff
 from domainkit_tests.test_resources import (
     Dearest,
@@ -549,6 +554,149 @@ def test_the_names_show_no_field_the_user_list_hides(
     }
     assert answer(f"{url}/names", search="Secret")["items"] == []
     assert answer(url, search="Secret")["items"] == []
+
+
+def test_the_names_follow_the_fields_a_project_chooses(api: Api) -> None:
+    """``AUTH.NAME_FIELDS``: the first entry that gives text names the user.
+
+    An entry is a field, or fields joined by a space; one whose fields are
+    all empty gives way to the next, and none leaves the name null. Search
+    stays ``/users``' own: a name, configured or not, is never matched
+    (user report D2, 2.7).
+    """
+    client = api(NAME_FIELDS=(("last_name", "first_name"), "email"))
+    headers = staff("admin", "auth.view_user")
+    ann = create_user("ann", email="ann@example.com", first_name="Ann", last_name="Lee")
+    bob = create_user("bob", email="bob@example.com")
+    cy = create_user("cy")
+    url = f"{ADMIN}/users/names"
+
+    def names(**params: Any) -> list[str | None]:  # noqa: ANN401 - parameters.
+        found = client.get(url, params=params, headers=headers)
+        assert found.status_code == 200, found.text
+        return [each["name"] for each in found.json()["items"]]
+
+    assert names(id=[str(ann), str(bob), str(cy)]) == [
+        "Lee Ann",
+        "bob@example.com",
+        None,
+    ]
+    assert names(search="Lee") == []
+    assert names(search="example") == []
+
+
+def test_a_name_field_the_user_list_does_not_show_gives_no_name(
+    api: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A name is built of what ``/users`` shows when it is asked, field by field.
+
+    ``check`` refuses a field ``/users`` does not show (``auth.E012``); a
+    field that stops being shown later, or settings ``check`` never read,
+    still give no name: the entry gives way to the next, and the name is
+    null when none is left (review of user report D2).
+    """
+    client = api(NAME_FIELDS=(("first_name", "last_name"), "email", "password"))
+    headers = staff("admin", "auth.view_user")
+    ann = create_user(
+        "ann", email="ann@example.com", first_name="Ann", last_name="Secret"
+    )
+    model = get_user_model()
+    url = f"{ADMIN}/users/names"
+
+    def named() -> str | None:
+        found = client.get(url, params={"id": str(ann)}, headers=headers)
+        assert found.status_code == 200, found.text
+        (item,) = found.json()["items"]
+        return cast(str | None, item["name"])
+
+    shown = named()
+    monkeypatch.setattr(model, "EDITABLE_FIELDS", frozenset({"email", "first_name"}))
+    without_last_name = named()
+    monkeypatch.setattr(model, "EDITABLE_FIELDS", frozenset({"first_name"}))
+    monkeypatch.setattr(model, "READ_ONLY_FIELDS", frozenset({"password"}))
+    with_password_shown = named()
+
+    assert shown == "Ann Secret"
+    assert without_last_name == "ann@example.com"
+    assert with_password_shown is None
+
+
+def test_name_fields_are_fields_the_user_list_shows(
+    use_auth: UseAuth, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``auth.E012`` names each field ``/users`` does not show, once.
+
+    A field the model lacks, one it holds but does not show, and one
+    ``/users`` hides whatever ``admin_fields()`` holds are refused when
+    the service starts. Left unset, nothing is checked, as in 2.7.
+    """
+    use_auth()
+    model = get_user_model()
+    monkeypatch.setattr(model, "READ_ONLY_FIELDS", frozenset({"last_login"}))
+    with pytest.raises(CheckFailed) as refused:
+        use_auth(
+            NAME_FIELDS=(
+                "display_name",
+                ("first_name", "is_staff"),
+                ("last_login", "display_name"),
+            )
+        )
+
+    [problem] = refused.value.messages
+    assert getattr(problem, "id", None) == "auth.E012"
+    assert str(problem).startswith(
+        "AUTH.NAME_FIELDS names 'display_name', 'is_staff', 'last_login', which "
+        "the admin API's GET /users does not show (User.admin_fields())"
+    )
+    use_auth(NAME_FIELDS=("email", ("first_name", "last_name")))
+    assert auth_settings().NAME_FIELDS == (("email",), ("first_name", "last_name"))
+
+
+def test_a_project_names_its_users_by_a_field_of_its_own(use_auth: UseAuth) -> None:
+    """A custom user's own field names it where ``/users`` shows that field.
+
+    ``Account`` shows its ``phone`` (``EDITABLE_FIELDS``), not its
+    ``risk_flag``: one names the user, the other is refused at startup.
+    """
+    domains = {"INSTALLED_DOMAINS": [CONTENTTYPES, AUTH, ACCOUNTS, SHOP, ALPHA]}
+    custom = {
+        "USER_MODEL": f"{ACCOUNTS}.models.Account",
+        "USER_TABLE": f"{ACCOUNTS}.tables.accounts",
+    }
+    with pytest.raises(CheckFailed, match="names 'risk_flag', which"):
+        use_auth(settings=domains, NAME_FIELDS=("risk_flag",), **custom)
+    use_auth(settings=domains, NAME_FIELDS=("phone", ("first_name",)), **custom)
+    account = Account.create(
+        password=PasswordHash("pbkdf2_sha256$1$salt$hash"),
+        username="ann",
+        email="ann@example.com",
+        phone="Ann at the front desk",
+        first_name="Ann",
+        risk_flag=True,
+    )
+    unnamed = Account.create(
+        password=PasswordHash("pbkdf2_sha256$1$salt$hash"), username="bob"
+    )
+
+    assert UserNameOut.of(account).name == "Ann at the front desk"
+    assert UserNameOut.of(unnamed).name is None
+
+
+@pytest.mark.parametrize(
+    ("value", "refused"),
+    [
+        ((), "at least 1 item"),
+        (("",), "at least 1 character"),
+        (((),), "at least 1 item"),
+        ("display_name", "valid tuple"),
+        (tuple(f"field_{n}" for n in range(9)), "at most 8 items"),
+        ((tuple(f"field_{n}" for n in range(9)),), "at most 8 items"),
+    ],
+)
+def test_name_fields_are_bounded(value: object, refused: str) -> None:
+    """At least one entry and at most 8, each of one to 8 named fields."""
+    with pytest.raises(ValidationError, match=refused):
+        AuthSettings.model_validate({"NAME_FIELDS": value})
 
 
 CROWD: Final = {

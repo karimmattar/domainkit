@@ -19,6 +19,16 @@ and a status.
   code, and field error a route would, with no layer of its own
   ([Bytes and streams](docs/uploads.md#bytes-and-streams), ADR 0182)
   (user report D2).
+- `AUTH.NAME_FIELDS` (unset): the fields the admin API's `GET
+  /users/names` names a user by, as entries tried in order, each a field
+  or fields joined by a space; the first that gives text is the name,
+  as in `("display_name", ("first_name", "last_name"))`. Each field must
+  be one `GET /users` shows among a user's `fields`, or `check` refuses
+  to start (`auth.E012`); a field that stops being shown gives no name,
+  and search still never matches a name. Unset, a user is named by
+  `first_name` and `last_name`, as in 2.7
+  ([The admin API](docs/auth/routes.md#the-admin-api), ADR 0182) (user
+  report D2).
 
 ### Changed
 

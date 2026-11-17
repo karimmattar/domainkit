@@ -93,6 +93,8 @@ the password (``pwd``), or a code of the authenticator app (``otp``)."""
 type AuthorizationMethod = Literal["pwd", "otp", "phone"]
 """What confirming an action authorization asks for: a ``Factor``, or
 ``phone``, a confirmation on a bound device's own screen (ADR 0144)."""
+MAX_NAME_FIELDS: Final = 8
+"""The most entries ``NAME_FIELDS`` holds, and the most fields an entry joins."""
 MAX_AUTHORIZATION_TTL: Final = timedelta(minutes=30)
 """The longest an action authorization may live (``AUTHORIZATIONS.TTL``)."""
 MAX_HELD_TTL: Final = timedelta(days=7)
@@ -645,6 +647,23 @@ class AuthSettings(BaseModel):
     """The user fields that identify a user, in the order a login tries
     them, such as ``("email", "mobile_number")`` (ADR 0126). None: the user
     model's ``USERNAME_FIELD`` alone, as before 1.8."""
+    NAME_FIELDS: (
+        tuple[
+            Annotated[
+                tuple[Annotated[str, Field(min_length=1)], ...],
+                Field(min_length=1, max_length=MAX_NAME_FIELDS),
+            ],
+            ...,
+        ]
+        | None
+    ) = Field(default=None, min_length=1, max_length=MAX_NAME_FIELDS)
+    """How the admin API's ``GET /users/names`` names a user (New in 2.8):
+    entries tried in order, each a field, or fields joined by a space; the
+    first that gives text is the name, as in ``("display_name",
+    ("first_name", "last_name"))``. Each field must be one ``GET /users``
+    shows (the model's ``admin_fields()``), or ``check`` refuses to start
+    (``auth.E012``, ADR 0182). None: ``first_name`` and ``last_name``
+    joined, as in 2.7."""
     CODE_TTL: timedelta = Field(
         default=timedelta(minutes=10),
         ge=timedelta(minutes=1),
@@ -695,6 +714,14 @@ class AuthSettings(BaseModel):
         """Refuse rates ``parse_rate`` cannot read."""
         if value is not None:
             parse_rate(value)
+        return value
+
+    @field_validator("NAME_FIELDS", mode="before")
+    @classmethod
+    def _fields_alone(cls, value: object) -> object:
+        """A field named alone is an entry of its own: ``"display_name"``."""
+        if isinstance(value, list | tuple):
+            return tuple((each,) if isinstance(each, str) else each for each in value)
         return value
 
     @field_validator("CSRF_TRUSTED_ORIGINS")

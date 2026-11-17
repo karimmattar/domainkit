@@ -49,7 +49,7 @@ from .backends import (
     get_backends,
 )
 from .hashers import insecure_hashers
-from .models import PROTECTED_FLOOR, AbstractBaseUser, AbstractUser, User
+from .models import HIDDEN_FIELDS, PROTECTED_FLOOR, AbstractBaseUser, AbstractUser, User
 from .permissions import declared_permissions, sync_permissions
 from .principals import invalidate_all, stamp_committed, stamp_pending, watch
 from .routing import AccountRoutes, on_account_routes
@@ -615,6 +615,17 @@ class AuthConfig(DomainConfig):
                     "AUTH.IDENTIFIERS names a field twice: name each once.",
                 )
             )
+        if unshown := self._unshown_names(config):
+            errors.append(
+                CheckMessage(
+                    "auth.E012",
+                    f"AUTH.NAME_FIELDS names {', '.join(map(repr, unshown))}, which "
+                    f"the admin API's GET /users does not show "
+                    f"({self.user_model.__name__}.admin_fields()): a name is built "
+                    "only of what staff see there. Name fields it shows, or add "
+                    "them to EDITABLE_FIELDS or READ_ONLY_FIELDS.",
+                )
+            )
         if config.CLIENT_CERT.HEADER is not None and not config.CLIENT_CERT.PROXIES:
             errors.append(
                 CheckMessage(
@@ -661,6 +672,18 @@ class AuthConfig(DomainConfig):
         if settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
             errors.extend(self._deployed_errors(config))
         return errors
+
+    def _unshown_names(self, config: AuthSettings) -> list[str]:
+        """The fields of ``AUTH.NAME_FIELDS`` that ``GET /users`` does not show.
+
+        ``/users`` shows the model's ``admin_fields()``, less
+        ``HIDDEN_FIELDS``; a field the model lacks is not shown either.
+        """
+        if config.NAME_FIELDS is None:
+            return []
+        shown = self.user_model.admin_fields() - HIDDEN_FIELDS
+        named = dict.fromkeys(name for entry in config.NAME_FIELDS for name in entry)
+        return [name for name in named if name not in shown]
 
     def _deployed_errors(self, config: AuthSettings) -> list[CheckMessage]:
         """What staging and production refuse besides."""

@@ -100,6 +100,7 @@ production ([commands](commands.md)).
 | `auth.E009` | everywhere, with `JWTAuthentication` | a key of `AUTH.JWT.PREVIOUS_KEYS` that retires more than a day ahead |
 | `auth.E010` | everywhere | a setting that contradicts `AUTH.PRESET`; each contradiction is named with its PCI DSS requirement ([PCI DSS v4.0's passwords](../auth/pci-dss.md)) |
 | `auth.E011` | everywhere | `AUTH.IDENTIFIERS` names a field the user model does not have, or one field twice ([Logging in with an email address or a mobile number](../auth/logging-in.md#logging-in-with-an-email-address-or-a-mobile-number)) |
+| `auth.E012` | everywhere | `AUTH.NAME_FIELDS` names a field the admin API's `GET /users` does not show among a user's `fields` (the model's `admin_fields()`, never `password`, `last_login` or the grants): a name is built only of what staff see there ([The admin API](../auth/routes.md#the-admin-api)) |
 
 Two other apps refuse a setting without an id:
 
