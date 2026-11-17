@@ -2,10 +2,11 @@
 
 ## Reporting a vulnerability
 
-Do not open a public issue. Report it privately through GitHub: **Security
-→ Report a vulnerability** on this repository
-(<https://github.com/karimmattar/domainkit/security/advisories/new>). Include
-what you found, how to reproduce it, and the impact you expect.
+Do not open a public issue. Report it privately through GitHub's private
+vulnerability reporting, at
+<https://github.com/karimmattar/domainkit/security/advisories/new> (a GitHub
+account is needed). Include what you found, how to reproduce it, and the
+impact you expect.
 
 The maintainers aim to:
 
