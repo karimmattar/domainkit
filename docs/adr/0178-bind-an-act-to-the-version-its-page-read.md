@@ -84,14 +84,23 @@ Where `If-Match` is required:
   work, lent to the rule, is held to the versions (`uow.expect`), so
   what `binds` and `show` load through it is checked again: a change
   made in between is `412` before anything is stored. Versions are read
-  as a write reads them (`expected_versions`): by the number a tag
-  carries, weak or strong, quoted or not; several tags, any; `*`, none;
-  a tag that names no version, a malformed one, or more than 20, match
-  nothing. A twin on the collection reads none, as its act reads none.
+  as a write reads them: by the number a tag carries, weak or strong,
+  quoted or not; a tag that names no version, a malformed value, or more
+  than 20 tags match nothing. A twin takes **one tag** (`asked_versions`):
+  a page reads one version, and a twin that took `"1", "2"` bound an act
+  made on version 2, which no page had read (found in review). Several
+  are `422`, as a header out of bounds is (the 4096 characters a route
+  reads): not `412`, since no condition was found false, nor a new code.
+  `*`, or an empty value, names none. A twin on the collection reads
+  none, as its act reads none. A loaded aggregate the expectation does
+  not match (an id of another type) is an error, as at the act, never a
+  pass.
 - **The rule is given it.** An `ask_authorization` that takes
   `if_match` by name is given the header; `StepUp(for_=...)` does and
-  passes it on. A rule of 2.7 is asked as before, and still gets the
-  `412`.
+  passes it on, and so do approvals' approve, reject, and cancel rules,
+  whose acts are command routes that hold `If-Match`. A rule of 2.7 is
+  asked as before, and still gets the `412`. The twin's OpenAPI says
+  the act is bound to the tag only where the rule is given it.
 - **The digest covers it.** `request_action_authorization(...,
   if_match=...)` computes the digest with the versions it names, sorted:
   the SHA-256 of `{"action", "arguments", "binds", "if_match"}` as
@@ -103,26 +112,38 @@ Where `If-Match` is required:
   with those versions, and, unless the action requires `If-Match`,
   without: an authorization asked with versions holds for an act that
   names the same ones, however written (`W/"3-…"` and `"3"`); another
-  `If-Match`, `*`, or none is other arguments: `403
-  action_not_authorized`, voided. One asked without holds as in 2.7,
-  with or without an `If-Match` at the act, which holds the write as
-  before.
+  `If-Match`, several, `*`, an empty one, or none is other arguments:
+  `403 action_not_authorized`, voided. One asked without holds as in
+  2.7, with or without an `If-Match` at the act, which holds the write
+  as before.
+- **Fail closed where a step is forgotten** (found in review). Asking
+  with `if_match` is refused (`ImproperlyConfigured`) unless the unit
+  of work it lends holds an expectation of those versions that a load
+  checked (`UnitOfWork.expectations`); a `ResourceRouter`'s twin marks
+  its own as checked, having checked the aggregate itself. The act is
+  refused, before it spends or reads anything, unless its unit of work
+  is held to the versions its authorization holds. Either is the
+  route's mistake, not the client's: a `500` names it, and the
+  confirmation is kept, where a `403` would burn it and a `412` send the
+  client round again for nothing.
 - **At the act**, a resource's `If-Match` holds the write (`412`), and
   `binds` is read as before (`409 action_record_changed`, voided). A
   `binds` that loads the record at a version the authorization does not
   hold raises `412`, and voids it: the record will never be at that
   version again.
-- **`Action(require_if_match=True)`**: asking without `If-Match`, or with
-  `*`, is `428 precondition_required`, before anything is stored; the
-  act without one is `428` too, and voids nothing; an authorization
-  asked without versions is refused (`403`, voided). Off by default.
+- **`Action(require_if_match=True)`**: asking without `If-Match`, with
+  `*`, or with an empty one, is `428 precondition_required`, before
+  anything is stored; the act without one is `428` too, and voids
+  nothing; an authorization asked without versions is refused (`403`,
+  voided). Off by default. A collection route whose rule is given such
+  an action is refused when declared: it would never be authorized.
 - **A route of the project's own** reads `If-Match` itself, as its act
   already must to hold its write: its twin holds the unit of work it
   lends to the read to the versions (`uow.expect`), passes it
   (`unit_of_work=lambda: uow`), and passes the header
   (`if_match=`); its act holds its unit of work to them as before. The
   framework cannot know which record a route of the project's names, so
-  it does not guess.
+  it does not guess; it refuses what it cannot see checked.
 - (b) is not done. A route that compares something else than a version
   passes it in the command, which the digest covers already.
 
@@ -142,14 +163,26 @@ Where `If-Match` is required:
 - **Versions are numbers** (ADR 0025): an aggregate created again under
   an id it had starts again at its first version. Ids are new for each
   record (`new_id`), so a page's tag names one record's version.
-- **`require_if_match` on an act on the collection** refuses every ask:
-  such an act has no `If-Match` to send. The docs say so.
+- **Only the aggregate the path names.** `If-Match` names a version of
+  it alone. A `binds` that reads another record (a document's file kept
+  as an aggregate of its own) binds it as the twin reads it, as in 2.7,
+  and A25 survives there. The project puts the act on that record's
+  path, or the page sends the version it read of the other record in
+  the act's body, which the digest covers, and `binds` reads it with
+  `get_for_update` (ADR 0174) and raises `PreconditionFailed` for
+  another: `412` at the twin, voided at the act. The docs show it.
+- **A rolling deploy**: a 2.7 instance computes 2.7's digest, so it
+  refuses (`403`, voided) an authorization a 2.8 instance stored with
+  `If-Match`. Clients send `If-Match` to twins once every instance runs
+  2.8; the upgrading notes say so, and that the twins' OpenAPI gains
+  the header and `412`.
 - **New names**: `Action(require_if_match=...)`,
   `request_action_authorization(..., if_match=...)`,
   `Action.digest_of(..., versions)`, `if_match` in
-  `ActionStepUp.ask_authorization` and in the `AsksAuthorization`
-  protocol's description. Nothing is renamed or removed: a minor release
-  (2.8).
+  `ActionStepUp.ask_authorization`, approvals' `ask_authorization`, and
+  the `AsksAuthorization` protocol's description, `asked_versions`,
+  `UnitOfWork.expectations`, `authorize_act(..., if_match=...)`.
+  Nothing is renamed or removed: a minor release (2.8).
 
 ## References
 

@@ -536,10 +536,12 @@ invitations.command_route(
   must have proved who they are. So no one asks for an authorization of
   an act they could not make.
 - On an act on one aggregate it reads `If-Match` as the act does,
-  optional (*new in 2.8*): after the checks above, an aggregate at none
-  of the versions it names is `412`, and the unit of work it lends is
-  held to them. A rule whose method takes `if_match` is given the
-  header; `StepUp(for_=...)` binds the act to it
+  optional (*new in 2.8*): after the checks above, an aggregate not at
+  the version it names is `412`, and the unit of work it lends is held
+  to it. It takes one tag, the version a page read: several are `422`
+  (`asked_versions`). A rule whose method takes `if_match` is given the
+  header; `StepUp(for_=...)` and approvals' rules bind the act to it,
+  and OpenAPI says so only for such a rule
   ([The version the page read](auth/actions.md#the-version-the-page-read)).
 - It then awaits the rule's `ask_authorization(request, command)`, and
   answers `201` with what it returns, marked `Cache-Control: no-store`.
@@ -1095,6 +1097,11 @@ expected_versions('W/"3-5d41402abc4b2a76", "4"')  # frozenset({3, 4})
 expected_versions("*")  # None: any version
 expected_versions('"abc"')  # frozenset(): no version, so nothing matches
 ```
+
+A [twin](#authorizations-for-one-act) reads its `If-Match` with
+`asked_versions` (*new in 2.8*): as `expected_versions`, but `None` for
+an empty value too, and `422` for a list of several tags, since a page
+reads one version.
 
 **How the check works.** The check needs nothing from the service. The
 route hands the service a unit of work that holds the request's

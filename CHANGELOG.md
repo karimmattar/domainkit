@@ -13,11 +13,16 @@ and a status.
 
 - `Action(require_if_match=True)` (off by default): asking for an
   authorization of the act, and the act, need `If-Match` naming the
-  version the page read; without one, or with `*`, `428
-  precondition_required`, before anything is stored, and the act voids
-  nothing. `request_action_authorization(..., if_match=...)` lets a
-  route of the project's own bind it, and `authorize_act(...,
-  if_match=...)` sends it to a twin in tests
+  version the page read; without one, with `*`, or with an empty one,
+  `428 precondition_required`, before anything is stored, and the act
+  voids nothing. A collection route given such an action is refused
+  when declared. `request_action_authorization(..., if_match=...)` lets
+  a route of the project's own bind it, refused unless the unit of work
+  it lends checked the version; `Action.digest_of(..., versions)`
+  computes the digest; a rule's `ask_authorization(..., if_match=...)`
+  is given the twin's header; `asked_versions` reads it as a twin does;
+  `UnitOfWork.expectations` lists what `expect` holds; and
+  `authorize_act(..., if_match=...)` sends it to a twin in tests
   ([The version the page read](docs/auth/actions.md#the-version-the-page-read),
   ADR 0178) (user report A25).
 
@@ -34,8 +39,11 @@ and a status.
   without the same `If-Match`, or with another, is refused (`403
   action_not_authorized`) and voids the authorization; a `binds` that
   loads the record at another version voids it too (`412`). A twin
-  documents the header in OpenAPI. A twin asked without `If-Match` binds
-  as in 2.7, and authorizations stored before hold
+  documents the header in OpenAPI, and takes one tag (`422` for
+  several). Approvals' approve, reject, and cancel twins pass it on. An
+  act whose unit of work is not held to the version its authorization
+  holds is refused, never made on another. A twin asked without
+  `If-Match` binds as in 2.7, and authorizations stored before hold
   ([upgrading.md](docs/upgrading.md#27-to-28),
   [The version the page read](docs/auth/actions.md#the-version-the-page-read),
   ADR 0178) (user report A25).

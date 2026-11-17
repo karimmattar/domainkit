@@ -50,9 +50,24 @@ relied on 2.7's behaviour changes, and what to run.
   client that sent `If-Match` to a twin by habit sends the act the same
   one, or none to the twin. A twin asked without it, an `If-Match` sent
   to the act alone, and the authorizations stored before are as in
-  2.7. To have every client send it, declare the act with
+  2.7. A twin takes one tag: a list of several is `422`. To have every
+  client send it, declare the act with
   `Action(..., require_if_match=True)`
   ([The version the page read](auth/actions.md#the-version-the-page-read)).
+- **Twins' OpenAPI gains `If-Match`.** Each twin of an act on one
+  aggregate documents an optional `If-Match` header and a `412` (and
+  `422`) answer: a snapshot test of the schema sees them. Approvals'
+  approve, reject, and cancel twins pass the header on, as
+  `StepUp(for_=...)` does.
+- **Deploy every instance before clients send `If-Match` to twins.** A
+  2.7 instance computes the digest without it, so it refuses (`403`, and
+  voids) an act whose authorization a 2.8 instance stored with
+  `If-Match`.
+- **A route of your own that passes `if_match=`** to
+  `request_action_authorization` holds the unit of work it lends to the
+  version, and its act's unit of work too (`uow.expect`): a twin whose
+  `show` and `binds` checked nothing, or an act held to no version, is
+  refused (`500`, `ImproperlyConfigured`).
 
 ## 2.6 to 2.7
 

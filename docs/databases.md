@@ -206,6 +206,7 @@ not committed.
 | `run(work, *, retry=None)` | Runs the whole work again when it loses a race ([running work again](#running-work-again)). |
 | `lock(name, *, nowait=False)` | Holds a lock by name until the transaction ends ([locks](#locks)). |
 | `expect(model, id_, versions)` | Holds an aggregate to the versions an `If-Match` names ([resources](resources.md#versions-and-conditional-requests)). |
+| `expectations` | What the open `expect` blocks hold it to now, each an `Expectation` (*new in 2.8*). |
 | `readonly` | Refuses to commit (`ReadOnlyError`). |
 | `committed` | How many times it has committed. |
 | `events` | The `EventBus` it publishes to (the global `event_bus` by default). |

@@ -409,16 +409,22 @@ POST /documents/42/approve
 
 - **The twin holds it as its act does.** On a `ResourceRouter`'s act
   on one aggregate, after the route's rules, the reach check, and the
-  rules on the aggregate, an aggregate at none of the versions
-  `If-Match` names is `412 precondition_failed`: nothing is stored, and
-  the phone is never asked. The unit of work the twin lends to `show`
-  and `binds` is held to them too: what they load through it at another
-  version is `412`, before anything is stored.
-- **The digest covers it**: the versions it names, sorted, beside the
-  arguments and what `binds` read. The act's `If-Match` must name the
-  same versions, however written (`W/"4-…"` or `"4"`). Another, `*`, or
-  none is `403 action_not_authorized`, and voids the authorization, as
-  other arguments do.
+  rules on the aggregate, an aggregate not at the version `If-Match`
+  names is `412 precondition_failed`: nothing is stored, and the phone
+  is never asked. The unit of work the twin lends to `show` and `binds`
+  is held to it too: what they load through it at another version is
+  `412`, before anything is stored.
+- **One tag.** A page reads one version, so a twin takes one tag: a
+  list of several, even of one version, is `422`. A tag that names no
+  version, or a malformed value, matches nothing (`412`). Tags are
+  compared by the version they carry, weak or strong
+  ([resources.md](../resources.md#versions-and-conditional-requests)).
+  `*`, or an empty value, names no version, and counts as none.
+- **The digest covers it**, beside the arguments and what `binds` read.
+  The act's `If-Match` must name the same version, however written
+  (`W/"4-…"` or `"4"`). Another, several, `*`, or none is `403
+  action_not_authorized`, and voids the authorization, as other
+  arguments do.
 - **At the act**, `If-Match` holds the write as before (`412`), and
   `binds` reads the record again (`409 action_record_changed`). A
   `binds` that loads it at a version the authorization does not hold
@@ -426,26 +432,50 @@ POST /documents/42/approve
   again.
 - **Without `If-Match` at the twin**, the act is bound as in 2.7: an
   `If-Match` sent to the act alone holds its write and nothing else, and
-  an authorization stored before 2.8 holds. `*` names no version, and
-  counts as none.
-- Versions are read as a write reads them
-  ([resources.md](../resources.md#versions-and-conditional-requests)):
-  by the number a tag carries, weak or strong; with several tags, any of
-  them; a tag that names no version, or a malformed one, matches
-  nothing. A twin on the collection reads no `If-Match`, as its act
-  reads none.
+  an authorization stored before 2.8 holds. A twin on the collection
+  reads no `If-Match`, as its act reads none.
+- **Approvals' twins** (approve, reject, cancel) pass it on too: an
+  approval asked with the request's `ETag` is made only with the same
+  `If-Match`.
 - **`Action(require_if_match=True)`** asks for it. The twin without
-  `If-Match`, or with `*`, is `428 precondition_required`, before
-  anything is stored. The act without one is `428` too, and voids
-  nothing: send it again with the tag. An authorization asked without
-  one is refused (`403`, voided). Only for an act on one aggregate: an
-  act on the collection has no `If-Match` to send, and is never
-  authorized.
+  `If-Match`, with `*`, or with an empty one, is `428
+  precondition_required`, before anything is stored. The act without
+  one is `428` too, and voids nothing: send it again with the tag. An
+  authorization asked without one is refused (`403`, voided). Only for
+  an act on one aggregate: a route on the collection whose rule is
+  given the action is refused when it is declared
+  (`ImproperlyConfigured`).
 
-A route of your own reads `If-Match` itself, as its act already must to
-hold its write: the framework does not know which record your route
+**Only the aggregate the path names.** `If-Match` names a version of the
+aggregate the act's path names, and nothing else. A `binds` that reads
+another record (a document's file, kept as an aggregate of its own) binds
+it as the twin reads it, as in 2.7: a file replaced between the page and
+the twin is bound as replaced. Put the act on that record's own path, or
+let the page send the version of it that it read, in the act's body,
+which the digest covers, and have `binds` refuse another, reading it
+locked as above:
+
+```python
+class ApproveDocument(Command):
+    document_id: UUID
+    file_id: UUID
+    file_version: int  # The version of the file the page showed.
+
+
+async def bound_file(command: ApproveDocument, uow: DocumentsUnitOfWork) -> int:
+    file = await uow.files.get_for_update(FileId(command.file_id))
+    if file.version != command.file_version:
+        raise PreconditionFailed("The file changed since you read it.")
+    return file.version
+```
+
+At the twin, that is `412` before anything is stored; at the act, it
+voids an authorization asked with `If-Match`.
+
+**A route of your own** reads `If-Match` itself, as its act already must
+to hold its write: the framework does not know which record your route
 names. Its twin holds the unit of work that `show` and `binds` read in
-to the versions, lends it, and passes the header on:
+to the version, lends it, and passes the header on:
 
 ```python
 from typing import Annotated
@@ -457,7 +487,7 @@ from domainkit.contrib.auth.actions import (
     ActionAuthorizationOut,
     request_action_authorization,
 )
-from domainkit.resources import expected_versions
+from domainkit.resources import asked_versions
 
 
 @router.post("/documents/{document_id}/approve/authorization", status_code=201)
@@ -468,8 +498,7 @@ async def ask_to_approve(
     if_match: Annotated[str | None, Header()] = None,
 ) -> ActionAuthorizationOut:
     uow = DocumentsUnitOfWork()
-    versions = None if if_match is None else expected_versions(if_match)
-    with uow.expect(Document, DocumentId(document_id), versions):
+    with uow.expect(Document, DocumentId(document_id), asked_versions(if_match)):
         asked = await request_action_authorization(
             request,
             APPROVE_DOCUMENT,
@@ -480,14 +509,23 @@ async def ask_to_approve(
     return ActionAuthorizationOut.of(asked)
 ```
 
+- `asked_versions(if_match)` reads the header as a twin does: none for
+  no value, an empty one, or `*`; `422` for several tags.
 - `binds` (or `show`) loads the record through `uow`, so its version is
-  checked there. A record they do not load is not checked: load it.
+  checked there. **A twin whose `show` and `binds` checked nothing is
+  refused** (`ImproperlyConfigured`, `500`), before anything is stored:
+  a tag nobody compared with the record must not reach the phone. Load
+  the record through `uow` first if they do not.
 - The act's rule, `StepUp(for_=...)`, reads the act's own `If-Match`.
   Its route holds its unit of work to it, as any conditional write does
   ([A route of your own](../resources.md#versions-and-conditional-requests)).
+  **An act whose unit of work is not held to the version its
+  authorization holds is refused** (`ImproperlyConfigured`, `500`),
+  before it spends anything or reads the record.
 - A rule of your own that asks (`AsksAuthorization`) is given the
   header when its `ask_authorization` takes `if_match`;
-  `StepUp(for_=...)` does.
+  `StepUp(for_=...)` does. A twin says in OpenAPI that the act is bound
+  to its `If-Match` only where its rule is given it.
 
 ## The route asks: `StepUp(for_=...)`
 
@@ -927,8 +965,9 @@ An app that confirms its own way (the phone of
 | `409 authorization_needs_other_factors` | A code or a passkey where the act asks the phone; the phone asked for an act that asks the password. |
 | `409 authorization_changed` | The phone, or another app (the app's own act), confirms a digest other than the act's. |
 | `409 action_record_changed` | The action `binds` the record, and it reads otherwise than when the authorization was asked for; the authorization is voided. |
-| `412 precondition_failed` | The twin, or the act, sent `If-Match`, and the record is at none of the versions it names; at the act, a `binds` that loads it so voids an authorization asked with `If-Match`. |
-| `428 precondition_required` | The action asks for `If-Match` (`require_if_match`), and the twin or the act sent none, or `*`. |
+| `412 precondition_failed` | The twin, or the act, sent `If-Match`, and the record is not at the version it names; at the act, a `binds` that loads it so voids an authorization asked with `If-Match`. |
+| `428 precondition_required` | The action asks for `If-Match` (`require_if_match`), and the twin or the act sent none, an empty one, or `*`. |
+| `422 validation_error` | A twin's `If-Match` lists several tags: a page reads one version. |
 | `404 authorization_not_found` | Another user's or another login's authorization. |
 | `401 invalid_code`, `400 password_required`, `400 wrong_password`, `429` | As for a step-up. |
 | `500 authorization_unspent` | Under `DEBUG` and in tests: a rule accepted one, and no service spent it. |
