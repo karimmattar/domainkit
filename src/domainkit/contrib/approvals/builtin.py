@@ -30,12 +30,16 @@ never the user it promotes.
 ``ADMIN_APPROVALS`` holds changes of auth's admin API for approval: making
 staff (``SET_STAFF``), adding groups (``SET_GROUPS``) or permissions
 (``SET_PERMISSIONS``), setting a password (``SET_PASSWORD``),
-impersonating (``IMPERSONATE``). The admin API asks before each change
-(``on_admin_change``); for one the setting names, the change is submitted
-as the staff member's request and refused (``approval_pending``), and the
-same call, made again by them once the request is approved, makes it,
-once (a guard ``by_maker``). The approvers are superusers (or the holders
-of ``ADMIN_APPROVERS``), never the user the change is about.
+impersonating (``IMPERSONATE``); since 2.7, making a user who holds access
+active again (``REACTIVATE``), and granting a group permissions
+(``SET_GROUP_PERMISSIONS``). The admin API asks before each change
+(``on_admin_change``, ``on_admin_group_change``), after the project's
+checks (``HOLD_ORDER``); for one the setting names, the change is
+submitted as the staff member's request and refused
+(``approval_pending``), and the same call, made again by them once the
+request is approved, makes it, once (a guard ``by_maker``). The
+approvers are superusers (or the holders of ``ADMIN_APPROVERS``), never
+the user the change is about, nor a member of the group granted.
 """
 
 from collections.abc import Mapping
@@ -44,7 +48,8 @@ from uuid import UUID
 
 from domainkit.apps import registry
 from domainkit.context import current_request
-from domainkit.ddd import Command, PermissionDenied
+from domainkit.ddd import Command, PermissionDenied, ValueObject
+from domainkit.exceptions import ImproperlyConfigured
 
 from .exceptions import ApprovalRequired, MakerNotAllowed
 from .guards import (
@@ -70,8 +75,8 @@ if TYPE_CHECKING:
         PostEntry,
         ReverseEntry,
     )
-    from domainkit.contrib.auth import AbstractBaseUser, AuthUnitOfWork
-    from domainkit.contrib.auth.gates import AdminChange
+    from domainkit.contrib.auth import AbstractBaseUser, AuthUnitOfWork, Group
+    from domainkit.contrib.auth.gates import AdminChange, GroupChange
 
 POST_ENTRY: Final = "accounting.post_entry"
 """The guarded action of postings over their currency's threshold."""
@@ -91,6 +96,14 @@ SET_PASSWORD: Final = "auth.set_password"  # noqa: S105 - an action, not a secre
 """The guarded action of setting a user's password in the admin API."""
 IMPERSONATE: Final = "auth.impersonate"
 """The guarded action of acting as a user in the admin API."""
+REACTIVATE: Final = "auth.reactivate"
+"""The guarded action of making a user who holds access active again (since 2.7)."""
+SET_GROUP_PERMISSIONS: Final = "auth.set_group_permissions"
+"""The guarded action of granting a group permissions in the admin API (since 2.7)."""
+HOLD_ORDER: Final = 100
+"""The ``order`` approvals' checks of admin changes register with: after the
+checks registered without one, so a change a project refuses spends no
+approval (user report A19)."""
 
 
 @requires_approval(POST_ENTRY)
@@ -370,21 +383,42 @@ def refuse_if_guarded(action: str) -> None:
 
 
 class SetStaff(Command):
-    """Make a user staff, in the admin API (``PATCH /users/{id}``)."""
+    """Make a user staff, in the admin API (``PATCH /users/{id}``).
+
+    Where ``auth.reactivate`` is not held, it is also making a staff member
+    active again: their return gives staff back (since 2.7).
+    """
 
     user_id: UUID
+
+
+class HeldGroup(ValueObject):
+    """A group a ``SetGroups`` adds, as it was when the change was asked.
+
+    Its id, its name, and the keys of the permissions it grants, sorted
+    (since 2.7, user report A21).
+    """
+
+    id: UUID
+    name: str
+    permissions: tuple[str, ...]
 
 
 class SetGroups(Command):
     """Add a user to groups, and take them out of others, in the admin API.
 
     ``added`` and ``removed`` are what ``PUT /users/{id}/groups`` changes,
-    by name, sorted: the change itself, not the list sent.
+    by name, sorted: the change itself, not the list sent. ``groups``
+    holds each group added, by name, as ``HeldGroup`` (since 2.7): its id
+    and the permissions it grants. An approval grants the groups it
+    held: a group renamed, made again, or granted other permissions since
+    makes another command, which waits for an approval of its own.
     """
 
     user_id: UUID
     added: tuple[str, ...]
     removed: tuple[str, ...] = ()
+    groups: tuple[HeldGroup, ...] = ()
 
 
 class SetPermissions(Command):
@@ -416,12 +450,39 @@ class Impersonate(Command):
     reason: str
 
 
+class Reactivate(Command):
+    """Make a user who holds access active again, in the admin API (since 2.7).
+
+    ``PATCH /users/{id}`` with ``"is_active": true``, for an inactive user
+    who is staff or a superuser, belongs to a group, or holds a
+    permission, directly or on an object: they get it all back.
+    """
+
+    user_id: UUID
+
+
+class SetGroupPermissions(Command):
+    """Grant a group permissions, and take others away, in the admin API.
+
+    ``added`` and ``removed`` are what ``PUT /groups/{id}/permissions``
+    changes, by key, sorted; ``name`` is the group's. Every member gains
+    what it adds, so none of them decides it (since 2.7).
+    """
+
+    group_id: UUID
+    name: str
+    added: tuple[str, ...]
+    removed: tuple[str, ...] = ()
+
+
 ADMIN_COMMANDS: Final[Mapping[str, type[Command]]] = {
     SET_STAFF: SetStaff,
     SET_GROUPS: SetGroups,
     SET_PERMISSIONS: SetPermissions,
     SET_PASSWORD: SetPassword,
     IMPERSONATE: Impersonate,
+    REACTIVATE: Reactivate,
+    SET_GROUP_PERMISSIONS: SetGroupPermissions,
 }
 """The command of each admin action ``ADMIN_APPROVALS`` may name."""
 ADMIN_POLICIES: Final[Mapping[str, str]] = {
@@ -430,6 +491,8 @@ ADMIN_POLICIES: Final[Mapping[str, str]] = {
     SET_PERMISSIONS: "auth.permissions",
     SET_PASSWORD: "auth.password",
     IMPERSONATE: "auth.impersonation",
+    REACTIVATE: "auth.reactivation",
+    SET_GROUP_PERMISSIONS: "auth.group_permissions",
 }
 """The policy each admin action's requests wait under."""
 
@@ -460,6 +523,14 @@ def _about_user(command: Any) -> list[str]:  # noqa: ANN401 - an admin command.
     return [str(command.user_id)]
 
 
+async def _members(command: SetGroupPermissions) -> list[str]:
+    """The members of the group granted, as stored now: they do not decide it."""
+    from domainkit.contrib.auth import AuthUnitOfWork
+
+    async with AuthUnitOfWork() as uow:
+        return [str(each) for each in await uow.groups.member_ids(command.group_id)]
+
+
 def guard_admin_changes(config: ApprovalsSettings) -> None:
     """Guard the admin changes ``ADMIN_APPROVALS`` names, each with its approvals.
 
@@ -483,7 +554,7 @@ def guard_admin_changes(config: ApprovalsSettings) -> None:
                 ADMIN_SERVICES[action],
                 AuthUnitOfWork,
                 (Policy(ADMIN_POLICIES[action], approvals=approvals, **approvers),),
-                parties=_about_user,
+                parties=_members if action == SET_GROUP_PERMISSIONS else _about_user,
                 http=False,
                 by_maker=True,
             )
@@ -513,14 +584,17 @@ async def check_admin_change(
 ) -> None:
     """Hold a change of the admin API for approval, if a guard holds it.
 
-    Auth's ``on_admin_change`` calls it before each change. A change that
+    Auth's ``on_admin_change`` calls it before each change, after the
+    checks registered without an order (``HOLD_ORDER``). A change that
     ``ADMIN_APPROVALS`` names runs the guard's service: the staff member's
     approved request of exactly this change is spent and the change goes
     on, or else the change is submitted, or found waiting, and refused.
+    At the change's twin (``change.asking``) nothing is submitted or spent.
 
     Raises:
         ApprovalRequired: A user is created staff while making staff is
-            guarded: create them, then make them staff.
+            guarded: create them, then make them staff; or a change both
+            makes a user staff and active again while both are guarded.
         PermissionDenied: Staff act as someone else (an impersonation).
         ApprovalPending: The change waits for its approvals.
     """
@@ -528,38 +602,175 @@ async def check_admin_change(
         if change.values.get("is_staff") is True:
             refuse_staff_creation()  # The admin API asked it already.
         return
-    held = None if target is None else _admin_command(target, change)
-    if held is None or held[0] not in guards():
+    held = None if target is None else await _admin_command(target, change)
+    if held is not None:
+        await _hold(actor, *held, asking=change.asking)
+
+
+async def check_group_change(
+    actor: Any,  # noqa: ANN401 - the staff member, a user.
+    group: "Group | None",
+    change: "GroupChange",
+) -> None:
+    """Hold granting a group permissions for approval, if a guard holds it.
+
+    Auth's ``on_admin_group_change`` calls it before each change of a
+    group, as ``check_admin_change`` is called for a user's. Only a change
+    that grants (``auth.set_group_permissions``) is held: what only takes
+    away, a new group (it has no members), a name, and a deletion are not.
+    """
+    if (
+        change.kind != "group_permissions"
+        or not change.added
+        or group is None
+        or SET_GROUP_PERMISSIONS not in guards()
+    ):
         return
-    action, command = held
+    command = SetGroupPermissions(
+        group_id=group.id,
+        name=group.name,
+        added=tuple(sorted(change.added)),
+        removed=tuple(sorted(change.removed)),
+    )
+    await _hold(actor, SET_GROUP_PERMISSIONS, command, asking=change.asking)
+
+
+async def _hold(
+    actor: Any,  # noqa: ANN401 - the staff member, a user.
+    action: str,
+    command: Command,
+    *,
+    asking: bool,
+) -> None:
+    """Spend the staff member's approved request of ``command``, or submit it.
+
+    At a twin (``asking``) nothing is submitted or spent: the change is
+    only asked for.
+
+    Raises:
+        PermissionDenied: Staff act as someone else (an impersonation).
+        ApprovalPending: The change waits for its approvals.
+    """
+    if asking:
+        return
     context = current_request()
     if context is None or context.actor != str(actor.id):
         raise PermissionDenied("Requests are made and decided in one's own name only.")
     await ADMIN_SERVICES[action](command, None)
 
 
-def _admin_command(target: "AbstractBaseUser", change: "AdminChange") -> Any:  # noqa: ANN401 - (action, command) or None.
-    """The guarded action and command of ``change`` to ``target``, if it has one.
+TWO_HOLDS: Final = (
+    "Make the user staff and active again in two changes: each waits for its "
+    "own approval."
+)
+"""Why a change held twice over is refused (``auth.set_staff``, ``auth.reactivate``)."""
 
-    Making staff (not unmaking), adding groups or permissions (a change that
-    only takes away is not held), setting a password, impersonating.
+
+async def _admin_command(
+    target: "AbstractBaseUser", change: "AdminChange"
+) -> tuple[str, Command] | None:
+    """The guarded action and command of ``change`` to ``target``, if one holds it.
+
+    Making staff (not unmaking), making a user who holds access active
+    again, adding groups or permissions (a change that only takes away is
+    not held), setting a password, impersonating.
+
+    Raises:
+        ApprovalRequired: The change both makes the user staff and active
+            again while both are held: two approvals, never one for both.
     """
+    held = guards()
     user_id = target.id
+    found: tuple[str, Command] | None = None
     if change.kind == "update":
-        making = change.values.get("is_staff") is True
-        if making and not getattr(target, "is_staff", False):
-            return SET_STAFF, SetStaff(user_id=user_id)
-        return None
-    if change.kind in ("groups", "permissions") and change.added:
-        added, removed = tuple(sorted(change.added)), tuple(sorted(change.removed))
-        if change.kind == "groups":
-            return SET_GROUPS, SetGroups(user_id=user_id, added=added, removed=removed)
-        return SET_PERMISSIONS, SetPermissions(
-            user_id=user_id, added=added, removed=removed
+        return await _updated(target, change, held)
+    if change.kind == "groups" and change.added:
+        found = (
+            SET_GROUPS,
+            SetGroups(
+                user_id=user_id,
+                added=tuple(sorted(change.added)),
+                removed=tuple(sorted(change.removed)),
+                groups=_held_groups(change),
+            ),
         )
-    if change.kind == "password":
-        return SET_PASSWORD, SetPassword(user_id=user_id)
-    if change.kind == "impersonate":
+    elif change.kind == "permissions" and change.added:
+        found = (
+            SET_PERMISSIONS,
+            SetPermissions(
+                user_id=user_id,
+                added=tuple(sorted(change.added)),
+                removed=tuple(sorted(change.removed)),
+            ),
+        )
+    elif change.kind == "password":
+        found = SET_PASSWORD, SetPassword(user_id=user_id)
+    elif change.kind == "impersonate":
         reason = str(change.values.get("reason", ""))
-        return IMPERSONATE, Impersonate(user_id=user_id, reason=reason)
+        found = IMPERSONATE, Impersonate(user_id=user_id, reason=reason)
+    return found if found is not None and found[0] in held else None
+
+
+async def _updated(
+    target: "AbstractBaseUser", change: "AdminChange", held: Mapping[str, Guard]
+) -> tuple[str, Command] | None:
+    """The guarded action of a ``PATCH /users/{id}``, if one holds it.
+
+    Making the user active again is ``REACTIVATE``'s while they will hold
+    access; else, where only making staff is held, ``SET_STAFF`` covers a
+    staff member made active again, as it covers making staff (user report
+    A21).
+
+    Raises:
+        ApprovalRequired: The change makes the user staff and active again
+            while both are held.
+    """
+    values = change.values
+    staff = getattr(target, "is_staff", False) is True
+    making = values.get("is_staff") is True and not staff
+    reactivating = values.get("is_active") is True and not target.is_active
+    if reactivating and REACTIVATE in held and await _holds_access(target, change):
+        if making and SET_STAFF in held:
+            raise ApprovalRequired(TWO_HOLDS)
+        return REACTIVATE, Reactivate(user_id=target.id)
+    staff_after = values.get("is_staff", staff) is True
+    if SET_STAFF in held and (making or (reactivating and staff_after)):
+        return SET_STAFF, SetStaff(user_id=target.id)
     return None
+
+
+async def _holds_access(target: "AbstractBaseUser", change: "AdminChange") -> bool:
+    """Whether ``target`` holds access once ``change`` is made.
+
+    Staff or a superuser (as the change leaves them), a member of a group,
+    or granted a permission, directly or on an object (every backend's
+    ``object_grants``). What a backend grants only an active user, such as
+    a member's keys in a tenant, is not known here: guard it yourself.
+    """
+    from domainkit.contrib.auth.backends import object_grants
+
+    for flag in ("is_staff", "is_superuser"):
+        if change.values.get(flag, getattr(target, flag, False)) is True:
+            return True
+    if target.groups or target.user_permissions:
+        return True
+    return bool(await object_grants(target))
+
+
+def _held_groups(change: "AdminChange") -> tuple[HeldGroup, ...]:
+    """Each group ``change`` adds, by id, with its permissions, sorted by name.
+
+    Raises:
+        ImproperlyConfigured: The change does not hold each group it adds
+            (``AdminChange.groups``): it could not be bound.
+    """
+    found = tuple(
+        HeldGroup(group.id, group.name, tuple(sorted(group.permissions)))
+        for group in sorted(change.groups, key=lambda group: group.name)
+    )
+    if {group.name for group in found} != set(change.added):
+        raise ImproperlyConfigured(
+            "A change of groups names the groups it adds in AdminChange.groups, "
+            "so their approval binds them."
+        )
+    return found

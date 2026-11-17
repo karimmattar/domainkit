@@ -43,7 +43,7 @@ from domainkit.contrib.auth.admin_actions import AdminAct, fit, fitted, listed, 
 from domainkit.contrib.auth.apps import action_problems
 from domainkit.contrib.auth.tables import authorizations
 from domainkit.db import connections
-from domainkit.ddd import Command, fingerprint
+from domainkit.ddd import Command, PermissionDenied, fingerprint
 from domainkit.http import get_asgi_application
 from domainkit.http.access import Require
 from domainkit.http.routers import select_routes
@@ -61,7 +61,7 @@ from domainkit_tests.conftest import (
 )
 from domainkit_tests.support.auth import audited, create_user, grant
 from domainkit_tests.test_approvals import APPROVALS, AUDIT, FAST, MESSAGING
-from domainkit_tests.test_auth_admin import join, make_group, token_for
+from domainkit_tests.test_auth_admin import NEW_PASSWORD, join, make_group, token_for
 from domainkit_tests.test_auth_stepup import enrol, now_code
 
 ROUTES: Final = "domainkit_tests.sample_admin_action_routes"
@@ -775,6 +775,85 @@ def test_a_held_change_is_checked_before_it_waits_and_spent_once_approved(
     assert made.status_code == 200, made.json()
     assert made.json()["is_staff"] is True
     assert row(authorization)["consumed_at"] is not None
+
+
+def test_the_twin_runs_the_projects_checks_and_holds_nothing(
+    client: TestClient, frozen: FrozenClock
+) -> None:
+    """A check that refuses the change refuses its twin, before the confirmation.
+
+    Before 2.7 the twins ran no ``on_admin_change`` check: the phone
+    confirmed a change the project then refused (user report A17). The
+    checks see ``asking``: approvals' hold submits nothing at a twin, and
+    the change held is submitted when it is made. A group's twin runs the
+    ``on_admin_group_change`` checks the same way.
+    """
+    from domainkit.contrib.auth.gates import (
+        AdminChange,
+        GroupChange,
+        on_admin_change,
+        on_admin_group_change,
+    )
+
+    ann = Staff(client, frozen, "ann")
+    target = create_user("target")
+    group = make_group("clerks")
+    seen: list[bool] = []
+
+    async def not_yourself(actor: Any, user: Any, change: AdminChange) -> None:  # noqa: ANN401
+        seen.append(change.asking)
+        if user is not None and user.id == actor.id:
+            raise PermissionDenied("Nobody changes their own account here.")
+
+    async def no_admins(actor: Any, group: Any, change: GroupChange) -> None:  # noqa: ANN401
+        seen.append(change.asking)
+        if change.name == "admins":
+            raise PermissionDenied("No group is called admins here.")
+
+    on_admin_change(not_yourself, domain="alpha")
+    on_admin_group_change(no_admins, domain="alpha")
+    own = ann.ask(
+        f"/users/{ann.id}/authorization/patch", {"fields": {"last_name": "A"}}
+    )
+    renamed = ann.ask(f"/groups/{group}/authorization/patch", {"name": "admins"})
+    making = ann.ask(f"/users/{target}/authorization/patch", {"is_staff": True})
+    held = held_requests()
+    authorization = ann.confirm(making.json()["id"])
+    waiting = ann.call("PATCH", f"/users/{target}", {"is_staff": True}, authorization)
+
+    problem(own, 403, "permission_denied")
+    assert own.json()["detail"] == "Nobody changes their own account here."
+    problem(renamed, 403, "permission_denied")
+    assert making.status_code == 201, making.json()
+    assert held == 0
+    problem(waiting, 403, "approval_pending")
+    assert seen == [True, True, True, False]
+
+
+def test_a_reused_password_spends_its_authorization(
+    client: TestClient, frozen: FrozenClock
+) -> None:
+    """One confirmation, one guess at the user's old passwords.
+
+    The authorization binds only that a password is set. Before 2.7 a
+    reused one was refused and spent nothing, so one confirmation tested
+    password after password against the user's history (user report A17).
+    """
+    ann = Staff(client, frozen, "ann")
+    target = create_user("target", password=NEW_PASSWORD)
+    path = f"/users/{target}/password"
+    history = {**ACTS.settings["AUTH"], "PASSWORD_HISTORY": 2}
+
+    with override_settings(AUTH=history):
+        authorization = ann.authorized(
+            f"{path}/authorization", {"password": NEW_PASSWORD}
+        )
+        reused = ann.call("POST", path, {"password": NEW_PASSWORD}, authorization)
+        again = ann.call("POST", path, {"password": "Other-pass-42"}, authorization)
+
+    problem(reused, 422, "invalid_password")
+    assert row(authorization)["consumed_at"] is not None
+    problem(again, 403, "action_not_authorized")
 
 
 def test_the_act_digest_is_the_change_sorted_never_a_password() -> None:

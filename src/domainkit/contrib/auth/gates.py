@@ -55,12 +55,14 @@ from domainkit.apps.hooks import HookPoint
 from domainkit.exceptions import DomainkitError
 from domainkit.http.access import NotAuthenticated
 
-from .models import AbstractBaseUser
+from .models import AbstractBaseUser, Group
 from .tokens import LoginOrigin, SessionLimits, noted, utc_now
 
 __all__ = [
     "MANAGES_LOGINS",
+    "AddedGroup",
     "AdminChange",
+    "GroupChange",
     "LoginGate",
     "LoginNotGated",
     "LoginOrigin",
@@ -76,6 +78,7 @@ __all__ = [
     "login_origin",
     "manages_logins",
     "on_admin_change",
+    "on_admin_group_change",
     "on_create_staff",
     "on_login_gate",
     "on_make_superuser",
@@ -185,6 +188,16 @@ type AdminKind = Literal[
 
 
 @dataclass(frozen=True, slots=True)
+class AddedGroup:
+    """A group a change adds a user to, as the admin API read it (since 2.7)."""
+
+    id: UUID
+    name: str
+    permissions: frozenset[str]
+    """The keys of the permissions the group grants."""
+
+
+@dataclass(frozen=True, slots=True)
 class AdminChange:
     """What a staff member is about to do to a user through the admin API."""
 
@@ -200,6 +213,13 @@ class AdminChange:
     """What it sets: each of ``fields`` with the value it stores (``is_staff``
     true or false), and the ``reason`` of an ``impersonate`` (since 2.4).
     Never a password."""
+    groups: tuple[AddedGroup, ...] = field(default=(), compare=False)
+    """The groups it adds (``groups``), by id, with the permissions each
+    grants as it was read: ``added`` names them (since 2.7)."""
+    asking: bool = False
+    """True at the change's twin, which only asks for an authorization of
+    it: nothing is changed, and a check that writes (approvals' hold)
+    writes nothing (since 2.7)."""
 
 
 type AdminCheck = Callable[[Any, AbstractBaseUser | None, AdminChange], Awaitable[None]]
@@ -214,9 +234,54 @@ It runs once the admin API's own checks passed, right before the change,
 with the staff member, the user (None for ``create``), and the
 ``AdminChange``; raise to refuse it, as ``PermissionDenied`` ("nobody
 edits their own account here", "making staff needs another
-permission"). User report A9. ``domainkit.contrib.approvals`` registers
-one with ``APPROVALS.ADMIN_APPROVALS``: it holds the changes that setting
-names for approval.
+permission"). User report A9. With ``AUTH.ADMIN_ACTION`` on, the
+change's twin runs it too, with ``asking`` true (since 2.7).
+``domainkit.contrib.approvals`` registers one with
+``APPROVALS.ADMIN_APPROVALS``, at ``order=100``, after the checks
+registered without an order: it holds the changes that setting names
+for approval, and may spend an approval.
+"""
+
+type GroupKind = Literal[
+    "group_create", "group_rename", "group_permissions", "group_delete"
+]
+
+
+@dataclass(frozen=True, slots=True)
+class GroupChange:
+    """What a staff member is about to do to a group through the admin API.
+
+    Since 2.7 (user report A19).
+    """
+
+    kind: GroupKind
+    name: str | None = None
+    """The name it gives the group (``group_create``, ``group_rename``)."""
+    added: frozenset[str] = frozenset()
+    """The permissions it grants the group (``group_create``,
+    ``group_permissions``): every member gains them."""
+    removed: frozenset[str] = frozenset()
+    """Those it takes away (``group_permissions``)."""
+    asking: bool = False
+    """True at the change's twin: nothing is changed, and a check that
+    writes writes nothing."""
+
+
+type GroupCheck = Callable[[Any, Group | None, GroupChange], Awaitable[None]]
+"""A check of a change the admin API makes to a group: ``(actor, group, change)``."""
+
+on_admin_group_change: Final[HookPoint[GroupCheck]] = HookPoint(
+    "admin group change", arguments=3, awaited=True
+)
+"""Register a check of every change the admin API makes to a group (since 2.7).
+
+It runs as ``on_admin_change`` runs for a user's: once the admin API's own
+checks passed, right before the change, and at its twin with ``asking``
+true. It is called with the staff member, the group as stored (None for
+``group_create``), and the ``GroupChange``; raise to refuse it.
+``domainkit.contrib.approvals`` registers one with
+``APPROVALS.ADMIN_APPROVALS``, at ``order=100``: it holds granting a
+group permissions (``auth.set_group_permissions``).
 """
 
 _passed: ContextVar[Any] = ContextVar("login_gates_passed", default=None)

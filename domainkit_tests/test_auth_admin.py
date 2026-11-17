@@ -8,6 +8,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from fastapi import APIRouter, Depends
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.engine import Engine
@@ -33,16 +34,19 @@ from domainkit.contrib.auth.tables import mfa_devices, recovery_codes
 from domainkit.db import connections
 from domainkit.ddd import PermissionDenied, SoftDeletable
 from domainkit.http import ErrorResponse, encode_cursor, get_asgi_application
+from domainkit.http.routers import select_routes
 from domainkit.management import call_command
 from domainkit.management.base import run_async
 from domainkit_tests.conftest import (
     ALPHA,
+    API,
     AUTH,
     CONTENTTYPES,
     FAST_HASHER,
     MIDDLEWARE,
     SHOP,
     Api,
+    Migrated,
     UseAuth,
     domain_warnings,
 )
@@ -1759,3 +1763,200 @@ def test_the_project_checks_every_admin_change(api: Api) -> None:
         ("bob", AdminChange("groups", added=frozenset({"viewers"}))),
         ("bob", AdminChange("logout")),
     ]
+
+
+def test_the_project_checks_every_group_change(api: Api) -> None:
+    """``on_admin_group_change`` sees each change of a group; it may refuse.
+
+    Before 2.7 the group routes called no check (user report A19): a
+    project's check of a group's change could only be a dependency of its
+    route, and approvals could hold none of them.
+    """
+    from domainkit.contrib.auth.gates import GroupChange, on_admin_group_change
+
+    client = api()
+    headers = staff(
+        "admin", *ADMIN_PERMISSIONS, "shop.view_product", "shop.change_product"
+    )
+    seen: list[tuple[str | None, GroupChange]] = []
+
+    async def recorded(actor: Any, group: Any, change: GroupChange) -> None:  # noqa: ANN401
+        seen.append((None if group is None else group.name, change))
+
+    async def no_admins(actor: Any, group: Any, change: GroupChange) -> None:  # noqa: ANN401
+        if change.name == "admins":
+            raise PermissionDenied("No group is called admins here.")
+
+    on_admin_group_change(recorded, domain="auth")
+    on_admin_group_change(no_admins, domain="auth")
+
+    created = client.post(
+        f"{ADMIN}/groups",
+        json={"name": "viewers", "permissions": ["shop.view_product"]},
+        headers=headers,
+    )
+    group = created.json()["id"]
+    refused = client.patch(
+        f"{ADMIN}/groups/{group}", json={"name": "admins"}, headers=headers
+    )
+    renamed = client.patch(
+        f"{ADMIN}/groups/{group}", json={"name": "readers"}, headers=headers
+    )
+    granted = client.put(
+        f"{ADMIN}/groups/{group}/permissions",
+        json={"permissions": ["shop.change_product"]},
+        headers=headers,
+    )
+    deleted = client.delete(f"{ADMIN}/groups/{group}", headers=headers)
+
+    assert created.status_code == 201, created.json()
+    assert error(refused, 403) == (
+        "permission_denied",
+        "No group is called admins here.",
+    )
+    assert renamed.json()["name"] == "readers"
+    assert granted.json()["permissions"] == ["shop.change_product"]
+    assert deleted.status_code == 204
+    assert seen == [
+        (
+            None,
+            GroupChange(
+                "group_create", name="viewers", added=frozenset({"shop.view_product"})
+            ),
+        ),
+        ("viewers", GroupChange("group_rename", name="admins")),
+        ("viewers", GroupChange("group_rename", name="readers")),
+        (
+            "readers",
+            GroupChange(
+                "group_permissions",
+                added=frozenset({"shop.change_product"}),
+                removed=frozenset({"shop.view_product"}),
+            ),
+        ),
+        ("readers", GroupChange("group_delete")),
+    ]
+
+
+def test_a_changed_groups_ids_and_permissions_reach_the_checks(api: Api) -> None:
+    """``AdminChange.groups`` holds each group added: its id and its permissions.
+
+    A check, approvals' hold among them, can bind the groups a change adds,
+    not their names, which a rename gives another group (user report A21).
+    """
+    from domainkit.contrib.auth.gates import AddedGroup, AdminChange, on_admin_change
+
+    client = api()
+    headers = staff("admin", *ADMIN_PERMISSIONS, "shop.view_product")
+    bob = create_user("bob")
+    viewers = make_group("viewers", "shop.view_product")
+    empty = make_group("empty")
+    seen: list[AdminChange] = []
+
+    async def recorded(actor: Any, target: Any, change: AdminChange) -> None:  # noqa: ANN401
+        seen.append(change)
+
+    on_admin_change(recorded, domain="auth")
+    joined = client.put(
+        f"{ADMIN}/users/{bob}/groups",
+        json={"groups": ["viewers", "empty"]},
+        headers=headers,
+    )
+
+    assert joined.status_code == 200, joined.json()
+    assert [change.groups for change in seen] == [
+        (
+            AddedGroup(empty, "empty", frozenset()),
+            AddedGroup(viewers, "viewers", frozenset({"shop.view_product"})),
+        )
+    ]
+
+
+CHECKED: list[str] = []
+"""What ``counted_check`` saw, in order."""
+
+
+async def counted_check() -> None:
+    """A project's check of a route of the admin API, added with ``select_routes``."""
+    CHECKED.append("checked")
+
+
+selected = APIRouter()
+selected.include_router(
+    select_routes(
+        admin.router,
+        dependencies={
+            "PATCH /users/{user_id}": [Depends(counted_check)],
+            "PUT /groups/{group_id}/permissions": [Depends(counted_check)],
+        },
+    ),
+    prefix=ADMIN,
+)
+"""The admin API with a check of the project's on two routes."""
+
+
+def test_a_check_added_with_select_routes_runs_after_the_admin_rules(
+    migrated: Migrated,
+) -> None:
+    """The admin API's rules are its routes' dependencies, so they answer first.
+
+    Before 2.7 they were its endpoints' parameters, which FastAPI solves
+    after a route's dependencies: a project's check added with
+    ``select_routes`` ran for anyone, signed in or not, staff or not, before
+    the admin API refused them (user report A17).
+    """
+    CHECKED.clear()
+    with (
+        migrated(API),
+        override_settings(ROOT_ROUTER=f"{__name__}.selected"),
+        TestClient(get_asgi_application()) as client,
+    ):
+        bob = create_user("bob")
+        group = make_group("viewers")
+        plain = staff("plain", is_staff=False)
+        lacking = staff("lacking")
+        allowed = staff("admin", *ADMIN_PERMISSIONS)
+        user_path = f"{ADMIN}/users/{bob}"
+        group_path = f"{ADMIN}/groups/{group}/permissions"
+        body = {"fields": {"last_name": "B"}}
+        refused = [
+            client.patch(user_path, json=body),
+            client.patch(user_path, json=body, headers=plain),
+            client.patch(user_path, json=body, headers=lacking),
+            client.put(group_path, json={"permissions": []}, headers=lacking),
+        ]
+        before = list(CHECKED)
+        made = client.patch(user_path, json=body, headers=allowed)
+        granted = client.put(group_path, json={"permissions": []}, headers=allowed)
+
+    assert [each.status_code for each in refused] == [401, 403, 403, 403]
+    assert before == []
+    assert made.status_code == 200, made.json()
+    assert granted.status_code == 200, granted.json()
+    assert CHECKED == ["checked", "checked"]
+
+
+def test_a_reused_password_counts_as_a_wrong_one(api: Api) -> None:
+    """Each reuse refused is a guess at the user's history: ``LOGIN_RATE`` bounds it.
+
+    A password that is not reused gives its count back. Before 2.7 the
+    refusals counted nowhere: staff could test the user's old passwords
+    at no rate (user report A17).
+    """
+    client = api(PASSWORD_HISTORY=2, LOGIN_RATE="3/minute")
+    headers = staff("admin", *ADMIN_PERMISSIONS)
+    bob = create_user("bob")
+    path = f"{ADMIN}/users/{bob}/password"
+
+    first = client.post(path, json={"password": NEW_PASSWORD}, headers=headers)
+    reused = [
+        client.post(path, json={"password": NEW_PASSWORD}, headers=headers)
+        for _ in range(3)
+    ]
+    throttled = client.post(
+        path, json={"password": NEW_PASSWORD + "!"}, headers=headers
+    )
+
+    assert first.status_code == 204, first.json()
+    assert [error(each, 422)[0] for each in reused] == ["invalid_password"] * 3
+    assert error(throttled, 429)[0] == "rate_limited"

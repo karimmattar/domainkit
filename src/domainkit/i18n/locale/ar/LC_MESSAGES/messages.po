@@ -1431,6 +1431,9 @@ msgstr "لا تعرف خدمة الإشعارات هذا الرمز: اطلب م
 msgid "Making staff needs approval: create the user, then make them staff."
 msgstr "يحتاج ضمّ مستخدم إلى الموظفين إلى موافقة: أنشئ المستخدم، ثم اجعله من الموظفين."
 
+msgid "Make the user staff and active again in two changes: each waits for its own approval."
+msgstr "اجعل المستخدم من الموظفين ونشطًا من جديد في تغييرين: ينتظر كلٌّ منهما موافقته."
+
 msgid "Requests are made and decided in one's own name only."
 msgstr "تُقدَّم الطلبات ويُبتّ فيها باسم صاحبها فقط."
 

@@ -25,18 +25,30 @@ from domainkit.conf import override_settings
 from domainkit.context import RequestContext, bind_request
 from domainkit.contrib.approvals import (
     IMPERSONATE,
+    REACTIVATE,
+    SET_GROUP_PERMISSIONS,
+    SET_GROUPS,
     SET_STAFF,
     ApprovalsSettings,
+    Reactivate,
     SetStaff,
     approvers_of,
     fingerprint,
     guards,
 )
-from domainkit.contrib.approvals.builtin import check_admin_change
+from domainkit.contrib.approvals.builtin import (
+    _updated,
+    check_admin_change,
+    check_group_change,
+)
 from domainkit.contrib.approvals.services import _spend
 from domainkit.contrib.approvals.tables import requests
 from domainkit.contrib.auth import AuthUnitOfWork, User
-from domainkit.contrib.auth.gates import AdminChange
+from domainkit.contrib.auth.gates import (
+    AdminChange,
+    GroupChange,
+    on_admin_change,
+)
 from domainkit.contrib.messaging.testing import drain
 from domainkit.db import connections
 from domainkit.ddd import PermissionDenied
@@ -48,7 +60,7 @@ from domainkit_tests.conftest import ALPHA, Migrated, Shape
 from domainkit_tests.support.auth import create_user, grant
 from domainkit_tests.test_approvals import APPROVALS, AUDIT, MESSAGING
 from domainkit_tests.test_approvals_api import APPROVALS_API, problem
-from domainkit_tests.test_auth_admin import NEW_PASSWORD, make_group, token_for
+from domainkit_tests.test_auth_admin import NEW_PASSWORD, join, make_group, token_for
 
 ADMIN: Final = "/admin/auth"
 API: Final = "/approvals/requests"
@@ -68,6 +80,8 @@ APPROVALS_ADMIN: Final = Shape(
                 "auth.set_permissions": 1,
                 "auth.set_password": 1,
                 "auth.impersonate": 2,
+                "auth.reactivate": 1,
+                "auth.set_group_permissions": 1,
             },
         },
     },
@@ -222,13 +236,14 @@ def test_a_change_of_groups_is_bound_to_what_it_adds_and_removes(
 ) -> None:
     """The approved change is the one made; another needs its own approval.
 
-    A change that only takes groups away waits for no one.
+    A change that only takes groups away waits for no one. Each group
+    added is held by its id and the permissions it grants (user report A21).
     """
     ann = staff("ann", "accounting.view_account", "accounting.view_entry")
     root = staff("root", superuser=True)
     bob = create_user("bob")
-    make_group("viewers", "accounting.view_account")
-    make_group("readers", "accounting.view_entry")
+    viewers = make_group("viewers", "accounting.view_account")
+    readers = make_group("readers", "accounting.view_entry")
     path = f"{ADMIN}/users/{bob}/groups"
 
     first = pending(client.put(path, json={"groups": ["viewers"]}, headers=ann))
@@ -246,6 +261,7 @@ def test_a_change_of_groups_is_bound_to_what_it_adds_and_removes(
         "user_id": str(bob),
         "added": ["viewers"],
         "removed": [],
+        "groups": [bound_group("viewers", viewers, "accounting.view_account")],
     }
     assert wider != first
     assert joined.status_code == 200, joined.json()
@@ -256,9 +272,15 @@ def test_a_change_of_groups_is_bound_to_what_it_adds_and_removes(
         "user_id": str(bob),
         "added": ["readers"],
         "removed": ["viewers"],
+        "groups": [bound_group("readers", readers, "accounting.view_entry")],
     }
     assert left.status_code == 200, left.json()
     assert left.json()["groups"] == []
+
+
+def bound_group(name: str, group_id: UUID, *permissions: str) -> dict[str, Any]:
+    """A group as ``SetGroups`` holds it: its id, name, and permissions."""
+    return {"id": str(group_id), "name": name, "permissions": sorted(permissions)}
 
 
 def test_the_bounds_of_staff_are_checked_before_anything_is_submitted(
@@ -452,10 +474,15 @@ def test_a_request_found_by_a_forged_fingerprint_runs_nothing_else(
     root = staff("root", superuser=True)
     bob = create_user("bob")
     make_group("viewers", "accounting.view_account")
-    make_group("readers", "accounting.view_entry")
+    readers = make_group("readers", "accounting.view_entry")
     path = f"{ADMIN}/users/{bob}/groups"
     held = pending(client.put(path, json={"groups": ["viewers"]}, headers=ann))
-    other = {"user_id": str(bob), "added": ["readers"], "removed": []}
+    other = {
+        "user_id": str(bob),
+        "added": ["readers"],
+        "removed": [],
+        "groups": [bound_group("readers", readers, "accounting.view_entry")],
+    }
 
     async def forge() -> None:
         async with connections.engine().begin() as connection:
@@ -523,6 +550,7 @@ def test_the_guards_are_by_maker_off_http_and_about_the_user(
         "auth.set_groups",
         "auth.set_permissions",
         "auth.set_password",
+        "auth.set_group_permissions",
     }
     assert (held.by_maker, held.http) == (True, False)
     assert held.parties_of(SetStaff(user_id=promoted)) == {str(promoted)}
@@ -633,3 +661,332 @@ def test_with_admin_approvers_their_holders_approve(migrated: Migrated) -> None:
         assert set(guards()) & {SET_STAFF, IMPERSONATE} == set()
         policy = guards()["auth.set_permissions"].policies[0]
         assert policy.permission == "auth.change_user"
+
+
+def rename(client: TestClient, group: UUID, name: str, headers: Headers) -> None:
+    """Rename ``group`` to ``name`` through the admin API."""
+    renamed = client.patch(
+        f"{ADMIN}/groups/{group}", json={"name": name}, headers=headers
+    )
+    assert renamed.status_code == 200, renamed.json()
+
+
+def test_an_approval_grants_the_groups_it_held_not_their_names(
+    client: TestClient,
+) -> None:
+    """A group renamed to the name approved, or made again, needs its own approval.
+
+    Approved for "readers", the maker renamed readers away and admins to
+    "readers", repeated the call, and the user joined admins (user report
+    A21). The approval holds each group's id and permissions: the same call
+    now submits a request of its own, which shows what admins grant. A
+    group granted more since is another group too.
+    """
+    ann = staff("ann", "accounting.view_entry", "accounting.add_entry")
+    root = staff("root", superuser=True)
+    bob = create_user("bob")
+    readers = make_group("readers", "accounting.view_entry")
+    admins = make_group("admins", "accounting.view_entry", "accounting.add_entry")
+    path = f"{ADMIN}/users/{bob}/groups"
+    body = {"groups": ["readers"]}
+
+    approved = pending(client.put(path, json=body, headers=ann))
+    approve(client, approved, root)
+    rename(client, readers, "old", root)
+    rename(client, admins, "readers", root)
+    swapped = pending(client.put(path, json=body, headers=ann))
+    swap = read(client, swapped, ann)
+    rename(client, admins, "admins", root)
+    rename(client, readers, "readers", root)
+    widen(readers, "accounting.add_entry")
+    wider = pending(client.put(path, json=body, headers=ann))
+
+    assert swapped not in (approved, wider)
+    assert swap["arguments"]["groups"] == [
+        bound_group("readers", admins, "accounting.view_entry", "accounting.add_entry")
+    ]
+    assert read(client, approved, ann)["status"] == "approved"
+    assert user_of(bob).groups == set()
+
+
+def widen(group_id: UUID, *permissions: str) -> None:
+    """Grant the group ``group_id`` more, as a way round the admin API would."""
+
+    async def grant_more() -> None:
+        async with AuthUnitOfWork() as uow:
+            group = await uow.groups.get(group_id)  # type: ignore[arg-type]
+            group.grant(*await uow.permissions.get_many(permissions))
+            await uow.commit()
+
+    run_async(grant_more())
+
+
+def test_an_approval_does_not_reach_a_group_made_again(client: TestClient) -> None:
+    """A group deleted and made again with the same name is another group."""
+    ann = staff("ann", "accounting.view_entry")
+    root = staff("root", superuser=True)
+    bob = create_user("bob")
+    first = make_group("readers", "accounting.view_entry")
+    path = f"{ADMIN}/users/{bob}/groups"
+    body = {"groups": ["readers"]}
+
+    approved = pending(client.put(path, json=body, headers=ann))
+    approve(client, approved, root)
+    deleted = client.delete(f"{ADMIN}/groups/{first}", headers=root)
+    again = make_group("readers", "accounting.view_entry")
+    fresh = pending(client.put(path, json=body, headers=ann))
+
+    assert deleted.status_code == 204
+    assert fresh != approved
+    assert read(client, fresh, ann)["arguments"]["groups"] == [
+        bound_group("readers", again, "accounting.view_entry")
+    ]
+    assert user_of(bob).groups == set()
+
+
+def deactivated(name: str, **flags: bool) -> UUID:
+    """A user ``name``, made with ``flags``, then made inactive."""
+    user_id = create_user(name, **flags)
+
+    async def deactivate() -> None:
+        async with AuthUnitOfWork() as uow:
+            user = await uow.users.get(user_id)  # type: ignore[arg-type]
+            user.set_active(False)
+            await uow.commit()
+
+    run_async(deactivate())
+    return user_id
+
+
+def test_making_someone_who_holds_access_active_again_waits(
+    client: TestClient,
+) -> None:
+    """``auth.reactivate``: a superuser, a member of a group wait.
+
+    Before 2.7 ``{"is_active": true}`` gave a deactivated superuser
+    everything back with no approval (user report A21). A user who holds
+    nothing comes back at once; the user made active does not decide.
+    """
+    root = staff("root", superuser=True)
+    other = staff("other", superuser=True)
+    make_group("readers", "accounting.view_entry")
+    boss = deactivated("boss", is_superuser=True)
+    clerk = deactivated("clerk")
+    join("clerk", "readers")
+    plain = deactivated("plain")
+    body = {"is_active": True}
+
+    held = pending(client.patch(f"{ADMIN}/users/{boss}", json=body, headers=root))
+    request = read(client, held, root)
+    approve(client, held, other)
+    back = client.patch(f"{ADMIN}/users/{boss}", json=body, headers=root)
+    member = pending(client.patch(f"{ADMIN}/users/{clerk}", json=body, headers=root))
+    free = client.patch(f"{ADMIN}/users/{plain}", json=body, headers=root)
+
+    assert (request["action"], request["policy"]) == (REACTIVATE, "auth.reactivation")
+    assert request["arguments"] == {"user_id": str(boss)}
+    assert guards()[REACTIVATE].parties_of(Reactivate(user_id=boss)) == {str(boss)}
+    assert back.status_code == 200, back.json()
+    assert back.json()["is_active"] is True
+    assert read(client, member, root)["action"] == REACTIVATE
+    assert free.status_code == 200, free.json()
+
+
+def test_a_change_held_twice_over_is_refused_and_each_hold_is_its_own(
+    client: TestClient,
+) -> None:
+    """Made staff and active again in one call: refused, so no approval is spent.
+
+    ``auth.set_staff`` and ``auth.reactivate`` each want their approvals;
+    one request for both would spend one hold's for the other's change.
+    """
+    ann = staff("ann")
+    bob = deactivated("bob")
+
+    both = client.patch(
+        f"{ADMIN}/users/{bob}", json={"is_staff": True, "is_active": True}, headers=ann
+    )
+
+    problem(both, 403, "approval_required")
+    assert both.json()["detail"] == (
+        "Make the user staff and active again in two changes: each waits for "
+        "its own approval."
+    )
+    with override("ar"):
+        assert gettext(both.json()["detail"]) != both.json()["detail"]
+    assert client.get(API, headers=ann).json()["items"] == []
+
+
+def test_which_hold_a_user_made_active_again_waits_for(client: TestClient) -> None:
+    """``auth.reactivate`` where it is held; else ``auth.set_staff`` for staff.
+
+    The run of making staff covers a staff member made active again (user
+    report A21): without ``auth.reactivate``, a deactivated staff member's
+    return waits for ``auth.set_staff``. Making staff and active at once,
+    with only one of them held, is that one's.
+    """
+    staff_id = deactivated("staffer", is_staff=True)
+    plain_id = deactivated("plain")
+    registered = guards()
+    only_staff = {SET_STAFF: registered[SET_STAFF]}
+    only_reactivate = {REACTIVATE: registered[REACTIVATE]}
+    back = AdminChange("update", values={"is_active": True})
+    unmade = AdminChange("update", values={"is_active": True, "is_staff": False})
+    both = AdminChange("update", values={"is_active": True, "is_staff": True})
+
+    async def decide() -> list[object]:
+        async with AuthUnitOfWork() as uow:
+            staffer = await uow.users.get(staff_id)  # type: ignore[arg-type]
+            plain = await uow.users.get(plain_id)  # type: ignore[arg-type]
+        return [
+            await _updated(staffer, back, only_staff),
+            await _updated(staffer, unmade, only_staff),
+            await _updated(plain, back, only_staff),
+            await _updated(plain, both, only_reactivate),
+            await _updated(plain, both, only_staff),
+            await _updated(staffer, back, {}),
+        ]
+
+    assert run_async(decide()) == [
+        (SET_STAFF, SetStaff(user_id=staff_id)),
+        None,
+        None,
+        (REACTIVATE, Reactivate(user_id=plain_id)),
+        (SET_STAFF, SetStaff(user_id=plain_id)),
+        None,
+    ]
+
+
+def test_granting_a_group_permissions_waits_and_its_members_do_not_decide(
+    client: TestClient,
+) -> None:
+    """``auth.set_group_permissions``: every member gains them (user report A20).
+
+    Taking permissions away, and creating a group with some (it has no
+    members), wait for no one.
+    """
+    root = staff("root", superuser=True)
+    other = staff("other", superuser=True)
+    member = staff("member", superuser=True)
+    readers = make_group("readers", "accounting.view_entry")
+    join("member", "readers")
+    path = f"{ADMIN}/groups/{readers}/permissions"
+    wider = {"permissions": ["accounting.view_entry", "accounting.add_entry"]}
+
+    held = pending(client.put(path, json=wider, headers=root))
+    request = read(client, held, root)
+    by_member = approve(client, held, member)
+    approve(client, held, other)
+    granted = client.put(path, json=wider, headers=root)
+    narrowed = client.put(path, json={"permissions": []}, headers=root)
+    created = client.post(
+        f"{ADMIN}/groups",
+        json={"name": "clerks", "permissions": ["accounting.add_entry"]},
+        headers=root,
+    )
+
+    assert (request["action"], request["policy"]) == (
+        SET_GROUP_PERMISSIONS,
+        "auth.group_permissions",
+    )
+    assert request["arguments"] == {
+        "group_id": str(readers),
+        "name": "readers",
+        "added": ["accounting.add_entry"],
+        "removed": [],
+    }
+    problem(by_member, 403, "interested_party")
+    assert granted.status_code == 200, granted.json()
+    assert granted.json()["permissions"] == [
+        "accounting.add_entry",
+        "accounting.view_entry",
+    ]
+    assert narrowed.status_code == 200, narrowed.json()
+    assert created.status_code == 201, created.json()
+
+
+def test_the_projects_checks_run_before_the_hold_spends_an_approval(
+    client: TestClient,
+) -> None:
+    """A check of a domain installed after approvals refuses first: nothing is spent.
+
+    Approvals registers its hold with ``order=100``, after the checks
+    registered without an order, whatever their domain (user report A19).
+    Before 2.7 it ran in domain order, and spent the approval of a change
+    that a later check refused.
+    """
+    ann = staff("ann")
+    root = staff("root", superuser=True)
+    bob = create_user("bob")
+    body = {"is_staff": True}
+    held = pending(client.patch(f"{ADMIN}/users/{bob}", json=body, headers=ann))
+    approve(client, held, root)
+
+    async def not_today(actor: Any, target: Any, change: AdminChange) -> None:  # noqa: ANN401
+        raise PermissionDenied("No staff are made today.")
+
+    on_admin_change(not_today, domain="alpha")
+    refused = client.patch(f"{ADMIN}/users/{bob}", json=body, headers=ann)
+
+    problem(refused, 403, "permission_denied")
+    assert read(client, held, ann)["status"] == "approved"
+
+
+def test_a_reused_password_spends_no_approval(client: TestClient) -> None:
+    """The password history is checked before the hold, with the validators' care.
+
+    A password among the user's last ones is refused, and the approved
+    request stays approved for a password that will do (user report A19).
+    """
+    ann = staff("ann")
+    root = staff("root", superuser=True)
+    bob = create_user("bob", password=NEW_PASSWORD)
+    path = f"{ADMIN}/users/{bob}/password"
+    history = {**APPROVALS_ADMIN.settings["AUTH"], "PASSWORD_HISTORY": 2}
+
+    with override_settings(AUTH=history):
+        held = pending(
+            client.post(path, json={"password": "Other-pass-42"}, headers=ann)
+        )
+        approve(client, held, root)
+        reused = client.post(path, json={"password": NEW_PASSWORD}, headers=ann)
+        still = read(client, held, ann)["status"]
+        made = client.post(path, json={"password": "Other-pass-42"}, headers=ann)
+
+    problem(reused, 422, "invalid_password")
+    assert still == "approved"
+    assert made.status_code == 204, made.json()
+    assert read(client, held, ann)["status"] == "executed"
+
+
+def test_a_change_of_groups_must_name_each_group_it_adds(
+    client: TestClient,
+) -> None:
+    """Without ``AdminChange.groups``, a held change of groups could not be bound.
+
+    It is refused, rather than approved by name. A change of a group that
+    grants nothing, a group's name, or no group at all is not held.
+    """
+    actor = user_of(create_user("root", is_staff=True, is_superuser=True))
+    target = user_of(create_user("bob"))
+    unbound = AdminChange("groups", added=frozenset({"readers"}))
+    readers = run_async(_group("readers"))
+
+    with pytest.raises(ImproperlyConfigured, match=r"AdminChange\.groups"):
+        run_async(check_admin_change(actor, target, unbound))
+    for group, change in [
+        (readers, GroupChange("group_rename", name="other")),
+        (readers, GroupChange("group_permissions", removed=frozenset({"x.y"}))),
+        (None, GroupChange("group_create", name="new", added=frozenset({"x.y"}))),
+        (readers, GroupChange("group_delete")),
+    ]:
+        run_async(check_group_change(actor, group, change))
+    assert SET_GROUPS in guards()
+
+
+async def _group(name: str) -> Any:  # noqa: ANN401 - a group.
+    """A group ``name``, stored."""
+    async with AuthUnitOfWork() as uow:
+        group = await uow.groups.create(name)
+        await uow.commit()
+    return group

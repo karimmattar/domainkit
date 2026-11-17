@@ -57,6 +57,7 @@ from ..tables import (
     permissions,
     sca_challenges,
     step_ups,
+    user_link_tables,
 )
 from ..tokens import utc_now
 from ..users import get_user_model, get_user_table
@@ -409,13 +410,17 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
         *,
         priority: bool = False,
         temporary: bool = False,
+        reuse_checked: bool = False,
     ) -> None:
         """Hash and store a new password; None makes it unusable.
 
         ``priority`` hashes in the places ``AUTH.HASHING_RESERVED`` keeps,
         for signed-in users changing a password. With
         ``AUTH.PASSWORD_HISTORY``, a password among the user's last ones
-        (the current one included) is refused; with it or
+        (the current one included) is refused, unless ``reuse_checked``
+        says the caller refused it already in this transaction
+        (``PasswordHistoryStore.refuse_reuse``, as the admin API does
+        before its hooks, since 2.7); with it or
         ``AUTH.PASSWORD_CHANGE_ON_FIRST_USE``, the new one is kept in the
         history, ``temporary`` (set by staff, to change at the next login)
         or not.
@@ -427,7 +432,8 @@ class UserRepository(SqlAlchemyRepository[AbstractBaseUser, UserId]):
             user.set_unusable_password()
             return
         history = PasswordHistoryStore(self.session)
-        await history.refuse_reuse(user.id, password, priority=priority)
+        if not reuse_checked:
+            await history.refuse_reuse(user.id, password, priority=priority)
         hashed = PasswordHash(await amake_password(password, priority=priority))
         user.set_password(hashed)
         await history.record(user.id, hashed, temporary=temporary)
@@ -545,6 +551,14 @@ class GroupRepository(SqlAlchemyRepository[Group, GroupId]):
         for group in found.values():
             self._track(group)
         return [found[name] for name in wanted]
+
+    async def member_ids(self, group_id: UUID) -> list[UUID]:
+        """The ids of the users in the group ``group_id``, in no order (since 2.7)."""
+        members, _ = user_link_tables(get_user_table())
+        found = await self.session.scalars(
+            select(members.c.user_id).where(members.c.group_id == group_id)
+        )
+        return list(found)
 
     async def rename(self, group: Group, name: str) -> None:
         """Give ``group`` a new name.

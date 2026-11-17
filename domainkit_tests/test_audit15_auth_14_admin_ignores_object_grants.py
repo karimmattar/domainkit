@@ -20,6 +20,7 @@ from domainkit.contrib.objectpermissions import grant_permission
 from domainkit.ddd import PermissionDenied
 from domainkit_tests.test_auth_admin import make_group
 from domainkit_tests.test_object_permissions import (
+    BARE,
     CHANGE,
     person,
     products,
@@ -46,7 +47,7 @@ def test_staff_cannot_take_over_a_user_with_object_grants_they_lack(
     with pytest.raises(PermissionDenied):
         run(
             admin.set_password(
-                owner.id, admin.AdminPasswordIn(password=NEW_PASSWORD), helpdesk
+                owner.id, admin.AdminPasswordIn(password=NEW_PASSWORD), BARE, helpdesk
             )
         )
 

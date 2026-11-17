@@ -49,14 +49,17 @@ class ApprovalsConfig(DomainConfig):
         (ADR 0163). The guards of large
         postings, of making superusers, and of the admin changes
         ``ADMIN_APPROVALS`` names are registered when their apps are
-        installed and their settings ask.
+        installed and their settings ask; the checks of admin changes run
+        after the project's (``HOLD_ORDER``, ADR 0172).
 
         Raises:
             ImproperlyConfigured: One of the ``*_ACTION`` settings, or
                 ``ADMIN_APPROVALS``, is set without ``domainkit.contrib.auth``.
         """
         from .builtin import (
+            HOLD_ORDER,
             check_admin_change,
+            check_group_change,
             guard_admin_changes,
             guard_entries,
             guard_superusers,
@@ -94,6 +97,7 @@ class ApprovalsConfig(DomainConfig):
         if registry.is_installed(AUTH):
             from domainkit.contrib.auth.gates import (
                 on_admin_change,
+                on_admin_group_change,
                 on_create_staff,
                 on_make_superuser,
             )
@@ -103,7 +107,10 @@ class ApprovalsConfig(DomainConfig):
                 guard_superusers(config)
             if config.ADMIN_APPROVALS:
                 guard_admin_changes(config)
-                on_admin_change(check_admin_change, domain=self.label)
+                on_admin_change(check_admin_change, domain=self.label, order=HOLD_ORDER)
+                on_admin_group_change(
+                    check_group_change, domain=self.label, order=HOLD_ORDER
+                )
                 on_create_staff(refuse_staff_creation, domain=self.label)
 
     def application_problems(self, app: "FastAPI") -> list[str]:

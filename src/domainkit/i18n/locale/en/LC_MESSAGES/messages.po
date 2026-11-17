@@ -1392,6 +1392,9 @@ msgstr ""
 msgid "Making staff needs approval: create the user, then make them staff."
 msgstr ""
 
+msgid "Make the user staff and active again in two changes: each waits for its own approval."
+msgstr ""
+
 msgid "Requests are made and decided in one's own name only."
 msgstr ""
 
