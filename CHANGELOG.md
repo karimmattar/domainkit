@@ -13,10 +13,13 @@ and a status.
 
 - `domainkit.http.problems`: `APIError` and `FieldError`, the problems a
   route raises, in a module of their own that builds no response.
-  `domainkit.http.errors` and `domainkit.http` re-export them, so every
-  import of 2.7 works and the classes are the same. The infrastructure
-  layer may import it: a file gateway refuses a file with the status,
-  code, and field error a route would, with no layer of its own
+  `domainkit.http.errors` and `domainkit.http` re-export them, the same
+  classes, and `domainkit.http.errors` still holds `DomainkitError`:
+  every domainkit name 2.7 imported from either still imports (only the
+  standard library's `Sequence` and `TYPE_CHECKING` left
+  `domainkit.http.errors`). The infrastructure layer may import the
+  module: a file gateway refuses a file with the status, code, and field
+  error a route would, with no layer of its own
   ([Bytes and streams](docs/uploads.md#bytes-and-streams), ADR 0182)
   (user report D2).
 - `AUTH.NAME_FIELDS` (unset): the fields the admin API's `GET
@@ -33,10 +36,18 @@ and a status.
 ### Changed
 
 - The layer rules let the infrastructure layer import
-  `domainkit.http.problems` (`domainkit.architecture.ALLOWED_MODULES`);
-  the rest of `domainkit.http.errors` stays forbidden there, and the
-  application and domain layers import neither (ADR 0003's amendment of
-  2026-11-17) (user report D2).
+  `domainkit.http.problems` (`domainkit.architecture.ALLOWED_MODULES`),
+  but only the names its `__all__` lists: `from domainkit.http.problems
+  import HTTPException` is refused. The rest of `domainkit.http.errors`
+  stays forbidden there, the application and domain layers import
+  neither, and `domainkit.http.client` and `domainkit.http.uploads` are
+  held as in 2.7 (ADR 0003's amendment of 2026-11-17) (user report D2).
+- `APIError` and `FieldError` are defined in `domainkit.http.problems`,
+  so tracebacks, the body of the mail reporter's report
+  (`domainkit.http.problems.APIError was raised at ...`), and tracing's
+  `error.type` name that module, not `domainkit.http.errors`: a filter
+  or an alert on the old name needs the new one
+  ([upgrading.md](docs/upgrading.md#27-to-28)) (user report D2).
 
 ## [2.7.0] - 2026-11-17
 

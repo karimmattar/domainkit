@@ -7,8 +7,9 @@ so ``from domainkit.http.errors import APIError`` still works.
 
 They are apart from ``domainkit.http.errors``, which builds responses
 and maps every other error, so that the infrastructure layer may import
-them: a file gateway refuses a file with the code a route would
-(``domainkit.architecture.ALLOWED_MODULES``, New in 2.8, ADR 0182).
+them, by the names of ``__all__`` alone: a file gateway refuses a file with
+the code a route would (``domainkit.architecture.ALLOWED_MODULES``, New in
+2.8, ADR 0182).
 Business refusals stay domain errors (``domainkit.ddd.exceptions``),
 which the HTTP layer maps.
 """

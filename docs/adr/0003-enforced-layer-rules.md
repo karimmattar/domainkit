@@ -74,6 +74,8 @@ packages are exempt from the cross-domain rule.
 - The infrastructure layer may import `domainkit.http.problems` too
   ([0182](0182-let-a-gateway-raise-a-routes-problems-and-name-users-by-the-fields-a-project-chooses.md)): `APIError` and `FieldError`, moved there from
   `domainkit.http.errors`, which re-exports them. A file gateway refuses
-  a file with the status, code, and field error a route would. The rest
-  of `domainkit.http.errors`, which reads requests and builds responses,
+  a file with the status, code, and field error a route would. Only the
+  names its `__all__` lists may be imported from it, not what it imports
+  itself (Starlette's `HTTPException`). The rest of
+  `domainkit.http.errors`, which reads requests and builds responses,
   stays forbidden there, and a business refusal stays a domain error.

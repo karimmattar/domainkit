@@ -239,8 +239,8 @@ domains' own models keep those keys as secrets.
   `UploadFile` (*New in 2.7*), and the problems a route raises
   (`domainkit.http.problems`: `APIError` and `FieldError`), so that a
   file gateway refuses a file with the status and code a route would
-  (*New in 2.8*); the rest of `domainkit.http.errors`, which builds
-  responses, stays out;
+  (*New in 2.8*), and only the names its `__all__` lists; the rest of
+  `domainkit.http.errors`, which builds responses, stays out;
 - another domain is reached only through its `application` or
   `domain.events`.
 

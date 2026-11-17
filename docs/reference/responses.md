@@ -133,7 +133,8 @@ errors (`FieldError(loc=..., msg=..., type=...)`). Both are defined in
 `domainkit.http.problems` (since 2.8), which the infrastructure layer
 may import, so a file gateway refuses a file as a route would
 ([uploads.md](../uploads.md#bytes-and-streams));
-`domainkit.http` and `domainkit.http.errors` re-export them. The message is English text, translated in the caller's
+`domainkit.http` and `domainkit.http.errors` re-export them. The
+message is English text, translated in the caller's
 language if a catalog has it, or a lazy string (`gettext_lazy`,
 `ngettext_lazy`, `pgettext_lazy`), answered as its text in the caller's
 language (since 2.6; 2.5 answered the code in words). `ngettext_lazy`

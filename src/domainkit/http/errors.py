@@ -27,7 +27,7 @@ catalogs.
 
 ``APIError`` and ``FieldError`` are defined in ``domainkit.http.problems``,
 which the infrastructure layer may import (since 2.8, ADR 0182); this module
-re-exports them.
+re-exports them, and ``DomainkitError``, as 2.7's did.
 """
 
 import re
@@ -63,6 +63,7 @@ from domainkit.ddd.exceptions import (
     PermissionDenied,
     PreconditionFailed,
 )
+from domainkit.exceptions import DomainkitError as DomainkitError
 from domainkit.exceptions import ServiceBusy, UpstreamError
 from domainkit.http.problems import APIError as APIError
 from domainkit.http.problems import FieldError as FieldError

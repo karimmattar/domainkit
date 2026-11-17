@@ -524,9 +524,10 @@ from there too.
 
 A gateway refuses a file as a route would: with an `APIError`, its
 status, code, and `FieldError`s, from `domainkit.http.problems`, which
-the layer rules allow there (since 2.8). The rest of
-`domainkit.http.errors`, which builds the responses, stays out. A rule
-of the business is still a domain error, which the HTTP layer maps.
+the layer rules allow there (since 2.8), by the names its `__all__`
+lists. The rest of `domainkit.http.errors`, which builds the responses,
+stays out. A rule of the business is still a domain error, which the
+HTTP layer maps.
 
 ```python
 # billing/infrastructure/files.py

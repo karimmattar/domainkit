@@ -11,13 +11,7 @@ from domainkit.utils.module_loading import lazy_names
 
 if TYPE_CHECKING:
     from domainkit.http.application import get_asgi_application
-    from domainkit.http.errors import (
-        APIError,
-        ErrorResponse,
-        FieldError,
-        error_response,
-        error_responses,
-    )
+    from domainkit.http.errors import ErrorResponse, error_response, error_responses
     from domainkit.http.filters import EveryWord, Filter, FilterSet, InvalidFilter
     from domainkit.http.pagination import (
         CURSOR_PATTERN as CURSOR_PATTERN,
@@ -32,6 +26,7 @@ if TYPE_CHECKING:
         decode_cursor,
         encode_cursor,
     )
+    from domainkit.http.problems import APIError, FieldError
     from domainkit.http.responses import JSONResponse
 
 __all__ = [
@@ -61,15 +56,10 @@ __getattr__ = lazy_names(
     {
         "get_asgi_application": "domainkit.http.application",
         **dict.fromkeys(
-            [
-                "APIError",
-                "ErrorResponse",
-                "FieldError",
-                "error_response",
-                "error_responses",
-            ],
+            ["ErrorResponse", "error_response", "error_responses"],
             "domainkit.http.errors",
         ),
+        **dict.fromkeys(["APIError", "FieldError"], "domainkit.http.problems"),
         **dict.fromkeys(
             ["EveryWord", "Filter", "FilterSet", "InvalidFilter"],
             "domainkit.http.filters",

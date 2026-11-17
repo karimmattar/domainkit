@@ -1,6 +1,11 @@
 """Layer rules for domain packages."""
 
-from typing import Any
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any, Final
 
 import pytest
 from fastapi import FastAPI
@@ -20,10 +25,12 @@ from domainkit.architecture import (
 )
 from domainkit.conf import override_settings
 from domainkit.conf.global_settings import ArchitectureConfig, Settings
-from domainkit.exceptions import ImproperlyConfigured
+from domainkit.exceptions import DomainkitError, ImproperlyConfigured
 from domainkit.http import errors, problems, uploads
 from domainkit.http.errors import install_exception_handlers
 from domainkit_tests.conftest import MakePackage
+
+ROOT: Final = Path(__file__).parents[1]
 
 
 @pytest.fixture
@@ -621,6 +628,9 @@ def test_a_file_gateway_raises_the_problems_a_route_raises(
     that builds responses (``domainkit.http.errors``) stays out of the
     layer, and the application and domain layers import neither (user
     report D2, 2.7). A project that forbids the module by name forbids it.
+    Only what its ``__all__`` lists may be imported from it, not what it
+    imports itself (``HTTPException``); ``client`` and ``uploads`` are
+    held to nothing more than in 2.7 (``StoredUpload``).
     """
     make_package(
         "arch.deeds",
@@ -629,6 +639,9 @@ def test_a_file_gateway_raises_the_problems_a_route_raises(
                 import domainkit.http.problems
                 from domainkit.http.problems import APIError, FieldError
                 from domainkit.http.errors import APIError as Answered
+                from domainkit.http.problems import HTTPException, BaseModel
+                from domainkit.http.problems import DomainkitError
+                from domainkit.http.uploads import StoredUpload
             """,
             "application/commands.py": (
                 "from domainkit.http.problems import APIError\n"
@@ -640,6 +653,9 @@ def test_a_file_gateway_raises_the_problems_a_route_raises(
         (v.module.removeprefix("arch.deeds."), v.imported)
         for v in check_domains(["arch.deeds"], LayerRules())
     }
+    rules = {
+        str(v).partition(": ")[2] for v in check_domain("arch.deeds", (), LayerRules())
+    }
     extra = {"FORBIDDEN_LIBRARIES": {"infrastructure": ["domainkit.http.problems"]}}
     with override_settings(ARCHITECTURE=extra):
         forbidden = {v.imported for v in check_domain("arch.deeds")}
@@ -647,12 +663,19 @@ def test_a_file_gateway_raises_the_problems_a_route_raises(
     assert found == {
         ("infrastructure.files", "domainkit.http.errors"),
         ("infrastructure.files", "domainkit.http.errors.APIError"),
+        ("infrastructure.files", "domainkit.http.problems.HTTPException"),
+        ("infrastructure.files", "domainkit.http.problems.BaseModel"),
+        ("infrastructure.files", "domainkit.http.problems.DomainkitError"),
         ("application.commands", "domainkit.http.problems"),
         ("application.commands", "domainkit.http.problems.APIError"),
         ("domain.model", "domainkit.http.problems"),
         ("domain.model", "domainkit.http.problems.FieldError"),
     }
     assert "domainkit.http.problems" in architecture.ALLOWED_MODULES["infrastructure"]
+    assert (
+        "the infrastructure layer may import only the __all__ of "
+        "domainkit.http.problems"
+    ) in rules
     assert {
         "domainkit.http.problems",
         "domainkit.http.problems.APIError",
@@ -692,6 +715,50 @@ def test_the_problems_module_builds_no_response() -> None:
     }
 
 
+GRAPH: Final = """
+import json, sys
+before = set(sys.modules)
+import domainkit.http.problems
+print(json.dumps(sorted(set(sys.modules) - before)))
+"""
+"""Import ``domainkit.http.problems`` alone; print every module it loaded."""
+
+
+def test_importing_the_problems_loads_no_web_framework() -> None:
+    """In a fresh interpreter, ``domainkit.http.problems`` loads its graph only.
+
+    Of domainkit, the package, ``exceptions`` and ``http``'s lazy names; of
+    Starlette, its exceptions; no FastAPI, no SQLAlchemy, no settings, no
+    request or response, and none of ``domainkit.http``'s other modules
+    (ADR 0182).
+    """
+    done = subprocess.run(  # noqa: S603 - the test interpreter and a fixed script.
+        [sys.executable, "-c", GRAPH],
+        cwd=ROOT,
+        env={**os.environ, "PYTHONPATH": str(ROOT / "src")},
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    assert done.returncode == 0, done.stderr
+    loaded = set(json.loads(done.stdout))
+
+    def under(*roots: str) -> set[str]:
+        return {name for name in loaded if name.partition(".")[0] in roots}
+
+    assert under("domainkit") == {
+        "domainkit",
+        "domainkit.exceptions",
+        "domainkit.http",
+        "domainkit.http.problems",
+        "domainkit.utils",
+        "domainkit.utils.module_loading",
+    }
+    assert under("starlette") == {"starlette", "starlette.exceptions"}
+    assert under("fastapi", "sqlalchemy", "anyio", "httpx2", "multipart") == set()
+
+
 def test_the_errors_module_still_answers_the_problems() -> None:
     """``domainkit.http.errors`` and ``domainkit.http`` re-export the same classes.
 
@@ -716,6 +783,7 @@ def test_the_errors_module_still_answers_the_problems() -> None:
 
     assert errors.APIError is problems.APIError is http.APIError
     assert errors.FieldError is problems.FieldError is http.FieldError
+    assert errors.DomainkitError is DomainkitError
     assert issubclass(problems.APIError, HTTPException)
     assert answer.status_code == 413
     assert answer.json() == {
