@@ -43,6 +43,7 @@ from typing import Final
 from domainkit.apps.hooks import HookPoint
 from domainkit.ddd import BusinessRuleViolation
 from domainkit.i18n import ngettext, pgettext
+from domainkit.inspection import IGNORABLE
 
 from .repositories.authorizations import DETAIL_MAX_LENGTH, MAX_DETAILS
 from .settings import auth_settings
@@ -92,11 +93,7 @@ READ_CHOICES: Final = 8
 """How many characters of a label are read each way they look (``_latin``)."""
 READINGS: Final = 256
 """How many ways to read a label are tried at most (``_latin``)."""
-IGNORED: Final = re.compile(
-    "[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f"
-    "\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufff8"
-    "\U0001bca0-\U0001bca3\U0001d173-\U0001d17a\U000e0000-\U000e0fff]"
-)
+IGNORED: Final = re.compile(f"[{IGNORABLE}]")
 """Characters a screen draws as nothing (Unicode's default ignorable ones)."""
 DOTS: Final = str.maketrans(
     dict.fromkeys(
