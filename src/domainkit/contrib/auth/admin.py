@@ -566,7 +566,7 @@ users = ResourceRouter(
 users) and ``/users/{id}``."""
 
 
-@router.get("/users/names", responses=_errors(*COMMON))
+@router.get("/users/names", responses=_errors(*COMMON), dependencies=[_users("view")])
 async def list_user_names(
     actor: Annotated[AnyUser, _users("view")],
     listing: Annotated[Listing, Depends(user_listing)],
