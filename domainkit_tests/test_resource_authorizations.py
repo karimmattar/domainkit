@@ -406,6 +406,68 @@ def test_the_twin_lends_no_unit_of_work_it_cannot_give_by_name(
     assert making.json()["purpose"] == "shop.other"
 
 
+class AsksHeld(Asks):
+    """Asks as ``Asks`` does, given the request's ``If-Match`` (ADR 0178)."""
+
+    def __init__(self) -> None:
+        """No ``If-Match`` given yet."""
+        super().__init__()
+        self.held: list[str | None] = []
+
+    async def ask_authorization(
+        self, request: Request, command: object, if_match: str | None = None
+    ) -> BaseModel:
+        """Record the ``If-Match``; answer as ``Asks``."""
+        self.held.append(if_match)
+        return await super().ask_authorization(request, command)
+
+
+def test_the_twin_holds_if_match_as_its_act_does(use_auth: UseAuth) -> None:
+    """One item's twin: ``412`` for a version it is not at, before the rule asks.
+
+    A rule whose method takes ``if_match`` is given the header; one of 2.7
+    is asked as before. On the collection, a twin reads no ``If-Match``,
+    as its act reads none (ADR 0178, user report A25).
+    """
+    use_auth()
+    held = AsksHeld()
+    plain = Asks()
+    store = InMemoryGadgets([make_gadget("a")])
+    resource = gadgets(store)
+    resource.use_case(restock, path="/restock", rule=held)
+    resource.command_route(RenameGadget, service=rename, body=RenameIn, rule=plain)
+    resource.command_route(MakeGadget, service=make, body=MakeIn, rule=held)
+    client = client_of(resource)
+    [(gadget_id, gadget)] = store.items.items()
+    current, stale = f'W/"{gadget.version}-0a1b"', f'"{gadget.version + 1}"'
+
+    def ask(path: str, tag: str | None, body: dict[str, Any]) -> int:
+        tags = {} if tag is None else {"If-Match": tag}
+        return client.post(
+            f"{path}/authorization", json=body, headers=as_("changer", **tags)
+        ).status_code
+
+    restock_at = f"{LOCATION}{gadget_id}/restock"
+    asked = [
+        ask(restock_at, stale, {"quantity": 1}),
+        ask(restock_at, current, {"quantity": 1}),
+        ask(restock_at, None, {"quantity": 1}),
+        ask(f"{LOCATION}{gadget_id}", stale, {"name": "b"}),
+        ask(f"{LOCATION}{gadget_id}", current, {"name": "b"}),
+    ]
+    made = client.post(
+        "/gadgets/authorization",
+        json={"name": "n", "price": "1.00"},
+        headers=as_("adder", **{"If-Match": stale}),
+    )
+
+    assert asked == [412, 201, 201, 412, 201]
+    assert made.status_code == 201
+    assert held.held == [current, None, None]
+    assert [type(each).__name__ for each in plain.asked] == ["RenameGadget"]
+    assert store.items[gadget_id].version == gadget.version  # Nothing ran.
+
+
 class AsksOfItsService(Asks):
     """Asks, and refuses a service that is not ``rename``, as an act's rule may."""
 
@@ -910,7 +972,11 @@ def test_a_route_s_own_dependencies_run_on_the_act_not_its_twin(
 
 
 def test_openapi_documents_the_twin_as_its_own_operation(use_auth: UseAuth) -> None:
-    """Its name, summary, errors, body, and 201 schema; it declares a rule (A6)."""
+    """Its name, summary, errors, body, and 201 schema; it declares a rule (A6).
+
+    One item's twin reads ``If-Match`` as its act does, optional: ``412``
+    (ADR 0178, user report A25).
+    """
     use_auth()
     store = InMemoryGadgets([make_gadget("a")])
     resource = gadgets(store, rule=None)
@@ -934,7 +1000,15 @@ def test_openapi_documents_the_twin_as_its_own_operation(use_auth: UseAuth) -> N
     assert made["operationId"].startswith("make_gadget_authorization")
     assert twin["summary"] == "Ask for an authorization: Rename a gadget."
     assert made["summary"] == "Ask for an authorization: Make a gadget."
-    assert sorted(twin["responses"]) == ["201", "401", "403", "404", "408", "422"]
+    assert sorted(twin["responses"]) == [
+        "201",
+        "401",
+        "403",
+        "404",
+        "408",
+        "412",
+        "422",
+    ]
     assert sorted(made["responses"]) == ["201", "401", "403", "408", "422"]
     assert twin["responses"]["201"]["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/Asked"
@@ -942,7 +1016,8 @@ def test_openapi_documents_the_twin_as_its_own_operation(use_auth: UseAuth) -> N
     assert twin["requestBody"]["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/RenameIn"
     }
-    assert [each["name"] for each in twin["parameters"]] == ["gadget_id"]
+    assert [each["name"] for each in twin["parameters"]] == ["gadget_id", "If-Match"]
+    assert [each["name"] for each in made.get("parameters", [])] == []
     assert route.status_code == 201
     # The resource declares no rule; its routes with one are not open.
     assert open_routes(app) == ["GET /gadgets", "GET /gadgets/{gadget_id}"]

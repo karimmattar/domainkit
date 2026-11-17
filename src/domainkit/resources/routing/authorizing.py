@@ -18,6 +18,12 @@ authorizations of one act: both are refused when the route is declared.
 So is a service the rule says would not spend what it asks for (its
 ``service_problem``): ``StepUp(for_=...)`` on a use case left unguarded.
 
+On an act on one aggregate the twin holds ``If-Match`` as the act does
+(ADR 0178): the aggregate at another version than one it names is ``412``,
+before the rule is asked, and again where the rule reads in the route's
+unit of work; a rule whose method takes ``if_match`` is given the header,
+which an action's digest then covers. Without ``If-Match``, as before.
+
 Where routes of one path ask by several methods (a ``PATCH`` and a
 ``DELETE`` of one item), each twin's path names its route's method:
 ``<path>/authorization/patch``, ``<path>/authorization/delete`` (ADR 0162).
@@ -29,7 +35,8 @@ request apart with ``asking_authorization``.
 import copy
 import dataclasses
 import inspect
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Final
 
 from fastapi import Response, status
@@ -37,6 +44,7 @@ from fastapi.routing import APIRoute
 from pydantic import BaseModel
 from starlette.requests import HTTPConnection
 
+from domainkit.ddd.preconditions import Expectation
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import (
     AllOf,
@@ -49,6 +57,7 @@ from domainkit.http.access import (
 )
 from domainkit.http.responses import BuiltJSONResponse
 
+from ..conditional import expected_versions
 from . import reach
 from .context import RouteContext, RouteSpec
 from .declaring import add_route
@@ -105,8 +114,10 @@ class AuthorizationRoute:
         """Twins of other methods of the route's path, which then name theirs."""
         self.added: APIRoute | None = None
         """The route FastAPI declared, once it is."""
-        self.lends = _takes_unit_of_work(rule)
+        self.lends = _takes(rule, "uow")
         """Whether the rule reads in the route's unit of work (ADR 0161)."""
+        self.passes = _takes(rule, "if_match")
+        """Whether the rule is given the request's ``If-Match`` (ADR 0178)."""
         spec = route.spec
         self.spec = RouteSpec(
             self.path(by_method=by_method),
@@ -121,6 +132,7 @@ class AuthorizationRoute:
             provided=spec.provided,
             body_limit=spec.body_limit,
             rules=rules,
+            conditional=True,
         )
 
     @classmethod
@@ -204,6 +216,29 @@ class AuthorizationRoute:
         self.spec = dataclasses.replace(self.spec, path=self.path(by_method=True))
         self.add()
 
+    def expected(self, context: RouteContext, versions: frozenset[int]) -> Expectation:
+        """The aggregate the path names, expected at one of ``versions``."""
+        router = self.route.router
+        return Expectation(router.model, context.ids[router.lookup], versions)
+
+    @contextmanager
+    def held(
+        self, context: RouteContext, versions: frozenset[int] | None
+    ) -> Iterator[None]:
+        """Hold the route's unit of work to ``versions``, lent to the rule.
+
+        What ``show`` and ``binds`` load of the aggregate through it is
+        checked, so a change made since the check above is ``412`` before
+        anything is stored. Without ``If-Match``, or a unit of work the
+        rule does not take, nothing is held.
+        """
+        if versions is None or not self.lends:
+            yield
+            return
+        router = self.route.router
+        with context.uow.expect(router.model, context.ids[router.lookup], versions):
+            yield
+
     def path(self, *, by_method: bool) -> str:
         """Its path in the router: ``<path>/authorization``, or ``.../<method>``."""
         spec = self.route.spec
@@ -213,13 +248,21 @@ class AuthorizationRoute:
     async def handle(self, context: RouteContext) -> Response:
         """Build the command, check what the act would, and ask the rule.
 
+        On one aggregate, ``If-Match`` holds it as the act's write is held:
+        checked once the rules allowed, and again in the route's unit of
+        work, which the rule reads in (``held``).
+
         Raises:
             NotFound: The aggregate is not there, or out of the caller's reach.
             PermissionDenied: A rule refuses the caller the aggregate.
+            PreconditionFailed: The aggregate is at none of the versions
+                ``If-Match`` names (412).
             RuntimeError: The rule answered something else than its model.
         """
         route = self.route
         command = await route.build(context)
+        header = context.if_match
+        versions = None if header is None else expected_versions(header)
         if route.detail:
             uow = context.uow
             async with uow:
@@ -227,9 +270,14 @@ class AuthorizationRoute:
                     route.router, uow, context.request, context.ids
                 )
             await reach.check_object(context.request, aggregate, self.rules)
-        lent = {"uow": context.uow} if self.lends else {}
+            if versions is not None:
+                self.expected(context, versions).check(aggregate)
+        lent: dict[str, object] = {"uow": context.uow} if self.lends else {}
+        if self.passes:
+            lent["if_match"] = header
         ask: Callable[..., Awaitable[BaseModel]] = self.rule.ask_authorization
-        answer = await ask(context.request, command, **lent)
+        with self.held(context, versions):
+            answer = await ask(context.request, command, **lent)
         if not isinstance(answer, self.model):
             raise RuntimeError(
                 f"{type(self.rule).__name__}.ask_authorization answered "
@@ -299,20 +347,23 @@ def _standing_in(
     return rule
 
 
-def _takes_unit_of_work(rule: AsksAuthorization) -> bool:
-    """Whether ``rule.ask_authorization`` takes ``uow`` by name: one of 2.4 does not."""
+def _takes(rule: AsksAuthorization, name: str) -> bool:
+    """Whether ``rule.ask_authorization`` takes ``name`` by name: ``uow``, ``if_match``.
+
+    One of 2.4 takes neither; one of 2.5 to 2.7 no ``if_match``.
+    """
     try:
         parameters = inspect.signature(rule.ask_authorization).parameters
     except (TypeError, ValueError):  # No signature to read: called as in 2.4.
         return False
-    found = parameters.get("uow")
+    found = parameters.get(name)
     return found is not None and found.kind in BY_NAME
 
 
 BY_NAME: Final = frozenset(
     {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
 )
-"""The kinds of parameter ``uow=`` can be given to."""
+"""The kinds of parameter ``uow=`` and ``if_match=`` can be given to."""
 
 
 def _instance(rule: Rule) -> BasePermission:

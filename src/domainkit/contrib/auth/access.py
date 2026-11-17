@@ -355,12 +355,18 @@ class ActionStepUp(StepUp):
         return ActionAuthorizationOut
 
     async def ask_authorization(
-        self, request: Request, command: object, uow: "UnitOfWork | None" = None
+        self,
+        request: Request,
+        command: object,
+        uow: "UnitOfWork | None" = None,
+        if_match: str | None = None,
     ) -> BaseModel:
         """Store an authorization of ``command`` for the request's user and login.
 
         ``uow`` is the unit of work the act runs in, not yet open, which a
         ``show(command, uow)`` reads in: the twin gives its route's.
+        ``if_match`` is the request's ``If-Match``, which the twin of an
+        act on one aggregate checked: the digest covers it (ADR 0178).
 
         Raises:
             ImproperlyConfigured: No action is registered for the purpose.
@@ -379,6 +385,7 @@ class ActionStepUp(StepUp):
             action,
             command,
             unit_of_work=None if uow is None else lambda: uow,
+            if_match=if_match,
         )
         return ActionAuthorizationOut.of(authorization)
 

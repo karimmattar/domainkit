@@ -122,6 +122,8 @@ class RouteSpec:
     """It answers one aggregate with its ``ETag`` (``If-None-Match``)."""
     writes: bool = False
     """It changes data (``If-Match`` on one aggregate; 409 and 422)."""
+    conditional: bool = False
+    """It reads ``If-Match`` on one aggregate, and changes nothing (a twin's)."""
     provided: Mapping[str, Callable[..., object]] = dataclasses.field(
         default_factory=dict
     )

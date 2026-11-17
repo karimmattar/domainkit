@@ -62,6 +62,10 @@ OPTIONAL: Final = (
     "filters",
 )
 """Parameters some routes take, which the context names alike."""
+IF_MATCH_ASKED: Final = (
+    "The ETag of the version you read: the act is bound to it; 412 if it changed since."
+)
+"""What a twin's ``If-Match`` does (ADR 0178)."""
 MAX_HEADER: Final = 4096
 """The longest ``If-Match`` or ``If-None-Match`` a route reads."""
 
@@ -223,6 +227,8 @@ def _headers(
                 else "The ETag of the version you change; 412 if it changed since.",
             )
         )
+    elif spec.detail and spec.conditional:
+        found.append(("if_match", "If-Match", IF_MATCH_ASKED))
     return tuple(found)
 
 
@@ -277,6 +283,8 @@ def _responses(
         codes.append(status.HTTP_412_PRECONDITION_FAILED)
         if router.require_if_match:
             codes.append(status.HTTP_428_PRECONDITION_REQUIRED)
+    elif spec.conditional and spec.detail:
+        codes.append(status.HTTP_412_PRECONDITION_FAILED)
     if spec.body is not None:
         codes.append(status.HTTP_408_REQUEST_TIMEOUT)
     exporting = spec.listing and len(router.media_types) > 1
