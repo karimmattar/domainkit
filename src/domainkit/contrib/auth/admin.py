@@ -1367,6 +1367,9 @@ async def may_change(actor: AnyUser, user: AbstractBaseUser) -> None:
     who belongs to a tenant they do not, or holds keys there they lack
     (``tenants_beyond``); while ``TENANCY.MEMBER_PERMISSIONS`` is set
     without ``MEMBER_TENANTS``, only superusers change users (ADR 0150).
+    Staff who hold ``TENANCY.ALL_TENANTS_PERMISSION`` everywhere change a
+    tenant's member they do not share it with, when they hold everywhere
+    what the member holds there (ADR 0177).
     """
     if user.is_superuser:
         _superusers_only(actor, "Only superusers may change superusers.")

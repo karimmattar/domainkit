@@ -22,9 +22,16 @@ rule narrows a list::
     ResourceRouter("/companies", ..., tenant=PathTenant("company_id"),
                    rule=MemberActions(Company, outside=IsAuthenticated()),
                    scope=companies_of_caller)
+
+An action of the domain's own whose key names no model's permission (an
+invitation posted to a company) is named whole by ``keys`` (ADR 0177)::
+
+    MemberActions(Company, keys={"invite": "organizations.add_membership"})
 """
 
-from collections.abc import Callable, Sequence
+import re
+from collections.abc import Callable, Mapping, Sequence
+from types import MappingProxyType
 from typing import ClassVar, Final, Protocol, runtime_checkable
 
 from starlette.requests import HTTPConnection
@@ -44,6 +51,8 @@ VIEW: Final = "view"
 ADD: Final = "add"
 CHANGE: Final = "change"
 DELETE: Final = "delete"
+PERMISSION_KEY: Final = re.compile(r"\w+\.\w+")
+"""A permission's key: ``<domain>.<codename>``."""
 
 type ModelLike = type | str | Callable[[], type]
 """A mapped class, its content type (``"billing.invoice"``), or a function
@@ -65,17 +74,28 @@ class HasModelPermission(BasePermission):
     It asks ``HasPermissions`` for the key, so whatever that rule checks
     (the backends, and any limit on the credentials) applies alike: it
     checks scopes, so credentials limited to the key pass it (WEB-15).
+    ``key`` names the key whole instead, for an action whose key names no
+    model's permission (``organizations.add_membership``).
     """
 
     bounds_scopes: ClassVar[bool] = True
 
-    def __init__(self, action: str, model: ModelLike) -> None:
-        """Check ``action`` on ``model``."""
+    def __init__(
+        self, action: str, model: ModelLike, *, key: str | None = None
+    ) -> None:
+        """Check ``action`` on ``model``, or ``key`` (New in 2.7).
+
+        Raises:
+            ValueError: ``key`` is not a permission's key.
+        """
         self.action = action
         self.model = model
+        self.key = None if key is None else _checked_key(key)
 
     def permission(self) -> str:
-        """The permission's key: ``billing.change_invoice``."""
+        """The permission's key: ``billing.change_invoice``, or ``key``."""
+        if self.key is not None:
+            return self.key
         domain, name = content_type_of(self.model)
         return f"{domain}.{self.action}_{name}"
 
@@ -89,17 +109,30 @@ class ModelActions:
 
     ``ModelActions(Invoice)`` needs ``billing.view_invoice`` to list,
     ``billing.add_invoice`` to create, and so on;
-    ``ModelActions(Invoice, IsAdminUser())`` needs staff as well.
+    ``ModelActions(Invoice, IsAdminUser())`` needs staff as well. ``keys``
+    names the key of an action whole, where the model's would not do:
+    ``keys={"invite": "organizations.add_membership"}`` asks a route of
+    the action ``invite`` for that key, not ``companies.invite_company``.
     """
 
-    def __init__(self, model: ModelLike, *rules: Rule) -> None:
-        """Ask for ``model``'s permissions, after ``rules``."""
+    def __init__(
+        self, model: ModelLike, *rules: Rule, keys: Mapping[str, str] | None = None
+    ) -> None:
+        """Ask for ``model``'s permissions, after ``rules``; ``keys`` by action.
+
+        Raises:
+            ValueError: A key of ``keys`` is not a permission's key.
+        """
         self.model = model
         self.rules = rules
+        self.keys = _checked_keys(keys)
 
     def rules_for(self, action: str) -> Sequence[Rule]:
-        """``rules``, then the model permission of ``action``."""
-        return (*self.rules, HasModelPermission(action, self.model))
+        """``rules``, then the model permission of ``action``, or its key."""
+        return (
+            *self.rules,
+            HasModelPermission(action, self.model, key=self.keys.get(action)),
+        )
 
 
 class HasMemberModelPermission(HasModelPermission):
@@ -171,22 +204,37 @@ class MemberActions:
     rules of each action itself. With ``outside``, a member's keys count
     only where the path named the tenant (``path_tenant``), and ``outside``
     rules wherever it did not, whatever tenant a middleware serves.
+
+    ``keys`` names the key of an action of the domain's own whole, as
+    ``ModelActions`` takes it: an invitation posted to a company, under
+    ``keys={"invite": "organizations.add_membership"}``, asks the member
+    for that key (New in 2.7).
     """
 
     def __init__(
-        self, model: ModelLike, *rules: Rule, outside: "Rule | Actions | None" = None
+        self,
+        model: ModelLike,
+        *rules: Rule,
+        outside: "Rule | Actions | None" = None,
+        keys: Mapping[str, str] | None = None,
     ) -> None:
-        """Ask for ``model``'s permissions among a member's keys, after ``rules``."""
+        """Ask for ``model``'s permissions among a member's keys, after ``rules``.
+
+        Raises:
+            ValueError: A key of ``keys`` is not a permission's key.
+        """
         self.model = model
         self.rules = rules
         self.outside = outside
+        self.keys = _checked_keys(keys)
 
     def rules_for(self, action: str) -> Sequence[Rule]:
         """``rules``, then the member's permission of ``action``, or ``outside``'s."""
         given = self.outside
+        key = self.keys.get(action)
         if given is None:
-            return (*self.rules, HasMemberModelPermission(action, self.model))
-        member = _ByPath(action, self.model)
+            return (*self.rules, HasMemberModelPermission(action, self.model, key=key))
+        member = _ByPath(action, self.model, key=key)
         outside = (
             rules_for(given, action)
             if isinstance(given, Actions) or action in {VIEW, ADD}
@@ -204,6 +252,31 @@ def rules_for(rule: Rule | Actions | None, action: str) -> tuple[Rule, ...]:
     if isinstance(rule, Actions):
         return tuple(rule.rules_for(action))
     return (rule,)
+
+
+def _checked_keys(keys: Mapping[str, str] | None) -> Mapping[str, str]:
+    """``keys``, each a permission's key, read-only.
+
+    Raises:
+        ValueError: One is not a permission's key.
+    """
+    return MappingProxyType(
+        {action: _checked_key(key) for action, key in (keys or {}).items()}
+    )
+
+
+def _checked_key(key: str) -> str:
+    """``key``, if it is a permission's key (``<domain>.<codename>``).
+
+    Raises:
+        ValueError: It is not.
+    """
+    if not isinstance(key, str) or not PERMISSION_KEY.fullmatch(key):
+        raise ValueError(
+            f"{key!r} is not a permission's key: name it as <domain>.<codename>, "
+            "such as 'organizations.add_membership'."
+        )
+    return key
 
 
 def content_type_of(model: ModelLike) -> tuple[str, str]:

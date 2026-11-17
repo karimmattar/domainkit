@@ -1232,6 +1232,31 @@ call it:
 A resource given `outside=` and no `tenant=` is refused with `TypeError`:
 its items would serve no tenant either, and `outside` would rule them.
 
+An action of the domain's own whose key names no model's permission (an
+invitation posted to a company, which needs another domain's
+`organizations.add_membership`) is named whole by `keys`, by action
+(since 2.7):
+
+```python
+companies = ResourceRouter(
+    "/companies",
+    ...,
+    tenant=PathTenant("company_id"),
+    rule=MemberActions(
+        Company,
+        outside=IsAuthenticated(),
+        keys={"invite": "organizations.add_membership"},
+    ),
+    scope=companies_of_caller,
+)
+companies.command_route(Invite, service=invite, path="/invite", action="invite")
+```
+
+Without `keys`, the route would ask `companies.invite_company`, which no
+model declares. The other actions keep their model's keys. `ModelActions`
+takes `keys` alike, and a key that is not `<domain>.<codename>` is
+refused (`ValueError`).
+
 ### Rules on objects, and scope
 
 Rules that look at objects (`HasObjectPermissions`, or a rule of your own

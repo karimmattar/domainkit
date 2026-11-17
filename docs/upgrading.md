@@ -36,6 +36,17 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.6 to 2.7
+
+- **`check` names throttles counted per tenant unsaid.** A `Throttle` on
+  a route served as a tenant (a `PathTenant`'s, or any route under
+  `TenantMiddleware` but a tenants' collection) that says neither
+  `per_tenant=True` nor `per_tenant=False` is warned of
+  (`tenancy.W001`), so `check --deploy` fails until each says how it
+  counts. Nothing counts differently: `per_tenant=True` keeps each
+  tenant's count, as before, and `SILENCED_CHECKS` may name the warning
+  ([tenancy.md](tenancy.md#caches-limits-and-logs)).
+
 ## 2.5 to 2.6
 
 2.6 follows up 2.5. No table changes. Each item of this list says what a

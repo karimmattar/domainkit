@@ -359,7 +359,12 @@ companies = ResourceRouter(
   there what the membership gives. With no tenant served, it refuses.
   Without `MEMBER_PERMISSIONS`, it raises `ImproperlyConfigured`.
 - `MemberActions(model)` asks for the key of each route's action, as
-  `ModelActions` does, with `HasMemberPermissions`. A resource's routes
+  `ModelActions` does, with `HasMemberPermissions`. An action of the
+  domain's own whose key names no model's permission, such as an
+  invitation posted to a company, is named whole by `keys`:
+  `MemberActions(Company, keys={"invite": "organizations.add_membership"})`
+  asks a route declared with `action="invite"` for that key (since 2.7;
+  `ModelActions` takes `keys` too). A resource's routes
   that serve no tenant are refused, unless `outside=` rules them. A rule
   given as `outside` decides only the `view` and `add` routes there (the
   list, queries on the collection, creation); `Actions`, such as
@@ -410,6 +415,38 @@ tenants staff lack what the user holds, not which. Impersonation tokens
 are checked the same way on every request. With `MEMBERSHIP` alone, staff
 are held to the user's tenants once `MEMBER_TENANTS` is set; without it,
 as before 2.4, the admin API does not count memberships.
+
+**A back office that serves every tenant.** Staff who belong to no
+company change no company's members, whatever they hold everywhere. As
+Microsoft Entra lets an administrator assigned to the whole directory
+reset the passwords of users in its units, name a permission that
+reaches every tenant (since 2.7):
+
+```python
+TENANCY = {
+    "MEMBER_PERMISSIONS": "accounts.tenancy.member_permissions",
+    "MEMBER_TENANTS": "accounts.tenancy.member_tenants",
+    "ALL_TENANTS_PERMISSION": "companies.administer_company",
+}
+```
+
+Staff granted that key everywhere (directly or through a group, never
+through a role) change a member of a tenant they do not belong to when
+they hold everywhere every key the member holds there. A tenant whose
+hooks do not say what the member holds there stays beyond them. Staff
+without the key change only the members of tenants they belong to, as
+before. Grant the key as you would `auth.change_user`: with it, a holder
+of a role's keys takes over that role's members in every tenant.
+
+**What a role gives back.** The admin API counts what a member holds in
+a tenant now. A project whose roles depend on the tenant's state (a
+suspended company's owner only looks) names what each role grants
+whatever the state in `MEMBER_GRANTS`, a function of the user and a
+tenant id that answers keys, or None for one who is not a member. The
+admin API counts its keys with `MEMBER_PERMISSIONS`' answer, so staff
+who hold a suspended company's looking keys do not take over an owner
+who holds everything once it is reactivated. No request is served with
+them: `MEMBER_PERMISSIONS` alone answers the rules.
 
 ## Outside a request
 
@@ -583,6 +620,14 @@ whichever tenant the route serves (since 2.5):
 invitations = Throttle("50/day", scope="invitations", per_tenant=False)
 ```
 
+A throttle on a route served as a tenant (one that takes its tenant from
+its path, or any route under `TenantMiddleware` but a tenants'
+collection) says how it counts: `per_tenant=False` once per caller, or
+`per_tenant=True` once per caller and tenant, on purpose. `check` names
+each one that says neither (`tenancy.W001`, since 2.7): moving routes
+under a tenant would otherwise multiply a person's limit by their
+tenants, unseen.
+
 A limit holds no data, so one count for every tenant tells nothing of
 any. A cache entry does: computed while a tenant is served, it holds that
 tenant's rows. So `@cached` has no such option; share an entry on purpose
@@ -608,7 +653,7 @@ it, and so do formats that name it (`%(tenant)s`).
 | `current_tenant()` | The tenant being served, or None. |
 | `member_permissions(user)` | The keys `user` holds as a member of the current tenant (`MEMBER_PERMISSIONS`); async. |
 | `path_tenant()` | The tenant a route's path named (`PathTenant`), if it is the one served; None where only `TenantMiddleware` or `tenant()` chose it. |
-| `tenants_beyond(actor, user, held)` | The tenants where `user` holds what `actor` does not (`MEMBER_TENANTS`), or None when no one can be ruled out; async. The admin API's `may_change` asks it. |
+| `tenants_beyond(actor, user, held)` | The tenants where `user` holds what `actor` does not (`MEMBER_TENANTS`, `MEMBER_GRANTS`, `ALL_TENANTS_PERMISSION`), or None when no one can be ruled out; async. The admin API's `may_change` asks it. |
 | `row_tenant()` | The tenant `TenantOwned` rows are scoped to; None inside `all_tenants()`. With no tenant current, it raises `TenantRequired`. |
 | `tenant_schema(tenant_id)` | The PostgreSQL schema of a tenant. |
 | `scoped_key(key)` | The key, made the current tenant's own. |
@@ -637,6 +682,8 @@ None
 | `MEMBERSHIP` | `None` | Dotted path to a function of the user and a tenant id (async or not): whether the user may act in it. |
 | `MEMBER_PERMISSIONS` | `None` | Dotted path to a function of the user and a tenant id (async or not): the keys the user holds as a member, or None for one who is not. Not with `MEMBERSHIP`. |
 | `MEMBER_TENANTS` | `None` | Dotted path to a function of the user (async or not): the ids of the tenants the user belongs to. With `MEMBERSHIP` or `MEMBER_PERMISSIONS`. |
+| `MEMBER_GRANTS` | `None` | Dotted path to a function of the user and a tenant id (async or not): the keys the user's roles there grant whatever the tenant's state, or None. The admin API counts them. With `MEMBER_PERMISSIONS` and `MEMBER_TENANTS`. |
+| `ALL_TENANTS_PERMISSION` | `None` | A permission key: staff who hold it everywhere change members of tenants they do not belong to, holding everywhere what the member holds there. With `MEMBER_TENANTS`. |
 | `REQUIRED` | `True` | Refuse a request that names no tenant. |
 | `EXEMPT_PATHS` | `("/health",)` | Paths that may name no tenant. |
 | `SCHEMA` | `"tenant_{tenant}"` | A tenant's schema on `SCHEMA_DATABASES`: lowercase letters and `_` around `{tenant}`. |
