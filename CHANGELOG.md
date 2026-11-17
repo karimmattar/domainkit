@@ -46,23 +46,36 @@ and a status.
   (CVE-2026-34591), and its dulwich had nine advisories. CI audits the
   build's hash-pinned tools too.
 
+### Fixed
+
+- `ReceivedUpload.store` drops its temporary file when `STORAGES` has no
+  alias it is given; the file stayed open. An `upload_route` looks its
+  storage up, and checks its directory, before it reads the body: both
+  raised once the file was received and checked
+  ([Bounds decided per request](docs/resources.md#bounds-decided-per-request))
+  (user report U3).
+
 ### Security
 
 - `CHECKED_PDF` (`PdfCheck`) decodes each page's content in the check's
   process and refuses a PDF whose pages' contents decode to more than
   `max_content` (64 MiB, new) in all, a stream drawn twice counted
   twice. A 170 KB file of twenty pages, each 8 MiB of spaces deflated,
-  passed, and laying text over it made 168 MB. The content is counted as
-  it inflates and never held. A PDF of more content, which 2.6 took, is
+  passed, and laying text over it made 168 MB. Content deflated alone is
+  counted as it inflates and never held; the deadline is read once each
+  stream is decoded. A PDF of more content, which 2.6 took, is
   refused: give `PdfCheck(max_content=...)` a bound of your own
   ([Checking documents](docs/uploads.md#checking-documents), ADR 0175)
   (user report U6).
 - `DOCX`, `XLSX` and `PPTX` (`OfficeCheck`) refuse a Word field that
   pulls content in or runs a program when it never ends, or when its
   instruction, or part of it, is a tracked deletion (`w:delInstrText`),
-  read with and without the deletion; and a VML picture or fill whose
-  `src`, `o:href` or `o:althref` names a source, or whose `o:relid` names
-  a hyperlink's relationship. Each passed, and a converter may fetch it
+  read with and without the deletion; a `HYPERLINK` field to a file or a
+  share; a VML picture, fill or stroke whose `src`, `o:href` or
+  `o:althref` names a source, or whose `o:relid` names a hyperlink's
+  relationship; and any of these in a part a relationship names, whatever
+  its content type says (a header named `header2.png`), when its bytes
+  start as XML does. Each passed, and a converter may fetch it
   ([Checking documents](docs/uploads.md#checking-documents), ADR 0175)
   (user report U5).
 - `DeviceSigned` looks the signing device up from the headers before it

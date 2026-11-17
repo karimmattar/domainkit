@@ -120,7 +120,7 @@ How `DeviceSigned` reads the body:
 | Option | What it costs |
 | --- | --- |
 | Look the device up first, in the same unit of work, reading the body in it | Holds a database connection while a client sends its body. |
-| **Look the device up first in a unit of work of its own, then read the body, then record the request in another** | A second transaction for a signed request with `SIGNATURE_STORE = "database"`; none for the cache. A session thief who names a device of the user (`GET /devices` lists them) is still read. |
+| **Look the device up first in a unit of work of its own, then read the body, then read the device again and record the request in another** | Two transactions for a signed request where 2.6 took one, with either store. A session thief who names a device of the user (`GET /devices` lists them) is still read. |
 | **Also take `Content-Digest`: verify the signature with the declared digest before the body is read, then the body against it; `DEVICES.CONTENT_DIGEST = "required"` refuses a request without one** | The signed message is unchanged, so clients that send nothing work as before. With `"required"`, nothing a thief sends is read. |
 
 How `upload_route` decides per request:
@@ -141,20 +141,29 @@ How `upload_route` decides per request:
   at a time and nothing of it kept; the clock is looked at for each
   chunk. One with other filters, or whose deflated data is damaged (gzip,
   which pypdf recovers), is decoded by pypdf under `apply_configuration`,
-  each filter's limit what is left of `max_content` plus one byte. A page
-  with no content, or content that is no stream, counts nothing.
+  each filter's limit what is left of `max_content` plus one byte; pypdf
+  looks at no clock, so the check reads its deadline once each stream is
+  decoded. A page with no content, or content that is no stream, counts
+  nothing.
 - **`OfficeCheck`** reads `w:delInstrText` as instruction text, and checks
   each instruction twice: with its deletions (rejected) and without them
   (accepted); a nested field that starts an instruction whose text so far
   is all deleted is refused as one that starts with a field. The fields a
   part began and never separated nor ended are checked at the part's end.
   A VML element (`urn:schemas-microsoft-com:vml`) with a `src`, a VML
-  picture with an `o:href` or `o:althref`, and an `o:relid` naming a
-  hyperlink's relationship are refused as content from elsewhere.
+  picture, fill or stroke with an `o:href` or `o:althref`, and an
+  `o:relid` naming a hyperlink's relationship are refused as content from
+  elsewhere. A `HYPERLINK` field's target is held to what a hyperlink's
+  relationship may name (`http`, `https`, `mailto`), its switches' own
+  arguments left out. A part a relationship names (but an image, a font,
+  an embedded package and the like) is read as XML when its bytes start
+  as XML does, whatever its name and content type say: a reader follows
+  a header's relationship to `header2.png` and parses it, and a
+  LibreOffice conversion fetched what such a header linked.
 - **`receive_upload(..., remember=None)`** (New in 2.7) names who receives
   the file. With it, a file whose checks took it under that name within
-  `CHECKED_FOR` (30 minutes, `AUTHORIZATIONS.TTL`'s most), of the same
-  content and checks, is not checked again; one taken now is kept. Only a
+  30 minutes (`AUTHORIZATIONS.TTL`'s most), of the same content and
+  checks, is not checked again; one taken now is kept. Only a
   file a check reads is remembered, and only what the checks took. An
   `upload_route` whose rules ask for an authorization receives its file
   under the route's name and the caller's id, on the twin and the act.
@@ -165,12 +174,16 @@ How `upload_route` decides per request:
   and must have it. Otherwise the signature is checked once the body is
   read, unless `DEVICES.CONTENT_DIGEST = "required"` (New in 2.7; default
   `"optional"`), which refuses the request unread. The request is then
-  recorded in another unit of work, as before.
+  recorded in another unit of work, which reads the device again and
+  refuses it if it was unbound, or its key changed, while the body
+  arrived: 2.6 read it and recorded the request in one.
 - **`upload_route`** takes `types`, `max_size`, `storage` and `directory`
-  as values or callables (`Decided`), and `dependencies=` as
-  `command_route` does; the twin runs none of them. What a callable
-  decides is checked as a declared value is (a `ValueError` or
-  `TypeError`: a 500).
+  as values or callables of the request and the aggregate, and
+  `dependencies=` as `command_route` does; the twin runs none of them.
+  What a callable decides is checked as a declared value is (a
+  `ValueError` or `TypeError`: a 500), the storage an alias names looked
+  up and the directory checked before the body is read, a declared one's
+  too.
 
 ## Consequences
 
@@ -185,10 +198,12 @@ How `upload_route` decides per request:
 - A confirmed upload costs one check process, not two, when the act runs
   in a process that shares the default cache with the twin's (Redis, or
   one process). The file is still sent twice: the act stores the bytes it
-  receives, which a phone signs.
-- `DeviceSigned` with `SIGNATURE_STORE = "database"` takes two short
-  transactions where it took one, so that no connection is held while a
-  body arrives. A phone app that sends `Content-Digest` lets the operator
+  receives, which a phone signs. A verdict outlives a deploy that changes
+  a project's own check, for up to 30 minutes; and a check that holds a
+  set pickles in another order in each process (string hashes are
+  salted per process), so its verdict is found only where it was kept.
+- `DeviceSigned` takes two short transactions where it took one, so that
+  no connection is held while a body arrives. A phone app that sends `Content-Digest` lets the operator
   set `CONTENT_DIGEST = "required"`; until every app in use sends it,
   keep `"optional"`.
 - A route that decides its bounds per request reads them after the

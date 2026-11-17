@@ -502,6 +502,17 @@ and the act do this ([resources.md](resources.md#files)). Name the
 caller in it: a verdict shared between callers answers one of them
 sooner when another sent the same file, which tells of that file.
 
+- A verdict outlives a deploy that changes a check of your own, for up
+  to 30 minutes: a file the old check took is not checked by the new one
+  meanwhile. domainkit's version is part of where a verdict is kept, so
+  an upgrade of domainkit forgets them all. Empty the cache, or wait 30
+  minutes, after a deploy that makes a check of your own stricter.
+- The checks are compared as they pickle. A check that holds a set (a
+  `frozenset` of names) pickles its items in another order in each
+  process, as Python salts string hashes per process: its verdict is
+  found only in the process that kept it, and the file is checked again
+  elsewhere. Hold a tuple, sorted, instead.
+
 A gateway of the infrastructure layer may call `save_upload` with the
 bytes its route hands it: the [layer rules](reference/settings.md#layer-rules)
 allow `domainkit.http.uploads` there since 2.5. They keep Starlette's
@@ -645,8 +656,10 @@ A Word document with macros, sent as `contract.docx`:
   to more than `max_content` (64 MiB) in all: a content stream drawn on
   two pages counts twice. A 170 KB file of twenty pages, each 8 MiB of
   spaces deflated, is refused ("The file is too large or too complex to
-  check."). The content is counted as it inflates, 64 KiB at a time, and
-  never held whole.
+  check."). Content deflated alone is counted as it inflates, 64 KiB at
+  a time, and never held whole; content with another filter is decoded
+  by pypdf, each filter held to what is left of `max_content`, and the
+  check's deadline is read once each stream is decoded.
 - **`DOCX`, `XLSX`, `PPTX`** (`OfficeCheck`) refuse a document whose main
   part is macro-enabled (a `.docm` named `.docx`), macros (`vbaProject.bin`,
   Excel 4.0 macro sheets), OLE objects, ActiveX controls, chunks imported
@@ -661,17 +674,23 @@ A Word document with macros, sent as `contract.docx`:
   read with and without the deletion), OLE objects and controls written
   in the XML itself (`w:object`, `o:OLEObject`, `w:control`), a picture
   or an object that names a hyperlink's relationship (by `r:id`, or, since
-  2.7, VML's `o:relid`), a VML picture or fill that names a source of its
-  own (`src`; a picture's `o:href` or `o:althref`; *new in 2.7*), Excel's
-  links to other workbooks,
+  2.7, VML's `o:relid`), a VML picture, fill or stroke that names a source
+  of its own (`src`, `o:href` or `o:althref`; *new in 2.7*), a `HYPERLINK`
+  field to anything but `http`, `https` or `mailto` (a file, a share; *new
+  in 2.7*, as a hyperlink's relationship already was), Excel's links to
+  other workbooks,
   data connections, query tables, formulas anywhere in a sheet (cells,
   names, conditional formats, validations, tables, charts) that call
   `WEBSERVICE`, `RTD`, `IMAGE` or DDE (`cmd|'...'!A0`), and an XML part
   with a DTD or an entity, or in another encoding than UTF-8 and UTF-16.
   A part is XML by its name (`.xml`, `.rels`, `.vml`) or its content
-  type (`+xml`), never by its first bytes; white space before its markup
+  type (`+xml`), whatever its first bytes; white space before its markup
   is passed over, however long, and a part that is not XML after all is
-  `unreadable_file`. An embedded workbook (a
+  `unreadable_file`. *Since 2.7*, a part a relationship names (but an
+  image, a font, an embedded package and the like) is XML too when its
+  bytes start as XML does, whatever its name and content type: a reader
+  follows a header's relationship to `word/header2.png` and parses it as
+  the header it is. An embedded workbook (a
   chart's data) is checked the same way. A template, or another kind of
   document, is not the type: with `OFFICE` the next type is tried, else
   415. Power Query reaches its data through a connection, which is

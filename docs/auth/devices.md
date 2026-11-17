@@ -272,7 +272,9 @@ once the body is read. `DeviceSigned` reads it last: it looks the device
 up from `X-Device-Id` first, and refuses a request that names no device
 of the caller's, or whose time or signature is malformed, before a byte
 of the body is read. Before 2.7 it read the whole body first, up to the
-route's limit, for any session.
+route's limit, for any session. No database connection is held while the
+body arrives: the device is read again as the request is recorded, and
+one unbound, or given another key, meanwhile is refused.
 
 A session thief can list the user's devices (`GET /devices`), and name
 one. So a phone may also say the body's SHA-256 in `Content-Digest`

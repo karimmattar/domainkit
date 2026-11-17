@@ -710,10 +710,12 @@ templates.upload_route(
   request may send, file and form, held while the body arrives. Without
   it the route is refused when it is declared (`TypeError`).
 - What a callable decides is checked as a value given when declaring:
-  no type, or a size under 1 byte, is a `ValueError`; a storage that is
+  no type, a size that is not a whole number of bytes, or a directory a
+  storage refuses (`..`, `/root`), is a `ValueError`; a storage that is
   neither a `Storage` nor an alias, or a directory that is not text, a
-  `TypeError`. Either is a 500: a mistake of the route's, not the
-  client's.
+  `TypeError`; an alias `STORAGES` lacks, `ImproperlyConfigured`. Each is
+  a 500, a mistake of the route's, not the client's, raised before a
+  byte of the body is read; so is a declared storage's or directory's.
 - A type's check runs in a process of its own, without the settings
   ([Checks of your own](uploads.md#checks-of-your-own)): decide a limit
   that is a setting when the request comes, and give it to the check as
