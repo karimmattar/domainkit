@@ -647,11 +647,19 @@ A Word document with macros, sent as `contract.docx`:
   deadline, `REQUEST_TIMEOUT`) kills it first. A client that goes away
   does not cancel its request under Granian or uvicorn: the check runs
   on, `SECONDS` at most. A type without a check takes no slot.
-- **Memory to give.** `MEMORY` must exceed the largest `max_size` a
-  checked type takes: the process holds the file whole, and Python with
-  pypdf or lxml takes about 100 MiB of address space before it reads a
-  byte. Each worker runs up to `PROCESSES` checks: workers times
-  `PROCESSES` times `MEMORY` must fit the host or the container.
+- **Memory to give.** Python with pypdf or lxml takes about 100 MiB of
+  address space before it reads a byte, and the process holds the file
+  whole. A PDF check also keeps what it decodes, as pypdf does: the
+  object streams, up to `max_decoded`, and the pages' content, up to
+  `max_content`, whose largest stream zlib holds twice as it is decoded.
+  So give `MEMORY` about 100 MiB, plus the largest `max_size` a checked
+  type takes, plus `max_decoded`, plus twice `max_content`: at the
+  defaults, about 300 MiB, within the 512 MiB default. Measured: a page
+  of 63 MiB took 166 MiB; with `max_content` of 128 MiB, a page of 127
+  MiB took 294 MiB; with 256 MiB, a page of 250 MiB needed 540 MiB, and
+  at 512 MiB was refused. Each worker runs up to `PROCESSES` checks:
+  workers times `PROCESSES` times `MEMORY` must fit the host or the
+  container.
 - **`CHECKED_PDF`** (`PdfCheck`) reads a PDF as a strict reader does,
   and only as its cross-reference tables say: an object they do not
   declare, or one not at its offset, makes the file `unreadable_file`,
@@ -706,11 +714,13 @@ A Word document with macros, sent as `contract.docx`:
   A part is XML by its name (`.xml`, `.rels`, `.vml`) or its content
   type (`+xml`), whatever its first bytes; white space before its markup
   is passed over, however long, and a part that is not XML after all is
-  `unreadable_file`. *Since 2.7*, a part a relationship names (but an
-  image, a font, an embedded package and the like) is XML too when its
-  bytes start as XML does, whatever its name and content type: a reader
-  follows a header's relationship to `word/header2.png` and parses it as
-  the header it is. An embedded workbook (a
+  `unreadable_file`. *Since 2.7*, a part a relationship names, of any
+  type, is XML too when its bytes start as XML does, whatever its name,
+  its content type, or its relationship's type: a reader follows a
+  header's relationship to `word/header2.png`, typed an image, and parses
+  it as the header it is. One that is not XML past its start (an image or
+  a font whose first byte is `<`) is passed over: what came before is
+  checked. An embedded workbook (a
   chart's data) is checked the same way. A template, or another kind of
   document, is not the type: with `OFFICE` the next type is tried, else
   415. Power Query reaches its data through a connection, which is

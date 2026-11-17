@@ -168,11 +168,14 @@ How `upload_route` decides per request:
   `o:relid` naming a hyperlink's relationship are refused as content from
   elsewhere. A `HYPERLINK` field's target is held to what a hyperlink's
   relationship may name (`http`, `https`, `mailto`), its switches' own
-  arguments left out. A part a relationship names (but an image, a font,
-  an embedded package and the like) is read as XML when its bytes start
-  as XML does, whatever its name and content type say: a reader follows
-  a header's relationship to `header2.png` and parses it, and a
-  LibreOffice conversion fetched what such a header linked.
+  arguments left out. A part a relationship names, of any type, is read
+  as XML when its bytes start as XML does, whatever its name, its content
+  type and its relationship's type say: a reader follows a header's
+  relationship to `header2.png`, typed an image, and parses it, and a
+  LibreOffice conversion fetched what such a header linked. One that is
+  not XML past its start (an image or a font whose first byte is `<`, as
+  an embedded font's scrambled bytes are one time in a few hundred) is
+  passed over, not refused: what came before was checked.
 - **`receive_upload(..., remember=None)`** (New in 2.7) names who receives
   the file. With it, a file whose checks took it under that name within
   30 minutes (`AUTHORIZATIONS.TTL`'s most), of the same content and
@@ -205,7 +208,10 @@ How `upload_route` decides per request:
   predictor or an image's filter on a page's content, a filter pypdf
   runs in Python but first or past its share, more than 32 sections. A
   project that takes larger drawings gives `PdfCheck(max_content=...)`
-  its own bound, and `UPLOAD_CHECKS.MEMORY` room for it.
+  its own bound, and `UPLOAD_CHECKS.MEMORY` room for it: about 100 MiB,
+  plus the file, plus `max_decoded`, plus twice `max_content`, as the
+  check keeps what it decodes and zlib holds the largest stream twice
+  (a page of 250 MiB needed 540 MiB).
 - A Word document with an unended `INCLUDEPICTURE`, a tracked deletion of
   one, or a VML picture or fill from a URL, is refused. A document whose
   VML picture names its image by `src` alone (HTML saved as a document

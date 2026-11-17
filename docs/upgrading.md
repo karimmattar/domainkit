@@ -188,8 +188,11 @@ relied on 2.6's behaviour changes, and what to run.
   ([Checking documents](uploads.md#checking-documents), ADR 0175, ADR
   0176). A project that takes larger drawings gives its type a bound of
   its own: `FileType("application/pdf", ".pdf", PDF.matches,
-  PdfCheck(max_content=256 * 1024 * 1024))`, and `UPLOAD_CHECKS.SECONDS`
-  room to decode it.
+  PdfCheck(max_content=128 * 1024 * 1024))`, and `UPLOAD_CHECKS` room to
+  decode it: the check keeps what it decodes, and holds the largest
+  stream twice, so a page of 127 MiB took 294 MiB, within the 512 MiB
+  `MEMORY`; one of 250 MiB, with `max_content` of 256 MiB, needed 540
+  MiB ([Memory to give](uploads.md#checking-documents)).
 - **Office documents with an unended or deleted field, a link to a file,
   or a VML picture from elsewhere, are refused.** A Word field that pulls
   content in and never ends, or whose instruction is a tracked deletion; a
