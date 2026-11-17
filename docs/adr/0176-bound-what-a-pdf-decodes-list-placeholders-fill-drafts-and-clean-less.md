@@ -36,15 +36,19 @@ project.
   filters, which return what they read (DCT, JPX, CCITT) or run the
   `jbig2dec` program (JBIG2). LZW, run-length, ASCIIHex, ASCII85, and the
   predictors run in Python. Measured here, per MiB read: ASCII85 of `z`
-  94 MiB of memory, random ASCII85 1.8 s, LZW 5.5 s, one-byte runs 45 MiB,
-  a Paeth predictor 8.5 s. A review found that a budget on what a stream
-  decodes to misses them: a 31 KB PDF whose content was deflate, then
-  ASCII85, decoded 30 MiB of `z`s within the budget and took 2.8 GB and
-  5 seconds before it was refused. ASCII85 is no attack's alone:
+  94 MiB of memory (under `tracemalloc`), and in time, without it,
+  ASCII85 0.15 s, run-length up to 0.3 s, LZW 0.6 s, a Paeth predictor
+  0.3 s. A review found that a budget on what a stream decodes to misses
+  them: a 31 KB PDF whose content was deflate, then ASCII85, decoded 30
+  MiB of `z`s within the budget and took 2.8 GB before it was refused.
+  A second found that a bound on each stream misses many: a 33 MB file
+  of 64 object streams of LZW, each under it, took 17 seconds a call. ASCII85 is no attack's alone:
   ReportLab, a common generator, armours its streams with it by default
   (its `useA85` setting), first, over deflate. A cross-reference stream
   listing 1.99 million entries took pypdf 26 seconds and 389 MiB as it
-  opened a 20 KB file; pypdf's default allows 2 million [16].
+  opened a 20 KB file; pypdf's default allows 2 million [16]. pypdf
+  follows every `/Prev` link of a chain of sections: 500 of them, each a
+  stream of 1 MiB with a predictor, took 47 seconds.
 - **pypdf's limits are per context.** pypdf keeps its configuration in a
   `ContextVar`, and `apply_configuration` sets it for a `with` block,
   resetting it on the way out [1], [6]. Each thread has its own context,
@@ -136,17 +140,25 @@ worked in 2.6 is refused but a PDF past the new bounds.
   decoded**, and it is refused unread unless: each filter is deflate,
   LZW, run-length, ASCIIHex, ASCII85, or Brotli; one of the four run in
   Python at most, first, so that it reads the stream as stored, never
-  what another filter inflated; such a stream stores `max_decoded / 64`
-  bytes at most (512 KiB, at most 3 seconds and 50 MiB beside its
-  output, measured); and no filter has a predictor, which belongs to
-  images and cross-reference streams. `[/ASCII85Decode /FlateDecode]` is
-  read; `[/FlateDecode /ASCII85Decode]` is refused in a millisecond.
-- **The cross-reference streams** list 65,536 entries in all, or one for
-  each 512 bytes of `max_decoded` where that is more
-  (`xref_stream_maximum_entries`, checked before pypdf reads one), and
-  each decodes to 16 bytes an entry at most while the file is opened,
-  wider than an entry and its predictor's byte. A file past either is
-  refused at once.
+  what another filter inflated; and no filter has a predictor, which
+  belongs to images and cross-reference streams. What the streams
+  decoded in Python store is counted, per call, and bounded in all at
+  `max_decoded / 32` (1 MiB: 0.6 seconds and 100 MiB at worst,
+  measured). `[/ASCII85Decode /FlateDecode]` is read;
+  `[/FlateDecode /ASCII85Decode]` is refused in a millisecond, and so is
+  the 64-stream file once two streams are decoded. The judgement is one
+  function (`filters_refused`), and the per-call count one object
+  (`DecodeBudget`), for an upload check to use too.
+- **The cross-reference sections** are counted from the file's bytes
+  before pypdf opens it, following `/Prev` and `/XRefStm` from the last
+  `startxref` as pypdf does: 8 at most, one for the file and one for
+  each save added to it (`xref_sections_past`). Their streams list
+  65,536 entries in all, or one for each 512 bytes of `max_decoded`
+  where that is more (`xref_stream_maximum_entries`), and each decodes
+  to 8 bytes an entry at most while the file is opened, an entry of a
+  file under 4 GB and its predictor's byte (512 KiB). Eight sections,
+  each as large and slow as that allows, took 0.8 seconds. A file past
+  any of these is refused at once.
 - **`renderer()` with no renderer raises `RendererNotConfigured`**, a
   `RendererUnavailable` and an `ImproperlyConfigured`: the HTTP layer
   answers it 503 `renderer_unavailable`, with the same detail, and code
@@ -191,9 +203,10 @@ worked in 2.6 is refused but a PDF past the new bounds.
   MiB is refused where 2.6 laid it. Drawings and maps of many megabytes
   a page need `max_decoded` raised; the upgrade notes say so.
 - PDFs whose content or objects use an image's filter, a stage run in
-  Python after another filter, such a stage on more than 512 KiB, or a
-  predictor are refused, as are object streams that cannot be decoded
-  and files of more than 65,536 cross-reference entries. PDFs of the
+  Python after another filter, such stages on more than 1 MiB in all, or
+  a predictor are refused, as are object streams that cannot be decoded,
+  files of more than 65,536 cross-reference entries, and files saved
+  more than seven times over. PDFs of the
   early 1990s used `[/ASCII85Decode /LZWDecode]`: they are refused too.
 - `page_sizes` decodes every object stream of the file up front, where
   it decoded those of the page tree only; the work is bounded by the

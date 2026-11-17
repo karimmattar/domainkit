@@ -55,12 +55,13 @@ a project that relied on 2.6's behaviour changes.
 - **Some PDFs 2.6 read are refused unread** (security), by
   `overlay_pdf` and `page_sizes`, where a stream they decode has an
   image's filter, `/Crypt`, or one they do not know; an LZW, run-length,
-  ASCIIHex, or ASCII85 stage after another filter, or two of them; such a
-  stage first on a stream of more than `max_decoded / 64` bytes (512 KiB);
-  or a predictor. An object stream that cannot be decoded is refused
-  even when nothing uses it, and the cross-reference streams list 65,536
-  entries at most (one for each 512 bytes of `max_decoded` where that is
-  more). Few generators write any of these on a page's content (PDFs of
+  ASCIIHex, or ASCII85 stage after another filter, or two of them; such
+  stages first on streams of more than `max_decoded / 32` bytes in all
+  (1 MiB); or a predictor. An object stream that cannot be decoded is
+  refused even when nothing uses it; the cross-reference streams list
+  65,536 entries at most (one for each 512 bytes of `max_decoded` where
+  that is more); and a file chains 8 cross-reference sections at most,
+  one for the file and one for each save added to it. Few generators write any of these on a page's content (PDFs of
   the early 1990s used `[/ASCII85Decode /LZWDecode]`, now refused), and
   ReportLab's `[/ASCII85Decode /FlateDecode]` is read as before.
 - **A request that needs a renderer where none is set is answered 503.**

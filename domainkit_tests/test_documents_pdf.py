@@ -11,6 +11,7 @@ shown. So a rotated page that shifted the overlay would fail here.
 import base64
 import io
 import struct
+import time
 import tracemalloc
 import zlib
 from typing import Any, Final, TypedDict
@@ -31,6 +32,7 @@ from pypdf.generic import (
 
 from domainkit.documents import DocumentError, overlay_pdf, page_sizes
 from domainkit.documents import pdf as pdf_module
+from domainkit.documents.pdf import xref_sections_past
 
 ROTATIONS: Final = (0, 90, 180, 270, -90, 450)
 KiB: Final = 1024
@@ -128,14 +130,14 @@ def inflating(size: int, at: tuple[float, float] = (10, 10)) -> bytes:
 
 def streamed(
     *sizes: int,
-    extra: tuple[bytes, bytes] | None = None,
+    extras: tuple[tuple[bytes, bytes], ...] = (),
     stray: bool = False,
     entries: int = 0,
     padding: int = 0,
 ) -> bytes:
     """A PDF of one page whose object streams decode to ``sizes`` bytes each.
 
-    ``extra`` adds an object stream of these filters and stored bytes;
+    ``extras`` adds object streams of these filters and stored bytes;
     ``stray`` an entry whose object stream is the catalog, no stream.
     Nothing refers to the objects the streams hold. Its cross-reference
     stream lists ``entries`` at least, and decodes to ``padding`` more
@@ -158,8 +160,7 @@ def streamed(
             + b"\nendstream"
         )
         held.append(len(objects))
-    if extra is not None:
-        filters, stored = extra
+    for filters, stored in extras:
         objects.append(
             b"<< /Type /ObjStm /N 1 /First 6 /Filter "
             + filters
@@ -170,7 +171,7 @@ def streamed(
         held.append(len(objects))
     if stray:
         held.append(1)
-    out = b"%PDF-1.7\n"
+    out = bytearray(b"%PDF-1.7\n")
     offsets = []
     for number, body in enumerate(objects, 1):
         offsets.append(len(out))
@@ -189,7 +190,58 @@ def streamed(
         f"/Filter /FlateDecode /Length {len(data)} >>\nstream\n"
     ).encode()
     out += data + b"\nendstream\nendobj\n"
-    return out + f"startxref\n{start}\n%%EOF\n".encode()
+    return bytes(out + f"startxref\n{start}\n%%EOF\n".encode())
+
+
+def chained(sections: int, *, streams: bool = False, hybrid: bool = False) -> bytes:
+    """A one-page PDF saved ``sections`` times, each save a section linked by ``/Prev``.
+
+    Tables, or ``streams``; ``hybrid`` gives the last table a stream of its
+    own by ``/XRefStm``, as a hybrid file does: one section more.
+    """
+    out = bytearray(b"%PDF-1.7\n")
+    offsets = []
+    for number, body in enumerate(
+        (
+            b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] >>",
+        ),
+        1,
+    ):
+        offsets.append(len(out))
+        out += f"{number} 0 obj\n".encode() + body + b"\nendobj\n"
+
+    def stream(number: int, rows: list[tuple[int, int]], links: str) -> int:
+        """An object ``number``: a cross-reference stream of ``rows``; its offset."""
+        at = len(out)
+        data = b"".join(struct.pack(">BIH", 1, offset, 0) for _, offset in rows)
+        index = " ".join(f"{each} 1" for each, _ in rows)
+        out.extend(
+            f"{number} 0 obj\n<< /Type /XRef /Size {number + 1} /Index [{index}] "
+            f"/W [1 4 2] /Root 1 0 R{links} /Length {len(data)} >>\nstream\n".encode()
+            + data
+            + b"\nendstream\nendobj\n"
+        )
+        return at
+
+    previous = ""
+    for save in range(sections):
+        number = 4 + save
+        if streams:
+            first = list(enumerate(offsets, 1)) if save == 0 else []
+            at = stream(number, [*first, (number, len(out))], previous)
+        else:
+            extra = ""
+            if hybrid and save == sections - 1:
+                extra = f" /XRefStm {stream(number, [(number, len(out))], '')}"
+            at = len(out)
+            rows = "".join(f"{offset:010d} 00000 n \n" for offset in offsets)
+            table = f"0 4\n0000000000 65535 f \n{rows}" if save == 0 else "0 0\n"
+            trailer = f"/Size {number + 1} /Root 1 0 R{previous}{extra}"
+            out += f"xref\n{table}trailer\n<< {trailer} >>\n".encode()
+        previous = f" /Prev {at}"
+    return bytes(out + f"startxref\n{at}\n%%EOF\n".encode())
 
 
 def overlay_for(document: bytes, at: tuple[float, float] = (30, 40)) -> bytes:
@@ -472,9 +524,9 @@ def test_an_object_stream_that_cannot_be_decoded_is_refused_though_unused() -> N
     """
     assert page_sizes(streamed(100, stray=True), max_decoded=1000) == [(300.0, 400.0)]
     with pytest.raises(DocumentError) as refused:
-        page_sizes(streamed(extra=(b"/ASCIIHexDecode", b"zz>")))
+        page_sizes(streamed(extras=((b"/ASCIIHexDecode", b"zz>"),)))
     with pytest.raises(DocumentError, match="decoded with /Bogus"):
-        overlay_pdf(streamed(extra=(b"/Bogus", b"100 0 null")), pdf(Page()))
+        overlay_pdf(streamed(extras=((b"/Bogus", b"100 0 null"),)), pdf(Page()))
 
     assert str(refused.value) == "A stream cannot be decoded (PdfStreamError)."
 
@@ -543,7 +595,8 @@ def test_ascii85_after_deflate_is_refused_before_it_is_decoded() -> None:
     assert peak < 4 * MiB
     with pytest.raises(DocumentError, match="ASCII85Decode after /FlateDecode"):
         page_sizes(
-            streamed(extra=(b"[/FlateDecode /ASCII85Decode]", stored)), max_decoded=MiB
+            streamed(extras=((b"[/FlateDecode /ASCII85Decode]", stored),)),
+            max_decoded=MiB,
         )
 
 
@@ -572,28 +625,48 @@ def test_filters_that_could_pass_the_budget_are_refused_unread(
         overlay_pdf(document, overlay_for(document))
 
 
-def test_a_stream_decoded_in_python_is_bounded_by_what_it_stores() -> None:
-    """ASCII85 alone, first as written: up to ``max_decoded / 64`` bytes stored.
+def test_streams_decoded_in_python_store_a_bounded_amount_in_all() -> None:
+    """``max_decoded / 32`` bytes stored, in all the call decodes: 1 MiB by default.
 
-    pypdf decodes it in Python, at up to 94 MiB of memory a MiB stored.
-    As a generator writes it (ASCII85 over deflate), a page is laid over.
+    pypdf decodes ASCII85 in Python, at 0.15 s and up to 94 MiB of memory a
+    MiB stored. As a generator writes it (ASCII85 over deflate), a page is
+    laid over; two pages of 600 KiB are refused, though each alone fits.
     """
-    raw = pdf(Page(stored=b"z" * (600 * KiB) + b"~>", filters=("/ASCII85Decode",)))
+    raw = Page(stored=b"z" * (600 * KiB) + b"~>", filters=("/ASCII85Decode",))
     armoured = base64.a85encode(zlib.compress(text((10, 10)))) + b"~>"
     document = pdf(Page(stored=armoured, filters=("/ASCII85Decode", "/FlateDecode")))
+    two = pdf(raw, raw)
 
     with pytest.raises(DocumentError) as refused:
-        overlay_pdf(raw, overlay_for(raw))
+        overlay_pdf(two, overlay_for(two))
 
     assert str(refused.value) == (
-        "A stream decoded with /ASCII85Decode holds 614,402 bytes, more than "
-        "524,288 (max_decoded / 64): pypdf decodes it in Python."
+        "The streams pypdf decodes in Python (LZW, run-length, ASCIIHex, "
+        "ASCII85) store more than 1,048,576 bytes in all (max_decoded / 32)."
     )
+    assert len(overlay_pdf(two, {0: overlay_for(pdf(raw))})) > 0
+    assert len(overlay_pdf(two, overlay_for(two), max_decoded=64 * MiB)) > 0
     assert shown(overlay_pdf(document, overlay_for(document))) == [
         (10.0, 10.0),
         (30.0, 40.0),
     ]
-    assert len(overlay_pdf(raw, overlay_for(raw), max_decoded=64 * MiB)) > 0
+
+
+def test_many_small_streams_decoded_in_python_are_refused_fast() -> None:
+    """A 32 MB file of 64 object streams of ASCII85, each half a MiB stored.
+
+    Each fits; together they took 5 seconds a call, LZW 17. Refused once
+    they pass 1 MiB in all: two are decoded, the rest never.
+    """
+    one = base64.a85encode(bytes(range(256)) * 1600) + b"~>"
+    document = streamed(extras=((b"/ASCII85Decode", one),) * 64)
+    assert len(document) > 30 * MiB
+
+    started = time.perf_counter()
+    with pytest.raises(DocumentError, match="store more than 1,048,576 bytes in all"):
+        page_sizes(document)
+
+    assert time.perf_counter() - started < 2
 
 
 @pytest.mark.parametrize(
@@ -636,13 +709,13 @@ def test_cross_reference_streams_list_a_bounded_number_of_entries(
     """65,536 entries by default, refused before pypdf reads one: each costs 13 µs.
 
     One for each 512 bytes of ``max_decoded`` where that is more; and each
-    stream decodes to 16 bytes an entry at most.
+    stream decodes to 8 bytes an entry at most.
     """
     with pytest.raises(DocumentError) as refused:
         page_sizes(streamed(entries=65_537))
     monkeypatch.setattr(pdf_module, "XREF_ENTRIES", 1000)
     larger = streamed(entries=1500)
-    with pytest.raises(DocumentError, match="1500 > 1000"):
+    with pytest.raises(DocumentError, match="past a limit it is read within"):
         overlay_pdf(larger, pdf(Page(width=300, height=400)), max_decoded=512_000)
     with pytest.raises(DocumentError, match="Limit reached while decompressing"):
         page_sizes(streamed(padding=16_000), max_decoded=512_000)
@@ -652,4 +725,51 @@ def test_cross_reference_streams_list_a_bounded_number_of_entries(
         "entry limit reached: 65537 > 65536."
     )
     assert page_sizes(larger, max_decoded=1500 * 512) == [(300.0, 400.0)]
-    assert page_sizes(streamed(padding=8_000), max_decoded=512_000) == [(300.0, 400.0)]
+    assert page_sizes(streamed(padding=6_000), max_decoded=512_000) == [(300.0, 400.0)]
+
+
+def test_a_chain_of_cross_reference_sections_is_bounded() -> None:
+    """Eight sections, as a file and its saves make, and not one more.
+
+    pypdf follows every ``/Prev`` and ``/XRefStm``: 500 sections of 1 MiB
+    took it 0.8 s and 540 MiB, with a predictor 47 s. The chain is read
+    from the file's bytes first, and refused unread.
+    """
+    assert page_sizes(chained(8)) == [(300.0, 400.0)]
+    assert page_sizes(chained(8, streams=True)) == [(300.0, 400.0)]
+    assert page_sizes(chained(7, hybrid=True)) == [(300.0, 400.0)]
+    for document in (chained(9), chained(9, streams=True), chained(8, hybrid=True)):
+        with pytest.raises(DocumentError) as refused:
+            overlay_pdf(document, pdf(Page(width=300, height=400)))
+        assert str(refused.value) == (
+            "The document chains more than 8 cross-reference sections: one for "
+            "the file, and one for each save added to it."
+        )
+
+    long = chained(500)
+    tracemalloc.start()
+    try:
+        started = time.perf_counter()
+        with pytest.raises(DocumentError, match="more than 8 cross-reference"):
+            page_sizes(long)
+        took = time.perf_counter() - started
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert took < 1
+    assert peak < 2 * MiB
+
+
+@pytest.mark.parametrize(
+    ("data", "past"),
+    [
+        (b"%PDF-1.7\nno cross-reference section", False),
+        (b"%PDF-1.7\nstartxref\n999\n%%EOF", False),
+        (b"%PDF-1.7\nxref\n0 1\nstartxref\n9\n%%EOF", False),
+        (b"%PDF-1.7\n1 0 obj << /Prev 9 >> endobj startxref\n9\n%%EOF", False),
+        (b"%PDF-1.7\n1 0 obj << /Prev 23 >> 2 0 obj << /Prev 9 >> startxref 9", True),
+    ],
+)
+def test_the_chain_is_read_from_the_files_bytes(data: bytes, past: bool) -> None:
+    """No section, one past the end, a table with no trailer, a loop, two."""
+    assert xref_sections_past(data, 1) is past
