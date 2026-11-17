@@ -568,19 +568,22 @@ PUT  /admin/auth/users/6f1c.../groups {"groups": ["auditors"]}
   user, is refused (`403 action_not_authorized`), and voids it. A user
   created active and one created inactive are two acts.
 - **The screen says which user and what change**: "Change a user's
-  groups", then "User: alice@example.com" (the user's first identifier)
-  or the group's name, the flags that grant or take access
-  ("Superuser", "Staff", "Active": yes or no), "Adds: auditors", "Takes
-  away: clerks", the reason of an impersonation, then the other fields
-  set, by name ("Email", "Display name"). A list goes over as many lines
-  as it takes ("Adds", "Adds (2)"). Six lines at most: with
-  `AUTH["AUTHORIZATIONS"]["WHOLE"]` on (since 2.7), a change that does not
-  fit whole is refused at the twin (`422 too_much_to_show`), and staff
-  make it in smaller steps; off, what does not fit is cut and counted,
-  the flags first ("auditors, clerks and 4 more", "2 more values"). The
-  phone shows these words, read from the server's record
-  ([Confirming one act](ciba.md#confirming-one-act), [What a screen
-  shows](actions.md#what-a-screen-shows)).
+  groups", then "User: alice@example.com (6f1c…)" (the user's first
+  identifier and, since 2.7, their id; a name too long is cut beside the
+  id, which the act binds) or the group's name and id, the flags that
+  grant or take access ("Superuser", "Staff", "Active": yes or no),
+  "Adds: auditors", "Takes away: clerks", the reason of an impersonation,
+  then the other fields set, by name ("Email", "Display name"). A list
+  goes over as many lines as it takes ("Adds", "Adds (2)"). Six lines at
+  most: with `AUTH["AUTHORIZATIONS"]["WHOLE"]` on (since 2.7), a change
+  whose values or lists do not fit whole is refused at the twin (`422
+  too_much_to_show`), and staff make it in smaller steps; so is a change
+  approvals would hold that its approver's screen, a line longer, could
+  not show whole. A user's or a group's name never is. Off, what does not
+  fit is cut and counted, the flags first ("auditors, clerks and 4 more",
+  "2 more values"). The phone shows these words, read from the server's
+  record ([Confirming one act](ciba.md#confirming-one-act), [What a
+  screen shows](actions.md#what-a-screen-shows)).
 - **The twin checks what the change checks**: the staff member's bounds,
   the fields, a password's validators, impersonation's rules, a user or
   group that is not there, the last active superuser deleted or

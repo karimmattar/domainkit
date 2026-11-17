@@ -631,13 +631,18 @@ PATCH /admin/auth/users/6f1c... {"is_staff": true}                       200: th
   user, then make them staff."). Since 2.5 the refusal is auth's
   `on_create_staff` check, which the creation's twin asks too.
 - **The approver's screen names the user** (since 2.7): "User:
-  alice@example.com", their first identifier, read when the screen is
-  built and never stored with the request; then "Adds" and "Takes away",
-  each group or permission on as many lines as it takes, or an
-  impersonation's "Reason". With auth's `AUTHORIZATIONS.WHOLE` and
-  `APPROVE_ACTION` on, a change that the approver's screen could not show
-  whole is refused when it is submitted (`422 too_much_to_show`): the
-  staff member makes it in smaller steps, each approved whole.
+  alice@example.com (6f1c…)", their first identifier, cut to fit if need
+  be, and their id, which the request binds; the name is read when the
+  screen is built and never stored with the request ("erased" once it is
+  gone). Then "Adds" and "Takes away", each group or permission on as
+  many lines as it takes, and left out when empty, or an impersonation's
+  "Stated reason" (a rejection's own "Reason" shows beside it). With
+  auth's `AUTHORIZATIONS.WHOLE` and `APPROVE_ACTION` on, a change that
+  the approver's screen could not show whole is refused at the admin
+  API's twin, before the staff member confirms it (auth's
+  `on_admin_screen`), or when it is submitted without one (`422
+  too_much_to_show`): the staff member makes it in smaller steps, each
+  approved whole.
 - **Superusers approve**, other than the staff member, and never the user
   the change is about (`interested_party`). With `ADMIN_APPROVERS` set,
   the holders of that permission approve instead; as with
@@ -751,9 +756,11 @@ POST /api/approvals/requests/6c0e.../approve {"fingerprint": "3f1b..."}
 request, never sent by a page: the title "Approve a request", the action,
 then what the guard's `show` says of the command, or else its arguments
 by name, in the command's order. Each value is the argument as compact
-JSON (a string as itself), printable; a list of strings or numbers goes
-over as many lines as it takes ("added", "added (2)"), each item shown
-([What a screen shows](../auth/actions.md#what-a-screen-shows)). A screen
+JSON (a string as itself), printable; a list goes over as many lines as
+it takes ("added", "added (2)"), item by item, an object or a list as
+compact JSON ([What a screen shows](../auth/actions.md#what-a-screen-shows)).
+A value of a guard's `show` that JSON has not, such as a `Decimal` or a
+`UUID`, shows as its text. A screen
 holds six lines of 64 characters. What does not fit is cut and counted
 (since 2.7, a list's last line says how many more items: "… and 22
 more"), and with more arguments than lines, the last line says how many

@@ -104,21 +104,39 @@ approver's screen would not show them whole.
   module `domainkit.contrib.auth.screens`, lays out labelled values on a
   screen's lines. A text is one line. A list's items are joined with `, `
   while they fit, then go on to the next line, labelled with its number
-  ("Adds", "Adds (2)", in the request's language). An item that holds a
-  comma or a double quote, or spaces around it, is quoted, so two items
-  never read as one. With `whole`, a text, an item, or a label longer than
-  a line, a label twice, or more than six lines raise `TooMuchToShow`
-  (`422 too_much_to_show`). Otherwise what does not fit is cut and
-  counted: a text ends with `…`, a list's last line says how many more,
-  and a last line ("…") how many values are not shown. Every value gets a
-  line before a list gets more. `Shown` itself is unchanged.
+  ("Adds", "Adds (2)", in the request's language), whatever its items:
+  a text as itself, anything else as compact JSON. A dict, a number,
+  `True`, `None` is one line of compact JSON; a value JSON has not is a
+  `TypeError`. A text item that holds a comma or a double quote, spaces
+  around it, or nothing is quoted, so two items never read as one. A
+  character that is not printable is escaped as Python writes it, and a
+  backslash is doubled: two different values never show alike. With
+  `whole`, a text, an item, or a label longer than a line, a label twice,
+  or more than six lines raise `TooMuchToShow` (`422 too_much_to_show`).
+  Otherwise what does not fit is cut and counted: a text ends with `…`, a
+  list's last line says how many more, and a last line ("…") how many
+  values are not shown. Every value gets a line before a list gets more.
+  `Shown` itself is unchanged.
+- **What the act is on shows by name and id** (`named(name, id)`):
+  "ann@example.com (6f1c…)", the id whole and the name cut to the room
+  left, "erased" when it is empty. The act binds the id, and a name can
+  be changed to read like another's (a user's address, through a change
+  that is not held), so the name alone never names the subject, and a
+  long one is never a reason to refuse: a username or a group name of 150
+  characters must not lock its user or group.
 - **`AUTH.AUTHORIZATIONS.WHOLE`** (off): the framework's acts show what
-  they do whole, or are refused when asked for: `auth.admin_change`,
-  `approvals.submit`, and `approvals.approve`. With `APPROVE_ACTION` on,
-  submitting a request whose approval could not be shown whole is refused
-  too, however it is submitted (`POST /requests`, `submit_command`, a
-  guarded service called directly, the admin API's held change), so no
-  request waits for an approval nobody could confirm. `approvals.reject`
+  they set, add, and take away whole, or are refused when asked for:
+  `auth.admin_change`, `approvals.submit`, and `approvals.approve`. With
+  `APPROVE_ACTION` on, a change of the admin API that approvals would
+  hold is refused at its twin when the approver's screen, a line longer
+  (the action), could not show it whole: auth's new `on_admin_screen`
+  hook runs as the twin builds the staff member's screen, before an
+  authorization is stored, and approvals registers its check there.
+  Submitting a request whose approval could not be shown whole is
+  refused too, however it is submitted (`POST /requests`,
+  `submit_command`, a guarded service called directly, the admin API's
+  held change without its act), so no request waits for an approval
+  nobody could confirm. `approvals.reject`
   and `approvals.cancel` are never refused for what they show: they stop
   a request, and do nothing the screen leaves out (ADR 0154 keeps
   stopping a request from waiting).
@@ -130,41 +148,52 @@ approver's screen would not show them whole.
   group, the flags, the reason, the lists, then the fields, so that
   counting keeps what grants access.
 - **Approvals' screens** (`details_of`) lay out each argument so: a list
-  of strings, numbers, or booleans goes over lines, item by item; other
-  values stay compact JSON. **`guard(show=...)`** (and `Guard.show`)
-  says what a request shows in place of its arguments: a function of the
-  command, plain or `async`, returning labelled values. The built-in
-  holds of users (`auth.grant_superuser`, and every hold
-  `ADMIN_APPROVALS` names) show "User" by the user's first identifier,
-  read when shown, then "Adds", "Takes away", or "Reason".
+  goes over lines, item by item, an object or a list among its items as
+  compact JSON; another value is one line. **`guard(show=...)`** (and
+  `Guard.show`) says what a request shows in place of its arguments: a
+  function of the command, plain or `async`, returning labelled values;
+  a value JSON has not (a `Decimal`, a `UUID`) shows as its text. The
+  built-in holds of users (`auth.grant_superuser`, and every hold
+  `ADMIN_APPROVALS` names, through `ADMIN_SHOWS`, where a hold of a group
+  gives its own) show "User" by the user's first identifier and id, read
+  when shown, then "Adds", "Takes away", or "Stated reason": a
+  rejection's or a cancellation's own "Reason" shows beside it.
 
 ## Consequences
 
 - **With `WHOLE` on, the phone shows everything the act does**, or the
   act is refused before anything is stored: no authorization, no
-  request. Staff make a large grant in several smaller ones, each
+  request, and for a held change of the admin API, no confirmation that
+  fails afterwards. Staff make a large grant in several smaller ones, each
   confirmed, and approved, whole: the project's twin dependencies and its
   check of held grants go.
 - **Off, nothing is left out unsaid**: a list shows its first items over
   the lines left and how many more, where approvals showed cut JSON. The
   count is still a count: the setting is what closes padding.
-- **The labels change** ("Staff: no" for `is_staff: false`). They are
-  words for people, in the request's language, never a contract; a
-  client or a test that matched them reads the new ones.
+- **The labels change** ("Staff: no" for `is_staff: false`), and a user
+  or a group shows with its id. They are words for people, in the
+  request's language, never a contract; a client or a test that matched
+  them reads the new ones. An empty list shows as nothing, where 2.6
+  wrote `[]`; a backslash shows doubled.
+- **A line holds 64 code points**, not 64 columns: combining marks count
+  one each, a wide character once. A text and the value it spells show
+  alike (`1` and `"1"`, `true` and `"true"`), as in 2.6.
 - **A guard whose arguments do not fit has no screen under `WHOLE`.**
   Accounting's guards show their arguments by name, and a posting's
-  `lines` are JSON objects longer than a line: with `WHOLE` and
-  `APPROVE_ACTION` on, a large posting is refused when it is submitted. A
-  project gives such a guard of its own a `show`; the ledger's guards
-  need one in a later release.
+  `lines` are JSON objects longer than a line: off, they show one by one
+  and are counted; with `WHOLE` and `APPROVE_ACTION` on, a large posting
+  is refused when it is submitted. A project gives such a guard of its
+  own a `show`; the ledger's guards need one in a later release.
 - **A user's name on the approver's phone** is personal data on the
   approver's own device, as the admin API's screen is (ADR 0163). It is
   read when shown and kept with the authorization only, whose rows live
   minutes and go with the user.
-- **New names**: `domainkit.contrib.auth.screens` (`laid_out`,
-  `TooMuchToShow`), `AUTH.AUTHORIZATIONS.WHOLE`, the `show` argument of
-  `guard()` and `Guard`, and the problem code `too_much_to_show`. No
-  table changes. A later major release may turn `WHOLE` on by default.
+- **New names**: `domainkit.contrib.auth.screens` (`laid_out`, `named`,
+  `fitted`, `LINES`, `LINE_LENGTH`, `TooMuchToShow`),
+  `AUTH.AUTHORIZATIONS.WHOLE`, auth's `on_admin_screen`, the `show`
+  argument of `guard()` and `Guard`, and the problem code
+  `too_much_to_show`. No table changes. A later major release may turn
+  `WHOLE` on by default.
 
 ## References
 

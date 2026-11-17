@@ -42,9 +42,12 @@ never published), with each section below.
   API's act names flags and fields as a person reads them ("Staff: no",
   "Email", "Display name"), and approvals' screens show a list's items,
   over as many lines as it takes ("added", "added (2)"), where 2.6 showed
-  `is_staff: false` and a list as JSON cut at 64 characters. The digest
-  of each act is unchanged; a client or a test that matched the old
-  labels or values reads the new ones
+  `is_staff: false` and a list as JSON cut at 64 characters. A user or a
+  group shows by name and id ("ann (6f1c…)"), the name cut where both do
+  not fit; an empty list shows as nothing, where 2.6 wrote `[]`; an
+  approval's empty "Takes away" is left out; a backslash shows doubled.
+  The digest of each act is unchanged; a client or a test that matched
+  the old labels or values reads the new ones
   ([What a screen shows](auth/actions.md#what-a-screen-shows)).
 - **To show acts whole, or refuse them**, set
   `AUTH = {"AUTHORIZATIONS": {"WHOLE": True}}`. The admin API's twins,
@@ -52,7 +55,10 @@ never published), with each section below.
   too_much_to_show` for a change their screen cannot show whole: a value
   longer than 64 characters (a long impersonation reason), more than six
   lines (a change padded with fields), a list longer than the screen.
-  With `APPROVE_ACTION` on, submitting such a request is refused too.
+  With `APPROVE_ACTION` on, so is a held change of the admin API that
+  the approver's screen could not show whole, at its twin, and
+  submitting such a request. A user's or a group's name, however long,
+  never is.
   Clients make those changes in smaller steps. A guard of the project's
   whose arguments do not fit gives `guard(show=...)`; accounting's
   postings have no `show` yet, and their lines do not fit.

@@ -134,33 +134,50 @@ person confirms what it shows: the act must be there whole. A screen
 holds a title and six lines of 64 characters. `laid_out(details)`, in
 `domainkit.contrib.auth.screens`, puts an act's labelled values on those
 lines: a text on one line, a list over as many as it takes, the next
-lines numbered.
+lines numbered. `named(name, id)` names what the act is on: its name, cut
+to fit, and its id, whole.
 
 ```python
 from domainkit.contrib.auth.actions import Shown
-from domainkit.contrib.auth.screens import laid_out
+from domainkit.contrib.auth.screens import laid_out, named
 
 
 async def show_grant(command: GrantKeys, uow: AccountsUnitOfWork) -> Shown:
     member = await uow.members.get(command.member_id)
-    details = {"Member": member.name, "Adds": command.keys}
+    details = {"Member": named(member.name, member.id), "Adds": command.keys}
     return Shown("Grant permissions", laid_out(details))
 ```
 
 ```text
 Grant permissions
-Member    Ada Lovelace
+Member    Ada Lovelace (6f1c9c1e-8a2b-4c3d-9e0f-123456789abc)
 Adds      accounts.add_user, accounts.change_user, accounts.view_user
 Adds (2)  accounts.delete_user
 ```
 
-- An item that holds a comma or a double quote is quoted
-  (`"readers, admins"`), so two items never read as one; a character that
-  is not printable is escaped (a new line as `\n`).
-- What does not fit whole is refused when the act is asked for:
-  `TooMuchToShow`, `422 too_much_to_show`. A text or an item longer than
-  a line, a label twice, or more than six lines. The person makes the act
-  in smaller steps, each shown whole.
+- **What the act is on is never too much to show.** The act binds its
+  id; its name is a hint, which a person may have changed (a user's
+  address). `named` keeps the id whole and cuts the name to the room
+  left, "ada.lovelace@exam… (6f1c…)"; an empty name shows as "erased".
+- **Each value shows one way.** A list's items are joined with `, `; an
+  item that holds a comma or a double quote, has spaces around it, or is
+  empty is quoted (`"readers, admins"`). A character that is not
+  printable is escaped as Python writes it (a new line as `\n`, a
+  zero-width space as `\u200b`), and a backslash is doubled, so a new
+  line and a backslash followed by `n` never show alike.
+- **Values are text or JSON.** A dict, a number, `True`, or `None` shows
+  as compact JSON on one line; a list or a tuple goes over lines item by
+  item, an item that is not text as compact JSON (`{"a":1}, ["b"], 3`). A
+  value JSON has not (bytes, a set, a `Decimal`) is a `TypeError`: give
+  its text. A text and the value it spells show alike: `1` and `"1"`,
+  `true` and `"true"`, as in 2.6.
+- **A line holds 64 characters, counted as code points**, not as the
+  width a phone draws: a character with combining marks counts each
+  mark, and a wide character counts once.
+- What the act does that does not fit whole is refused when the act is
+  asked for: `TooMuchToShow`, `422 too_much_to_show`. A text or an item
+  longer than a line, a label twice, or more than six lines. The person
+  makes the act in smaller steps, each shown whole.
 - `laid_out(details, whole=False)` cuts and counts instead: a text cut
   ends with `…`, a list's last line says how many more ("auditors,
   clerks and 4 more"), and a last line ("…") how many values are not
@@ -171,13 +188,16 @@ Adds (2)  accounts.delete_user
 `approvals.submit`, `approvals.approve`, `approvals.reject`, and
 `approvals.cancel`) lay out their screens so. A list goes over as many
 lines as it takes ("Adds", "Adds (2)"); flags and fields are named as a
-person reads them ("Superuser: yes", "Email", "Display name"). With
-`AUTH["AUTHORIZATIONS"]["WHOLE"]` on, what does not fit whole is refused,
-and a request that its approvers could not be shown whole is refused
-when it is submitted, rather than left waiting. Rejecting and cancelling
-are never refused for what they show: they stop a request. Off, the
-default in 2.x, what does not fit is cut and counted, never left out
-unsaid.
+person reads them ("Superuser: yes", "Email", "Display name"); a user or
+a group shows by name and id. With `AUTH["AUTHORIZATIONS"]["WHOLE"]` on,
+what an act sets, adds, or takes away that does not fit whole is
+refused, never its subject's name. A change of the admin API that
+approvals would hold is refused at its twin when the approver's screen,
+a line longer, could not show it whole, and a request that its approvers
+could not be shown whole is refused when it is submitted, rather than
+left waiting. Rejecting and cancelling are never refused for what they
+show: they stop a request. Off, the default in 2.x, what does not fit is
+cut and counted, never left out unsaid.
 
 ```python
 AUTH = {"ADMIN_ACTION": True, "AUTHORIZATIONS": {"WHOLE": True}}
