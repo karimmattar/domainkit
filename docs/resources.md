@@ -784,7 +784,9 @@ templates.upload_route(
   does) is refused with such a limit when the route is declared
   (`ImproperlyConfigured`). Give a route that reads its body early a
   number instead, the most a request may send. A probe for a disconnect
-  (`request.is_disconnected()`) reads nothing, and fixes no limit.
+  (`request.is_disconnected()`) made before the route decides is
+  cancelled before it takes a message: the server keeps it for the read,
+  and the limit is fixed by the read.
 - Once one route of the application decides its limit, a declared
   length is checked before routing against 1 GiB, the most a route may
   decide, and each route's own limit at the first read of its body: a
@@ -832,7 +834,9 @@ async def attach_template(
 
 - Its `file` is open at its start, each time the service runs, a
   run again by `retry` included. A file of more than 1 MiB is on disk:
-  read it in a thread, as above.
+  read it in a thread, as above. Reading a template's placeholders takes
+  up to 340 MiB a call, and calls at once add up: bound how many run at
+  once ([The XML parsed](documents.md#the-xml-parsed)).
 - The route closes it once the service returns or raises. A task the
   service starts and leaves running finds it closed.
 - It is the file the route stored: never store it again.

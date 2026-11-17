@@ -46,7 +46,7 @@ relied on 2.7's behaviour changes, and what to run.
   refuse, with `DocumentError`, a document whose content types and
   filled parts pass 12 MiB of XML, or 1,000,000 elements, texts,
   attributes, and placeholders, in all; `fill_docx` counts the values it
-  writes too, their bytes and two nodes for each line break or tab. Text
+  writes too, their bytes and three nodes for each line break or tab. Text
   with little formatting reaches the bounds at some 2,100 to 2,900
   pages; formatted text (bold, italics, links, tables, lists) at some 270
   to 330. 2.7 parsed what `ArchiveLimits` let inflate, 256 MiB, in the

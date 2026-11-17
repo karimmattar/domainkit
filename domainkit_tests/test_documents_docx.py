@@ -5,6 +5,7 @@ placeholder spread over runs by a spelling mark, text boxes kept twice
 (``mc:Choice`` and ``mc:Fallback``), headers, footers, and footnotes.
 """
 
+import concurrent.futures
 import contextlib
 import io
 import os
@@ -12,6 +13,7 @@ import random
 import string
 import struct
 import sys
+import threading
 import tracemalloc
 import unicodedata
 import warnings
@@ -1196,7 +1198,7 @@ def test_what_the_values_add_is_bounded_before_it_is_written(paragraphs: int) ->
 
 
 def test_each_value_written_counts_its_bytes_and_breaks() -> None:
-    """Its bytes in UTF-8; each line break or tab, a break and a text."""
+    """Its bytes in UTF-8; each line break or tab, a break, a text, and its space."""
     template = docx(runs("{{a}} {{a}}") + runs("{{b}}"))
     values = {"a": "عقد\nx", "b": "y\tz"}
     taken = ArchiveLimits(max_xml_bytes=10**9, max_nodes=10**9)
@@ -1208,7 +1210,7 @@ def test_each_value_written_counts_its_bytes_and_breaks() -> None:
         for name in ("[Content_Types].xml", "word/document.xml")
     )
     written = 2 * len("عقد\nx".encode()) + len(b"y\tz")
-    breaks = 2 * 2 + 2
+    breaks = 3 * (2 + 1)
 
     def limits(extra_bytes: int, extra_nodes: int) -> ArchiveLimits:
         return ArchiveLimits(
@@ -1223,6 +1225,22 @@ def test_each_value_written_counts_its_bytes_and_breaks() -> None:
     with pytest.raises(DocumentError, match="with its values"):
         fill_docx(template, values, limits=limits(written, breaks - 1))
     placeholders(template, limits=limits(0, 0))
+
+
+@pytest.mark.parametrize("unit", ["\tx", "\nx", "x\n"])
+def test_a_value_of_many_lines_counts_what_each_line_writes(unit: str) -> None:
+    """A break, a ``w:t`` after it, and that text's ``xml:space``: three nodes.
+
+    One value of 499,000 lines took 375 MiB in the second cut of 2.8,
+    which counted two nodes a line; at three, it is refused.
+    """
+    template = docx(runs("{{a}}"))
+
+    with pytest.raises(DocumentError, match="placeholders in all, with its values"):
+        fill_docx(template, {"a": unit * 499_000})
+    filled = fill_docx(template, {"a": unit * 330_000})
+
+    assert len(filled) > len(template)
 
 
 def test_each_call_parses_in_a_thread_of_its_own() -> None:
@@ -1251,3 +1269,28 @@ def test_a_failure_in_the_calls_thread_is_raised_in_the_caller() -> None:
         placeholders(b"not a zip")
 
     assert refused.value.missing == ("a",)
+
+
+def test_calls_from_threads_at_once_read_and_fill_their_own() -> None:
+    """Each call's thread parses its own document: no tree crosses a thread.
+
+    Sixteen callers at once, each its own names and values, from a pool
+    as ``asyncio.to_thread`` calls them; a barrier starts them together.
+    """
+    callers = 16
+    start = threading.Barrier(callers)
+
+    def call(number: int) -> tuple[Placeholders, list[str]]:
+        names = [f"n{number}_{index}" for index in range(50)]
+        template = docx("".join(runs(f"{{{{{name}}}}}") for name in names))
+        start.wait()
+        found = placeholders(template)
+        filled = fill_docx(template, dict.fromkeys(names, f"v{number}"))
+        return found, paragraphs(filled)
+
+    with concurrent.futures.ThreadPoolExecutor(callers) as pool:
+        results = list(pool.map(call, range(callers)))
+
+    for number, (found, written) in enumerate(results):
+        assert found.names == tuple(f"n{number}_{index}" for index in range(50))
+        assert written == [f"v{number}"] * 50

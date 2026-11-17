@@ -1,5 +1,6 @@
 """Routes' own body limits (``body_limit``), above or below the global one."""
 
+import asyncio
 import logging
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack
@@ -20,6 +21,8 @@ from domainkit.http.middleware import (
     MAX_ROUTE_BODY_SIZE,
     RequestBodyLimitMiddleware,
     body_limit,
+    decides_body_limit,
+    hold_body,
     largest_body_limit,
     route_body_limit,
     smallest_body_limit,
@@ -473,3 +476,90 @@ def test_the_smallest_limit_below_counts_routes_without_one_at_the_default() -> 
     assert smallest_body_limit(router.routes, 1_000) == LOGIN_LIMIT
     assert smallest_body_limit([Mount("/x", routes=list(router.routes))], 10) == 10
     assert smallest_body_limit([], 1_000) == 1_000
+
+
+# A limit decided per request, and a probe for a disconnect (U7) ----------------------
+
+
+def server(messages: list[Message], *, suspends: bool) -> Receive:
+    """A server's ``receive``: ``suspends`` first, as one with nothing buffered does.
+
+    uvicorn's returns a message it holds already without suspending.
+    """
+    queue = list(messages)
+
+    async def receive() -> Message:
+        if suspends:
+            await asyncio.sleep(0)
+        return queue.pop(0) if queue else {"type": "http.disconnect"}
+
+    return receive
+
+
+async def probed(
+    messages: list[Message], *, suspends: bool, declared: int | None
+) -> tuple[int, dict[str, object]]:
+    """A route that probes for a disconnect, decides 500,000 bytes, then reads.
+
+    The global limit is 10,000 bytes: what a body read before the route
+    decides is held to.
+    """
+    seen: dict[str, object] = {}
+
+    async def endpoint(scope: Scope, receive: Receive, send: Send) -> None:
+        request = Request(scope, receive)
+        seen["disconnected"] = await request.is_disconnected()
+        hold_body(scope, 500_000)
+        seen["read"] = len(await request.body())
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    decides_body_limit(endpoint)
+    route = SimpleNamespace(endpoint=endpoint)
+    headers = [] if declared is None else [(b"content-length", str(declared).encode())]
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/",
+        "headers": headers,
+        "app": SimpleNamespace(routes=[route], router=None),
+        "route": route,
+    }
+    sent: list[Message] = []
+
+    async def send(message: Message) -> None:
+        sent.append(message)
+
+    with override_settings(MAX_REQUEST_BODY_SIZE=10_000):
+        limits = RequestBodyLimitMiddleware(endpoint)
+        await limits(scope, server(messages, suspends=suspends), send)
+    started = next(each for each in sent if each["type"] == "http.response.start")
+    return started["status"], seen
+
+
+@pytest.mark.parametrize("suspends", [True, False], ids=["suspends", "at-once"])
+@pytest.mark.parametrize("declared", [None, 50_000], ids=["chunked", "declared"])
+def test_a_probe_before_the_route_decides_takes_no_message(
+    suspends: bool, declared: int | None
+) -> None:
+    """The probe is cancelled before it reaches the server: the body is read whole.
+
+    Where the server held the first chunk already, 2.8.0's first cut
+    handed it to the probe, which dropped it, and fixed the limit at the
+    global 10,000 bytes: 413 under a decided limit of 500,000.
+    """
+    body: list[Message] = [
+        {"type": "http.request", "body": b"x" * 25_000, "more_body": True},
+        {"type": "http.request", "body": b"x" * 25_000, "more_body": False},
+    ]
+
+    status, seen = asyncio.run(probed(body, suspends=suspends, declared=declared))
+
+    assert (status, seen) == (200, {"disconnected": False, "read": 50_000})
+
+
+def test_a_route_that_decides_its_limit_meets_the_largest_before_routing() -> None:
+    """Its limit may be anything up to 1 GiB: a declared length is held to that."""
+    decided = SimpleNamespace(endpoint=decides_body_limit(lambda: None))
+
+    assert largest_body_limit([decided]) == MAX_ROUTE_BODY_SIZE

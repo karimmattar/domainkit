@@ -105,6 +105,9 @@ NAME_SEGMENT: Final = re.compile(r"[^\x00-\x1f\x7f\\:]+")
 NOT_XML: Final = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
 """Characters XML 1.0 cannot hold."""
 BREAKS: Final = re.compile(r"([\n\t])")
+BREAK_NODES: Final = 3
+"""What a line break or tab of a value adds once written: its element, the
+``w:t`` of the text after it, and that text's ``xml:space``."""
 SHOWN: Final = 40
 """The most characters of a malformed placeholder an error quotes."""
 GRACE: Final = 100 * 1024
@@ -161,8 +164,8 @@ class ArchiveLimits:
     are counted on its bytes before it is parsed: each ``<`` twice (a tag,
     and the text before it), each ``=`` once (an attribute). A paragraph's
     ``{{`` counts once more each, before its placeholders are read; each
-    line break or tab of a value written counts twice (a break, and the
-    text after it), before it is written."""
+    line break or tab of a value written counts three times (a break, the
+    text after it, and its ``xml:space``), before it is written."""
 
 
 def fill_docx(
@@ -287,7 +290,10 @@ def _filled(
     """
     changed: dict[str, bytes] = {}
     costs = {
-        name: (len(value.encode()), 2 * (value.count("\n") + value.count("\t")))
+        name: (
+            len(value.encode()),
+            BREAK_NODES * (value.count("\n") + value.count("\t")),
+        )
         for name, value in values.items()
     }
     for info in _filled_parts(etree, archive, budget):
@@ -660,8 +666,8 @@ def _fill(
     text of braces that make no placeholder to ``malformed``. Each ``{{``
     of a paragraph is counted in ``budget`` before its placeholders are
     read: a character reference (``&#123;``) makes one where the bytes
-    showed none. What each value written adds, its bytes and the elements
-    of its line breaks and tabs (``costs``, by name), is counted before a
+    showed none. What each value written adds, its bytes and the nodes of
+    its line breaks and tabs (``costs``, by name), is counted before a
     paragraph is written: the template says how many times a value is.
 
     Raises:

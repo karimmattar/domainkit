@@ -280,8 +280,8 @@ all, before it is parsed, and so is what `fill_docx` writes in it:
   more before its placeholders are read, however its bytes wrote it
   (`&#123;` too).
 - Each value `fill_docx` writes counts its bytes in UTF-8, and each of
-  its line breaks and tabs two nodes (a break, and the text after it),
-  before its paragraph is written: the template says how many times a
+  its line breaks and tabs three nodes (a break, the text after it, and
+  that text's `xml:space`), before its paragraph is written: the template says how many times a
   value is written. A template of 50 KB that holds 480,000
   `{{ address }}`, filled with an address of four lines, is refused; it
   wrote 16 MB and took 1,075 MiB in the first cut of 2.8.
@@ -289,8 +289,9 @@ all, before it is parsed, and so is what `fill_docx` writes in it:
   ([ADR 0181](adr/0181-decide-a-body-limit-per-request-count-before-the-rules-hand-over-the-file-received-and-bound-the-xml-parsed.md)).
 
 Measured at the defaults, a call took 340 MiB at most, on XML written to
-cost the most, and a refused call as much; a document LibreOffice wrote,
-at the bound, 66 MiB. Text with little formatting (LibreOffice's and
+cost the most (250 MiB for `fill_docx` writing a value of 333,000
+lines, 200 MiB for one refused as it wrote); a document LibreOffice
+wrote, at the bound, 66 MiB. Text with little formatting (LibreOffice's and
 pandoc's, 140 to 330 nodes and 4 to 6 KB a page) reaches the bounds,
 on bytes, at some 2,100 to 2,900 pages. Formatted text (bold, italics,
 links, tables, lists: 3,000 to 3,700 nodes a page) reaches 1,000,000
@@ -304,6 +305,30 @@ them. Each call parses in a thread of its own, which ends with it: lxml
 keeps every name a thread parses, for as long as the thread lives, so a
 thread of a pool that read documents of 250,000 names each grew by 700
 MiB over 80 of them. The thread costs about 0.4 ms a call.
+
+The bounds hold one call. Calls at once add up: `asyncio.to_thread`
+runs up to `min(32, os.cpu_count() + 4)` of them in a worker, some 11
+GiB at the bounds. domainkit adds no limiter of its own: bound how many
+run at once with one the calls share, sized for the worker's memory:
+
+```python
+from functools import partial
+
+import anyio
+from anyio import to_thread
+
+from domainkit.documents import fill_docx
+
+DOCUMENTS = anyio.CapacityLimiter(2)  # two calls at once: 680 MiB at most
+
+
+async def filled(template: bytes, values: dict[str, str]) -> bytes:
+    work = partial(fill_docx, template, values)
+    return await to_thread.run_sync(work, limiter=DOCUMENTS)
+```
+
+A limiter serves one event loop: a server that runs several in a
+process (Granian's runtime threads) holds one for each.
 
 To refuse at upload a template that `fill_docx` would refuse, read its
 placeholders in the upload's check, in a process of its own

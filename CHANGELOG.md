@@ -25,7 +25,8 @@ and a status.
   read once, when the request comes. The body is held to it from its
   first read, and the file to it too; what reads the body before the
   route decides is held as on a command route without `body_limit`, and
-  a probe for a disconnect fixes no limit. A rule that reads the body
+  a probe for a disconnect made before the route decides takes no
+  message and fixes no limit. A rule that reads the body
   says so with `reads_body = True` (`DeviceSigned` does), and such a
   route refuses it when it is declared (`ImproperlyConfigured`)
   ([Bounds decided per request](docs/resources.md#bounds-decided-per-request))
@@ -57,12 +58,13 @@ and a status.
   `ArchiveLimits(max_xml_bytes=12 MiB, max_nodes=1_000_000)`, the
   content types and the parts filled in all, counted before anything is
   parsed, a paragraph's placeholders before they are read, and each
-  value's bytes, and two nodes for each of its line breaks and tabs,
+  value's bytes, and three nodes for each of its line breaks and tabs,
   before it is written. A Word document of 340 KB that `OfficeCheck`
   takes, holding 16 MiB of empty paragraphs, took 546 MiB of memory in
   `placeholders`; it is refused at once, and a call takes 340 MiB at
   most, measured on XML written to cost the most (66 MiB for a formatted
-  document of LibreOffice's at the bound). Formatted text reaches the
+  document of LibreOffice's at the bound). Calls at once add up: the docs
+  show a limiter that bounds them. Formatted text reaches the
   bounds at some 270 to 330 pages, plain text at some 2,100: a document
   past them, which 2.7 filled, is refused; give larger `ArchiveLimits`.
   Each call parses in a thread of its own, about 0.4 ms, so the names

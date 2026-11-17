@@ -128,7 +128,7 @@ How the XML parsed is bounded:
 | Run both in a process of their own, as the upload checks run | A process per preview, a pool or its start's cost, an async API in place of a function. |
 | Count elements while parsing, with lxml's events | An event and an object per element; attributes and texts not counted. |
 | **Count before parsing: the parts' bytes as the archive states them, against `max_xml_bytes`; the nodes their bytes can make (each `<` twice, each `=` once), against `max_nodes`; each paragraph's `{{` too, before its placeholders are read** | One pass of `bytes.count` a part. It counts more than lxml makes (an end tag, an `=` in text), never less: with no DTD and no entity, nothing else makes a node, and a character reference makes a brace only in the text, where it is counted. |
-| **And what `fill_docx` writes: each value's bytes in UTF-8 against `max_xml_bytes`, and two nodes for each of its line breaks and tabs (a break, and the text after it) against `max_nodes`, before its paragraph is written** | A value counts each time the template names it. |
+| **And what `fill_docx` writes: each value's bytes in UTF-8 against `max_xml_bytes`, and three nodes for each of its line breaks and tabs (a break, the text after it, and that text's `xml:space`) against `max_nodes`, before its paragraph is written** | A value counts each time the template names it. At two nodes a line, a value of 499,000 lines took 375 MiB. |
 
 How lxml's dictionary of names is kept from growing:
 
@@ -163,9 +163,12 @@ How the service reads the file received:
   body to it from then on (`hold_body`, the request's scope):
   `RequestBodyLimitMiddleware` refuses a declared length over it before
   a byte is read, and a streamed body as soon as it passes it. A route's
-  limit is fixed by the first message of its body; a probe for a
+  limit is fixed by the first message of its body. A probe for a
   disconnect (`Request.is_disconnected`, a `receive()` in a cancelled
-  scope) reads none, and is neither refused nor fixes a limit. The file
+  scope) made before the route decides is cancelled before it reaches
+  the server, which keeps its message for the read: uvicorn hands back
+  a message it holds without suspending, which the probe would take
+  and Starlette drop. The file
   is held to it too, where it is less than `max_size`: the file never
   exceeds the body limit, whatever read the body before. Until it is
   decided, the body is held as a command route's without `body_limit`.
@@ -186,7 +189,7 @@ How the service reads the file received:
   writes in them. A part's stated size is counted before it is
   inflated; its nodes, as above, before it is parsed; a paragraph's `{{`
   before its placeholders are read; each value written, its bytes and
-  two nodes a line break or tab, before its paragraph is written. Past
+  three nodes a line break or tab, before its paragraph is written. Past
   either, `DocumentError` at once. Every other part is inflated a piece
   at a time to check its checksum, then only as `fill_docx` writes it
   back, one at a time; `placeholders` inflates none. Each part's tree is
@@ -200,9 +203,9 @@ How the service reads the file received:
   over the process's before: 340 MiB for one element of a million
   attributes of distinct names, 300 MiB for attributes spread over
   elements, 284 MiB for a million placeholders of distinct names, 218
-  MiB for one paragraph of `<w:t/>x`, 245 MiB for `fill_docx` writing
-  330,000 values of one line break, 282 MiB for one refused as it wrote;
-  a formatted document of LibreOffice's at the bound, 66 MiB.
+  MiB for one paragraph of `<w:t/>x`, 250 MiB for `fill_docx` writing a
+  value of 333,000 lines, 200 MiB for one refused as it wrote; a
+  formatted document of LibreOffice's at the bound, 66 MiB.
 - **A service that names `received`** is given the `ReceivedUpload`,
   stored with `keep=True`, its file sought to its start before each run
   (a retry's too), and closed in a `finally` once the service is done.
@@ -233,6 +236,11 @@ How the service reads the file received:
 - `fill_docx` inflates each part not filled twice, to check it and to
   write it: a fifth more time than 2.7 for a document of images, and a
   fraction of the memory. Each call starts a thread: about 0.4 ms.
+- The bounds hold one call, not a worker: `asyncio.to_thread` runs up
+  to `min(32, cpus + 4)` calls at once, some 11 GiB at the bounds.
+  domainkit adds no limiter; the docs show one the calls share
+  (`anyio.CapacityLimiter`, one per event loop), which a project sizes
+  for its workers' memory.
 - pandoc writes a list's numbering part that inflates some 106 times,
   past `max_ratio`'s 100: such a document was refused in 2.7 too.
 
