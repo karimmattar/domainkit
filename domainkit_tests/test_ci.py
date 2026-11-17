@@ -2004,7 +2004,8 @@ def test_every_advisory_pip_audit_ignores_is_explained() -> None:
 
     PYSEC-2026-1325 (python-ecdsa, through the ``immudb`` extra) is on the
     ledger page, which says why verifying alone is unaffected and how a
-    project ignores it by its id.
+    project ignores it by its id. OpenSSF Scorecard's scan (osv-scanner,
+    reading ``osv-scanner.toml``) ignores the same advisories, no others.
     """
     sources = [*WORKFLOWS.glob("*.yml"), ROOT / "Makefile"]
     ignored = {
@@ -2012,6 +2013,9 @@ def test_every_advisory_pip_audit_ignores_is_explained() -> None:
         for source in sources
         for found in re.findall(r"--ignore-vuln\s+(\S+)", source.read_text())
     }
+    osv = tomllib.loads((ROOT / "osv-scanner.toml").read_text(encoding="utf-8"))
+    assert {entry["id"] for entry in osv["IgnoredVulns"]} == ignored
+    assert all("SECURITY.md" in entry["reason"] for entry in osv["IgnoredVulns"])
     security = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
     docs = [
         page.read_text(encoding="utf-8")

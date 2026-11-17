@@ -343,6 +343,7 @@ also_copy = [
     "CHANGELOG.md",
     "SECURITY.md",
     "renovate.json",
+    "osv-scanner.toml",
     "poetry.lock",
     "LICENSE",
     "CONTRIBUTING.md",
