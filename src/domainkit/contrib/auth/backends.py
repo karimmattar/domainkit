@@ -38,7 +38,8 @@ at once.
 from collections.abc import Awaitable, Callable, Hashable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
 from functools import cache
 from typing import Any, ClassVar, Final, cast
 from uuid import UUID
@@ -87,6 +88,9 @@ class ObjectGrant:
     """The object's content type: ``shop.product``."""
     object_id: object
     """The object's id: a UUID, an integer, or text."""
+    expires_at: datetime | None = field(default=None, compare=False)
+    """When the grant ends; None: it does not (since 2.7). Not compared: a
+    grant is the same grant whenever it ends."""
 
     def __str__(self) -> str:
         """``shop.change_product on shop.product 42``."""

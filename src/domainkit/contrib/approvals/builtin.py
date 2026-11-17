@@ -47,10 +47,9 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, Any, Final
 from uuid import UUID
 
-from domainkit import clock
 from domainkit.apps import registry
 from domainkit.context import current_request
-from domainkit.ddd import Command, PermissionDenied, ValueObject, fingerprint
+from domainkit.ddd import Command, PermissionDenied, ValueObject
 from domainkit.exceptions import ImproperlyConfigured
 
 from .exceptions import ApprovalRequired, MakerNotAllowed
@@ -61,14 +60,13 @@ from .guards import (
     Service,
     Threshold,
     check,
+    checked_when_spent,
     current_run,
     guards,
     on_guard,
     requires_approval,
 )
-from .models import RequestStatus
 from .settings import ApprovalsSettings
-from .uow import ApprovalsUnitOfWork
 
 if TYPE_CHECKING:
     from domainkit.contrib.accounting import (
@@ -666,9 +664,10 @@ async def _hold(
 
     At a twin (``asking``) nothing is submitted or spent: the change is
     only asked for. ``last`` is the admin API's last check of the change
-    (``AdminChange.last_check``): run once an approved request is found,
-    before it is spent, so a change it refuses spends no approval; never
-    while the change waits.
+    (``AdminChange.last_check``): run under the approved request's lock,
+    by the one call that claims it, before it is spent, so a change it
+    refuses spends no approval; never while the change waits, nor by a
+    call that loses the claim.
 
     Raises:
         PermissionDenied: Staff act as someone else (an impersonation).
@@ -680,25 +679,11 @@ async def _hold(
     context = current_request()
     if context is None or context.actor != str(actor.id):
         raise PermissionDenied("Requests are made and decided in one's own name only.")
-    if last is not None and await _approved(action, command, context.actor):
-        await last()
-    await ADMIN_SERVICES[action](command, None)
-
-
-async def _approved(action: str, command: Command, maker: str) -> bool:
-    """Whether ``maker`` holds an approved request of ``command`` that has not expired.
-
-    What ``run_by_maker`` looks for, to spend: the call goes on with it.
-    """
-    registered = guards()[action]
-    digest = fingerprint(action, registered.dump(command))
-    async with ApprovalsUnitOfWork() as uow:
-        found = await uow.requests.made_by(maker, action, digest)
-    now = clock.now()
-    return any(
-        request.status is RequestStatus.APPROVED and not request.expired(now)
-        for request in found
-    )
+    if last is None:
+        await ADMIN_SERVICES[action](command, None)
+        return
+    with checked_when_spent(last):
+        await ADMIN_SERVICES[action](command, None)
 
 
 TWO_HOLDS: Final = (
@@ -836,11 +821,19 @@ async def _held(group: "Group") -> HeldGroup:
 def _grants_digest(grants: "Iterable[ObjectGrant]") -> tuple[int, str]:
     """How many ``grants`` there are, and the SHA-256 of them, sorted ("" for none).
 
-    A grant on an object made since changes the digest: the command holding
-    it is another one.
+    Each with when it ends. A grant on an object made since, or renewed to
+    another date, changes the digest: the command holding it is another
+    one. Roles come as the grants of their permissions, one by one.
     """
     lines = sorted(
-        f"{grant.permission}\t{grant.content_type}\t{grant.object_id}"
+        "\t".join(
+            (
+                grant.permission,
+                grant.content_type,
+                str(grant.object_id),
+                "" if grant.expires_at is None else grant.expires_at.isoformat(),
+            )
+        )
         for grant in grants
     )
     if not lines:

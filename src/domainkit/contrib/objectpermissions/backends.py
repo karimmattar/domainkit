@@ -71,7 +71,10 @@ class ObjectPermissionBackend(BaseBackend):
                 for grant in await uow.grants.filter(current):
                     found.add(
                         ObjectGrant(
-                            grant.permission, grant.content_type, grant.object_id
+                            grant.permission,
+                            grant.content_type,
+                            grant.object_id,
+                            grant.expires_at,
                         )
                     )
         return frozenset(found)

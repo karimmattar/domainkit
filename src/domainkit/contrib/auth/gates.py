@@ -230,10 +230,14 @@ class AdminChange:
     )
     """The admin API's own check that only the change itself makes, run
     once, when the change is about to be made (since 2.7): a password among
-    the user's last ones. A check that lets the change go on by spending
-    something, as approvals' hold spends an approval it found, awaits it
-    first; else the admin API awaits it once every check passed. None:
-    there is none."""
+    the user's last ones. Approvals' hold awaits it under the approved
+    request's lock, by the one call that claims it, before spending it;
+    else the admin API awaits it once every check passed. A check of your
+    own awaits it only once the change will surely be made: after every
+    check that may still refuse it (approvals' hold among them, at
+    ``order=100``), and under whatever makes it sure. Awaited earlier, a
+    refusal after it tells a reused password from another. None: there is
+    none."""
 
 
 type AdminCheck = Callable[[Any, AbstractBaseUser | None, AdminChange], Awaitable[None]]

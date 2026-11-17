@@ -523,6 +523,32 @@ def current_run() -> Running | None:
     return _running.get()
 
 
+_when_spent: ContextVar[Callable[[], Awaitable[None]] | None] = ContextVar(
+    "domainkit_approvals_when_spent", default=None
+)
+
+
+@contextmanager
+def checked_when_spent(check: Callable[[], Awaitable[None]]) -> Iterator[None]:
+    """Have a ``by_maker`` call in the block await ``check`` as it spends a request.
+
+    Under the approved request's lock, once it is known to be spendable and
+    before it is marked executed: only the call that claims the approval
+    runs it, and one that raises leaves the request approved. Calls that
+    lose the claim, or find no approval, never run it (user report A19).
+    """
+    token = _when_spent.set(check)
+    try:
+        yield
+    finally:
+        _when_spent.reset(token)
+
+
+def when_spent() -> Callable[[], Awaitable[None]] | None:
+    """The check a ``by_maker`` call awaits as it spends a request, if any."""
+    return _when_spent.get()
+
+
 def approved(action: str, command: object) -> bool:
     """Whether ``command`` is the approved command of ``action`` being run."""
     current = _running.get()

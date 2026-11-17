@@ -105,7 +105,7 @@ from .gates import (
 from .models import AbstractBaseUser, AnyUser, Group, GroupId, Permission, UserId
 from .repositories import GroupRepository, user_search
 from .settings import auth_settings, identifier_fields
-from .throttling import attempt
+from .throttling import Attempt, attempt
 from .tokens import LoginMethod, LoginOrigin, logging_in
 from .uow import AuthUnitOfWork
 from .users import FieldValue, get_user_model, get_user_table, typed_fields
@@ -815,18 +815,25 @@ async def set_password(
     async with AuthUnitOfWork() as uow:
         user = await _user(uow, user_id)
         change = await _setting_password(actor, user, body)
-
-        async def not_reused(made: "AdminAct | None") -> None:
-            await _not_reused(request, uow, actor, user, body, made)
-
-        await _admin_change(
-            actor,
-            user,
-            change,
-            uow,
-            lambda: _password_act(user, body),
-            last=not_reused,
-        )
+        reuse = _Reuse(request, uow, actor, user, body.password)
+        await reuse.count()
+        try:
+            await _admin_change(
+                actor,
+                user,
+                change,
+                uow,
+                lambda: _password_act(user, body),
+                last=reuse.compare,
+            )
+        except InvalidPassword:
+            if reuse.found and _asked():  # One confirmation, one guess.
+                act = _password_act(user, body)
+                await spend_authorization(uow, _admin_change_action(), act)
+                await uow.commit()
+            raise
+        finally:
+            await reuse.settle()
         await uow.users.set_password(
             user,
             body.password,
@@ -871,55 +878,88 @@ async def _setting_password(
     return AdminChange("password")
 
 
-async def _not_reused(
-    request: Request,
-    uow: AuthUnitOfWork,
-    actor: AnyUser,
-    user: AbstractBaseUser,
-    body: AdminPasswordIn,
-    made: "AdminAct | None",
-) -> None:
-    """Refuse a password among ``user``'s last ones; the refusal costs a try.
+class _Reuse:
+    """A password compared with its user's history, once, and what a reuse costs.
 
     Compared only when the change is about to be made (``last_check``):
     after the project's checks, and, where approvals hold setting a
-    password, once an approval is found and before it is spent. While a
-    check refuses or a request waits, nothing is compared, and every
-    password gets the same answer (user reports A17, A19).
+    password, under the approved request's lock, by the one call that
+    claims it, before it is spent. While a check refuses or a request
+    waits, nothing is compared, and every password gets the same answer
+    (user reports A17, A19).
 
     A reuse is a guess at the user's old passwords. It counts against the
     staff member's guesses at this user's (``AUTH.LOGIN_RATE`` and
     ``ACCOUNT_LOGIN_RATE``, apart from the user's own counts of wrong
     passwords: neither holds the other back), and spends the change's
-    authorization ``made``, committed before the refusal, so one
-    confirmation is one guess. A password not reused gives its count back.
-
-    Raises:
-        InvalidPassword: It is one of the user's last ``PASSWORD_HISTORY``.
-        APIError: 429 ``rate_limited``: the staff member sent too many of
-            the user's old passwords.
+    authorization, so one confirmation is one guess. The count is taken
+    before anything is checked, so a full one refuses every password
+    alike, and given back unless the password was found.
     """
-    config = auth_settings()
-    if body.password is None or not config.PASSWORD_HISTORY:
-        return
-    key = f"admin-password:staff:{actor.id}:user:{user.id}"
-    counted = await attempt(
-        request,
-        [
-            (key, config.LOGIN_RATE),
-            (f"{key}:daily", daily_window(config.ACCOUNT_LOGIN_RATE)),
-        ],
-        action="auth.admin_change",
-        detail=REUSES_THROTTLED,
-    )
-    try:
-        await uow.passwords.refuse_reuse(user.id, body.password, priority=True)
-    except InvalidPassword:
-        if made is not None:
-            await spend_authorization(uow, _admin_change_action(), made)
-            await uow.commit()
-        raise
-    await counted.succeeded()
+
+    def __init__(
+        self,
+        request: Request,
+        uow: AuthUnitOfWork,
+        actor: AnyUser,
+        user: AbstractBaseUser,
+        password: str | None,
+    ) -> None:
+        """Compare ``password`` with ``user``'s history, for ``actor``, in ``uow``."""
+        self.request = request
+        self.uow = uow
+        self.actor = actor
+        self.user = user
+        self.password = password
+        self.counted: Attempt | None = None
+        self.found = False
+        """Whether the password was one of the user's last ones."""
+
+    async def count(self) -> None:
+        """Take a try from the staff member's count of the user's guesses.
+
+        Nothing without ``AUTH.PASSWORD_HISTORY``, or for no password.
+
+        Raises:
+            APIError: 429 ``rate_limited``: the count is full.
+        """
+        config = auth_settings()
+        if self.password is None or not config.PASSWORD_HISTORY:
+            return
+        key = f"admin-password:staff:{self.actor.id}:user:{self.user.id}"
+        self.counted = await attempt(
+            self.request,
+            [
+                (key, config.LOGIN_RATE),
+                (f"{key}:daily", daily_window(config.ACCOUNT_LOGIN_RATE)),
+            ],
+            action="auth.admin_change",
+            detail=REUSES_THROTTLED,
+        )
+
+    async def compare(self) -> None:
+        """Refuse the password if it is one of the user's last ones.
+
+        It reads only, so the lock of an approval it runs under waits on no
+        write of its own.
+
+        Raises:
+            InvalidPassword: It is.
+        """
+        if self.password is None or self.counted is None:
+            return
+        try:
+            await self.uow.passwords.refuse_reuse(
+                self.user.id, self.password, priority=True
+            )
+        except InvalidPassword:
+            self.found = True
+            raise
+
+    async def settle(self) -> None:
+        """Give the try back, unless the password was found."""
+        if self.counted is not None and not self.found:
+            await self.counted.succeeded()
 
 
 REUSES_THROTTLED: Final = (
@@ -1526,7 +1566,7 @@ async def _admin_change(
     uow: AuthUnitOfWork,
     act: Callable[[], "AdminAct"],
     *,
-    last: Callable[["AdminAct | None"], Awaitable[None]] | None = None,
+    last: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     """Run the domains' ``on_admin_change`` checks; any may refuse ``change``.
 
@@ -1535,10 +1575,10 @@ async def _admin_change(
     (one may spend an approval), and spent after them, in ``uow``'s
     transaction, so it is spent if and only if the change commits. Off, the
     act is never built. ``last`` is the admin API's own check that only the
-    change makes (a password reused), given the act: the checks see it as
+    change makes (a password reused): the checks see it as
     ``change.last_check``, and it runs once, when the change is about to be
-    made, by a check that spends something to let it go on, or else after
-    every check passed.
+    made, by approvals' hold as it spends an approval, or else after every
+    check passed.
 
     Raises:
         ActionNotAuthorized: With ``ADMIN_ACTION``, the authorization is of
@@ -1578,7 +1618,7 @@ async def _authorized_change(
     uow: AuthUnitOfWork,
     act: Callable[[], "AdminAct"],
     checks: Callable[["_Once | None"], Awaitable[None]],
-    last: Callable[["AdminAct | None"], Awaitable[None]] | None = None,
+    last: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     """The authorization of ``act()`` checked, ``checks``, ``last``, then spent.
 
@@ -1588,7 +1628,7 @@ async def _authorized_change(
     made = act() if _asked() else None
     if made is not None:
         await check_authorization(_admin_change_action(), made)
-    once = None if last is None else _Once(functools.partial(last, made))
+    once = None if last is None else _Once(last)
     await checks(once)
     if once is not None:
         await once()

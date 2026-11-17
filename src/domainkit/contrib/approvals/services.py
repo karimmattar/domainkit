@@ -61,7 +61,7 @@ from .exceptions import (
     RequestNotPending,
     RequestTampered,
 )
-from .guards import Guard, Policy, Running, guard_for, policy_of, running
+from .guards import Guard, Policy, Running, guard_for, policy_of, running, when_spent
 from .models import (
     MAX_PERSON,
     MAX_REASON,
@@ -372,7 +372,11 @@ async def _spend(
     run (it fails then, with the refusal's code). Its command must read as
     ``arguments``: the request was found by its fingerprint column, which
     its seal does not cover, and the arguments its seal covers are what
-    the approvers were shown.
+    the approvers were shown. The call's ``when_spent`` check runs last,
+    under the lock: one that raises leaves the request approved.
+
+    Raises:
+        Exception: Whatever the ``when_spent`` check raises.
     """
     async with ApprovalsUnitOfWork() as uow:
         request = await uow.locked(request_id)
@@ -389,6 +393,9 @@ async def _spend(
             request.failed(exc.code)
             await uow.commit()
             return None
+        last = when_spent()
+        if last is not None:
+            await last()  # Under the lock: the one call that spends it.
         request.executed()
         await uow.commit()
     return request

@@ -8,9 +8,10 @@ once approved, the same call, made again by the same staff member, makes
 exactly that change, once.
 """
 
+import asyncio
 import uuid
 from collections.abc import Iterator
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 from uuid import UUID
 
@@ -1145,12 +1146,12 @@ class GroupGrantsBackend(BaseBackend):
 
 
 def test_an_approval_binds_a_groups_grants_on_objects(client: TestClient) -> None:
-    """A grant on an object given to the group since is another group too.
+    """A grant on an object given to the group since, or renewed, is another group.
 
     ``HeldGroup`` holds how many grants on single objects the group holds,
-    and their digest: a grant made after the approval (by an object
-    permissions app, say) no longer rides it (found in review of user
-    report A21).
+    and their digest, each with when it ends: a grant made after the
+    approval (by an object permissions app, say), or renewed to a later
+    date, no longer rides it (found in review of user report A21).
     """
     ann = staff("ann", "accounting.view_entry")
     root = staff("root", superuser=True)
@@ -1165,22 +1166,32 @@ def test_an_approval_binds_a_groups_grants_on_objects(client: TestClient) -> Non
             f"{__name__}.GroupGrantsBackend",
         ],
     }
-    vault = ObjectGrant("accounting.view_entry", "accounting.entry", 7)
+    ends = datetime(2027, 1, 1, tzinfo=UTC)
+    vault = ObjectGrant("accounting.view_entry", "accounting.entry", 7, ends)
+    renewed = ObjectGrant(
+        "accounting.view_entry", "accounting.entry", 7, ends + timedelta(days=365)
+    )
+    ledger = ObjectGrant("accounting.view_entry", "accounting.entry", 8)
 
     GROUP_GRANTS.clear()
+    GROUP_GRANTS["readers"] = frozenset({vault})
     with override_settings(AUTH=auth):
         approved = pending(client.put(path, json=body, headers=ann))
         approve(client, approved, root)
-        GROUP_GRANTS["readers"] = frozenset({vault})
+        GROUP_GRANTS["readers"] = frozenset({renewed})
+        later = pending(client.put(path, json=body, headers=ann))
+        GROUP_GRANTS["readers"] = frozenset({vault, ledger})
         wider = pending(client.put(path, json=body, headers=ann))
         held = read(client, wider, ann)["arguments"]["groups"]
-        GROUP_GRANTS.clear()
+        GROUP_GRANTS["readers"] = frozenset({vault})
         joined = client.put(path, json=body, headers=ann)
+    GROUP_GRANTS.clear()
 
-    assert wider != approved
+    assert len({approved, later, wider}) == 3
+    assert renewed == vault  # The same grant, to sets; another, to an approval.
     assert [
         (each["object_grants"], len(each["object_grants_digest"])) for each in held
-    ] == [(1, 64)]
+    ] == [(2, 64)]
     assert held[0]["id"] == str(readers)
     assert joined.status_code == 200, joined.json()
     assert read(client, approved, ann)["status"] == "executed"
@@ -1214,3 +1225,71 @@ def test_a_group_permissions_hold_alone_is_warned_about(
         "approvals.W001"
     ]
     assert paired == local == []
+
+
+def test_one_approval_is_one_comparison_when_calls_race(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Calls at once on one approval: only the one that claims it compares.
+
+    The history is compared under the approved request's lock, by the call
+    that spends it; a call that loses the claim compares nothing and
+    answers ``approval_pending``, whatever its password. Found then
+    executed apart, each call compared, and one approval answered as many
+    guesses as calls were sent (found in review of user report A17).
+    """
+    import httpx2
+
+    from domainkit.contrib.auth.repositories import PasswordHistoryStore
+
+    ann = staff("ann")
+    root = staff("root", superuser=True)
+    bob = create_user("bob", password=NEW_PASSWORD)
+    path = f"{ADMIN}/users/{bob}/password"
+    history = {
+        **APPROVALS_ADMIN.settings["AUTH"],
+        "PASSWORD_HISTORY": 3,
+        "LOGIN_RATE": "50/minute",
+    }
+    compared: list[str] = []
+    original = PasswordHistoryStore.refuse_reuse
+
+    async def counted(
+        self: PasswordHistoryStore, user_id: UUID, password: str, *, priority: bool
+    ) -> None:
+        compared.append(password)
+        await original(self, user_id, password, priority=priority)
+
+    guesses = [f"Guess-pass-{each:02d}" for each in range(6)] + [NEW_PASSWORD] * 2
+
+    async def at_once() -> list[Any]:
+        transport = httpx2.ASGITransport(app=client.app)
+        async with httpx2.AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as http:
+            return list(
+                await asyncio.gather(
+                    *(
+                        http.post(path, json={"password": guess}, headers=ann)
+                        for guess in guesses
+                    )
+                )
+            )
+
+    with override_settings(AUTH=history):
+        held = pending(
+            client.post(path, json={"password": "Fresh-pass-1"}, headers=ann)
+        )
+        approve(client, held, root)
+        monkeypatch.setattr(PasswordHistoryStore, "refuse_reuse", counted)
+        answers = run_async(at_once())
+
+    codes = [
+        each.status_code if each.status_code == 204 else each.json()["code"]
+        for each in answers
+    ]
+    claimed = [code for code in codes if code in (204, "invalid_password")]
+    assert codes.count(204) == 1, codes
+    assert set(codes) <= {204, "invalid_password", "approval_pending"}, codes
+    assert len(compared) == len(claimed), (compared, codes)
+    assert read(client, held, ann)["status"] == "executed"
