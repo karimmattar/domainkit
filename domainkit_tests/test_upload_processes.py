@@ -288,12 +288,25 @@ async def test_a_path_on_sys_path_is_handed_as_text(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A ``Path`` on ``sys.path`` made every checked upload a 500."""
-    monkeypatch.setattr(sys, "path", [*sys.path, tmp_path, 7])
+    monkeypatch.setattr(sys, "path", [*sys.path, tmp_path])
 
     received = await receive_upload(b"x", types=[typed(hooks.chatty)], max_size=10)
     received.close()
 
     assert received.kind.inspect is hooks.chatty
+
+
+def test_what_is_no_path_on_sys_path_is_left_out(tmp_path: Path) -> None:
+    """A check's process gets ``sys.path`` as text, without what is no path.
+
+    The entries are handed to the helper, never put on ``sys.path``:
+    coverage reads ``sys.path`` each time it meets a file it has not seen,
+    and fails on an entry that is no path, as a checked upload with one
+    there once did.
+    """
+    path = inspection._child_path(["/first", tmp_path, 7])
+
+    assert path == ["/first", str(tmp_path)]
 
 
 class Watched(io.BytesIO):
