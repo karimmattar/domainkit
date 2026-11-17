@@ -40,7 +40,7 @@ the change, and hold nothing.
 
 import dataclasses
 import functools
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Annotated, Any, Final, Self, cast
@@ -106,6 +106,7 @@ from .gates import (
     on_make_superuser,
 )
 from .models import (
+    HIDDEN_FIELDS,
     AbstractBaseUser,
     AnyUser,
     Group,
@@ -138,14 +139,10 @@ __all__ = [
 
 PAGE_SIZE: Final = 50
 MAX_PAGE_SIZE: Final = 200
-HIDDEN_FIELDS: Final = frozenset(
-    {"id", "version", "password", "groups", "user_permissions", "last_login"}
-)
-"""Fields ``/users`` never shows among ``fields`` (``last_login`` has its own key)."""
 IDENTIFIED: Final = ("email", "mobile_number")
 """Fields a user changes by proving the new value first (ADR 0153)."""
 NAME_FIELDS: Final = ("first_name", "last_name")
-"""The fields ``/users/names`` joins into a name, where ``/users`` shows both."""
+"""The fields ``/users/names`` joins into a name without ``AUTH.NAME_FIELDS``."""
 
 router = APIRouter(tags=["auth admin"])
 pages = Pagination(default_limit=PAGE_SIZE, max_limit=MAX_PAGE_SIZE)
@@ -348,8 +345,10 @@ class UserNameOut(BaseModel):
     id: UUID
     username: str
     name: str | None
-    """``first_name`` and ``last_name``, joined, where ``/users`` shows both
-    (``admin_fields``); else null."""
+    """The first entry of ``AUTH.NAME_FIELDS`` that gives text, its fields
+    stripped and joined by a space (``first_name`` and ``last_name`` by
+    default), of the text ``/users`` shows (``admin_fields``, the username);
+    else null."""
     identifiers: dict[str, JsonValue]
     """The fields of ``AUTH.IDENTIFIERS`` among those ``/users`` shows, by name."""
 
@@ -357,23 +356,48 @@ class UserNameOut(BaseModel):
     def of(cls, user: AbstractBaseUser) -> Self:
         """Name ``user`` by what ``/users`` shows of them, and nothing more.
 
-        The name is built from ``NAME_FIELDS``, never from a model's
-        ``get_full_name``, which may read fields staff are not shown.
+        The name is built from ``AUTH.NAME_FIELDS`` (``NAME_FIELDS``
+        without it), never from a model's ``get_full_name`` or a method of
+        its own, which may read fields staff are not shown. An entry with
+        a field ``/users`` does not show gives nothing, whatever ``check``
+        found when the service started (``auth.E012``); nor does a value
+        that is not text, or only white space.
         """
         model = type(user)
         shown = model.admin_fields() - HIDDEN_FIELDS
-        parts = (str(getattr(user, name) or "") for name in NAME_FIELDS)
-        name = " ".join(filter(None, parts)) if shown >= set(NAME_FIELDS) else ""
         return cls(
             id=user.id,
             username=user.get_username(),
-            name=name or None,
+            name=_name(user, shown | ({model.USERNAME_FIELD} - HIDDEN_FIELDS)),
             identifiers={
                 name: jsonable(getattr(user, name))
                 for name in identifier_fields(model)
                 if name in shown
             },
         )
+
+
+def _name(user: AbstractBaseUser, shown: frozenset[str]) -> str | None:
+    """The first entry of the name's fields that gives text, of fields ``shown``.
+
+    ``shown`` holds what ``/users`` shows: the user's ``fields`` and username.
+    """
+    for entry in auth_settings().NAME_FIELDS or (NAME_FIELDS,):
+        if shown >= set(entry) and (name := " ".join(_parts(user, entry))):
+            return name
+    return None
+
+
+def _parts(user: AbstractBaseUser, entry: Iterable[str]) -> Iterator[str]:
+    """The text of each field of ``entry`` that holds some, stripped, in order.
+
+    A value that is not text (a date, a flag, a number) gives none: ``str()``
+    of it is not what ``/users`` shows, and it names no one.
+    """
+    for name in entry:
+        value = getattr(user, name)
+        if isinstance(value, str) and (text := value.strip()):
+            yield text
 
 
 class UserNamePage(BaseModel):

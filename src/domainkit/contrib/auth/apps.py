@@ -26,6 +26,7 @@ from domainkit.db import SqlAlchemyUnitOfWork, metadata
 from domainkit.db.hooks import on_committed, on_migrated, on_stage
 from domainkit.db.routing import router
 from domainkit.ddd import DomainEvent, event_bus
+from domainkit.ddd.fields import fields_of
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import (
     AllOf,
@@ -49,7 +50,7 @@ from .backends import (
     get_backends,
 )
 from .hashers import insecure_hashers
-from .models import PROTECTED_FLOOR, AbstractBaseUser, AbstractUser, User
+from .models import HIDDEN_FIELDS, PROTECTED_FLOOR, AbstractBaseUser, AbstractUser, User
 from .permissions import declared_permissions, sync_permissions
 from .principals import invalidate_all, stamp_committed, stamp_pending, watch
 from .routing import AccountRoutes, on_account_routes
@@ -615,6 +616,7 @@ class AuthConfig(DomainConfig):
                     "AUTH.IDENTIFIERS names a field twice: name each once.",
                 )
             )
+        errors.extend(self._name_field_errors(config))
         if config.CLIENT_CERT.HEADER is not None and not config.CLIENT_CERT.PROXIES:
             errors.append(
                 CheckMessage(
@@ -662,6 +664,45 @@ class AuthConfig(DomainConfig):
             errors.extend(self._deployed_errors(config))
         return errors
 
+    def _name_field_errors(self, config: AuthSettings) -> list[CheckMessage]:
+        """What ``auth.E012`` refuses of ``AUTH.NAME_FIELDS``: one message a case.
+
+        A name is built of text that ``GET /users`` shows: a field among a
+        user's ``fields`` (the model's ``admin_fields()``, never one of
+        ``HIDDEN_FIELDS``), or the username, its own key there.
+        """
+        if config.NAME_FIELDS is None:
+            return []
+        model = self.user_model
+        cases: dict[str, list[str]] = {}
+        for name in dict.fromkeys(
+            each for entry in config.NAME_FIELDS for each in entry
+        ):
+            if case := _name_field_case(model, name):
+                cases.setdefault(case, []).append(name)
+        what = model.__name__
+        advice = {
+            "missing": f"which {what} has no field for: name fields of {what}.",
+            "hidden": (
+                "which the admin API never shows (credentials, grants, ids): "
+                "name fields GET /users shows."
+            ),
+            "unshown": (
+                f"which GET /users does not show of {what}: add them to "
+                f"{what}.EDITABLE_FIELDS or READ_ONLY_FIELDS, or name fields "
+                "it shows."
+            ),
+            "not_text": "which do not hold text: a name is built of text fields only.",
+        }
+        return [
+            CheckMessage(
+                "auth.E012",
+                f"AUTH.NAME_FIELDS names {', '.join(map(repr, names))}, {text}",
+            )
+            for case, text in advice.items()
+            if (names := cases.get(case))
+        ]
+
     def _deployed_errors(self, config: AuthSettings) -> list[CheckMessage]:
         """What staging and production refuse besides."""
         where = settings.ENVIRONMENT
@@ -696,6 +737,21 @@ class AuthConfig(DomainConfig):
                 )
             )
         return errors
+
+
+def _name_field_case(model: type[AbstractBaseUser], name: str) -> str | None:
+    """Why ``name`` cannot name ``model``'s users (``auth.E012``); None if it can."""
+    fields = fields_of(model)
+    if name not in fields:
+        return "missing"
+    if name in HIDDEN_FIELDS:
+        return "hidden"
+    if name != model.USERNAME_FIELD and name not in model.admin_fields():
+        return "unshown"
+    kind = fields[name].kind
+    if not (isinstance(kind, type) and issubclass(kind, str)):
+        return "not_text"
+    return None
 
 
 NIST_DAILY_GUESSES: Final = 100

@@ -11,6 +11,31 @@ and a status.
 
 ### Added
 
+- `domainkit.http.problems`: `APIError` and `FieldError`, the problems a
+  route raises, in a module of their own that builds no response.
+  `domainkit.http.errors` and `domainkit.http` re-export them, the same
+  classes, and `domainkit.http.errors` still holds `DomainkitError`:
+  every domainkit name 2.7 imported from either still imports (only the
+  standard library's `Sequence` and `TYPE_CHECKING` left
+  `domainkit.http.errors`). The infrastructure layer may import the
+  module: a file gateway refuses a file with the status, code, and field
+  error a route would, with no layer of its own
+  ([Bytes and streams](docs/uploads.md#bytes-and-streams), ADR 0182)
+  (user report D2).
+
+- `AUTH.NAME_FIELDS` (unset): the fields the admin API's `GET
+  /users/names` names a user by, as entries tried in order, each a field
+  or fields joined by a space; the first that gives text is the name,
+  as in `("display_name", ("first_name", "last_name"))`. Each field must
+  be a text field `GET /users` shows, among a user's `fields` or as the
+  username, or `check` refuses to start (`auth.E012`, a message for each
+  case: no such field, never shown, not shown by the model, not text). A
+  field that stops being shown, or a value that is not text, gives no
+  name, and search still never matches a name. Unset, a user is named by
+  `first_name` and `last_name`, as in 2.7
+  ([The admin API](docs/auth/routes.md#the-admin-api), ADR 0182) (user
+  report D2).
+
 - `AUTH["AUTHORIZATIONS"]["NAMED_PERMISSIONS"]`: the permission keys a
   screen names wherever it would count them, by default
   `TENANCY.ALL_TENANTS_PERMISSION` where it is set. Approving
@@ -22,6 +47,7 @@ and a status.
   is counted, whatever its key. The line counts as any other under
   `WHOLE` ([What a screen shows](docs/auth/actions.md#what-a-screen-shows),
   ADR 0179) (user report A17).
+
 - `AUTH["STAFF_REUSES_COUNT_AS_PASSWORD_CHECKS"]` (off): a staff
   member's reuses of a user's old passwords count against the user's
   own counts of wrong passwords too, so staff acting together share one
@@ -29,6 +55,7 @@ and a status.
   passwords never hold back a staff reset, and staff reuses never refuse
   the user's checks ([Each change, authorized as one act](docs/auth/routes.md#each-change-authorized-as-one-act))
   (user report A17).
+
 - `held_groups(names)` (`domainkit.contrib.approvals`): the groups a
   project's own grant names, held as `auth.set_groups` holds them, by id
   with the keys they grant and their grants on objects (`HeldGroup`), to
@@ -40,6 +67,25 @@ and a status.
   (user report A17).
 
 ### Changed
+
+- The layer rules let the infrastructure layer import
+  `domainkit.http.problems` (`domainkit.architecture.ALLOWED_MODULES`),
+  but only the names its `__all__` lists: `from domainkit.http.problems
+  import HTTPException` is refused. The rest of `domainkit.http.errors`
+  stays forbidden there, the application and domain layers import
+  neither, and `domainkit.http.client` and `domainkit.http.uploads` are
+  held as in 2.7 (ADR 0003's amendment of 2026-11-17) (user report D2).
+
+- `APIError` and `FieldError` are defined in `domainkit.http.problems`,
+  so tracebacks, the body of the mail reporter's report
+  (`domainkit.http.problems.APIError was raised at ...`), and tracing's
+  `error.type` name that module, not `domainkit.http.errors`: a filter
+  or an alert on the old name needs the new one
+  ([upgrading.md](docs/upgrading.md#27-to-28)) (user report D2).
+
+- `GET /users/names` strips the names it joins: a first or last name of
+  white space alone no longer makes a name of spaces, and a padded one
+  is answered without its padding (user report D2).
 
 - The admin API's act of a change of groups shows each group added as
   approvals does, "Adds: readers (…9abc) 3 perms + 2 object grants",
@@ -59,6 +105,7 @@ and a status.
   authorization of a change of groups asked for under 2.7 is refused
   once; every other still binds ([upgrading.md](docs/upgrading.md#27-to-28),
   ADR 0179) (user report A17).
+
 - An authorization held for approval serves its own request alone: a
   call whose command changed since (a user made active again who was put
   in a group meanwhile) is refused (`403 action_not_authorized`) where it
@@ -66,12 +113,14 @@ and a status.
   not kept for, or whose time is up, is passed over. It submitted one, and
   the authorization held for the first, which still waited, made it once
   approved (ADR 0179) (user report A17).
+
 - `auth.set_staff` and `auth.reactivate` hold what else the call sets
   (`values`: an address, a number, a flag), which the approver sees and
   the approval binds. They held the grant alone, and the approval was
   spent by a call that also set a number no approver saw. A request of
   2.7 is still found and spent by a call that sets nothing else (ADR
   0179) (user report A17).
+
 - `PATCH /users/{id}` and `POST /users` refuse a username, an address
   that identifies users, or a number another user has before the
   `on_admin_change` checks: the commit refused it after approvals' hold
