@@ -405,7 +405,11 @@ refused, never decoded, unless:
 
 A stream that cannot be decoded is refused too, even an object stream
 nothing uses: skipped, it could cost what it decoded before it failed,
-again for each such stream. A page's content is written back deflated:
+again for each such stream. The policy is `domainkit.inspection`'s
+(`filters_refused`, `DecodeBudget`, `bounded_reader`): `CHECKED_PDF`
+reads an upload by it too, within `max_content`
+([Checking documents](uploads.md#checking-documents)), so a file the
+check took is one `overlay_pdf` decodes the same way. A page's content is written back deflated:
 the result is about the size of the document, not of what it decoded.
 
 ```python

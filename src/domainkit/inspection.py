@@ -77,9 +77,15 @@ before any check starts, and one of its calls can run a minute (ADR
 deadline (``max_seconds``) looked at per object or part; a PDF's object
 streams decode to ``max_decoded`` bytes in all, each stream to
 ``PDF_STREAM_LIMIT`` (``PDF_LIMITS``), and its pages' contents to
-``max_content`` in all, counted as they inflate and never held (a
-program that lays something over a page decodes them whole: ADR
-0175); the check reads at most
+``max_content`` in all (a program that lays something over a page
+decodes them whole: ADR 0175). A PDF is opened and decoded by the policy
+``overlay_pdf`` decodes with (ADR 0176): ``bounded_reader`` counts the
+cross-reference sections pypdf reads and its searches, and refuses a
+rebuilt table, an object stream in another, and an object from a stream
+not decoded; ``DecodeBudget`` decodes each stream once
+``filters_refused`` let it (no predictor, no image's filter, a filter
+pypdf runs in Python first and within its share), each no further than
+what is left, the deadline read after it; the check reads at most
 ``PDF_NODES`` values, and refuses a PDF pypdf read only in part; a ZIP's
 sizes are read from its directory before a byte is inflated. The checks
 do not make a file harmless; they refuse what is known to be used

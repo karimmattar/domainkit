@@ -354,9 +354,15 @@ and a status.
   process and refuses a PDF whose pages' contents decode to more than
   `max_content` (64 MiB, new) in all, a stream drawn twice counted
   twice. A 170 KB file of twenty pages, each 8 MiB of spaces deflated,
-  passed, and laying text over it made 168 MB. Content deflated alone is
-  counted as it inflates and never held; the deadline is read once each
-  stream is decoded. A PDF of more content, which 2.6 took, is
+  passed, and laying text over it made 168 MB. The check opens and
+  decodes a PDF by the policy `overlay_pdf` decodes with, now in
+  `domainkit.inspection` (`bounded_reader`, `DecodeBudget`,
+  `filters_refused`; ADR 0176): a predictor (292 KB padded to 3.8 GB), a
+  filter pypdf runs in Python but first or past its share (60 KB of
+  deflate then ASCII85 made 5.7 GB; 2.5 KB of LZW took 11 s), an
+  image's filter, and more than 32 cross-reference sections are refused,
+  and the deadline is read after each stream. A PDF of more content,
+  which 2.6 took, is
   refused: give `PdfCheck(max_content=...)` a bound of your own
   ([Checking documents](docs/uploads.md#checking-documents), ADR 0175)
   (user report U6).

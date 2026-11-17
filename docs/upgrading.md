@@ -178,13 +178,16 @@ relied on 2.6's behaviour changes, and what to run.
   whole tuple may need its order changed; `missing` and `unused` were
   sorted and stay so.
 
-- **A PDF's page content is bounded.** `CHECKED_PDF` refuses a PDF whose
-  pages' contents decode to more than 64 MiB in all, 422 `unsafe_file`
-  ("The file is too large or too complex to check."), and one whose
-  content uses a filter pypdf does not know, 422 `unreadable_file`
-  ([Checking documents](uploads.md#checking-documents), ADR 0175). A
-  project that takes larger drawings gives its type a bound of its own:
-  `FileType("application/pdf", ".pdf", PDF.matches,
+- **A PDF's page content is bounded, and decoded as `overlay_pdf`
+  decodes it** (security). `CHECKED_PDF` refuses, 422 `unsafe_file`
+  ("The file is too large or too complex to check."), a PDF whose pages'
+  contents decode to more than 64 MiB in all, and one the shared policy
+  refuses: a predictor or an image's filter on a page's content, ASCII85,
+  ASCIIHex, run-length or LZW anywhere but first or past their share,
+  more than 32 cross-reference sections, an object stream in another
+  ([Checking documents](uploads.md#checking-documents), ADR 0175, ADR
+  0176). A project that takes larger drawings gives its type a bound of
+  its own: `FileType("application/pdf", ".pdf", PDF.matches,
   PdfCheck(max_content=256 * 1024 * 1024))`, and `UPLOAD_CHECKS.SECONDS`
   room to decode it.
 - **Office documents with an unended or deleted field, a link to a file,

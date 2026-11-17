@@ -671,10 +671,15 @@ A Word document with macros, sent as `contract.docx`:
   to more than `max_content` (64 MiB) in all: a content stream drawn on
   two pages counts twice. A 170 KB file of twenty pages, each 8 MiB of
   spaces deflated, is refused ("The file is too large or too complex to
-  check."). Content deflated alone is counted as it inflates, 64 KiB at
-  a time, and never held whole; content with another filter is decoded
-  by pypdf, each filter held to what is left of `max_content`, and the
-  check's deadline is read once each stream is decoded.
+  check."). Each stream is decoded as `overlay_pdf` decodes it, by one
+  policy ([What a PDF may decode](documents.md#what-a-pdf-may-decode),
+  ADR 0176): its filters read first, and refused when they could pass
+  the bounds (a predictor, which pypdf pads to whole rows; an image's
+  filter; ASCII85, ASCIIHex, run-length or LZW anywhere but first, or
+  storing more than `max_content / 32` in all, LZW `/ 512`); then decoded
+  no further than what is left of `max_content`, and the deadline read.
+  A stream named again is counted again, not decoded again; each name
+  is a value the check reads.
 - **`DOCX`, `XLSX`, `PPTX`** (`OfficeCheck`) refuse a document whose main
   part is macro-enabled (a `.docm` named `.docx`), macros (`vbaProject.bin`,
   Excel 4.0 macro sheets), OLE objects, ActiveX controls, chunks imported
@@ -717,8 +722,10 @@ A Word document with macros, sent as `contract.docx`:
   200 MiB, and no part over 1 MiB inflating more than 200 times. A PDF's
   streams decode to 16 MiB each, its object streams to 64 MiB in all, and
   its pages' contents to 64 MiB in all (`max_content`, *new in 2.7*);
-  its tables declare at most 200,000 objects; the check reads at most a
-  million values; a PDF pypdf read only in part is refused. Each check
+  its tables declare at most 200,000 objects, in 32 sections at most,
+  each cross-reference stream deflated and decoding to 8 bytes an entry
+  (*new in 2.7*, as `overlay_pdf`'s); the check reads at most a million
+  values; a PDF pypdf read only in part is refused. Each check
   stops at its own deadline, 10 seconds, looked at per object or part.
   XML is parsed without entities, a DTD, or the network.
 - **Limits of your own.** `FileType(DOCX.content_type, ".docx",

@@ -87,7 +87,8 @@ How a PDF's page content is bounded:
 | --- | --- |
 | pypdf's per-filter limits alone | 75 MB a stream; twenty streams pass. |
 | Decode each page with `get_data`, counting | pypdf keeps what it decoded: the check holds every page's content. |
-| **Decode each page's content in the check, counting, within `max_content` in all: `/FlateDecode` alone inflated 64 KiB at a time and dropped; other filters by pypdf, each filter held to what is left** | Each stream decoded in the check's process (64 MiB at most, by default: about a tenth of a second). A stream two pages draw counts twice, as a program that lays text over each page writes it twice. Images and form XObjects are not counted: a renderer decodes them, not `overlay_pdf`. |
+| Decode each page's content in the check, counting, within `max_content` in all: `/FlateDecode` alone inflated 64 KiB at a time and dropped; other filters by pypdf, each filter held to what is left | Taken first. A review found what it missed: a predictor's padding (292 KB of `/Predictor 12` became 3.8 GB in pypdf), and the filters pypdf runs in Python, unbounded in memory or time (60 KB deflated then ASCII85 made 5.7 GB; 2.5 KB of LZW clear codes took 11 s), stopped by the process's limits alone. |
+| **Decode each page's content as `overlay_pdf` decodes it, by one policy in `domainkit.inspection` ([0176](0176-bound-what-a-pdf-decodes-list-placeholders-fill-drafts-and-clean-less.md)): its filters read first (`filters_refused`), each stream decoded once within what is left of `max_content` (`DecodeBudget`), the file read by `bounded_reader`** | pypdf keeps each stream it decoded, so the check holds up to `max_content`, and zlib's buffer as much again. A stream two pages draw counts twice, as a program that lays text over each page writes it twice; it is decoded once and counted again. Images and form XObjects are not counted: a renderer decodes them, not `overlay_pdf`. |
 
 What `max_content` defaults to:
 
@@ -136,15 +137,27 @@ How `upload_route` decides per request:
 - **`PdfCheck(max_content=64 MiB)`**: once every object is read, the
   check decodes each page's `/Contents` (a stream, or each stream of an
   array) and counts the bytes, refusing past `max_content` in all
-  ("too large or too complex", `unsafe_file`). A stream whose filters are
-  `/FlateDecode` alone (up to 16, pypdf's own bound) is inflated 64 KiB
-  at a time and nothing of it kept; the clock is looked at for each
-  chunk. One with other filters, or whose deflated data is damaged (gzip,
-  which pypdf recovers), is decoded by pypdf under `apply_configuration`,
-  each filter's limit what is left of `max_content` plus one byte; pypdf
-  looks at no clock, so the check reads its deadline once each stream is
-  decoded. A page with no content, or content that is no stream, counts
-  nothing.
+  ("too large or too complex", `unsafe_file`). It does so by the policy
+  `overlay_pdf` decodes with, moved to `domainkit.inspection` as public
+  names (ADR 0176): the file is opened by `bounded_reader` (32
+  cross-reference sections, each stream deflated and 8 bytes an entry;
+  32 searches; no rebuilt table, no object stream in another, no object
+  from a stream not decoded); the object streams are decoded first,
+  within `max_decoded`, by one `DecodeBudget`, and the pages' content by
+  another, within `max_content`. Each stream's filters are read before it
+  is decoded (`filters_refused`: no predictor, no image's filter or
+  `/Crypt`, a filter pypdf runs in Python only first, and storing
+  `max_content / 32` in all, LZW `/ 512`); it then decodes no further
+  than what is left, and the deadline is read after it, as pypdf looks
+  at no clock. A stream named again is counted again, not decoded again,
+  and each name is a value the check reads (`PDF_NODES`): a page naming
+  one byte 49,000 times is refused in under a second. A page with no
+  content, or content that is no stream, counts nothing.
+- Measured on the review's 39 files, through `PdfCheck` in its process:
+  each took 0.2 to 1.0 s and at most 176 MiB (the interpreter, pypdf,
+  and zlib's buffer of twice the 64 MiB it may return), all refused but
+  the four within the bounds; through `overlay_pdf`, at most 1.2 s and
+  112 MiB.
 - **`OfficeCheck`** reads `w:delInstrText` as instruction text, and checks
   each instruction twice: with its deletions (rejected) and without them
   (accepted); a nested field that starts an instruction whose text so far
@@ -188,9 +201,11 @@ How `upload_route` decides per request:
 ## Consequences
 
 - A PDF whose pages' contents decode to more than 64 MiB in all is
-  refused by `CHECKED_PDF`; one whose content uses a filter pypdf does not
-  know is `unreadable_file`. A project that takes larger drawings gives
-  `PdfCheck(max_content=...)` its own bound.
+  refused by `CHECKED_PDF`, and so is one the shared policy refuses: a
+  predictor or an image's filter on a page's content, a filter pypdf
+  runs in Python but first or past its share, more than 32 sections. A
+  project that takes larger drawings gives `PdfCheck(max_content=...)`
+  its own bound, and `UPLOAD_CHECKS.MEMORY` room for it.
 - A Word document with an unended `INCLUDEPICTURE`, a tracked deletion of
   one, or a VML picture or fill from a URL, is refused. A document whose
   VML picture names its image by `src` alone (HTML saved as a document
