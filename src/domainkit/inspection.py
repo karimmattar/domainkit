@@ -1371,8 +1371,9 @@ class _Pdf:
             refuse=_too_complex,
             after_each=self.clock.check,
         )
-        decoded: dict[tuple[int, int], int] = {}
-        """What each stream decoded to, by its reference, once it is."""
+        decoded: dict[object, int] = {}
+        """What each stream decoded to, once it is: by its reference, or by the
+        stream itself where it is written in the page (pypdf reads it there)."""
         # One stream of content may take what is left of max_content, not
         # PDF_STREAM_LIMIT: the budget lowers it to that, stream by stream.
         limits = dict.fromkeys(DECODED, check.max_content)
@@ -1388,13 +1389,15 @@ class _Pdf:
                 )
                 for reference in references:
                     self.clock.tick()
-                    if not isinstance(reference, IndirectObject):
-                        continue  # A stream is written apart: this names none.
-                    key = (reference.idnum, reference.generation)
+                    key: object = (
+                        (reference.idnum, reference.generation)
+                        if isinstance(reference, IndirectObject)
+                        else id(reference)  # Kept by its page while the check runs.
+                    )
                     if key in decoded:
                         content.count(decoded[key])
                         continue
-                    stream = reference.get_object()
+                    stream = _resolved(reference)
                     if hasattr(stream, "get_data"):
                         left = content.left
                         content.spend(stream)

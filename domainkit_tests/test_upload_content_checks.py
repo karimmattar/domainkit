@@ -323,6 +323,47 @@ def test_page_content_is_decoded_as_overlay_pdf_decodes_it(data: bytes) -> None:
     assert time.perf_counter() - started < 5
 
 
+def written_in_the_page(contents: str) -> bytes:
+    """A one-page PDF whose ``/Contents`` is ``contents``, as written in the page."""
+    return pdf(
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents {contents} >>",
+    )
+
+
+@pytest.mark.parametrize("array", [False, True], ids=["alone", "in-an-array"])
+def test_a_stream_written_in_the_page_is_counted_too(array: bool) -> None:
+    """Content written in the page, not apart, is read by pypdf: so is it counted.
+
+    1 MB of such content inflated to 1 GiB passed in a quarter of a second,
+    and pypdf decoded 75 MB of it at once. ``overlay_pdf``, by the same
+    policy, refuses it too.
+    """
+    from domainkit.documents import DocumentError, overlay_pdf
+    from domainkit_tests.test_documents_pdf import Page
+    from domainkit_tests.test_documents_pdf import pdf as overlay_of
+
+    bomb = stream(spaces(70 * MIB))
+    ascii85 = stream(zlib.compress(b"z" * MIB + b"~>"), "[/FlateDecode /ASCII85Decode]")
+    small = stream(spaces(1000))
+
+    def written(each: str) -> bytes:
+        return written_in_the_page(f"[{each} {each}]" if array else each)
+
+    assert verdict(PdfCheck(), written(bomb)) == COMPLEX
+    assert verdict(PdfCheck(), written(ascii85)) == COMPLEX
+    for refused in (written(bomb), written(ascii85)):
+        with pytest.raises(DocumentError):
+            overlay_pdf(refused, overlay_of(Page(width=100, height=100)))
+    assert (
+        verdict(PdfCheck(max_content=2000 if array else 1000), written(small)) == "ok"
+    )
+    assert (
+        verdict(PdfCheck(max_content=1999 if array else 999), written(small)) == COMPLEX
+    )
+
+
 def test_what_the_policy_allows_passes() -> None:
     """Python's filters first and within their share; 1000 names of one stream."""
     assert (
