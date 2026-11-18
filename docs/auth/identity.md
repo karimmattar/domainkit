@@ -290,8 +290,8 @@ What the ACS believes:
   `SIGNUP`.
 - **Encrypted assertions are not read.**
 
-Anyone may post to the ACS, so what it parses is bounded before it is
-parsed (since 2.9):
+Anyone may post to the ACS, so what it reads is bounded before the
+signature is checked (since 2.9):
 
 - At most 1,000,000 base64 characters, and 50,000 nodes, counted on the
   XML's bytes as a Word document's are ([The XML parsed](../documents.md#the-xml-parsed)):
@@ -299,15 +299,25 @@ parsed (since 2.9):
   makes some 7,000.
 - A DTD or an entity is refused before parsing. The XML is read as UTF-8,
   with a byte order mark or not, whatever it declares, so the count sees
-  what is parsed: a response in UTF-16 is refused.
+  what is parsed: a response not in UTF-8 is refused.
+- Then it is read once more, for what checking a signature costs: an
+  element holds at most 32 namespaces in scope (each prefix counts once,
+  however often it is declared: Okta declares `xs` and `xsi` on each
+  attribute value), and a `SignedInfo` at most 32 elements (one
+  reference takes some ten).
 - Each response is parsed in a thread of its own, which ends with it,
   never on the event loop's. lxml keeps every name a thread parses for
   as long as the thread lives; the names go with the thread. At most 4
-  are parsed at once on a loop, and the others wait. At the bound, XML
-  written to cost the most took 14 MiB and 19 ms to parse.
+  are parsed at once on a loop. A response that finds none of them free
+  within 5 seconds is refused.
+- Within these bounds, the whole check of XML written to cost the most
+  (the bytes counted, both readings, and signxml up to its refusal) took
+  up to 50 ms and 15 MiB. The thread is not a daemon: a worker that
+  exits while a response is parsed waits for that long, rather than stop
+  the parse halfway.
 
 A response past these bounds gets `?error=saml_refused`, as one that
-does not hold.
+does not hold, and so does one that lxml or signxml cannot read.
 
 SAML logs in; it does not link. Its identities are kept under the
 provider name `saml:<name>`.

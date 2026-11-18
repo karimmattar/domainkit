@@ -18,12 +18,15 @@ and a status.
   `privacy erase` drops it, and the user's export lists it, withheld. The
   trail still names the staff member, and rate limits, throttles, and
   live connections still count them (audit A28-SEC-03).
-- The SAML ACS bounds a response before it parses it: 50,000 nodes,
-  counted on its bytes, and no DTD or entity; it reads the XML as UTF-8.
-  It parses each response in a thread of its own, which ends with it,
-  never on the event loop's thread, and at most 4 at once on a loop. The
+- The SAML ACS bounds a response before it checks its signature: 50,000
+  nodes, counted on its bytes, no DTD or entity, 32 namespaces in scope
+  on an element, and 32 elements in a `SignedInfo`; it reads the XML as
+  UTF-8. It parses each response in a thread of its own, which ends with
+  it, never on the event loop's thread, and at most 4 at once on a loop;
+  a response that waits more than 5 seconds for one is refused. The
   names lxml keeps for a thread go with it, and the loop serves other
-  requests meanwhile (audit A28-PERF-03).
+  requests meanwhile. What lxml or signxml raise of a response refuses
+  it (`saml_refused`) (audit A28-PERF-03).
 - `holds_link` reads a name spaced out as the link it spells, so
   `TYPED_LINKS = "refused"` refuses it: `example . com`,
   `example .com`, `https : //`, `example<dot>com`, and, before `com`,

@@ -28,20 +28,25 @@ to ``FRONTEND_URL`` with a one-time ``ticket``, which the page trades
 for tokens at ``/identity/ticket``, or with an ``error`` code.
 Encrypted assertions are not read.
 
-Anyone may post to the ACS, so its response is bounded before it is
-parsed (since 2.9): ``MAX_RESPONSE`` base64 characters, and
+Anyone may post to the ACS, so its response is bounded before signxml
+reads it (since 2.9): ``MAX_RESPONSE`` base64 characters, and
 ``MAX_NODES`` nodes, counted on its bytes as ``domainkit.documents``
 counts a Word document's (each ``<`` twice, each ``=`` once). A DTD or
 an entity is refused before parsing, and it is read as UTF-8 only, so
-the count sees what is parsed. It is parsed in a thread of its own,
-which ends with it and takes with it the names lxml keeps for the
-thread, never on the event loop's; ``PARSES`` at most at once on a loop.
+the count sees what is parsed. It is then read once for what makes
+canonicalization cost: ``MAX_NAMESPACES`` namespaces in scope on an
+element, and ``MAX_SIGNED_INFO`` elements in a ``SignedInfo``. It is
+parsed in a thread of its own, which ends with it and takes with it the
+names lxml keeps for the thread, never on the event loop's; ``PARSES``
+at most at once on a loop, the others waiting ``SLOT_WAIT`` seconds at
+most.
 """
 
 import asyncio
 import base64
 import contextlib
 import contextvars
+import io
 import logging
 import re
 import threading
@@ -86,11 +91,22 @@ MAX_RESPONSE: Final = 1_000_000
 MAX_NODES: Final = 50_000
 """The most nodes a SAMLResponse's XML may make, counted before it is parsed.
 
-A thousand group values make some 7,000. At the bound, XML written to
-cost the most (an element of 50,000 attributes, each of another name) took
-14 MiB and 19 ms to parse."""
+A thousand group values make some 7,000."""
+MAX_NAMESPACES: Final = 32
+"""The most namespaces in scope on an element: its prefixes, and the default.
+
+Identity providers write fewer than ten, repeated on many elements
+(``xmlns:xs`` on each attribute value) as they may be."""
+MAX_SIGNED_INFO: Final = 32
+"""The most elements a ``ds:SignedInfo`` may hold, itself included.
+
+One reference, its transforms, and their methods take some ten."""
 PARSES: Final = 4
-"""The most responses parsed at once on one event loop; the others wait."""
+"""The most responses parsed at once on one event loop."""
+SLOT_WAIT: Final = 5.0
+"""How long, in seconds, a response waits for one of the ``PARSES`` slots
+before it is refused."""
+SIGNED_INFO: Final = "{http://www.w3.org/2000/09/xmldsig#}SignedInfo"
 DECLARATION: Final = re.compile(rb"<!(?:DOCTYPE|ENTITY)", re.IGNORECASE)
 """What declares a DTD or an entity: refused before the XML is parsed."""
 NS: Final = {"samlp": PROTOCOL, "saml": ASSERTION}
@@ -223,15 +239,17 @@ def verified_claims(
     """Who the signed assertion of ``encoded`` says logged in.
 
     Bounded before it is parsed: ``MAX_RESPONSE`` characters, ``MAX_NODES``
-    nodes, no DTD or entity; read as UTF-8. CPU-bound, and lxml keeps each
-    name it parses for the thread's life: the ACS calls it in a thread of
-    its own.
+    nodes, no DTD or entity; read as UTF-8. Then bounded before signxml
+    reads it: ``MAX_NAMESPACES`` and ``MAX_SIGNED_INFO`` (``_shaped``).
+    CPU-bound, and lxml keeps each name it parses for the thread's life:
+    the ACS calls it in a thread of its own.
 
     Raises:
-        AssertionRefused: The response does not prove a login for this request.
+        AssertionRefused: The response does not prove a login for this
+            request; what lxml or signxml raise of it among them.
     """
     from lxml import etree
-    from signxml.exceptions import InvalidInput, InvalidSignature
+    from signxml.exceptions import SignXMLException
     from signxml.verifier import XMLVerifier
 
     if len(encoded) > MAX_RESPONSE:
@@ -245,6 +263,7 @@ def verified_claims(
     if 2 * document.count(b"<") + document.count(b"=") > MAX_NODES:
         raise AssertionRefused(f"a SAMLResponse of more than {MAX_NODES:,} nodes")
     try:
+        _shaped(document)
         verified = XMLVerifier().verify(
             document,
             x509_cert=config.IDP_CERTIFICATE,
@@ -252,7 +271,10 @@ def verified_claims(
             # signxml's own parser, read as UTF-8 whatever the XML declares.
             parser=etree.XMLParser(resolve_entities=False, encoding="utf-8"),
         )
-    except (InvalidSignature, InvalidInput, etree.XMLSyntaxError) as exc:
+    except (SignXMLException, etree.LxmlError, ValueError, TypeError) as exc:
+        # A schema it fails, a namespace canonicalization refuses, a value
+        # that is not base64, an empty one signxml reads as None: the
+        # response proves nothing.
         raise AssertionRefused(f"no valid signature ({type(exc).__name__})") from None
     signed = verified.signed_xml  # type: ignore[union-attr]
     if signed is None:
@@ -317,6 +339,56 @@ def _claims(
     return Claims(subject=nameid, email=email, email_verified=email is not None)
 
 
+def _shaped(document: bytes) -> None:
+    """Refuse a response whose canonicalization would cost, before signxml runs.
+
+    Read once, as signxml's parser reads it (UTF-8, no entity): each
+    element's namespaces in scope, each prefix once however often it is
+    declared, and each ``SignedInfo``'s elements, which signxml
+    canonicalizes before it checks a signature.
+
+    Raises:
+        AssertionRefused: An element has more than ``MAX_NAMESPACES`` in
+            scope, or a ``SignedInfo`` more than ``MAX_SIGNED_INFO`` elements.
+        lxml.etree.XMLSyntaxError: It is not well-formed.
+    """
+    from lxml import etree
+
+    scopes: list[frozenset[str]] = [frozenset()]
+    declared: list[str] = []
+    signed, opened = 0, -1  # The open SignedInfo's elements, and its depth.
+    for event, item in etree.iterparse(
+        io.BytesIO(document),
+        events=("start-ns", "start", "end"),
+        encoding="utf-8",
+        resolve_entities=False,
+        no_network=True,
+        huge_tree=False,
+    ):
+        if event == "start-ns":
+            declared.append(item[0])
+        elif event == "start":
+            scope = scopes[-1].union(declared) if declared else scopes[-1]
+            declared = []
+            if len(scope) > MAX_NAMESPACES:
+                raise AssertionRefused(
+                    f"an element with more than {MAX_NAMESPACES} namespaces in scope"
+                )
+            scopes.append(scope)
+            if signed or item.tag == SIGNED_INFO:
+                opened = len(scopes) - 1 if not signed else opened
+                signed += 1
+                if signed > MAX_SIGNED_INFO:
+                    raise AssertionRefused(
+                        f"a SignedInfo of more than {MAX_SIGNED_INFO} elements"
+                    )
+        else:
+            scopes.pop()
+            if len(scopes) == opened:
+                signed, opened = 0, -1
+            item.clear()
+
+
 _parsing: Final[PerLoop[asyncio.Semaphore]] = PerLoop()
 """Each loop's slots for responses parsed at once (``PARSES``)."""
 
@@ -328,14 +400,26 @@ async def _alone(work: Callable[[], Claims]) -> Claims:
     event loop's thread, each response of new names would grow it for good,
     and block every other request while it parsed (ADR 0181 did the same
     for Word documents). A slot is held until the thread ends, even if the
-    request is cancelled meanwhile. ``work`` runs in a copy of the context.
+    request is cancelled meanwhile; one not free within ``SLOT_WAIT``
+    seconds refuses the response. ``work`` runs in a copy of the context.
+
+    The thread is not a daemon: a process that exits while a response is
+    parsed waits for the parse, which the bounds keep short, rather than
+    stop it halfway through lxml's or OpenSSL's code.
 
     Raises:
-        AssertionRefused: What ``work`` raised, raised again here.
+        AssertionRefused: What ``work`` raised, raised again here; or no
+            slot was free in time.
     """
     loop = asyncio.get_running_loop()
     slots = _parsing.get(lambda: asyncio.Semaphore(PARSES))
-    await slots.acquire()
+    try:
+        async with asyncio.timeout(SLOT_WAIT):
+            await slots.acquire()
+    except TimeoutError:
+        raise AssertionRefused(
+            f"no slot free to parse it in within {SLOT_WAIT:g} seconds"
+        ) from None
     done: asyncio.Future[Claims] = loop.create_future()
     context = contextvars.copy_context()
 
