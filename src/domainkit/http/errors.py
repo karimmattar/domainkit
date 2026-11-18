@@ -475,12 +475,14 @@ def transient(exc: BaseException) -> bool:
     """Whether ``exc`` says that what the work needs cannot serve now: try later.
 
     A timeout or another error of the operating system (a connection
-    refused or lost), ``ServiceBusy``, or a database that is busy or out
-    of reach: what ``database_refusal`` answers with 503, a connection
-    SQLAlchemy found invalidated among them. Work that ran into one is
-    tried again; any other error is the work's own (since 2.9, ADR 0196).
+    refused or lost), ``ServiceBusy``, an ``UpstreamError`` (an outgoing
+    call that failed, a host's circuit open among them), or a database
+    that is busy or out of reach: what ``database_refusal`` answers with
+    503, a connection SQLAlchemy found invalidated among them. Work that
+    ran into one is tried again; any other error is the work's own (since
+    2.9, ADR 0196).
     """
-    if isinstance(exc, OSError | ServiceBusy):  # TimeoutError is an OSError.
+    if isinstance(exc, OSError | ServiceBusy | UpstreamError):  # A timeout too.
         return True
     refusal = database_refusal(exc)
     return (

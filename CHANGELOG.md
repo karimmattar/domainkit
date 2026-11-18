@@ -240,8 +240,9 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   it answers offline as on a route; `scopes_of` takes one.
   `domainkit.http.errors.transient(exc)` says whether an error is one
   worth trying again after: a timeout, an error of the operating system,
-  `ServiceBusy`, or a database busy or out of reach (`database_refusal`'s
-  503s)
+  `ServiceBusy`, an `UpstreamError` (an outgoing call that failed, an open
+  circuit included), or a database busy or out of reach
+  (`database_refusal`'s 503s)
   ([Rules asked outside a request](docs/auth/routes.md#rules-asked-outside-a-request),
   ADR 0196) (audit A28-ARCH-08).
 
@@ -671,9 +672,10 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   mistake fails once (`maker_not_allowed`) instead of being run again
   until dead-lettered, and `approvers_of` no longer raises for every
   caller. A transient error (`domainkit.http.errors.transient`: a
-  timeout, a connection lost, `ServiceBusy`, a database busy or out of
-  reach) is still raised, so the run is tried again, and a maker rule's
-  `DomainError` still fails the request with its code
+  timeout, a connection lost, `ServiceBusy`, an outgoing call that failed,
+  a database busy or out of reach) is still raised, so the run is tried
+  again, and a maker rule's `DomainError` still fails the request with
+  its code
   ([upgrading.md](docs/upgrading.md#28-to-29), ADR 0196) (audit
   A28-ARCH-08).
 

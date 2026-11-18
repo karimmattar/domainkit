@@ -114,7 +114,8 @@ How others do it:
     `approvers_of` raises it: a rule that could not answer has not
     refused, and an approved command is not lost to a blip.
     `domainkit.http.errors.transient` says which: `OSError` (timeouts and
-    lost connections among them), `ServiceBusy`, and what
+    lost connections among them), `ServiceBusy`, `UpstreamError` (an
+    outgoing call that failed, a host's circuit open among them), and what
     `database_refusal` already answers with 503 (a pool out of
     connections, a statement cancelled or lost to another transaction, a
     server out of reach or a connection SQLAlchemy invalidated). It reuses
@@ -184,9 +185,9 @@ How others do it:
   offline as on a route. One that needs a request (a header, a step-up)
   refuses there, as the docs said; one with a mistake refuses and is
   logged, and no longer dead-letters the run or breaks `approvers_of`.
-  One that meets a timeout or a database out of reach is tried again, as
-  before, and one that refuses with a `DomainError` names its code, as
-  before. A mistake that raises an `OSError` (a file not found) is taken
+  One that meets a timeout, a failed outgoing call, or a database out of
+  reach is tried again, as before, and one that refuses with a
+  `DomainError` names its code, as before. A mistake that raises an `OSError` (a file not found) is taken
   for a transient error and tried again until it is dead-lettered.
 - A rule meant for both places can say so by annotating `RuleContext`.
   The built-in rules keep their annotations, so a project's subclass of

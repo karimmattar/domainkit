@@ -31,7 +31,7 @@ from domainkit.contrib.approvals.guards import Guard
 from domainkit.contrib.approvals.services import _check_maker
 from domainkit.contrib.messaging.testing import drain
 from domainkit.ddd import Command, DomainError
-from domainkit.exceptions import ServiceBusy
+from domainkit.exceptions import ServiceBusy, UpstreamError
 from domainkit.http.access import (
     AnonymousPrincipal,
     BasePermission,
@@ -43,6 +43,7 @@ from domainkit.http.access import (
     RuleContext,
     scopes_of,
 )
+from domainkit.http.client import CircuitOpen
 from domainkit.http.errors import transient
 from domainkit.management.base import run_async
 from domainkit_tests.test_approvals_api import decide
@@ -364,6 +365,8 @@ def test_transient_errors_are_told_apart_from_a_rules_own() -> None:
     assert transient(TimeoutError())
     assert transient(ConnectionResetError())
     assert transient(ServiceBusy("Busy."))
+    assert transient(UpstreamError())
+    assert transient(CircuitOpen("Calls to the payments service fail at once."))
     assert transient(gone)
     assert transient(DBAPIError("SELECT 1", {}, Stated("57014")))  # A timeout.
     assert not transient(DBAPIError("SELECT 1", {}, Stated("22021")))  # A NUL.
@@ -382,7 +385,8 @@ class Stated(Exception):
 
 
 @pytest.mark.parametrize(
-    "failure", [TimeoutError("slow"), ConnectionRefusedError("refused")]
+    "failure",
+    [TimeoutError("slow"), ConnectionRefusedError("refused"), UpstreamError()],
 )
 def test_a_transient_error_of_a_maker_rule_is_raised_not_refused(
     client: TestClient,  # noqa: F811 - the fixture.

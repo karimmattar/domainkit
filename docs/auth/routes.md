@@ -184,7 +184,8 @@ a request carries, such as a header or a step-up, refuses there.
 When such a rule raises, approvals tells three kinds of error apart:
 
 - A transient one: a timeout, a connection refused or lost, `ServiceBusy`,
-  or a database that is busy or out of reach
+  an outgoing call that failed (`UpstreamError`, a host's circuit open
+  among them), or a database that is busy or out of reach
   (`domainkit.http.errors.transient`, *new in 2.9*). It goes up, and the
   run is tried again, as any run that meets one is; `approvers_of` raises
   it.
