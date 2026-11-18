@@ -533,11 +533,11 @@ Operator queries: queue depth, lag, listings, retries, cancelling, dropping.
 
 ## `domainkit.contrib.messaging.heartbeat`
 
-The worker's health signal: a file it touches while every check holds.
+The worker's health signals: a file it touches while it lives, one while it is ready.
 
-- `beat`: Run the checks once; touch `path` if all hold. Whether they did.
+- `beat`: Touch `path`, then run the checks: touch `ready` if all hold, else remove it.
 - `failures`: What fails now: `/ready`'s checks, and `broker` (`broker:<alias>`).
-- `heartbeat`: Beat every `interval` seconds until `stop`; then remove `path`.
+- `heartbeat`: Beat every `interval` seconds until `stop`; then remove both files.
 
 ## `domainkit.contrib.messaging.testing`
 

@@ -819,7 +819,7 @@ and a full outbox drained at 950 tasks per second instead of 470.
 before the workers start; run it with an account that may configure the
 virtual host if the workers' account may not. `broker check` tells
 whether each broker answers: on RabbitMQ it opens and closes a channel,
-a round trip, as `runworker --heartbeat-file` does. In staging and production, brokers must use
+a round trip, as `runworker --ready-file` does. In staging and production, brokers must use
 `amqps://` with certificate checks, and a user other than `guest`;
 `memory://`, an in-process broker for tests and development, is refused
 there.

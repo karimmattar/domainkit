@@ -890,8 +890,9 @@ Before 2.4 they did not start.
 | `--database` | A target or an alias whose outboxes to run (default: every database that hosts domains). |
 | `--queue` | Runs only this queue's messages; repeat it for more (default: every queue). |
 | `--no-relay` | With a broker: only consumes, and never reads the outbox. |
-| `--heartbeat-file` | Rewrites this file while the worker's checks hold, from its own event loop: `/ready`'s checks and the broker's. A container's health check reads its age; it is removed when the worker stops ([The worker](../operations.md#the-worker)). |
-| `--heartbeat-interval` | Seconds between checks for `--heartbeat-file` (default: 15; more than 0, at most 3600). |
+| `--heartbeat-file` | Rewrites this file from the worker's own event loop while it runs, whatever its checks find. A container's health check reads its age; it is removed when the worker stops ([The worker](../operations.md#the-worker)). Before 2.9 it aged while a check failed. |
+| `--ready-file` | Rewrites this file while the worker's checks hold (`/ready`'s and the broker's), and removes it when one fails: its readiness. It is removed when the worker stops. |
+| `--heartbeat-interval` | Seconds between rounds for `--heartbeat-file` and `--ready-file` (default: 15; more than 0, at most 3600). |
 
 ### `messages`: see and act on the outbox
 
