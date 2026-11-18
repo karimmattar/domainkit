@@ -23,7 +23,7 @@ from typing import Any, Final
 from sqlalchemy import or_, select
 
 from domainkit.db import connections
-from domainkit.ddd.tenancy import all_tenants
+from domainkit.ddd.tenancy import tenant_alone
 
 from .exceptions import MakerNotAllowed
 from .models import RequestId, RequestStatus, Verdict
@@ -78,26 +78,35 @@ async def export_subject(subject: str) -> Mapping[str, object]:
 async def erase_subject(subject: str) -> Mapping[str, int]:
     """Pseudonymise ``subject`` in the requests and decisions; how many of each.
 
-    In every tenant's requests, as the export lists them all.
+    In every tenant's requests, as the export lists them all: those of
+    each tenant in a transaction of their own, as that tenant alone, so
+    what the commit publishes is that tenant's.
     """
     pseudonym = f"{ERASED}{uuid.uuid4().hex}"
     counts = dict.fromkeys(("requests", "cancelled", "failed", "decisions"), 0)
-    with all_tenants():
-        await _erase(subject, pseudonym, counts)
-    return {kind: count for kind, count in counts.items() if count}
-
-
-async def _erase(subject: str, pseudonym: str, counts: dict[str, int]) -> None:
-    """``erase_subject``'s work, counting into ``counts``."""
     async with ApprovalsUnitOfWork() as uow:
         decided = select(decisions.c.request_id).where(decisions.c.approver == subject)
-        found = await uow.session.scalars(
-            select(requests.c.id).where(
+        found = await uow.session.execute(
+            select(requests.c.id, requests.c.tenant_id).where(
                 or_(requests.c.maker == subject, requests.c.id.in_(decided))
             )
         )
-        for request_id in sorted(found):
-            request = await uow.locked(RequestId(request_id))
+        by_tenant: dict[str | None, list[RequestId]] = {}
+        for row in found:
+            by_tenant.setdefault(row.tenant_id, []).append(RequestId(row.id))
+    for tenant_id in sorted(by_tenant, key=lambda each: each or ""):
+        with tenant_alone(tenant_id):
+            await _erase(subject, pseudonym, sorted(by_tenant[tenant_id]), counts)
+    return {kind: count for kind, count in counts.items() if count}
+
+
+async def _erase(
+    subject: str, pseudonym: str, ids: list[RequestId], counts: dict[str, int]
+) -> None:
+    """Pseudonymise ``subject`` in the requests ``ids``, counting into ``counts``."""
+    async with ApprovalsUnitOfWork() as uow:
+        for request_id in ids:
+            request = await uow.locked(request_id)
             mine = request.maker == subject
             rejected = any(
                 each.approver == subject and each.verdict is Verdict.REJECT

@@ -10,8 +10,7 @@ by query. A request of no tenant is read where no tenant is served.
 Inside ``all_tenants()`` every request is (ADR 0183).
 """
 
-from collections.abc import Iterator
-from contextlib import contextmanager
+from collections.abc import Iterable
 from datetime import datetime
 from typing import Final
 from uuid import UUID
@@ -23,7 +22,7 @@ from domainkit.db import SqlAlchemyRepository, SqlAlchemyUnitOfWork
 from domainkit.db.routing import router
 from domainkit.ddd import Criteria, F, NotFound, Selection
 from domainkit.ddd.query import CriteriaLike, as_criteria
-from domainkit.ddd.tenancy import TenantRequired, no_tenant, row_tenant, tenant
+from domainkit.ddd.tenancy import TenantRequired, row_tenant
 
 from .exceptions import RequestNotFound
 from .models import ApprovalRequest, RequestId, RequestStatus
@@ -50,17 +49,6 @@ def served_tenant() -> object:
     except TenantRequired:
         return None
     return EVERY if owner is None else owner
-
-
-@contextmanager
-def serving(tenant_id: str | None) -> Iterator[None]:
-    """Serve ``tenant_id`` inside the block, or no tenant for None.
-
-    Where a request's own tenant must be served, whatever is served
-    outside: its run, its expiry.
-    """
-    with no_tenant() if tenant_id is None else tenant(tenant_id):
-        yield
 
 
 class RequestRepository(SqlAlchemyRepository[ApprovalRequest, RequestId]):
@@ -112,6 +100,19 @@ class RequestRepository(SqlAlchemyRepository[ApprovalRequest, RequestId]):
             .limit(limit)
         )
         return [RequestId(each) for each in found]
+
+    async def tenants_of(self, ids: Iterable[RequestId]) -> dict[RequestId, str | None]:
+        """The tenant of each request of ``ids``, every tenant's: by id.
+
+        Each one's work is then done as its tenant alone (``tenant_alone``).
+        """
+        wanted = list(ids)
+        if not wanted:
+            return {}
+        found = await self.session.execute(
+            select(requests.c.id, requests.c.tenant_id).where(requests.c.id.in_(wanted))
+        )
+        return {RequestId(row.id): row.tenant_id for row in found}
 
     async def made_by(
         self, maker: str, action: str, digest: str
