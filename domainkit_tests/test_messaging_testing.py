@@ -463,7 +463,9 @@ async def test_drain_runs_rounds_of_a_batch_by_priority() -> None:
     await enqueue(first_then_urgent)
     await enqueue(second)
 
-    with override_settings(MESSAGING={**FAST, "BATCH_SIZE": 1}):
+    # Not a test of timeouts: a slow machine may take longer than FAST's
+    # 0.2 s to queue from inside a task.
+    with override_settings(MESSAGING={**FAST, "BATCH_SIZE": 1, "TASK_TIMEOUT": 30}):
         assert (await kit.drain()).ran == 3
 
     assert ran == ["first", "urgent", "second"]
