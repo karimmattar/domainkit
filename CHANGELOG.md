@@ -161,7 +161,8 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 
 - `probes.W001`: `check` warns of a list of exempt paths that names some of
   `PROBE_PATHS`, not all: the probes it leaves out are exempt from it
-  since 2.9 (audit A28-ARCH-01).
+  since 2.9. The auth app warns so of `AUTH.AUTHENTICATION_EXEMPT_PATHS`
+  (audit A28-ARCH-01).
 
 ### Changed
 

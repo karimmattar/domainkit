@@ -19,7 +19,7 @@ from domainkit.architecture import check_domains
 from domainkit.cache.handler import deployment_warnings as cache_deployment_warnings
 from domainkit.checks import CheckMessage, Level, describe, silence
 from domainkit.conf import settings
-from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
+from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS, probes_left_out
 from domainkit.db import migrations
 from domainkit.db.connections import pool_sizing_warnings
 from domainkit.ddd import event_bus
@@ -136,7 +136,7 @@ def _warnings(app: FastAPI) -> list[str]:
     warnings += _tagged("blocking.W001", sync_calls(app, _project_domains()))
     warnings += _tagged("blocking.W002", awaited_sync(_event_handlers()))
     warnings += _tagged("tenancy.W001", unsaid_throttles(app))
-    warnings += _tagged("probes.W001", _partial_probe_lists())
+    warnings += _partial_probe_lists()
     if not deployed:  # A deployment migrates as it rolls out, after its checks.
         warnings += _tagged("migrations.W001", migrations.unapplied_warnings())
     warnings += shared_apps()
@@ -196,7 +196,7 @@ PROBE_LISTS: Final = (
     "CONCURRENCY_EXEMPT_PATHS",
     "ACCESS_LOG_QUIET_PATHS",
 )
-"""The lists of exact paths that add to ``PROBE_PATHS`` (ADR 0186)."""
+"""The framework's lists of exact paths that add to ``PROBE_PATHS`` (ADR 0186)."""
 
 
 def _partial_probe_lists() -> list[str]:
@@ -204,23 +204,14 @@ def _partial_probe_lists() -> list[str]:
 
     Before 2.9 such a list left the others out on purpose, or kept the old
     default (``/metrics`` was logged at INFO); since, ``PROBE_PATHS``
-    exempts them all, whatever it says.
+    exempts them all, whatever it says (``probes_left_out``). The auth app
+    checks ``AUTH.AUTHENTICATION_EXEMPT_PATHS`` so (``on_deployment_warnings``).
     """
     probes = settings.PROBE_PATHS
-    found: list[str] = []
-    for name in PROBE_LISTS:
-        listed = set(getattr(settings, name))
-        named = [path for path in probes if path in listed]
-        left = [path for path in probes if path not in listed]
-        if named and left:
-            others = ", ".join(left)
-            found.append(
-                f"{name} names {', '.join(named)} of PROBE_PATHS, but not "
-                f"{others}: since 2.9, PROBE_PATHS exempts every probe it names "
-                f"from it too. To leave {others} out, take it out of PROBE_PATHS, "
-                "and add it to each list that should still exempt it."
-            )
-    return found
+    found = (
+        probes_left_out(name, getattr(settings, name), probes) for name in PROBE_LISTS
+    )
+    return [each for each in found if each is not None]
 
 
 def _tagged(check_id: str, messages: Iterable[str]) -> list[str]:

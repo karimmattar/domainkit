@@ -310,9 +310,9 @@ Options weighed:
 7. Django, *django-admin and manage.py*, `runserver`:
    <https://docs.djangoproject.com/en/5.2/ref/django-admin/#runserver>
 
-## Amendment (2026-11-18): a commit in doubt in any task, and `enqueue`'s
+## Amendment (2026-11-18): a commit in doubt in any task, `enqueue`'s, and the auth app's list
 
-The review of this work closed three gaps before release:
+The review of this work closed four gaps before release:
 
 - **The mark is the error's own.** An error that takes no attribute (a
   frozen dataclass's) was kept in a `WeakSet`, which compares by value:
@@ -340,6 +340,11 @@ The review of this work closed three gaps before release:
   commit as a unit of work does, unless the database refused it
   (`refused_commit`, the SQL unit of work's rule, now a function both
   use). A failure before the `COMMIT` is not in doubt.
+- **`AUTH.AUTHENTICATION_EXEMPT_PATHS` in `probes.W001`.** The decision
+  named it among the four lists, but `check` read the framework's three
+  only: the core reads no app's settings. The auth app warns of its own
+  list through `on_deployment_warnings`, in every environment, with the
+  message the others get (`probes_left_out`).
 
 8. Starlette 1.8.0, `starlette/middleware/base.py`, `call_next`: the
    route runs in `task_group.start_soon(coro)`, which keeps an

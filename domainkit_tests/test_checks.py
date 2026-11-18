@@ -21,7 +21,7 @@ from domainkit.conf import UNSET, Settings, override_settings
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import call_command
 from domainkit.management.base import CommandError
-from domainkit_tests.conftest import MakePackage
+from domainkit_tests.conftest import MakePackage, UseAuth
 
 SECRET_KEY: Final = "tests-only-6Zq3b1Jw8RkV0yXc5MnHf2LpT9sDg4AeU7oKiWx3N"
 DEPLOYED: Final = {
@@ -420,6 +420,39 @@ def test_a_list_that_leaves_a_probe_out_is_warned_of(
     with override_settings(**change):
         checked = run("check")
     lines = [line for line in checked.splitlines() if "probes.W001" in line]
+    if said is None:
+        assert lines == []
+        return
+    (line,) = lines
+    assert line.startswith(f"  Warning: probes.W001: {said}: since 2.9, PROBE_PATHS")
+
+
+@pytest.mark.parametrize(
+    ("exempt", "said"),
+    [
+        ((), None),
+        (("/health", "/ready", "/metrics", "/hooks"), None),
+        (
+            ("/health", "/ready"),
+            (
+                "AUTH.AUTHENTICATION_EXEMPT_PATHS names /health, /ready of "
+                "PROBE_PATHS, but not /metrics"
+            ),
+        ),
+    ],
+)
+def test_the_auth_apps_exempt_list_is_warned_of_as_the_others(
+    use_auth: UseAuth, exempt: tuple[str, ...], said: str | None
+) -> None:
+    """``probes.W001`` of ``AUTH.AUTHENTICATION_EXEMPT_PATHS``, said by the auth app.
+
+    2.8 asked credentials of a probe that list left out; since 2.9
+    ``PROBE_PATHS`` exempts it from authentication too. The core reads no
+    app's settings: the app warns through ``on_deployment_warnings``, in
+    every environment, as ``check`` does of the framework's lists.
+    """
+    use_auth(AUTHENTICATION_EXEMPT_PATHS=list(exempt))
+    lines = [line for line in run("check").splitlines() if "probes.W001" in line]
     if said is None:
         assert lines == []
         return
