@@ -54,23 +54,31 @@ The app brings three tables, in every database that hosts a domain:
 ## A first example
 
 A task is an async function marked `@task`. A use case queues it with
-`uow.defer`, and it is stored only if the change commits:
+`uow.defer`, and it is stored only if the change commits. `uow` is the
+use case's unit of work: any `UnitOfWork`, such as the one `startdomain`
+writes for a domain:
 
 ```python
 from uuid import UUID
 
 from domainkit.contrib.messaging import task
+from domainkit.ddd import UnitOfWork
 
 
 @task(name="shop.send_welcome")
 async def send_welcome(user_id: UUID) -> None: ...  # send the mail
 
 
-async with uow:
-    ...
-    uow.defer(send_welcome, user_id=user.id)
-    await uow.commit()
+async def sign_up(uow: UnitOfWork, user_id: UUID) -> None:
+    """A use case: its change, and the task queued with it."""
+    async with uow:
+        ...  # store the new user
+        uow.defer(send_welcome, user_id=user_id)
+        await uow.commit()
 ```
+
+[Part 4 of the tutorial](../tutorial/4-events.md) queues a durable
+handler from a use case the same way, and runs it with the worker.
 
 After the commit, the message waits in the outbox:
 

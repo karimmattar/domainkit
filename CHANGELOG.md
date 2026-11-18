@@ -163,6 +163,21 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   `PROBE_PATHS`, not all: the probes it leaves out are exempt from it
   since 2.9 (audit A28-ARCH-01).
 
+- Three parts continue the tutorial's bank, each walked by
+  `domainkit_tests/test_walkthroughs.py`: money that moves (a transfer
+  under an `Idempotency-Key`, a locked row, a daily limit, and entries in
+  double-entry books), four eyes (large transfers held for another
+  clerk's approval, confirmed as one act with a code, and the audit
+  trail), and telling others (each transfer sent as a signed webhook
+  through the outbox, and a receiver that verifies it)
+  ([the tutorial](docs/tutorial.md)) (audit A28-DX-07).
+
+- Two recipes, walked by `domainkit_tests/test_recipes.py`:
+  organizations in the path (`PathTenant`, `TenantOwned` rows, and
+  members' permissions), and an upload with checks (a checked PDF or a
+  picture, typed by its content, of 2 MB at most)
+  ([recipes](docs/recipes.md)) (audit A28-DX-07).
+
 ### Changed
 
 - `diffsettings` shows each installed domain's settings (`AUTH`,
@@ -283,6 +298,17 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   INFO as unsupported and served every request a 500. Under Granian with
   `SERVE["EXIT_ON_FAILED_START"]`, such a lifespan is a failed start
   (audit A28-DX-04).
+
+- `domainkit init --profile fintech`: the sample transfer is booked in
+  the double-entry books once it commits, as a balanced entry posted by
+  a durable handler (`domains/payments/application/handlers.py`), which
+  opens the month's accounting period when none covers the date; and its
+  facts are recorded as evidence (`defer_evidence`). A transfer whose
+  entry the books would hold for their own approvals
+  (`APPROVALS.ENTRY_THRESHOLDS`) is refused before anything moves, `422
+  transfer_too_large`. Its tests prove each. `docs/learning.md` names the
+  profile as a complete example
+  ([fintech](docs/fintech.md)) (audit A28-DX-06).
 
 ### Fixed
 
@@ -406,6 +432,11 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   to install: `No installed domain declares IdempotencySettings: install
   'domainkit.contrib.idempotency' in INSTALLED_DOMAINS.` (audit
   A28-DX-04).
+
+- The first examples of approvals, action authorizations, messaging,
+  keys, sign-in approvals, phones, and identity define the names they
+  use, or say where each comes from and link the tutorial part that
+  makes one (audit A28-DX-06).
 
 ### Security
 

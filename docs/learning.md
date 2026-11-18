@@ -15,10 +15,12 @@ On this page you find:
 
 Read the guides in this order. Each one builds on the ones before it.
 
-1. **[The tutorial](tutorial.md)**: six parts of about 15 minutes each.
-   You build a project and one route, then a domain, rules, permissions,
-   an event that the worker handles, tests, and the checks production
-   runs.
+1. **[The tutorial](tutorial.md)**: nine parts. In six parts of about 15
+   minutes each, you build a project and one route, then a domain,
+   rules, permissions, an event that the worker handles, tests, and the
+   checks production runs. Three parts of about 30 minutes add transfers
+   booked in double-entry books, approvals by a second person, and
+   signed webhooks.
 2. **[Resources](resources.md)** and **[validation](validation.md)**:
    more aggregates, the routes made from them, and the limits a field or
    an aggregate keeps.
@@ -34,6 +36,14 @@ Read the guides in this order. Each one builds on the ones before it.
 8. **[Testing](testing.md)**: the pytest plugin and its fixtures.
 9. **[Deploying](deploying.md)** and **[operations](operations.md)**:
    from a project whose checks pass to one that serves in production.
+
+**A complete example.** `domainkit init bankAPI --profile fintech`
+writes a whole project with a bank's controls on and wired, and their
+tests: step-up, transfers confirmed for their amount and payee, an
+`Idempotency-Key`, limits, approvals over 1,000.00, encrypted card
+numbers, and each transfer booked as a balanced entry in the ledger with
+its evidence recorded. Read it after the tutorial, beside
+[fintech](fintech.md), which maps each control to its page and its test.
 
 If you know Django or FastAPI, [coming from Django](from-django.md) and
 [coming from FastAPI](from-fastapi.md) map each of their names to
