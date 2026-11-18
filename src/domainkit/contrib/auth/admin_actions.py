@@ -35,7 +35,13 @@ from domainkit.utils.decimals import jsonable
 
 from ._shown import FIELDS as FIELDS
 from ._shown import field_label as field_label
-from ._shown import grants_digest, group_item, named_first, named_permissions
+from ._shown import (
+    grants_digest,
+    group_item,
+    identifying_fields,
+    named_first,
+    named_permissions,
+)
 from .actions import Action, Shown, spent_in_code
 from .exceptions import GroupNotFound, UserNotFound
 from .gates import (
@@ -48,7 +54,7 @@ from .gates import (
     on_admin_screen,
 )
 from .models import AbstractBaseUser, Group, GroupId, UserId
-from .screens import Value, fitted, laid_out, named
+from .screens import Typed, Value, fitted, laid_out, named
 from .settings import auth_settings
 from .uow import AuthUnitOfWork
 
@@ -68,6 +74,8 @@ GROUP_KINDS: Final = frozenset(
     {"group_create", "group_rename", "group_permissions", "group_delete"}
 )
 """The kinds of change made to a group, not to a user."""
+NAMING_KINDS: Final = frozenset({"group_create", "group_rename"})
+"""The kinds of change whose ``name`` staff type: a group's new name (since 2.8)."""
 
 ActKind = Literal[
     "create",
@@ -280,16 +288,21 @@ async def show(act: AdminAct) -> Shown:
     shows as approvals shows it, in a few words: "readers (…9abc) 3 perms",
     and the keys ``AUTH.AUTHORIZATIONS.NAMED_PERMISSIONS`` names among
     what they grant show by name first ("Grants"); in a list of keys, those
-    it names come first (since 2.8). Then the ``on_admin_screen``
-    checks of a change to a user run, or the ``on_admin_group_screen``
-    checks of a change to a stored group (since 2.7): approvals refuses
-    there a change it would hold that its approver's screen could not show
-    whole.
+    it names come first (since 2.8). What staff typed is ``Typed`` (since
+    2.8): the reason, a group's new name, and each text a change sets on a
+    user but the fields that identify them; such a text sent as it is
+    stored (a form saved whole) changes nothing: it is not typed, and with
+    ``TYPED_LINKS`` refused not shown. Then the ``on_admin_screen`` checks
+    of a change to a user run, or the ``on_admin_group_screen`` checks of a
+    change to a stored group (since 2.7): approvals refuses there a change
+    it would hold that its approver's screen could not show whole.
 
     Raises:
         UserNotFound: The user is gone.
         GroupNotFound: The group is gone.
         TooMuchToShow: With ``WHOLE`` on, the change does not fit whole.
+        LinkNotShown: With ``TYPED_LINKS`` refused, what staff typed holds
+            a link, an email address, or a number to call.
     """
     title = TITLES[act.kind]
     if act.kind == "password" and act.password is False:
@@ -305,7 +318,8 @@ async def show(act: AdminAct) -> Shown:
         label = {"group_create": GROUP, "group_rename": NEW_NAME}.get(
             act.kind, USERNAME
         )
-        details.append((gettext(label), act.name))
+        typed = Typed(act.name) if act.kind in NAMING_KINDS else act.name
+        details.append((gettext(label), typed))
     values = dict(act.values)
     details.extend(
         (gettext(label), _flag(values.pop(flag)))
@@ -313,7 +327,7 @@ async def show(act: AdminAct) -> Shown:
         if flag in values
     )
     if act.kind == "impersonate":
-        details.append((gettext(REASON), values.pop("reason", "")))
+        details.append((gettext(REASON), _typed(values.pop("reason", ""))))
     details.extend(_added(act))
     if act.removed:
         details.append((gettext(TAKES_AWAY), act.removed))
@@ -321,9 +335,16 @@ async def show(act: AdminAct) -> Shown:
         state = pgettext("password", PASSWORD_STATES[act.password])
         details.append((gettext(PASSWORD), state))
     taken = {label for label, _ in details}
+    identifiers = identifying_fields()
+    refused = auth_settings().AUTHORIZATIONS.TYPED_LINKS == "refused"
     for name, value in sorted(values.items()):
         label = field_label(name)
         label = name if label in taken else label  # A field "group" beside "Group".
+        if name not in identifiers and isinstance(value, str):
+            if user is None or jsonable(getattr(user, name, None)) != value:
+                value = Typed(value)
+            elif refused:
+                continue  # Sent as stored (a form saved whole): it changes nothing.
         details.append((label, value))
         taken.add(label)
     whole = auth_settings().AUTHORIZATIONS.WHOLE
@@ -381,6 +402,11 @@ def _change_of(act: AdminAct) -> AdminChange:
         removed=frozenset(act.removed),
         values=dict(act.values),
     )
+
+
+def _typed(value: JsonValue) -> JsonValue:
+    """``value`` marked ``Typed`` if it is text: staff wrote it."""
+    return Typed(value) if isinstance(value, str) else value
 
 
 def _flag(value: JsonValue) -> JsonValue:

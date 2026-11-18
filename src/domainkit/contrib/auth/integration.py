@@ -17,7 +17,8 @@ another request (``confirmed_action_authorization``).
 An app that shows a grant on a screen, as approvals shows the admin API's
 changes it holds, names it as the admin API's act does (since 2.8): a group
 in a few words (``group_item``), a name cut to a list's item
-(``list_item``), a user's field (``field_label``), the keys
+(``list_item``), a user's field and the value staff typed in it
+(``field_label``, ``typed_field``), the keys
 ``AUTH.AUTHORIZATIONS.NAMED_PERMISSIONS`` names (``named_permissions``,
 ``named_first``), and grants on objects by their digest (``grants_digest``).
 """
@@ -30,6 +31,7 @@ from ._shown import (
     list_item,
     named_first,
     named_permissions,
+    typed_field,
 )
 from .access import impersonated, proof_of
 from .actions import (
@@ -178,6 +180,7 @@ __all__ = [
     "step_up_answer",
     "stepping_credentials",
     "target_of",
+    "typed_field",
     "user_for_staff",
     "utc_now",
 ]

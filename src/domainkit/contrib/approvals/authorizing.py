@@ -17,7 +17,12 @@ arguments, and the reason given (ADR 0163).
 What a request shows is its guard's ``show``, or its arguments by name,
 laid out on a phone's screen, a list over as many lines as it takes. With
 ``AUTH.AUTHORIZATIONS.WHOLE`` on, submitting and approving refuse what
-does not fit whole (ADR 0173); rejecting and cancelling cut and count it.
+does not fit whole (ADR 0173); rejecting and cancelling cut and count it,
+and refuse a reason longer than a line (since 2.8, ADR 0180). A reason
+given, and what a guard's ``show`` marks ``Typed``, are checked as typed
+text: with ``AUTH.AUTHORIZATIONS.TYPED_LINKS`` refused, one that holds a
+link is refused. Rejecting and cancelling check their own reason, never
+what the request typed.
 
 Only imported with one of them on, and so with ``domainkit.contrib.auth``
 installed (``ApprovalsConfig.ready`` refuses it otherwise).
@@ -38,7 +43,7 @@ from domainkit.contrib.auth.actions import (
     request_action_authorization,
     requires_authorization,
 )
-from domainkit.contrib.auth.screens import fitted, laid_out
+from domainkit.contrib.auth.screens import Typed, fitted, laid_out, on_typed_text
 from domainkit.ddd import UnitOfWork
 from domainkit.i18n import gettext, gettext_noop, ngettext
 
@@ -125,12 +130,16 @@ async def show_rejection(command: RejectRequest) -> Shown:
 
     Asking is refused as rejecting would be: a request no longer pending,
     the maker, a party to the command, someone who decided it already.
-    Never for what it shows: stopping a request does nothing it does not
-    show, so what does not fit is cut and counted.
+    Never for what the request shows: stopping a request does nothing it
+    does not show, so what does not fit is cut and counted, and what its
+    maker typed is not checked. The reason given is the approver's own
+    (since 2.8): ``Typed``, and with ``AUTH.AUTHORIZATIONS.WHOLE`` on,
+    refused past a line (``TooMuchToShow``), as an impersonation's is.
     """
     request = await check_rejection(command)
+    reason = stated(command.reason)
     shown = await _shown(request)
-    details = details_of(request.action, shown, reason=command.reason)
+    details = details_of(request.action, shown, reason=reason, typed=False)
     return Shown(fitted(gettext(REJECT_TITLE)), details)
 
 
@@ -138,13 +147,26 @@ async def show_cancellation(command: CancelRequest) -> Shown:
     """The request's action, the reason if any, and the arguments, stored.
 
     Asking is refused as cancelling would be: a request no longer pending,
-    or someone other than its maker. Never for what it shows, as for a
-    rejection.
+    or someone other than its maker. Never for what the request shows, as
+    for a rejection; the reason given is checked as a rejection's is.
     """
     request = await check_cancellation(command)
+    reason = stated(command.reason)
     shown = await _shown(request)
-    details = details_of(request.action, shown, reason=command.reason)
+    details = details_of(request.action, shown, reason=reason, typed=False)
     return Shown(fitted(gettext(CANCEL_TITLE)), details)
+
+
+def stated(reason: str) -> Typed:
+    """A rejection's or a cancellation's ``reason``, as its screen shows it: ``Typed``.
+
+    Raises:
+        TooMuchToShow: With ``AUTH.AUTHORIZATIONS.WHOLE`` on, it is longer
+            than a line (since 2.8).
+    """
+    if reason and whole():
+        laid_out([(gettext(REASON_LABEL), reason)], whole=True)
+    return Typed(reason)
 
 
 async def check_approvable(guard: Guard, command: object) -> None:
@@ -154,16 +176,28 @@ async def check_approvable(guard: Guard, command: object) -> None:
     ``AUTH.AUTHORIZATIONS.WHOLE``, a request no approver's screen shows
     whole could never be approved, so it is never stored.
 
+    It is refused too where what it typed would be refused on that
+    screen: with ``TYPED_LINKS`` refused, or an ``on_typed_text`` check
+    registered (since 2.8).
+
     Raises:
         TooMuchToShow: ``WHOLE`` is on, and approving it would not fit.
+        LinkNotShown: ``TYPED_LINKS`` is refused, and what approving it
+            shows typed holds a link.
     """
-    if whole():
-        details_of(guard.action, await shown_of(guard, command), whole=True)
+    if whole() or typed_checked():
+        details_of(guard.action, await shown_of(guard, command), whole=whole())
 
 
 def whole() -> bool:
     """Whether acts show what they do whole, or are refused (auth's ``WHOLE``)."""
     return registry.settings(AuthSettings).AUTHORIZATIONS.WHOLE
+
+
+def typed_checked() -> bool:
+    """Whether a screen refuses some typed text: auth's ``TYPED_LINKS``, or a check."""
+    refused = registry.settings(AuthSettings).AUTHORIZATIONS.TYPED_LINKS == "refused"
+    return refused or any(True for _ in on_typed_text)
 
 
 async def _shown(request: ApprovalRequest) -> Iterable[tuple[str, object]]:
@@ -188,6 +222,7 @@ def details_of(
     *,
     reason: str = "",
     whole: bool = False,
+    typed: bool = True,
 ) -> list[tuple[str, str]]:
     """The action, the reason if any, then the arguments by name, on a screen.
 
@@ -199,23 +234,30 @@ def details_of(
     ``whole``, what does not fit whole is refused (``TooMuchToShow``);
     otherwise a value is cut to 64 characters, a list's last line says how
     many more, and with more than fit, a last line how many arguments.
+    A ``Typed`` reason or argument is checked as ``laid_out`` checks one;
+    without ``typed``, an argument's mark is dropped, unchecked.
     """
     pairs = arguments.items() if isinstance(arguments, Mapping) else arguments
     details: list[tuple[str, object]] = [(gettext(ACTION_LABEL), action)]
     if reason:
         details.append((gettext(REASON_LABEL), reason))
-    details.extend((str(name), _jsonable(value)) for name, value in pairs)
+    details.extend((str(name), _jsonable(value, typed)) for name, value in pairs)
     return laid_out(details, whole=whole, more=_more_arguments)
 
 
-def _jsonable(value: object) -> object:
-    """``value`` as JSON: what JSON has as itself, anything else as its text."""
-    if value is None or isinstance(value, str | int | float | bool):
+def _jsonable(value: object, typed: bool = True) -> object:
+    """``value`` as JSON: what JSON has as itself, anything else as its text.
+
+    A ``Typed`` text stays marked, at the top or in a list, unless not ``typed``.
+    """
+    if isinstance(value, str):
+        return value if typed or type(value) is str else str(value)
+    if value is None or isinstance(value, int | float | bool):
         return value
     if isinstance(value, Mapping):
         return {str(key): _jsonable(each) for key, each in value.items()}
     if isinstance(value, list | tuple):
-        return [_jsonable(each) for each in value]
+        return [_jsonable(each, typed) for each in value]
     return str(value)
 
 

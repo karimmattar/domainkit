@@ -5,8 +5,9 @@ changes show the same things the same way: a group added in a few words,
 "readers (…9abc) 3 perms + 2 object grants"; the keys a setting names,
 by name, wherever they would be counted
 (``AUTH.AUTHORIZATIONS.NAMED_PERMISSIONS``); and a user's field as a
-person reads it ("Email", "Display name"). Other apps reach these names
-through ``domainkit.contrib.auth.integration``.
+person reads it ("Email", "Display name"), its value ``Typed`` where staff
+wrote it (``typed_field``). Other apps reach these names through
+``domainkit.contrib.auth.integration``.
 """
 
 import hashlib
@@ -16,8 +17,9 @@ from typing import TYPE_CHECKING, Final
 from domainkit.conf import settings
 from domainkit.i18n import gettext, gettext_noop, ngettext, pgettext
 
-from .screens import TooMuchToShow, laid_out
-from .settings import auth_settings
+from .screens import TooMuchToShow, Typed, laid_out
+from .settings import auth_settings, identifier_fields
+from .users import get_user_model
 
 if TYPE_CHECKING:
     from .backends import ObjectGrant
@@ -125,6 +127,30 @@ def field_label(name: str) -> str:
         return gettext(FIELDS[name])
     spaced = name.replace("_", " ").strip()
     return spaced[:1].upper() + spaced[1:] if spaced else name
+
+
+def identifying_fields() -> frozenset[str]:
+    """The user's fields that name them: a screen shows them as set, never as typed.
+
+    The username, the email, and each identifier (``IDENTIFIER_FIELDS``,
+    ``AUTH.IDENTIFIERS``): an address or a number there is what is set.
+    """
+    model = get_user_model()
+    named = {model.USERNAME_FIELD, model.EMAIL_FIELD}
+    named |= {*getattr(model, "IDENTIFIER_FIELDS", ()), *identifier_fields(model)}
+    return frozenset(each for each in named if each)
+
+
+def typed_field(name: str, value: object) -> object:
+    """A user's field ``name`` set to ``value``, as a screen shows it (since 2.8).
+
+    Text staff wrote is ``Typed``, so that ``laid_out`` checks it (ADR
+    0180), but in a field that identifies the user (``identifying_fields``);
+    any other value as given.
+    """
+    if isinstance(value, str) and name not in identifying_fields():
+        return Typed(value)
+    return value
 
 
 def grants_digest(grants: "Iterable[ObjectGrant]") -> tuple[int, str]:

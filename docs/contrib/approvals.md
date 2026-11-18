@@ -666,7 +666,14 @@ PATCH /admin/auth/users/6f1c... {"is_staff": true}                       200: th
   its own. Before, the request held the grant alone, and an approval of
   Bob's return was spent by a call that also gave Bob another address,
   which no approver saw (user report A17). A request of 2.7, which holds
-  none, is found and spent as before by a call that sets nothing else.
+  none, is found and spent as before by a call that sets nothing else. A
+  value the user holds already is not held: it changes nothing, so a
+  form saved whole holds what it changes, and the approver sees only
+  that. Each text staff typed there is `Typed`, as on the admin API's
+  screen (`typed_field`): with auth's `AUTHORIZATIONS.TYPED_LINKS`
+  refused, one that holds a link is refused when the change is held, and
+  approving a request that holds one is refused ([Text a person
+  typed](../auth/actions.md#text-a-person-typed)).
 - **A value another user has is refused before the hold** (since 2.8):
   an address that identifies users, a number, a username (`409`). Before,
   the commit refused it after the hold had spent the approval. A value
@@ -952,6 +959,14 @@ too_much_to_show`): asking to approve such a request, and, with
 approval nobody could confirm whole. The approver reads the whole request
 at `GET /requests/{id}`.
 
+**What the maker typed** (since 2.8): a guard's `show` marks it `Typed`
+(`("Memo", Typed(command.memo))`), as an impersonation's "Stated reason"
+is. With auth's `AUTHORIZATIONS.TYPED_LINKS` set to `"refused"`, a
+request whose typed text holds a link, an email address, or a number to
+call is refused when it is submitted and when approving it is asked for
+(`422 link_not_shown`); arguments shown by name are never marked
+([Text a person typed](../auth/actions.md#text-a-person-typed)).
+
 **Asking is refused as approving would be**: a request that is no longer
 pending (`request_not_pending`), the maker (`maker_cannot_decide`), a
 party to the command (`interested_party`), someone who decided it already
@@ -1026,7 +1041,10 @@ POST /api/approvals/requests {"action": "treasury.payout", "arguments": {...}}
   the maker's fields set to the maker. With auth's
   `AUTHORIZATIONS.WHOLE` on, submitting refuses what does not fit whole,
   as approving does; rejecting and cancelling never do: they stop a
-  request, so what does not fit is cut and counted.
+  request, so what does not fit is cut and counted. Their own reason is
+  the decider's: with `WHOLE` on, one longer than a line is refused (`422
+  too_much_to_show`, since 2.8), and with `TYPED_LINKS` refused, one that
+  holds a link (`422 link_not_shown`); what the request typed never is.
 - **The act is bound.** A submission with other arguments, a rejection
   or a cancellation with another reason, or of another request, is
   refused (`403 action_not_authorized`), and voids the authorization.
@@ -1429,9 +1447,12 @@ action_not_authorized` with one that does not hold, and those of asking
 for one ([Errors and refusals](../auth/actions.md#errors-and-refusals)).
 With auth's `AUTHORIZATIONS.WHOLE` on as well, asking to approve, and
 submitting, a request whose screen cannot show it whole answers `422
-too_much_to_show` (`TooMuchToShow`).
+too_much_to_show` (`TooMuchToShow`), and with `TYPED_LINKS` refused, one
+whose typed text holds a link answers `422 link_not_shown`
+(`LinkNotShown`).
 So do submitting, rejecting, and cancelling with `SUBMIT_ACTION`,
-`REJECT_ACTION`, and `CANCEL_ACTION` on.
+`REJECT_ACTION`, and `CANCEL_ACTION` on: rejecting and cancelling for
+their own reason only.
 
 ## Common mistakes
 

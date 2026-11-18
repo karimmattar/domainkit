@@ -278,6 +278,15 @@ and `protobuf` in `immudb`). CI's lint job checks it with deptry
 
 This section is for maintainers.
 
+Before the release commit, refresh the data the package copies from
+others, in a pull request of its own: `python3 .github/scripts/screen_data.py`
+downloads IANA's list of top-level domains and Unicode's confusables, and
+rewrites `src/domainkit/contrib/auth/tlds-alpha-by-domain.txt` and
+`confusable-letters.txt`, which `holds_link` reads
+([ADR 0180](adr/0180-refuse-links-a-person-typed-for-a-screen-and-a-reason-past-a-line.md)).
+Review the diff (a domain added, a letter mapped anew), and note it in
+the changelog if it changes what is refused.
+
 1. Move the changelog's **Unreleased** entries under the new version and
    date (`## [X.Y.Z] - YYYY-MM-DD`), and leave **Unreleased** empty.
 2. Update `version` in `pyproject.toml`. Steps 1 and 2 make the release

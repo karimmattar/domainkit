@@ -1,0 +1,245 @@
+# Letters of other scripts that read as Latin ones: a character, then the
+# Latin letters it reads as. domainkit.contrib.auth.screens reads a
+# top-level domain typed in them as the Latin one (holds_link).
+#
+# Derived from Unicode's confusables.txt, version 18.0.0 (UTS #39,
+# https://www.unicode.org/Public/security/latest/confusables.txt): each
+# character of the Latin, Cyrillic, Greek, Armenian, Cherokee, Coptic, and
+# Lisu scripts that it maps to one Latin letter, after NFKC, case folding,
+# and its combining marks dropped. Used under the Unicode License V3:
+#
+# UNICODE LICENSE V3
+#
+# COPYRIGHT AND PERMISSION NOTICE
+#
+# Copyright © 1991-2026 Unicode, Inc.
+#
+# NOTICE TO USER: Carefully read the following legal agreement. BY
+# DOWNLOADING, INSTALLING, COPYING OR OTHERWISE USING DATA FILES, AND/OR
+# SOFTWARE, YOU UNEQUIVOCALLY ACCEPT, AND AGREE TO BE BOUND BY, ALL OF THE
+# TERMS AND CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT
+# DOWNLOAD, INSTALL, COPY, DISTRIBUTE OR USE THE DATA FILES OR SOFTWARE.
+#
+# Permission is hereby granted, free of charge, to any person obtaining a
+# copy of data files and any associated documentation (the "Data Files") or
+# software and any associated documentation (the "Software") to deal in the
+# Data Files or Software without restriction, including without limitation
+# the rights to use, copy, modify, merge, publish, distribute, and/or sell
+# copies of the Data Files or Software, and to permit persons to whom the
+# Data Files or Software are furnished to do so, provided that either (a)
+# this copyright and permission notice appear with all copies of the Data
+# Files or Software, or (b) this copyright and permission notice appear in
+# associated Documentation.
+#
+# THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+# KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF
+# THIRD PARTY RIGHTS.
+#
+# IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS NOTICE
+# BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES,
+# OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+# WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+# ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE DATA
+# FILES OR SOFTWARE.
+#
+# Except as contained in this notice, the name of a copyright holder shall
+# not be used in advertising or otherwise to promote the sale, use or other
+# dealings in these Data Files or Software without prior written
+# authorization of the copyright holder.
+
+00FE p
+0131 i
+0185 b
+018D g
+0192 f
+01BD s
+01BF p
+01C0 l
+0237 j
+024D r
+0251 a
+0261 g
+0263 y
+0269 i l
+026A i l
+026F w
+0280 r
+0284 f
+028B u
+028F y
+029D j
+03B1 a
+03B2 b
+03B3 y
+03B5 e
+03B6 z
+03B7 h
+03B9 i l
+03BA k
+03BC m
+03BD n v
+03BF o
+03C1 p
+03C3 c o
+03C4 t
+03C5 u y
+03C7 x
+03DD f
+03ED o
+03F3 j
+03F8 p
+03FB m
+0430 a
+0432 b
+0433 r
+0435 e
+043A k
+043C m
+043D h
+043E o
+0440 p
+0441 c
+0442 t
+0443 y
+0445 x
+0448 w
+044C b
+0455 s
+0456 i l
+0458 j
+0461 w
+0475 v
+04AF y
+04BB h
+04BD e
+04CF l
+0501 d
+050D g
+051B q
+051D w
+0561 w
+0563 q
+0566 q
+0570 h
+0575 j
+0578 n
+057C n
+057D u
+057F s
+0581 g
+0582 i
+0584 f
+0585 o
+13A0 d
+13A1 r
+13A2 t
+13A5 i
+13A9 y
+13AA a
+13AB j
+13AC e
+13B1 r
+13B3 w
+13B7 m
+13BB h
+13BD y
+13C0 g
+13C2 h
+13C3 z
+13CF b
+13D2 r
+13D4 w
+13D5 s
+13D9 v
+13DA s
+13DE l
+13DF c
+13E2 p
+13E6 k
+13E7 d
+13F3 g
+13F4 b
+1D04 c
+1D0F o
+1D11 o
+1D1C u
+1D20 v
+1D21 w
+1D22 z
+1D26 r
+1D83 g
+1D8C y
+1E9D f
+1EFF y
+2C6C z
+2C83 b
+2C85 r
+2C8D z
+2C8F h
+2C93 i l
+2C95 k
+2C99 m
+2C9B n
+2C9F o
+2CA3 p
+2CA5 c
+2CA7 t
+2CA9 y
+2CAD x
+2CBD w
+2CCF p
+2CD1 l
+A4D0 b
+A4D1 p
+A4D2 d
+A4D3 d
+A4D4 t
+A4D6 g
+A4D7 k
+A4D9 j
+A4DA c
+A4DC z
+A4DD f
+A4DF m
+A4E0 n
+A4E1 l
+A4E2 s
+A4E3 r
+A4E6 v
+A4E7 h
+A4EA w
+A4EB x
+A4EC y
+A4EE a
+A4F0 e
+A4F2 l
+A4F3 o
+A4F4 u
+A647 i
+A731 s
+A781 l
+A799 f
+A79F u
+A7B5 b
+A7FA w
+A7FE l
+AB32 e
+AB35 f
+AB3D o
+AB47 r
+AB48 r
+AB4E u
+AB52 u
+AB53 x
+AB5A y
+AB64 a
+1017E f
+1018B d
+102F5 z
+1D207 b
+1D20C w
+1D20D v
+1D213 f
+1D216 r
+1D22A l

@@ -597,6 +597,8 @@ jobs:
           python -m zipfile -l dist/*.whl | grep -q "management/templates/profiles/fintech/dot-github/workflows/ci.yml-tpl"
           python -m zipfile -l dist/*.whl | grep -q "management/templates/servers/granian/Dockerfile-tpl"
           python -m zipfile -l dist/*.whl | grep -q "contrib/auth/common-passwords.txt.gz"
+          python -m zipfile -l dist/*.whl | grep -q "contrib/auth/tlds-alpha-by-domain.txt"
+          python -m zipfile -l dist/*.whl | grep -q "contrib/auth/confusable-letters.txt"
       # Uploaded as built, before anything else is installed or run here: what
       # the smoke tests below install could otherwise change the files the
       # attest job signs (audit A7-1).

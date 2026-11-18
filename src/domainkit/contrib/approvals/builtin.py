@@ -386,12 +386,13 @@ async def show_about_user(command: Any) -> list[tuple[str, object]]:  # noqa: AN
     meanwhile shows as "(erased)". ``added`` and ``removed`` are lists
     ("Adds", "Takes away"), left out when empty, the keys
     ``AUTH.AUTHORIZATIONS.NAMED_PERMISSIONS`` names first among those it
-    adds (since 2.8); ``reason`` is "Stated reason"; any other field shows
-    by its name. A command with no ``user_id`` shows its fields alone.
+    adds (since 2.8); ``reason`` is "Stated reason", ``Typed`` (since 2.8);
+    any other field shows by its name. A command with no ``user_id`` shows
+    its fields alone.
     """
     from domainkit.contrib.auth import AuthUnitOfWork, UserId
     from domainkit.contrib.auth.integration import named_first
-    from domainkit.contrib.auth.screens import named
+    from domainkit.contrib.auth.screens import Typed, named
 
     shown: list[tuple[str, object]] = []
     dumped = TypeAdapter(type(command)).dump_python(command, mode="json")
@@ -407,6 +408,8 @@ async def show_about_user(command: Any) -> list[tuple[str, object]]:  # noqa: AN
             if value:
                 shown.append((gettext(SHOWN_LABELS[name]), value))
         elif name in SHOWN_LABELS:
+            if name == "reason" and isinstance(value, str):  # The maker typed it.
+                value = Typed(value)
             shown.append((gettext(SHOWN_LABELS[name]), value))
         else:
             shown.append((name, value))
@@ -530,9 +533,11 @@ def _values(values: Mapping[str, object]) -> list[tuple[str, object]]:
 
     The flags first ("Active: no"), then the fields as the admin API's act
     names them ("Email", "Display name"), each in its order; a field
-    cleared shows as "(none)", in the request's language.
+    cleared shows as "(none)", in the request's language. A text staff
+    typed is ``Typed`` (``typed_field``), as on the admin API's screen:
+    checked where it is shown (ADR 0180).
     """
-    from domainkit.contrib.auth.integration import field_label
+    from domainkit.contrib.auth.integration import field_label, typed_field
 
     yes_no = {True: pgettext("flag", "yes"), False: pgettext("flag", "no")}
     flags = [
@@ -541,7 +546,10 @@ def _values(values: Mapping[str, object]) -> list[tuple[str, object]]:
         if (value := values.get(name, UNSHOWN)) is not UNSHOWN
     ]
     fields = [
-        (field_label(name), pgettext("value", "(none)") if value is None else value)
+        (
+            field_label(name),
+            pgettext("value", "(none)") if value is None else typed_field(name, value),
+        )
         for name, value in sorted(values.items())
         if name not in FLAG_LABELS
     ]
@@ -1143,19 +1151,28 @@ async def _updated(
         granted = [
             name for name in ("is_staff", "is_active") if values.get(name) is True
         ]
-        return SET_STAFF, SetStaff(user_id=target.id, values=_beside(values, granted))
+        held_values = _beside(target, values, granted)
+        return SET_STAFF, SetStaff(user_id=target.id, values=held_values)
     return None
 
 
-def _beside(values: Mapping[str, object], granted: Iterable[str]) -> dict[str, Any]:
-    """What a change sets beside its grant (``granted``), as JSON, by field."""
+def _beside(
+    target: "AbstractBaseUser", values: Mapping[str, object], granted: Iterable[str]
+) -> dict[str, Any]:
+    """What a change sets beside its grant (``granted``), as JSON, by field.
+
+    A value ``target`` holds already is left out (since 2.8): it changes
+    nothing, so its approver is not shown it, nor checked for it (a form
+    saved whole sends a name as stored, a link the admin API's act leaves
+    off its screen too: ADR 0180).
+    """
     from domainkit.utils.decimals import jsonable
 
     left = set(granted)
     return {
         name: jsonable(value)
         for name, value in sorted(values.items())
-        if name not in left
+        if name not in left and jsonable(getattr(target, name, None)) != jsonable(value)
     }
 
 
@@ -1193,7 +1210,7 @@ async def _returning(
         permissions=permissions,
         object_grants=count,
         object_grants_digest=digest,
-        values=_beside(values, ("is_active", *flags)),
+        values=_beside(target, values, ("is_active", *flags)),
     )
 
 
