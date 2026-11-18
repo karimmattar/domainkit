@@ -13,6 +13,19 @@ On this page you learn how to:
 - fill in fields just before a commit, with `before_save()`;
 - read the answer a client gets when a value is refused.
 
+## When to use it, and when not to
+
+- **Use it when** a limit belongs to one field and holds everywhere: a
+  length, a range, a format. The aggregate, the request body, and the
+  column then refuse the same values.
+- **Use `clean()`** for a rule across the fields of one aggregate, and a
+  method of the aggregate for a rule that depends on its state ("an
+  archived account takes no deposits"), as
+  [tutorial part 2](tutorial/2-rules.md) writes them.
+- **Do not use it** for a rule that reads the database or other
+  aggregates, such as a name no other row has: a marker sees one value.
+  Use a [unique column](databases.md#unique-values), or the use case.
+
 ## A first example
 
 A product has an SKU (a stock code), a name, and a stock count. Each field

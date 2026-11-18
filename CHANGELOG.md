@@ -5,11 +5,56 @@ All notable changes to domainkit. The format follows
 [Semantic Versioning](https://semver.org/); see `docs/versioning.md`.
 Entries end with the ids of the review findings they answer, such as
 `(FIN-77)`: [docs/audit/0.9.0.md](docs/audit/0.9.0.md) gives each a title
-and a status.
+and a status. Ids that start with `A28-` name the 2.8 audit's findings,
+listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 
 ## [Unreleased]
 
 ### Added
+
+- `--version` prints domainkit's version (`python manage.py --version`,
+  `domainkit --version`), and `help <command>` prints the command's
+  options, as `<command> --help` does
+  ([Running a command](docs/reference/commands.md#running-a-command),
+  [upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-12).
+
+- `.github/workflows/docs.yml` publishes the documentation site to GitHub
+  Pages when a release tag is pushed: whatever tag starts it, the site
+  of the newest final release, once `release.yml`'s tag checks pass that
+  release, so a tag that those checks refuse publishes nothing.
+  `release_check.py --as-pushed` judges a tag as when it was pushed. The
+  workflow's one job that writes may write to Pages alone, and it reads
+  no secret. The repository's owner turns Pages on once
+  ([One-time setup](docs/versioning.md#one-time-setup), ADR 0189)
+  (audit A28-DX-02).
+
+- [Choosing a feature](docs/choosing.md): which tool a need takes where
+  two look alike (idempotency keys or the inbox, money limits or rate
+  limits, a step-up, an authorization, or approvals, a balance field or
+  the ledger, rows, databases, or schemas per tenant), and which to
+  leave alone. Sixteen feature pages open with "When to use it, and when
+  not to", and link the tool to use instead (audit A28-DX-05).
+
+- Runbook entries for a write that ran past its deadline, a retry that
+  finds the request ran (`409 idempotency_response_unavailable`), webhook
+  deliveries that fail, codes and mail that do not arrive, and requests
+  that fail during a rollout; the request flow, request deadlines, and
+  the rollout checklist say what a deadline answer tells about a commit,
+  and how a stopping process keeps serving
+  ([Runbook](docs/runbook.md#find-the-entry)) (audit A28-REL-06).
+
+- `examples/`: three runnable projects, each made by `domainkit init`,
+  with a walkthrough that opens with the problem it solves, and tests.
+  `payments-ledger` keeps wallets in double-entry books: payments under
+  an `Idempotency-Key`, holds captured or released, refunds as
+  reversals, and the trial balance. `maker-checker` holds large payouts
+  for approval, the maker and the approver each confirming the act.
+  `outbox-webhooks` sends transfers through a durable handler, with
+  retries and dead letters, and signed webhooks to a receiver that
+  verifies them. domainkit's tests play each one's CI workflow, on
+  SQLite and on PostgreSQL, so a change that breaks one fails CI; the
+  wheel and the sdist leave them out (ADR 0190). README.md and
+  `docs/learning.md` link them (audit A28-DX-06).
 
 - `per_tenant=False` on `live_events.stream`, `forward`, and
   `subscribe`: a route that serves every tenant on purpose, such as a
@@ -17,6 +62,7 @@ and a status.
   By default a subscription hears the tenant it is served as
   ([Live committed events](docs/live.md#live-committed-events), ADR 0183)
   (audit A28-SEC-01).
+
 - `everywhere=True` on `HasPermissions` (and `HasObjectPermissions`),
   `HasModelPermission`, `ModelActions`, and approvals' `guard()`
   (`Guard.everywhere`): only the permissions a user holds where no
@@ -24,6 +70,7 @@ and a status.
   commands over rows every tenant shares. Unset, nothing changes
   ([Rows of no tenant](docs/tenancy.md#rows-of-no-tenant), ADR 0183)
   (audit A28-SEC-04).
+
 - `tenancy.I001`: with `TENANCY` set, `check` names the installed apps
   whose rows every tenant shares, `domainkit.contrib.accounting` and
   `domainkit.contrib.limits`. It is an info, which `check --deploy` lists
@@ -33,15 +80,78 @@ and a status.
 
 ### Changed
 
+- `diffsettings` shows each installed domain's settings (`AUTH`,
+  `APPROVALS`, `LIMITS`, ...) as its schema validated them, defaults
+  filled in, and marks those left at their defaults under `--all`; 2.8
+  hid a domain's settings whole. It fails closed: values typed as
+  secrets, names that suggest one (`sid` and `pin` now among them), URL
+  passwords and `password=` pairs, and all text in a mapping or a value
+  typed `Any` (a provider's options) stay hidden
+  ([diffsettings](docs/reference/commands.md#diffsettings-show-the-settings),
+  [upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-10).
+
+- In development and tests, each problem the application finds at its
+  build or start (a route without an access rule, say) is logged as a
+  warning of its own, on one line; 2.8 logged them in one record, which
+  the log escaped onto one line with `\n` between them
+  ([upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-12).
+
+- `createsuperuser`'s note on a superuser that no code can reach says
+  "no verification code can be sent to the superuser ... until its email
+  address is verified" (audit A28-DX-12).
+
+- PyPI's "Documentation" link opens the first page, `docs/index.md`, not
+  `docs/reference.md` (audit A28-DX-02).
+
+- The site's navigation keeps the pages for those who make domainkit
+  (decisions, the style guide, the roadmap, the audits) under "Project",
+  apart from the reference; their addresses do not change. The feature
+  inventory says that it records the review of 1.5 (audit A28-DX-13).
+
 - An approver's list of approval requests reads through an index of the
   tenant, the action, the policy, and the time submitted
   (`ix_domainkit_approval_requests_scope`). An approver of a rare policy
   read the whole table on every page: 29 ms a page at 300,000 requests on
   PostgreSQL, 0.08 ms with the index. Run `makemigrations` and `migrate`
   (audit A28-PERF-04).
+
 - An approval screen reads the names of the groups a change holds in one
   statement, where it read one per group, up to 1,000 of them (audit
   A28-PERF-07).
+
+### Fixed
+
+- The tutorial and the recipes name the file each block makes or
+  changes in the text above it, which GitHub shows; a block's title, the
+  only place that named it, is shown by the site alone. `test_docs.py`
+  fails on a titled block whose file the text does not name (audit
+  A28-DX-01).
+
+- The README's quick start makes the four-file domain that `startdomain`
+  makes by default, and that the tutorial starts from, and describes
+  `--layered` and `--minimal` as they are. It counts the tutorial's six
+  parts, and says when a route answers 401, 403, or 404. The recipes
+  that make a layered domain say why (audit A28-DX-03).
+
+- The first example of [Authenticating requests](docs/auth/authentication.md#a-first-example)
+  runs in a project made by `init`: it logs in by email address, and
+  sends a host the local settings accept. `test_walkthroughs.py` runs it
+  (audit A28-DX-09).
+
+- The tutorial says that its commands need a POSIX shell, and to use WSL
+  or Git Bash on Windows
+  ([Before you start](docs/tutorial.md#before-you-start)) (audit
+  A28-DX-11).
+
+- [Free-threaded Python](docs/runtime.md#free-threaded-python) names
+  the `documents` (`fill_docx`, `placeholders`) and `saml` extras, whose
+  lxml turns the GIL back on for the rest of the process, beside
+  `immudb` (audit A28-PERF-06).
+
+- [What a request costs](docs/performance.md#what-a-request-costs) shows
+  each rung's calls, round trips, and modules as `benchmarks/budgets.toml`
+  holds them, and `test_docs.py` fails when the two differ (audit
+  A28-PERF-09).
 
 ### Security
 
@@ -53,6 +163,7 @@ and a status.
   without `TENANCY` sees no change
   ([upgrading.md](docs/upgrading.md#28-to-29), ADR 0183) (audit
   A28-SEC-01).
+
 - Approval requests are scoped to the tenant they were submitted in:
   they are listed, read, approved, rejected, and cancelled where that
   tenant is served alone, by the routes and from code, and the approved
@@ -68,6 +179,7 @@ and a status.
   ([Requests and tenants](docs/contrib/approvals.md#requests-and-tenants),
   [upgrading.md](docs/upgrading.md#28-to-29), ADR 0183) (audit
   A28-SEC-02).
+
 - The routes of `domainkit.contrib.limits` and
   `domainkit.contrib.accounting`, and approvals' guards of postings,
   captures, reversals, making superusers, and admin changes, count only
@@ -77,6 +189,7 @@ and a status.
   ([Rows of no tenant](docs/tenancy.md#rows-of-no-tenant),
   [upgrading.md](docs/upgrading.md#28-to-29), ADR 0183) (audit
   A28-SEC-04).
+
 - The staff APIs count a staff member's permissions as they hold them
   everywhere: the admin API (users, groups, permissions), the staff APIs
   of `domainkit.contrib.flags` and `domainkit.contrib.webhooks`, the

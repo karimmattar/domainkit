@@ -33,7 +33,8 @@ python manage.py migrate
 ### Step 2: read the keys from the environment
 
 In production, the signing key comes from the environment. So do the
-keys it replaced, with the time the rollout of the new key ended:
+keys it replaced, with the time the rollout of the new key ended. Add
+them to `src/config/settings/production.py`:
 
 ```python title="src/config/settings/production.py"
 AUTH = {
@@ -51,7 +52,7 @@ AUTH = {
 }
 ```
 
-The tests sign with a key of their own:
+The tests sign with a key of their own, in `src/config/settings/test.py`:
 
 ```python title="src/config/settings/test.py"
 AUTH = {
@@ -81,7 +82,8 @@ It prints `System check identified no issues`.
 
 The test logs in while the old key signs, then serves the application
 with the new key and the old one retired. It checks that the old token
-works through the rollout, and is refused after it:
+works through the rollout, and is refused after it. Make a new file,
+`tests/test_jwt_keys.py`:
 
 ```python title="tests/test_jwt_keys.py (new file)"
 """A token of the old key works through the rollout, then is refused."""

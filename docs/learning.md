@@ -39,7 +39,15 @@ If you know Django or FastAPI, [coming from Django](from-django.md) and
 [coming from FastAPI](from-fastapi.md) map each of their names to
 domainkit's. If you have one task to do, the
 [how-to recipes](recipes.md) each solve one, and the tests run them as
-written.
+written. If two features seem to do the same thing, such as idempotency
+keys and the inbox, [choosing a feature](choosing.md) says which one a
+need takes.
+
+The [examples](../examples/README.md) are whole projects for the
+features that come after the tutorial: wallets in double-entry books
+with idempotency keys, large payouts approved with each act confirmed,
+and an outbox with signed webhooks. Each opens with the problem it
+solves, and CI runs its tests.
 
 ## Words
 
