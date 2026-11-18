@@ -1339,10 +1339,10 @@ Code that calls other services through `domainkit.outbound.client` is tested
 without them. `stub(handler)` sends every call made in its block (and in
 tasks it starts) to `handler`, a function of an `httpx2.Request` that
 returns an `httpx2.Response` ([runtime.md](runtime.md#outgoing-http-calls)).
-A test that patches one of the client's names patches it in
-`domainkit.outbound.client`, the module that reads it; `domainkit.http.client`,
-its path until 2.9, imports the same objects, and a name set there is not
-read ([upgrading.md](upgrading.md#28-to-29)):
+A test patches one of the client's names in `domainkit.outbound.client`,
+the module that reads it. A 2.8 test that patches `domainkit.http.client`,
+the client's path until 2.9, still reaches it: a name set there is set
+on the new module ([upgrading.md](upgrading.md#28-to-29)):
 
 ```python
 import httpx2

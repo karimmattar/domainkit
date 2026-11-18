@@ -1271,6 +1271,7 @@ jobs:
           - name: http-2
             mutants: >-
               domainkit.http.client.* domainkit.outbound.client.*
+              domainkit.http._moved.*
               domainkit.http.deadlines.* domainkit.http.health.*
               domainkit.http.live.* domainkit.http.middleware.*
               domainkit.http.pagination.* domainkit.http.responses.*
