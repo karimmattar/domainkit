@@ -3,10 +3,12 @@
 import io
 from typing import Any
 
+import pytest
 from domainkit.contrib.messaging.testing import drain
 from domainkit.management import call_command
 from domainkit.testing import TestClient
 
+from domains.transfers.domain import Transfer
 from receiver import Receiver
 from tests.conftest import FakeBank, subscribe
 
@@ -82,6 +84,35 @@ def test_a_failing_bank_is_tried_again_then_left_for_an_operator(
     assert len(bank.calls) == 4  # Three attempts (the test settings'), and the retry.
     assert set(bank.keys) == {transfer_id}
     assert "transfers.send_to_bank" in dead.getvalue()
+    assert clerk.get(f"{URL}/{transfer_id}").json()["status"] == "sent"
+    assert len(receiver.events) == 1
+
+
+def test_a_worker_that_dies_before_its_commit_moves_the_money_once(
+    client: TestClient,
+    clerk: TestClient,
+    bank: FakeBank,
+    receiver: Receiver,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bank answered, then the commit never came: the message runs again.
+
+    The bank is asked twice under the same key, and moves the money once;
+    the subscribers hear of the transfer once.
+    """
+    mark_sent, crashes = Transfer.mark_sent, [RuntimeError("The worker died.")]
+
+    def dies_once(sent: Transfer, bank_reference: str) -> None:
+        if crashes:
+            raise crashes.pop()
+        mark_sent(sent, bank_reference)
+
+    monkeypatch.setattr(Transfer, "mark_sent", dies_once)
+    transfer_id = clerk.post(URL, json=transfer("250.00")).json()["id"]
+
+    client.run(drain, delayed=True)
+
+    assert bank.keys == [transfer_id, transfer_id]
     assert clerk.get(f"{URL}/{transfer_id}").json()["status"] == "sent"
     assert len(receiver.events) == 1
 

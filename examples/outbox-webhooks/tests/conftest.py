@@ -10,6 +10,7 @@ from collections.abc import Iterator
 
 import httpx2
 import pytest
+from domainkit.contrib.webhooks import new_secret
 from domainkit.http.client import stub
 from domainkit.testing import ClientFor, LiveServer, SettingsOverrides, TestClient
 
@@ -71,7 +72,7 @@ def partner(settings: SettingsOverrides) -> Iterator[tuple[Receiver, str]]:
     developer's machine.
     """
     settings.DEBUG = True
-    receiver = Receiver()
+    receiver = Receiver(new_secret())  # The subscription's, once it is made.
     with LiveServer(receiver.app) as server:
         yield receiver, server.url
 

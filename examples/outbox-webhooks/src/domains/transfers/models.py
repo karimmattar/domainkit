@@ -2,9 +2,11 @@
 
 ``table_for`` makes the table from the aggregate's fields. ``HttpBank``
 calls the bank's API through ``domainkit.http.client``: pooled, bounded by
-the work's deadline, retried, and stubbed in tests. ``send_transfer`` is
-the durable handler ``apps.py`` subscribes: it runs ``send_to_bank`` with
-these adapters, under the inbox.
+the work's deadline, behind a circuit breaker, and stubbed in tests. A
+failed call is not tried again here: the worker runs the whole message
+again later, which is the one place retries are counted. ``send_transfer``
+is the durable handler ``apps.py`` subscribes: it runs ``send_to_bank``
+with these adapters, under the inbox.
 """
 
 from domainkit.apps import registry

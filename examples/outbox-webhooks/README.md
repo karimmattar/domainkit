@@ -61,10 +61,11 @@ pytest
 ```
 
 The example holds no migrations: `makemigrations` writes them for the
-domainkit you installed. `init` writes a `.env` that names the settings
-module, and `.env` is never committed, so the `export` line does its job.
-Run `python manage.py runworker` beside `runserver`: the worker sends
-transfers and delivers webhooks.
+domainkit you installed. In a project of your own, made from this one,
+commit the migrations it writes. `init` writes a `.env` that names the
+settings module, and `.env` is never committed, so the `export` line does
+its job. Run `python manage.py runworker` beside `runserver`: the worker
+sends transfers and delivers webhooks.
 
 ## The request commits; the worker tells
 
@@ -150,12 +151,16 @@ async def send_transfer(event: TransferRequested) -> None:
 
 ## Retries and dead letters
 
-When the bank answers 503, `raise_for_status()` fails the attempt, and
-the worker tries again later, each wait about twice the last (2 s, 4 s,
-8 s, up to an hour). After `MESSAGING["MAX_ATTEMPTS"]` attempts (10; the
-tests use 3), the message is a dead letter: it stays in the outbox, and
-an error report goes to `ERROR_REPORTERS`. Once the bank is back, an
-operator sends it again, with fresh attempts:
+When the bank answers 503, `raise_for_status()` fails the attempt. The
+HTTP client does not try the call again itself; the worker runs the whole
+message again later, after a wait that doubles each time: half to all of
+2 seconds after the first attempt, of 4 seconds after the second, and so
+on, 256 to 512 seconds after the ninth. After `MESSAGING["MAX_ATTEMPTS"]`
+attempts (10; the tests use 3), some 8 to 17 minutes from the first, the
+message is a dead letter. The one-hour cap on a wait
+(`RETRY_MAX_SECONDS`) is not reached at these defaults. A dead letter
+stays in the outbox, and an error report goes to `ERROR_REPORTERS`. Once
+the bank is back, an operator sends it again, with fresh attempts:
 
 ```bash
 python manage.py messages list dead
@@ -163,9 +168,18 @@ python manage.py messages retry all
 ```
 
 The retried message carries the same transfer, so the bank gets the same
-key. After 5 failures in a row the HTTP client's circuit for the bank
-opens: for 30 seconds its calls fail at once, without reaching the bank
+key. After 5 failures in a row the HTTP client opens the bank's circuit:
+for 30 seconds its calls fail at once, without reaching the bank, and an
+attempt made then still counts as one of the message's ten
 ([outgoing calls](../../docs/runtime.md#outgoing-http-calls)).
+
+A bank that refuses a transfer for good (a 4xx: an IBAN it does not
+know) is tried again too, and the message ends as a dead letter, where an
+operator reads why. A durable handler takes no `dont_retry_on`; a project
+that wants such refusals to stop at once records them on the transfer
+(a `refused` status) instead of raising, or does the call in a task,
+whose `dont_retry_on` dead-letters them at once
+([task options](../../docs/contrib/messaging.md#task-options)).
 
 ## The webhook, signed
 
@@ -217,7 +231,8 @@ async def receive(self, request: Request) -> Response:
 
 `verify` compares the signature in constant time, and refuses a
 timestamp more than 5 minutes away: a delivery captured and sent again
-later fails. The same delivery tried twice has one `webhook-id`, so the
+later fails. A `Receiver` cannot be made without its secret: signed with
+an empty one, anyone's delivery would hold. The same delivery tried twice has one `webhook-id`, so the
 receiver keeps it once. A real receiver keeps the ids in its database,
 unique, and acts on a delivery the first time only.
 
@@ -246,7 +261,7 @@ def partner(settings: SettingsOverrides) -> Iterator[tuple[Receiver, str]]:
     developer's machine.
     """
     settings.DEBUG = True
-    receiver = Receiver()
+    receiver = Receiver(new_secret())  # The subscription's, once it is made.
     with LiveServer(receiver.app) as server:
         yield receiver, server.url
 ```
@@ -261,8 +276,9 @@ The test settings let webhooks reach 127.0.0.1, which deployments refuse
 | `test_a_transfer_is_told_once_it_commits` | The request calls nobody; the worker calls the bank once, keyed, then delivers the signed webhook. |
 | `test_nothing_is_told_of_a_transfer_that_did_not_commit` | A refused transfer leaves nothing to send. |
 | `test_a_failing_bank_is_tried_again_then_left_for_an_operator` | Three attempts, a dead letter, `messages retry`, and the money moved once. |
+| `test_a_worker_that_dies_before_its_commit_moves_the_money_once` | The bank answered, the commit never came: the bank is asked again under the same key, and one webhook goes out. |
 | `test_a_failed_delivery_is_tried_again_then_replayed` | A receiver that answers 404 fails each attempt; staff fix the URL and replay it. |
-| `tests/test_receiver.py` | The receiver keeps a signed delivery once, and refuses another secret, a changed body, an old timestamp, and no signature. |
+| `tests/test_receiver.py` | The receiver keeps a signed delivery once, refuses another secret, a changed body, an old timestamp, and no signature, and needs its secret. |
 
 domainkit's CI runs them on SQLite and on PostgreSQL, with the project's
 ruff, mypy, `check`, and migrations, for every change to the framework.

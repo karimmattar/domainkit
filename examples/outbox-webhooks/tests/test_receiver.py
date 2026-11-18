@@ -61,3 +61,9 @@ def test_a_delivery_that_does_not_hold_is_refused(
 
     assert (refused.status_code, unsigned.status_code) == (400, 400)
     assert receiver.events == {}
+
+
+def test_a_receiver_needs_its_secret() -> None:
+    """With no secret, anyone could sign a delivery it would take."""
+    with pytest.raises(ValueError, match="secret"):
+        Receiver("")

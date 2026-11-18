@@ -24,8 +24,14 @@ class Receiver:
     the first time only.
     """
 
-    def __init__(self, secret: str = "") -> None:
-        """An endpoint that verifies with ``secret``."""
+    def __init__(self, secret: str) -> None:
+        """An endpoint that verifies with ``secret``.
+
+        Raises:
+            ValueError: ``secret`` is empty: anyone could sign with it.
+        """
+        if not secret:
+            raise ValueError("A receiver needs its subscription's secret.")
         self.secret = secret
         self.events: dict[str, Any] = {}
         self.app = FastAPI()
