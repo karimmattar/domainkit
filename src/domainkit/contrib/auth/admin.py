@@ -154,9 +154,14 @@ def staff_rules(model: ModelLike) -> ModelActions:
     """Staff (``is_staff``) or superusers, with the model permission of each action.
 
     Credentials limited to scopes are refused: what staff grant is bounded
-    by their permissions, never by a token's scopes.
+    by their permissions, never by a token's scopes. The permission counts
+    as the staff member holds it everywhere: users, groups, and what the
+    other staff APIs serve belong to no tenant, so a member's role in the
+    tenant served opens none of them (ADR 0183).
     """
-    return ModelActions(model, IsUnscoped(), IsAdminUser() | IsSuperuser())
+    return ModelActions(
+        model, IsUnscoped(), IsAdminUser() | IsSuperuser(), everywhere=True
+    )
 
 
 def staff(action: str, model: Callable[[], type]) -> Any:  # noqa: ANN401 - Depends.

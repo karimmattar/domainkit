@@ -655,6 +655,12 @@ grant it as you would grant `view_account` and `view_entry` together. To
 show people their own accounts, serve them from routes of your own,
 filtered by `holder`.
 
+The ledger belongs to no tenant. With
+[multi-tenancy](../tenancy.md#rows-of-no-tenant), each permission counts
+only as a user holds it everywhere, never through a member's role in the
+tenant served (`403`), and approvals' guards of postings, captures, and
+reversals count their makers' and approvers' keys the same way.
+
 ## From the command line
 
 | Action | What it does |

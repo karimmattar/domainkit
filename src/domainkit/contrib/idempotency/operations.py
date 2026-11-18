@@ -60,9 +60,9 @@ class Operation:
     actor: str | None = None
     """Who sent it; whom its response is about, if anyone."""
     subjects: set[str] = field(default_factory=set)
-    """Whom else its response may be about: the subjects of the ``Personal``
-    fields of the events it committed. Kept with the response, with the
-    actor."""
+    """Whom else its response may be about: the user staff act as, if they
+    impersonate one, and the subjects of the ``Personal`` fields of the
+    events it committed. Kept with the response, with the actor."""
 
     def holds_key(self) -> ColumnElement[bool]:
         """Match the key's row while this request holds it."""

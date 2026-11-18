@@ -7,15 +7,18 @@ accepts none of them is ``406``.
 
 CSV cells that a spreadsheet would run as a formula start with an
 apostrophe instead, as OWASP advises: text starting with ``=``, ``+``,
-``-``, ``@``, a tab, or a carriage return, also behind spaces of any kind,
-and in their full-width and small forms (U+FF1D, U+FE62). Numbers stay
-numbers. NDJSON escapes the separators other than its newline that split
+``-``, ``@``, a tab, or a carriage return, also behind white space,
+controls, and characters that show nothing (Unicode's format characters
+and other default ignorables: a directional mark, a soft hyphen; since
+2.8.1), and in their full-width and small forms (U+FF1D, U+FE62). Numbers
+stay numbers. NDJSON escapes the separators other than its newline that split
 lines (U+0085, U+2028, U+2029), so each document is one line.
 """
 
 import io
 import json
 import re
+import unicodedata
 from collections.abc import Iterable, Mapping, Sequence
 from decimal import Decimal
 from typing import Any, Final
@@ -24,6 +27,7 @@ from fastapi import status
 
 from domainkit.http.errors import APIError
 from domainkit.utils.decimals import decimal_text
+from domainkit.utils.text import IGNORABLE
 
 JSON: Final = "application/json"
 CSV: Final = "text/csv"
@@ -39,8 +43,9 @@ FORMULA: Final = (
     "\u2212",  # The minus sign.
 )
 """What starts a formula; spreadsheets skip the spaces before it."""
-LEADING: Final = re.compile(r"^[\s\ufeff\u200b\u200c\u200d\u2060]+")
-"""Spaces, and characters that show nothing, which spreadsheets skip."""
+LEADING: Final = re.compile(rf"[\s\x00-\x1f\x7f-\x9f{IGNORABLE}]+")
+"""White space, controls, and Unicode's default ignorables (``IGNORABLE``),
+which show nothing: a formula behind them is guarded."""
 NUMBER: Final = re.compile(r"-?\d+(\.\d+)?([eE][-+]?\d+)?", re.ASCII)
 LINE_BREAKS: Final = {"\u0085": "\\u0085", "\u2028": "\\u2028", "\u2029": "\\u2029"}
 """What splits lines but JSON leaves unescaped, as JSON escapes it."""
@@ -144,13 +149,37 @@ def cell(value: object) -> str:
 
 
 def guarded(text: str) -> str:
-    """``text``, with an apostrophe first if a spreadsheet would run it."""
-    head = LEADING.sub("", text)
+    """``text``, with an apostrophe first if a spreadsheet would run it.
+
+    Read past what shows nothing (``_shown``): whether a spreadsheet skips
+    such a character before a formula is not known for every one, and the
+    application that will open a file is not known either, so a formula
+    behind one is guarded all the same.
+    """
+    head = _shown(text)
     if (text.startswith(FORMULA) or head.startswith(FORMULA)) and not (
         NUMBER.fullmatch(head)
     ):
         return f"'{text}"
     return text
+
+
+def _shown(text: str) -> str:
+    """``text`` from its first character a spreadsheet may show.
+
+    Past white space, controls, default ignorables (``LEADING``), and format
+    characters (Unicode's Cf), the ones that show a mark among them
+    (U+0600, the Arabic number sign).
+    """
+    start = 0
+    while start < len(text):
+        if (skipped := LEADING.match(text, start)) is not None:
+            start = skipped.end()
+        elif unicodedata.category(text[start]) == "Cf":
+            start += 1
+        else:
+            break
+    return text[start:]
 
 
 def csv_rows(rows: Iterable[Sequence[object]]) -> str:

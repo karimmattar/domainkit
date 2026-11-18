@@ -36,6 +36,120 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.8.0 to 2.8.1
+
+2.8.1 is a security release. Each item of this list says what a
+project that relied on 2.8.0's behaviour notices, and what to change.
+With `domainkit.contrib.approvals` installed, make and apply its
+migration ([below](#make-and-apply-approvals-migration)) before the new
+code serves.
+
+- **Staff acting as a user get answers kept for that user alone.** Under
+  an impersonation, a page cached with `vary_on_user=True` and a
+  response kept for an `Idempotency-Key` are kept for the staff member
+  acting as that user, where 2.8 kept them for the staff member, shared
+  across every user they acted as. An entry or a key made while acting
+  as a user before the upgrade misses once; a retry of a request sent
+  just before the deploy, while acting as a user, runs again. Rate
+  limits, throttles, and live connections count the staff member, as
+  before.
+- **An impersonation needs the right to change users held everywhere.**
+  Each of its requests checks the staff member's `change` permission on
+  the user model as they hold it everywhere. With `MembershipBackend`, a
+  staff member who holds it only through a role in a tenant can no
+  longer keep an impersonation going in requests served as that tenant:
+  they get `401`. Grant the permission everywhere to staff who
+  impersonate.
+- **The SAML ACS refuses a response past its bounds.** A response whose
+  XML makes more than 50,000 nodes (each `<` counts twice, each `=`
+  once), that has an element deeper than 32 levels, with more than 32
+  namespace declarations on its path (a prefix declared again counts
+  again), one of a URI past 128 characters, or more than 32 attributes,
+  or a `SignedInfo` of more than 32 elements or 16 KiB, or that is not
+  in UTF-8 (in UTF-16, or declaring Latin-1 with bytes past ASCII), gets
+  `?error=saml_refused`, where 2.8 read it. A response of a thousand
+  group values makes some 7,000 nodes; identity providers write UTF-8,
+  about five declarations on a path, namespace URIs under 60 characters,
+  fewer than ten levels, up to some seven attributes on an element, and
+  a `SignedInfo` under 2 KiB. Responses are parsed in a
+  thread of their own, at most 4 at once on an event loop; one that
+  waits more than 5 seconds for its turn is refused. A response that
+  lxml or signxml cannot read gets `saml_refused` where 2.8 answered 500.
+- **With `TYPED_LINKS = "refused"`, more typed text is refused.** A name
+  spaced out (`example . com`) or bracketed (`example (dot) com`), or
+  spelled with `dot`, or a dot and white space, before `com` (`example
+  dot com`, `example. com`, `example .com`), answers `422
+  link_not_shown`, and so do `the dot com era`, `fine . me too` and `the
+  key (dot) is broken`. Under `"shown"`, the default, nothing changes.
+- **A CSV cell that starts with an invisible character and a formula's
+  sign gets an apostrophe.** A directional mark, a soft hyphen, a control
+  or any other character that shows nothing, before `=`, `+`, `-` or
+  `@`, now counts as the spaces before them did: a phone number written
+  with a left-to-right mark before its `+`, as right-to-left pages write
+  it, is exported with an apostrophe first, as `+1 555 0100` already
+  was. Numbers stay numbers.
+- **Live events are each tenant's own** (security,
+  [ADR 0183](adr/0183-keep-live-events-and-approval-requests-to-their-tenant-and-rows-of-no-tenant-to-keys-held-everywhere.md)).
+  With `TENANCY`, an event reaches only the connections served as the
+  tenant it was committed in, and one committed as no tenant only those
+  served as none. A route only staff reach that streams every tenant's
+  events on purpose, such as a back office's, passes `per_tenant=False`
+  to `stream`, `forward`, or `subscribe`: its rule never sees an event's
+  tenant ([tenancy](tenancy.md#live-events-and-approvals)). With
+  `LIVE_FANOUT`, processes of 2.8.0 send their events without a tenant,
+  so connections served as a tenant miss them until every process is
+  upgraded. Without `TENANCY`, nothing changes.
+- **Approval requests are each tenant's own** (security). With
+  `TENANCY`, a request is listed, read, approved, rejected, and
+  cancelled where the tenant it was submitted in is served alone, and
+  its command runs in that tenant. Approvers who decided for a tenant
+  while served as another, or as none, are served as the request's
+  tenant now; code that decides across tenants does it inside
+  `all_tenants()`
+  ([Requests and tenants](contrib/approvals.md#requests-and-tenants)).
+  Requests stored by 2.8.0 have no tenant: they are read where no tenant
+  is served. Do not set their `tenant_id` by hand, which breaks their
+  seal: decide or cancel them where no tenant is served, or let them
+  expire. Before you deploy, let the worker run the requests already
+  approved: once deployed, such a request runs as no tenant.
+  `approvals.view_every_approvalrequest` shows the requests of a guard
+  `everywhere`, such as approvals' own guards of postings, superusers,
+  and admin changes, to those who hold it everywhere: grant it so to the
+  staff who read them. Without `TENANCY`, nothing changes.
+- **Limits and the ledger count the keys held everywhere** (security).
+  A key granted in the tenant served, by `MembershipBackend` or any
+  backend that grants by `current_tenant()`, does not count on the routes
+  of `domainkit.contrib.limits` or `domainkit.contrib.accounting`
+  (`403`), nor for the makers and approvers of approvals' guards of
+  postings, captures, reversals, making superusers, and admin changes.
+  Grant those keys to the staff who use them, directly or through a
+  group ([Rows of no tenant](tenancy.md#rows-of-no-tenant)). Routes of
+  your own over rows every tenant shares say `everywhere=True`, which
+  asks the permissions as where no tenant is served: it relies on a
+  backend that grants per tenant reading `current_tenant()`.
+- **Staff APIs count the keys held everywhere** (security). The admin
+  API (users, groups, permissions), the staff APIs of flags and
+  webhooks, the audit trail's history, and the admin site's models that
+  are not `TenantOwned` count a staff member's model permission, and
+  `audit.view_history`, as they hold it everywhere: a role in the tenant
+  served opens none of them (`403`). Staff who used them through a role
+  are granted the keys everywhere, directly or through a group
+  ([Rows of no tenant](tenancy.md#rows-of-no-tenant)).
+- **`check` names the apps whose rows every tenant shares**
+  (`tenancy.I001`). It is an info: nothing to change, and
+  `check --deploy` never refuses it.
+
+### Make and apply approvals' migration
+
+With `domainkit.contrib.approvals` installed, the requests table
+(`domainkit_approval_requests`) gains a nullable column, `tenant_id`,
+the tenant a request was submitted in
+([ADR 0183](adr/0183-keep-live-events-and-approval-requests-to-their-tenant-and-rows-of-no-tenant-to-keys-held-everywhere.md)).
+Run `python manage.py makemigrations`, review the revision, then
+`migrate` it before the new code serves. Until then every read of the
+requests fails with a database error, so their routes and the worker's
+runs answer `500`. Requests stored before have no tenant.
+
 ## 2.7 to 2.8
 
 2.8 follows up 2.7. Each item of this list says what a project that

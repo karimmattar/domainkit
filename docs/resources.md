@@ -1023,8 +1023,14 @@ f056550e-1f49-4cf9-b364-d942a15aded4,0,Big lamp,5
   caller may not see. Nested values are JSON. A text cell that a
   spreadsheet would run as a formula gets an apostrophe first: one that
   starts with `=`, `+`, `-`, `@`, a tab, or a carriage return, also behind
-  spaces of any kind or invisible characters, and in the full-width and
-  small forms of those signs. Numbers, such as `-1.50`, stay as they are.
+  white space, control characters, or characters that show nothing, and
+  in the full-width and small forms of those signs. Numbers, such as
+  `-1.50`, stay as they are. What shows nothing is each format character
+  (a directional mark, a soft hyphen) and each of Unicode's other default
+  ignorable code points (a variation selector, a tag), as screens and
+  `OfficeCheck` read them (since 2.8.1). LibreOffice 24.2 runs none of these
+  as a formula; other spreadsheets were not all checked, and the file may
+  be opened by any of them, so the apostrophe goes first all the same.
 - NDJSON has one document per line. The separators that would split a
   line elsewhere (U+0085, U+2028, U+2029) are escaped, as JSON allows.
 
@@ -1300,6 +1306,11 @@ So `POST /products/{id}/rename` needs `catalog.change_product`, where
 - Each permission is a `HasModelPermission(action, model)`;
   `.permission()` gives its key. It checks the credentials' scopes too,
   so a token limited to that key passes it.
+- `ModelActions(Limit, everywhere=True)` counts only the keys a user
+  holds where no tenant is served: a member's role in the tenant served
+  does not, for a resource over rows that belong to no tenant
+  ([rows of no tenant](tenancy.md#rows-of-no-tenant)).
+  `HasModelPermission` takes `everywhere=` too.
 - A rule of your own that depends on the action is any object with
   `rules_for(action)`, which returns the rules to check: the `Actions`
   protocol.
@@ -1815,7 +1826,11 @@ router.include_router(admin.site.router, prefix="/admin")
   credentials not limited to scopes, and the model permission of its
   action: `catalog.view_product` to list, read, and query; `change` for
   commands (or a command's `action=`); and `audit.view_history` too for
-  histories. `/meta` needs staff.
+  histories. `/meta` needs staff. With multi-tenancy, a model's
+  permission counts as the staff member holds it everywhere, unless the
+  model is `TenantOwned`, whose rows are the tenant's served; so does
+  `audit.view_history`, always
+  ([rows of no tenant](tenancy.md#rows-of-no-tenant)).
 - **Actions are commands** through application services. The admin never
   sets fields itself, so the domain's rules and events hold.
 - **Options.** `schema=`, `present=`, `policy=`, `scope=`, and

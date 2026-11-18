@@ -5,7 +5,7 @@ customer sees only its own data. Each customer is a
 [tenant](learning.md#words): a company, a school, a shop.
 `domainkit.tenancy` gives each request its tenant. It then scopes to that
 tenant what the framework keeps: rows, databases, caches, rate limits,
-logs, and background tasks.
+logs, background tasks, live events, and approval requests.
 
 On this page you learn how to:
 
@@ -28,6 +28,8 @@ On this page you learn how to:
 | Rate limits | Every count is the tenant's own. |
 | Logs | Every record names the tenant (`tenant`). |
 | Background tasks | A task runs as the tenant whose request queued it. |
+| Live events | An event reaches only the connections served as the tenant it was committed in. |
+| Approval requests | A request is read, decided, and run in the tenant it was submitted in. |
 
 ## A first example
 
@@ -318,7 +320,12 @@ reads, leaves out the backends whose grants hold in one tenant only
   within that (`You can only grant permissions you have`);
 - a personal token, and a sign-in approval's access token, carry only
   scopes the user holds everywhere (`403 scope_not_held`). A scope only
-  bounds a token anyway: each request still needs the permission itself.
+  bounds a token anyway: each request still needs the permission itself;
+- the routes of limits and of the ledger, whose rows belong to no
+  tenant, and approvals' guards over them, count only what a user holds
+  everywhere ([rows of no tenant](#rows-of-no-tenant)); approval
+  requests and live events are each of one tenant
+  ([live events and approvals](#live-events-and-approvals)).
 
 `/auth/me` lists a member's keys in the tenant with the rest, as the
 checks count them.
@@ -660,6 +667,82 @@ tenants is two requests.
 Log records get a `tenant` field, `-` outside a tenant. JSON logs have
 it, and so do formats that name it (`%(tenant)s`).
 
+## Live events and approvals
+
+**Live events.** An event committed while a tenant is served keeps that
+tenant, and `live_events` hands it only to the connections served as it:
+`stream`, `forward`, and `subscribe` hear the tenant the route serves
+([live events](live.md#live-committed-events)). An event committed as
+no tenant reaches only the connections served as none. With
+`LIVE_FANOUT`, each message between processes names the tenant too;
+processes of 2.8.0 send their messages without one, so during a rolling
+deploy connections served as a tenant miss what those processes commit.
+A route that serves every tenant on purpose says so with
+`per_tenant=False`; its `rule` alone then decides what each connection
+sees, and it never sees an event's tenant: keep such routes to staff,
+such as a back office's.
+
+**Approval requests.** With `domainkit.contrib.approvals`, a request
+belongs to the tenant it was submitted in. It is listed, read, approved,
+rejected, and cancelled where that tenant is served alone, by the routes
+and from code; another tenant's is not found, whatever keys a role holds
+there. Its command runs in its tenant, whichever tenant the message that
+runs it names. A request of no tenant is read where no tenant is served;
+code inside `all_tenants()` reads every tenant's
+([Requests and tenants](contrib/approvals.md#requests-and-tenants)).
+
+## Rows of no tenant
+
+Some apps keep rows that every tenant shares: `domainkit.contrib.accounting`
+keeps one ledger, and `domainkit.contrib.limits` one set of limits. A
+member's role holds in its tenant alone, so their routes count only the
+keys a user holds everywhere: a company's finance role that names
+`limits.change_limit` or `accounting.view_account` changes no limit and
+reads no account (`403`). Staff granted the keys everywhere reach them
+from any tenant. Approvals' guards of postings, captures, and reversals,
+of making superusers, and of admin changes count their makers' and
+approvers' keys the same way, and show their requests to those who hold
+`approvals.view_every_approvalrequest` everywhere, not through a role.
+
+Users, groups, flags, webhooks, the audit trail, and the admin site's
+models that are not `TenantOwned` belong to no tenant either: their
+staff APIs count a staff member's permissions as they hold them
+everywhere. Staff who act there through a role are granted the keys
+everywhere, directly or through a group.
+
+Routes of your own over such rows say so with `everywhere=True`:
+
+```python
+from fastapi import Depends
+
+from domainkit.http.access import HasPermissions, Require
+from domainkit.resources import ModelActions, ResourceRouter
+
+rates = ResourceRouter("/rates", ..., rule=ModelActions(Rate, everywhere=True))
+
+
+@router.post(
+    "/rates/publish",
+    dependencies=[
+        Depends(Require(HasPermissions("pricing.publish_rate", everywhere=True)))
+    ],
+)
+async def publish() -> None: ...
+```
+
+`everywhere=True` asks the user's permissions as where no tenant is
+served (`HasPermissions`, `HasObjectPermissions`, `HasModelPermission`,
+`ModelActions`), as every ceiling of the admin API counts them. It
+relies on what grants per tenant reading `current_tenant()`, as
+`MembershipBackend` does: a backend of your own that grants per tenant
+reads it too, or `everywhere` counts its grants. A guard
+of approvals takes it too, for its makers and approvers
+([guarding a use case](contrib/approvals.md#guarding-a-use-case)).
+
+With `TENANCY` set, `check` names the installed apps whose rows every
+tenant shares (`tenancy.I001`). It is an info: `check --deploy` lists it
+and never refuses it.
+
 ## Reading the tenant in code
 
 | Function | Answers |
@@ -732,6 +815,9 @@ None
 - **`HasPermissions` where only the role should count.** It counts what
   a member holds everywhere too: staff who are members act as staff. Use
   `HasMemberPermissions` or `MemberActions`.
+- **`HasPermissions` on rows every tenant shares.** It counts a member's
+  role too: a role in one tenant reaches every tenant's rows. Say
+  `everywhere=True` ([rows of no tenant](#rows-of-no-tenant)).
 - **A mount under a tenant's path.** A Starlette route, WebSocket route,
   mount, or host takes no dependency, so no `PathTenant`, even inside a
   router included under `/{company_id}`. A tenants' resource refuses one

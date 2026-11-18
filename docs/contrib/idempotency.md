@@ -262,7 +262,10 @@ past `MAX_RESPONSE_BYTES`, or sends its body by path, is let go then
 ## Whose key it is
 
 Keys belong to the actor that `AuthenticationMiddleware` sets, so one
-user cannot replay another's response.
+user cannot replay another's response. Staff acting as a user
+([impersonation](../auth/routes.md#impersonation)) have keys apart for each
+user they act as, apart from their own and the user's: a retry acting as
+one customer is never replayed what was answered as another (since 2.8.1).
 
 Credentials limited to scopes (a personal token made for an integration)
 are a caller apart from their user's other credentials, one caller for
@@ -348,7 +351,8 @@ when it is made, so a purge reads only the keys that are due.
 A kept response may hold personal data. `privacy erase` drops the kept
 responses about a person, and keeps their keys, so a retry gets 409 and
 never runs again. `privacy export` lists them. A response is about the
-caller who got it, and about the people whose events its request
+caller who got it, about the user staff acted as, if they impersonated
+one (since 2.8.1), and about the people whose events its request
 committed. Only its caller gets its body in an export; others see it
 withheld ([privacy.md](../privacy.md)).
 

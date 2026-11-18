@@ -437,7 +437,9 @@ router.include_router(limits, prefix="/api/limits")
 | `GET /usage?kind=holder&subject=...` | `limits.view_limit` | A subject's usage of each limit that bounds it (`currency=` and `direction=` keep to one). |
 
 Every route needs its permission, whatever authenticates requests.
-Amounts are `{"amount": "50000.00", "currency": "EGP"}`. Each usage item
+Limits belong to no tenant: with [multi-tenancy](../tenancy.md#rows-of-no-tenant),
+each permission counts only as a user holds it everywhere, never through
+a member's role in the tenant served (`403`). Amounts are `{"amount": "50000.00", "currency": "EGP"}`. Each usage item
 also says where its limit comes from: `"origin": "stored"` or
 `"settings"`. A breach answers 422 with its code wherever a counted
 movement is refused: on the ledger's `POST /entries`, or on a route of

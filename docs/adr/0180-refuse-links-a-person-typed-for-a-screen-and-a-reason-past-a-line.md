@@ -1,6 +1,6 @@
 # 0180. Refuse links a person typed for a screen, and a reason past a line
 
-- Status: Accepted
+- Status: Accepted; amended 2026-11-18 (at the end)
 - Date: 2026-11-17
 - Amends: [0173](0173-show-an-act-whole-or-refuse-it.md)
 
@@ -227,3 +227,26 @@ service on the framework reported two gaps (user report A17):
    <https://www.iana.org/news/2024/proposed-private-use-tld>
 10. Android, `android.util.Patterns`, `TOP_LEVEL_DOMAIN_STR` and `PHONE`:
     <https://developer.android.com/reference/android/util/Patterns>
+
+## Amendment (2026-11-18): names spaced out, read in the text as typed
+
+The 2.8 audit found `TYPED_LINKS = "refused"` letting a name spaced out
+through (A28-SEC-05). `holds_link` now reads more ways of writing a name
+not to be a link:
+
+- Bracketed, as before, now with `(dot)` and `<dot>`, `https : //`, and
+  white space or new lines around them; `(.)` with white space around
+  it before `com` only (`a period (.) at the end` is prose).
+- Spaced out: a dot with white space or new lines on both sides, but
+  before a capital, which starts a sentence (`Rejected . No receipt`);
+  and, before `com` only, a dot with white space on one side, or `dot`.
+  Other words follow a full stop or `dot` in prose, and many top-level
+  domains are words (`vs. net`, the `.NET` service, `a dot net
+  developer`, `Done. Info sent`).
+- The spaced-out readings apply to the text as typed, never to a cut of
+  it or to a line as shown: a cut ends a word, and `i.e. company` cut to
+  `i.e. com…` refused common prose in the first cut of this change (the
+  lead review). The cuts are still read for the rest, as this record
+  decided.
+
+The docs list what it still does not read: it is a heuristic.

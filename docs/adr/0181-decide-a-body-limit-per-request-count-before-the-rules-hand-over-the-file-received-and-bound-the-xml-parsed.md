@@ -1,6 +1,6 @@
 # 0181. Decide a body limit per request, count before the rules, hand over the file received, and bound the XML parsed
 
-- Status: Accepted
+- Status: Accepted; amended 2026-11-18 (at the end)
 - Date: 2026-11-17
 - Amends: [0175](0175-bound-page-content-check-an-acts-upload-once-and-read-a-signed-body-last.md) and [0176](0176-bound-what-a-pdf-decodes-list-placeholders-fill-drafts-and-clean-less.md)
 
@@ -261,3 +261,37 @@ How the service reads the file received:
 10. lxml 6.1.3, `debug.pxi` (`dict_size`: "the global name dictionary
     used by libxml2 for the current thread. Each thread has its own
     dictionary."): <https://github.com/lxml/lxml/blob/lxml-6.1.3/src/lxml/debug.pxi>
+
+## Amendment (2026-11-18): the SAML ACS parses as Word documents are parsed
+
+The 2.8 audit found the SAML ACS parsing what anyone may post with lxml
+on the event loop's thread (A28-PERF-03): each response of new names
+grew the thread's dictionary for good, and the loop waited while it
+parsed. The ACS now takes this record's design:
+
+- The response's XML is bounded before it is parsed: 50,000 nodes,
+  counted on its bytes as above; no DTD or entity; read as UTF-8 whatever
+  it declares, so the count sees what is parsed. A response not in UTF-8
+  is refused.
+- It is parsed in a thread of its own, which ends with it. At most 4 are
+  parsed at once on an event loop, and a response that waits more than
+  5 seconds for its turn is refused. The thread is not a daemon: a
+  process that exits waits for a parse under way, which the bounds keep
+  short.
+- Counting nodes does not bound all of signxml's work before it checks
+  the signature (the lead review of the fix). So the response is read
+  once more in the thread before signxml runs: an element sits at most
+  32 levels deep, with at most 32 namespace declarations on its path
+  from the root, a prefix declared again counted again (Okta declares
+  `xs` and `xsi` again on sibling values, so each path holds them once),
+  each of a URI of 128 characters at most, which exclusive
+  canonicalization writes again on each element that uses it, and at
+  most 32 attributes, in the signed part signxml canonicalizes before it
+  compares a digest as in a `SignedInfo`; a `SignedInfo` holds at most
+  32 elements and 16 KiB (the re-checks of the fix). Within all the
+  bounds, XML written to cost the most took up to 50 ms and 15 MiB when
+  no one signed it. When the provider signed it and it was then
+  changed, the costliest shapes took up to 275 ms, most of their runs
+  150 to 230 ms, and up to 46 MiB over what the process held before,
+  with inclusive or exclusive canonicalization, both readings and
+  signxml's refusal included (measured at a load average near 8).
