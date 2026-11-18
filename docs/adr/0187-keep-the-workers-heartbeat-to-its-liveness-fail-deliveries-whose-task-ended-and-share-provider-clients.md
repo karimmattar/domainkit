@@ -126,7 +126,8 @@ For the clients:
    transaction, and so are a replay and its task, so a pending delivery
    without one has no attempt to come. The purge matches a task to its
    delivery by the id in its arguments, in one statement on PostgreSQL
-   and SQLite.
+   and SQLite, through `messaging.admin.unfinished_arguments`: webhooks
+   reads the outbox through messaging's public names.
 5. **An outcome stays.** An attempt's outcome is written only to a
    delivery still `pending`. A late duplicate run counts and logs its
    attempt, and leaves `succeeded` or `failed` as it was.

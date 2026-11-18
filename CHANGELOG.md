@@ -22,6 +22,11 @@ and a status.
   each test, so a client that backends share carries no open circuit
   into the next test ([What each test starts from](docs/testing.md#what-each-test-starts-from))
   (audit A28-ARCH-02).
+- `unfinished_arguments(target, argument)`
+  (`domainkit.contrib.messaging.admin`): a query of one argument of each
+  message of a task that has not finished (pending, running, or held),
+  for a statement on another table of the outbox's database to tell
+  whether a task still waits for one of its rows (audit A28-REL-05).
 
 ### Changed
 
