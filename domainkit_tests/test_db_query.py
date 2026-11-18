@@ -2,12 +2,13 @@
 
 import asyncio
 import os
+import re
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, Any, NewType
-from uuid import uuid4
+from typing import Annotated, Any, Final, NewType
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import Depends, FastAPI
@@ -20,6 +21,7 @@ from sqlalchemy import (
     create_engine,
     false,
     select,
+    update,
 )
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -71,6 +73,7 @@ from domainkit_tests.gadgets import (
     MADE,
     Color,
     Gadget,
+    GadgetId,
     GadgetMade,
     GadgetRepository,
     GadgetsUnitOfWork,
@@ -875,6 +878,247 @@ async def test_a_page_after_a_position_reads_an_index_from_there(
     else:
         assert f"USING INDEX ix_test_keyset ({start[0]})" in plan
         assert "MULTI-INDEX OR" not in plan
+
+
+@pytest.mark.parametrize(
+    ("ordering", "position", "searched"),
+    [
+        (
+            ("stock", "id"),
+            0,
+            (("(stock>?)", "(stock=?)"), ("(stock >= ", "(stock IS NULL)")),
+        ),
+        (
+            ("-stock", "id"),
+            None,
+            (
+                ("(stock=? AND id>?)", "(stock>?)"),
+                ("AND (id > ", "(stock IS NOT NULL)"),
+            ),
+        ),
+    ],
+    ids=["ascending-past-a-stock", "descending-past-a-missing-one"],
+)
+async def test_a_page_into_the_other_group_reads_each_from_its_start(
+    tables: None,
+    ordering: tuple[str, str],
+    position: int | None,
+    searched: tuple[tuple[str, ...], tuple[str, ...]],
+) -> None:
+    """Where the missing stocks follow the position's group, each is a statement.
+
+    Ascending past a stock come the stocks above it, then every missing
+    one; descending past a missing one, the missing ones after it, then
+    every stock. No one range of the index holds both: the one statement
+    of both read the index from its first row (ADR 0185). Each part starts
+    the index, made in the ordering's directions, at its own first row now.
+    """
+    await store(*dataset())
+    columns = ", ".join(
+        f"{name.lstrip('-')}{' DESC' * (name[0] == '-')}" for name in ordering
+    )
+    async with GadgetsUnitOfWork() as uow:
+        connection = await uow.gadgets.session.connection()
+        await connection.exec_driver_sql(
+            f"CREATE INDEX ix_test_keyset ON framework_test_gadgets ({columns})"
+        )
+        if ON_POSTGRES:  # Five rows: the plan a large table gets.
+            await connection.exec_driver_sql("SET LOCAL enable_seqscan = off")
+        total = tuple(map(Ordering.parse, ordering))
+        everything = await uow.gadgets.filter(Selection(ordering=total))
+        index = next(n for n, each in enumerate(everything) if each.stock == position)
+        after = position_of(everything[index], total)
+        plan = await uow.gadgets.explain(
+            Selection(ordering=total, after=after, limit=2)
+        )
+    lines = plan.splitlines()
+    if ON_POSTGRES:
+        bounds = [line for line in lines if "Index Cond:" in line]
+        assert len(bounds) == 2
+        assert all(map(str.__contains__, bounds, searched[1]))
+        assert not [line for line in lines if "Filter:" in line and "stock IS" in line]
+    else:
+        for part in searched[0]:
+            assert (
+                f"SEARCH framework_test_gadgets USING INDEX ix_test_keyset {part}"
+                in lines
+            )
+        assert "SCAN framework_test_gadgets USING INDEX ix_test_keyset" not in plan
+        assert "MULTI-INDEX OR" not in plan  # Every row of each, then sorted.
+
+
+@pytest.mark.parametrize(
+    ("ordering", "reads"),
+    [(("stock",), [1, 1, 2, 1]), (("-stock",), [1, 2, 1, 1])],
+    ids=["ascending", "descending"],
+)
+async def test_pages_through_missing_values_cover_each_once_in_order(
+    tables: None, ordering: tuple[str], reads: list[int]
+) -> None:
+    """Two at a time, either way: every gadget once, in order, as in memory.
+
+    The page that crosses from one group to the other (the stocks, then
+    the missing ones, ascending; the reverse, descending) reads its rows
+    in two statements, the second only for what the first left of the
+    page; every other page, in one.
+    """
+    stocks = [3, None, 1, None, 3, None, 0, 1]
+    items = [make_gadget(f"g{n}", stock=stock) for n, stock in enumerate(stocks)]
+    await store(*items)
+    fake = InMemoryGadgets(items)
+    query = Selection(ordering=ordering)
+    seen: list[object] = []
+    counted: list[int] = []
+    after = None
+    async with GadgetsUnitOfWork() as uow:
+        everything = [each.id for each in await uow.gadgets.filter(query)]
+        assert everything == [each.id for each in await fake.filter(query)]
+        while True:
+            with CapturedQueries() as queries:
+                page = await uow.gadgets.paginate(query, limit=2, after=after)
+            expected = await fake.paginate(query, limit=2, after=after)
+            assert [each.id for each in page.items] == [
+                each.id for each in expected.items
+            ]
+            assert page.next_position == expected.next_position
+            counted.append(sum("LIMIT" in each for each in queries.statements))
+            seen += [each.id for each in page.items]
+            if not page.has_more:
+                break
+            after = page.next_position
+    assert (seen, counted) == (everything, reads)
+
+
+@pytest.mark.parametrize(
+    ("backend", "how"),
+    [
+        ("memory", "filter"),
+        ("memory", "values"),
+        pytest.param("sql", "filter", marks=postgres_only),
+        pytest.param("sql", "values", marks=postgres_only),
+    ],
+)
+@pytest.mark.parametrize(
+    ("limit", "reads"), [(9, [1, 3]), (3, [1, 2, 3])], ids=["room-left", "filled"]
+)
+async def test_a_row_that_moves_between_the_parts_is_read_once(
+    tables: None,
+    monkeypatch: pytest.MonkeyPatch,
+    backend: str,
+    how: str,
+    limit: int,
+    reads: list[int],
+) -> None:
+    """A row the first part read, and the second reads again, is kept once.
+
+    Each statement reads a snapshot of its own on PostgreSQL (``READ
+    COMMITTED``): a gadget read in the first part, whose stock another
+    request takes away before the second, comes back there, and is
+    dropped. When the second part came back full with it, the part is read
+    again for one more, so the page is not short of what follows. In
+    memory, the gadget changes between the two reads alike. SQLite keeps
+    one snapshot for the transaction, and the other request waits for it.
+    """
+    items = [make_gadget(f"g{n}", stock=s) for n, s in enumerate([1, 2, None, None])]
+    for n, each in enumerate(items):  # g1 sorts first of the missing, once moved.
+        each.id = GadgetId(UUID(int=n + 1))
+    moved = items[1]
+    calls: list[int] = []
+
+    async def move() -> None:
+        if backend == "memory":
+            moved.stock = None
+            return
+        async with connections.engine().begin() as other:
+            await other.execute(
+                update(gadgets).where(gadgets.c.id == moved.id).values(stock=None)
+            )
+
+    owner = InMemoryGadgets if backend == "memory" else GadgetRepository
+    name = "_filter" if how == "filter" or backend == "memory" else "_values"
+    read = getattr(owner, name)
+
+    async def racing(self: object, *arguments: Any) -> list[Any]:  # noqa: ANN401
+        found: list[Any] = await read(self, *arguments)
+        calls.append(len(found))
+        if len(calls) == 1:  # Another request commits between the two parts.
+            await move()
+        return found
+
+    ordering = (Ordering("stock"), Ordering("id"))
+    await store(*items)
+    async with GadgetsUnitOfWork(readonly=True) as uow:
+        repository = InMemoryGadgets(items) if backend == "memory" else uow.gadgets
+        everything = await repository.filter(Selection(ordering=ordering))
+        query = Selection(
+            ordering=ordering, after=position_of(everything[0], ordering), limit=limit
+        )
+        monkeypatch.setattr(owner, name, racing)
+        if how == "filter":
+            names: list[object] = [each.name for each in await repository.filter(query)]
+        else:
+            names = [row["name"] for row in await repository.values(query, "name")]
+    assert (names, calls) == (["g1", "g2", "g3"][:limit], reads)
+
+
+@pytest.mark.parametrize("fields", [("name",), ("name", "id")])
+async def test_values_through_missing_values_cover_each_once(
+    tables: None, fields: tuple[str, ...]
+) -> None:
+    """``values`` reads the parts as ``filter`` does, and gives the fields asked.
+
+    It reads the ids too, to tell the parts apart (see the test above),
+    and leaves them out of the rows when they were not asked for: a row
+    with a key no one asked for is the regression this catches. Past the
+    last stock, the first part finds nothing, and the second reads the
+    missing ones.
+    """
+    stocks = [3, None, 1, None, 0]
+    await store(*[make_gadget(f"g{n}", stock=s) for n, s in enumerate(stocks)])
+    ordering = (Ordering("stock"), Ordering("id"))
+    async with GadgetsUnitOfWork(readonly=True) as uow:
+        everything = await uow.gadgets.filter(Selection(ordering=ordering))
+        for index in (0, 2):  # Past the first stock, and past the last.
+            after = position_of(everything[index], ordering)
+            query = Selection(ordering=ordering, after=after, limit=9)
+            rows = await uow.gadgets.values(query, *fields)
+            assert [tuple(row) for row in rows] == [fields] * len(rows)
+            assert [row["name"] for row in rows] == [
+                each.name for each in everything[index + 1 :]
+            ]
+
+
+PARAMETER: Final = re.compile(r"\?|\$\d+")
+"""A bound parameter in a statement as the driver gets it (SQLite's, asyncpg's)."""
+
+
+async def test_the_second_part_binds_as_many_values_however_long_the_first(
+    tables: None,
+) -> None:
+    """The ids the first part read are not sent with the second.
+
+    Leaving them out in SQL bound one parameter per id, so a first part of
+    32,767 rows or more could not be sent (SQLite's and asyncpg's limits),
+    and a long one was slow; they are dropped as the rows come back.
+    """
+    await store(*[make_gadget(f"g{n}", stock=n % 40) for n in range(40)])
+    await store(*[make_gadget(f"m{n}") for n in range(3)])
+    ordering = (Ordering("stock"), Ordering("id"))
+    sent: list[int] = []
+    async with GadgetsUnitOfWork(readonly=True) as uow:
+        everything = await uow.gadgets.filter(Selection(ordering=ordering))
+        for index in (36, 0):  # Three stocks follow, then thirty-nine.
+            after = position_of(everything[index], ordering)
+            query = Selection(ordering=ordering, after=after, limit=50)
+            with CapturedQueries() as queries:
+                found = await uow.gadgets.filter(query)
+            assert [each.id for each in found] == [
+                each.id for each in everything[index + 1 :]
+            ]
+            selects = [each for each in queries.statements if "LIMIT" in each]
+            assert len(selects) == 2
+            sent.append(len(PARAMETER.findall(selects[1])))
+    assert sent[0] == sent[1]
 
 
 async def test_a_count_stops_where_it_is_told(tables: None) -> None:

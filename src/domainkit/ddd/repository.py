@@ -15,7 +15,14 @@ import asyncio
 import copy
 import dataclasses
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Callable, Hashable, Iterable, Sequence
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Hashable,
+    Iterable,
+    Sequence,
+)
 from dataclasses import dataclass
 from datetime import datetime
 from functools import cache
@@ -41,6 +48,7 @@ from domainkit.ddd.query import (
     as_ordering,
     as_query,
     following,
+    following_parts,
     order,
     position_of,
     resolve,
@@ -282,7 +290,9 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
             PreconditionFailed: The use case expects another version of an
                 aggregate found.
         """
-        found = await self._filter(self._prepare(self._ordered(as_query(query))))
+        found = await self._read(
+            self._ordered(as_query(query)), self._filter, lambda each: each.id
+        )
         for aggregate in found:
             check_expected(aggregate, self._expected)
             self._track(aggregate)
@@ -424,7 +434,16 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
                     f"{model.__name__}.{name} is encrypted: load the aggregate "
                     "to read it."
                 )
-        return await self._values(self._prepare(base), fields)
+        read = fields
+        if base.after is not None and ID not in fields:  # Parts are told apart by it.
+            read = (*fields, ID)
+        rows = await self._read(
+            base, lambda part: self._values(part, read), lambda row: row[ID]
+        )
+        if read is not fields:
+            for row in rows:
+                del row[ID]
+        return rows
 
     async def stream(
         self, query: Selection | CriteriaLike | None = None, *, batch: int = 500
@@ -655,6 +674,58 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
             return query
         default = default_ordering(self.aggregate_type)
         return query.replace(ordering=default) if default else query
+
+    async def _read[T](
+        self,
+        query: Selection,
+        read: Callable[[Selection], Awaitable[list[T]]],
+        key: Callable[[T], object],
+    ) -> list[T]:
+        """What ``read`` finds of ``query``'s parts (``_parts``), up to its limit.
+
+        Each part after the first is read only while the limit is not
+        reached, for what is left of it, without what was read before
+        (``key`` gives a row's id): each statement may read a snapshot of
+        its own (PostgreSQL's ``READ COMMITTED``), and a row whose ordering
+        field moved to the next part since comes back there. A part that
+        came back full with such rows is read again, asking for as many
+        more, so the page is never short for them; this runs only when a
+        row moved, at most as often as the rows read before.
+        """
+        first, *others = self._parts(query)
+        found = await read(first)
+        for part in others:
+            limit = cast("int", part.limit)  # Only a limited query has parts.
+            wanted = limit - len(found)
+            if wanted <= 0:
+                break
+            seen = {key(each) for each in found}
+            asked = wanted
+            while True:
+                rows = await read(part.replace(limit=asked))
+                fresh = [each for each in rows if key(each) not in seen]
+                if len(fresh) >= wanted or len(rows) < asked:
+                    break
+                asked = wanted + len(rows) - len(fresh)
+            found += fresh[:wanted]
+        return found
+
+    def _parts(self, query: Selection) -> list[Selection]:
+        """``query`` prepared (``_prepare``), in the parts ``_read`` reads in turn.
+
+        A query that continues after a position, with a limit, is read in
+        the parts of what follows the position (``following_parts``): each
+        starts an index at its own first row, where one statement of two
+        would read the index from its start. Any other query is one part.
+        """
+        if query.after is None or query.limit is None:
+            return [self._prepare(query)]
+        model = self.aggregate_type
+        ordering = tuple(item.bind(model) for item in total_ordering(query.ordering))
+        return [
+            self._prepare(query.where(part).replace(after=None))
+            for part in following_parts(model, ordering, query.after)
+        ]
 
     def _prepare(self, query: Selection) -> Selection:
         """``query`` bound to the aggregate: total ordering, position as criteria."""

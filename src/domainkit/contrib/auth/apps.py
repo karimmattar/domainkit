@@ -18,7 +18,7 @@ from domainkit.apps.hooks import (
     on_deployment_warnings,
     on_export_subject,
 )
-from domainkit.checks import CheckFailed, CheckMessage
+from domainkit.checks import CheckFailed, CheckMessage, probes_left_out
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS, REDIS_SCHEMES
 from domainkit.contrib.contenttypes.sync import has_tables
@@ -453,7 +453,9 @@ class AuthConfig(DomainConfig):
         (``auth.W008``), and a worker that may send codes once they expired
         (``auth.W009``). Anywhere, a backend that does not list its grants
         on objects (``auth.W007``), and members' keys without the list of a
-        user's tenants (``auth.W010``): only superusers then change users.
+        user's tenants (``auth.W010``): only superusers then change users;
+        and ``AUTHENTICATION_EXEMPT_PATHS`` naming some of ``PROBE_PATHS``,
+        not all (``probes.W001``, as ``check`` says of the framework's lists).
         """
         unlisted: list[str] = [
             CheckMessage(
@@ -479,6 +481,13 @@ class AuthConfig(DomainConfig):
                     "the function that lists the tenants a user belongs to.",
                 )
             )
+        probes = probes_left_out(
+            "AUTH.AUTHENTICATION_EXEMPT_PATHS",
+            auth_settings().AUTHENTICATION_EXEMPT_PATHS,
+            settings.PROBE_PATHS,
+        )
+        if probes is not None:
+            unlisted.append(probes)
         if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
             return unlisted
         config = auth_settings()

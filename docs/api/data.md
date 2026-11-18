@@ -65,6 +65,7 @@ SQLAlchemy integration: connections, ORM metadata, repositories, migrations.
 - `lock_key`: The 64-bit key `lock(name)` takes on PostgreSQL, signed, as `bigint`.
 - `map_imperatively`: Map `class_` to `table` once; later calls are ignored.
 - `metadata`: Every table of every domain; the target of `makemigrations`.
+- `refused_commit`: Whether `exc`, raised as a transaction committed, says it stored nothing.
 - `register_column_type`: Store fields of `cls` (and its subclasses) in `column_type`.
 - `table_for`: The table that stores `cls`: one column per field (see the module).
 
@@ -229,10 +230,12 @@ Domain-driven design building blocks ("seedwork").
 - `UseCase`: A use case: its command, and how to run it in a unit of work.
 - `ValueObject`: Immutable value defined only by its attributes; equal values are equal.
 - `event_bus`: Process-wide bus used by units of work unless they are given another.
+- `failed_in_doubt`: Whether `exc` comes from a commit that may have been applied.
 - `fields_about`: What `values` hold about `subject`, and about nobody else.
 - `fingerprint`: SHA-256 of the action and the arguments, as canonical JSON (64 hex digits).
 - `handles`: Mark a handler for `event_type` events (Django's `@receiver`).
 - `in_memory`: A unit of work whose repositories, made from its annotations, keep everything in memory.
+- `mark_in_doubt`: Mark `exc` as the error of a commit that may have been applied.
 - `use_case`: Make an async function a use case: its command is made from its parameters.
 
 ## `domainkit.ddd.choices`

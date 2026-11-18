@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 from sqlalchemy import Column, Integer, MetaData, Table
+from sqlalchemy.sql.elements import quoted_name
 
 from domainkit.conf import override_settings
 from domainkit.contrib.accounting import protection as ledger
@@ -231,11 +232,16 @@ async def test_no_tables_lack_nothing(make_database: MakeDatabase) -> None:
 async def test_the_longest_name_and_a_reserved_word_are_protected(
     make_database: MakeDatabase,
 ) -> None:
-    """42 characters keep the triggers' names whole; ``order`` is quoted."""
+    """42 characters keep the triggers' names whole; reserved words are quoted.
+
+    ``order`` is in SQLAlchemy's list; ``lateral`` only PostgreSQL 16's.
+    """
     url = make_database("words")
     if not url.startswith("postgresql"):
         pytest.skip("the triggers are PostgreSQL's")
-    tables = [table(LONGEST), table("order")]
+    # SQLAlchemy quotes `order` itself, and `lateral` only when told to.
+    lateral = table(quoted_name("lateral", quote=True))
+    tables = [table(LONGEST), table("order"), lateral]
     with override_settings(DATABASES={"default": {"URL": url}}):
         async with connections.engine().begin() as connection:
             for each in tables:
@@ -252,11 +258,29 @@ async def test_the_longest_name_and_a_reserved_word_are_protected(
                     refusals.append(f"{each.name} is append-only" in str(exc))
         await connections.close_all()
 
-    assert protected == [LONGEST, "order"]
+    assert protected == [LONGEST, "order", "lateral"]
     assert lacking == {}
-    assert refusals == [True, True]
+    assert refusals == [True, True, True]
     assert append_only_statements(table("order"))[0][1] == (
         'DROP TRIGGER IF EXISTS order_append_only ON "order"'
+    )
+
+
+@pytest.mark.parametrize(
+    "word",
+    ["order", "collation", "concurrently", "lateral", "system_user", "tablesample"],
+)
+def test_postgresqls_reserved_words_are_quoted(word: str) -> None:
+    """Each word PostgreSQL 16 reserves is quoted, SQLAlchemy's list or not.
+
+    ``order`` is in SQLAlchemy's list; the five others are not. Unquoted,
+    each is a syntax error where a table's name goes (``pg_get_keywords()``:
+    categories ``R`` and ``T``).
+    """
+    protect, unprotect = append_only_statements(table(word))
+    assert protect[1] == f'DROP TRIGGER IF EXISTS {word}_append_only ON "{word}"'
+    assert unprotect[0] == (
+        f'DROP TRIGGER IF EXISTS {word}_append_only_truncate ON "{word}"'
     )
 
 

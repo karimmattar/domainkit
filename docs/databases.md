@@ -1781,7 +1781,8 @@ characters (`MAX_TABLE_NAME`, so the second name fits PostgreSQL's 63),
 and the table must name no schema: each tenant's schema gets its own
 triggers, on the table its `search_path` finds. Each function refuses
 another table with `ValueError`, on SQLite too, before it makes or asks
-anything. A name that is a reserved word, such as `order`, is quoted.
+anything. A name that is one of PostgreSQL 16's reserved words, such as
+`order` or `lateral`, is quoted.
 `contrib.audit`'s `protect(op, table)` and `unprotect(op, table)`, which
 revisions already written call, take any table as 2.8 did:
 `append_only_statements(table, checked=False)` writes their statements

@@ -28,7 +28,7 @@ from domainkit.db.orm import (
 )
 from domainkit.db.repository import SqlAlchemyRepository, affected_rows
 from domainkit.db.types import CurrencyCode, ExactDecimal, JSONTuple, UTCDateTime
-from domainkit.db.uow import Isolation, SqlAlchemyUnitOfWork, lock_key
+from domainkit.db.uow import Isolation, SqlAlchemyUnitOfWork, lock_key, refused_commit
 
 __all__ = [
     "ConnectionHandler",
@@ -53,6 +53,7 @@ __all__ = [
     "lock_key",
     "map_imperatively",
     "metadata",
+    "refused_commit",
     "register_column_type",
     "table_for",
 ]

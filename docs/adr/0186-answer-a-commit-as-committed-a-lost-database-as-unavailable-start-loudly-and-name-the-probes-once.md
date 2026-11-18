@@ -1,6 +1,6 @@
 # 0186. Answer a commit as committed, a lost database as unavailable, start loudly, and name the probes once
 
-- Status: Accepted
+- Status: Accepted; amended 2026-11-18 (at the end)
 - Date: 2026-11-18
 - Amends: [0048](0048-request-deadlines.md), [0078](0078-deliver-events-in-process-after-commit-or-durably-through-the-outbox.md)
 
@@ -309,3 +309,43 @@ Options weighed:
    <https://www.uvicorn.org/settings/>
 7. Django, *django-admin and manage.py*, `runserver`:
    <https://docs.djangoproject.com/en/5.2/ref/django-admin/#runserver>
+
+## Amendment (2026-11-18): a commit in doubt in any task, `enqueue`'s, and the auth app's list
+
+The review of this work closed four gaps before release:
+
+- **The mark is the error's own.** An error that takes no attribute (a
+  frozen dataclass's) was kept in a `WeakSet`, which compares by value:
+  an equal error raised elsewhere read as in doubt while the marked one
+  lived, and lost its `Retry-After`. It is kept by its identity now
+  (`id`, in a `WeakValueDictionary`), so an error that has no hash is
+  marked too. One that takes neither an attribute nor a weak reference
+  (a frozen dataclass's with `slots`) stays unmarked, as before; its
+  commit still counts in `in_doubt`.
+- **In any task.** A commit cut off in a task the request started marked
+  that task's error. Under a `BaseHTTPMiddleware`, the route runs in a
+  task of an anyio task group, and a cancellation of it is not the
+  `Exception` that `call_next` passes on [8]; under `asyncio.TaskGroup`
+  the request's own cancellation is raised. Either way
+  `DeadlineMiddleware` read another error, and answered `Retry-After: 1`.
+  `mark_in_doubt` now notes the commit on the work's deadlines too
+  (`deadlines.commit_in_doubt()`, `Deadline.in_doubt`), the objects the
+  tasks share, as `after_commit()` lifts them from any task, and the
+  middleware reads its deadline's note as well as the error. Rejected: a
+  context variable, whose changes in the task do not reach the request's;
+  and leaving it as a documented limit, as the deadline already crosses
+  the task boundary.
+- **`enqueue`'s commit.** It commits outside a unit of work, so a
+  `COMMIT` cut off or lost was not marked. It marks the error of its
+  commit as a unit of work does, unless the database refused it
+  (`refused_commit`, the SQL unit of work's rule, now a function both
+  use). A failure before the `COMMIT` is not in doubt.
+- **`AUTH.AUTHENTICATION_EXEMPT_PATHS` in `probes.W001`.** The decision
+  named it among the four lists, but `check` read the framework's three
+  only: the core reads no app's settings. The auth app warns of its own
+  list through `on_deployment_warnings`, in every environment, with the
+  message the others get (`probes_left_out`).
+
+8. Starlette 1.8.0, `starlette/middleware/base.py`, `call_next`: the
+   route runs in `task_group.start_soon(coro)`, which keeps an
+   `Exception` it raises for the caller, not a cancellation.

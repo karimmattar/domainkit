@@ -27,7 +27,9 @@ runs in ``after_commit()``, where no deadline cuts it off. A deadline
 made ``until_commit`` (an HTTP request's), and every block it bounds, in
 any task, is lifted there for good, so the request is answered as
 committed, whichever of its tasks committed. The other deadlines the
-task enforces are put back after it, later by the time it took.
+task enforces are put back after it, later by the time it took. A
+commit that fails and may have been applied is noted on the work's
+deadlines (``Deadline.in_doubt``), whichever of its tasks made it.
 
 Outside a request there is no deadline until a block sets one with
 ``timeout``: a worker bounds a task the same way. Transactions on
@@ -91,6 +93,11 @@ class Deadline:
         self.until_commit = False
         """Whether a commit in the work lifts it for good (``after_commit``):
         an HTTP request's, whose answer must say what was committed."""
+        self.in_doubt = False
+        """Whether a commit of the work failed and may have been applied
+        (``commit_in_doubt``), in whichever task: what answers a request
+        cut off then does not invite a retry. It stays once the deadline is
+        cleared, or its block ends."""
         self._timer: asyncio.Timeout | None = None
         self._task: asyncio.Task[Any] | None = None
         self._outer: Deadline | None = None
@@ -397,6 +404,22 @@ def after_commit() -> AfterCommit:
     left as it is.
     """
     return AfterCommit()
+
+
+def commit_in_doubt() -> None:
+    """Note on the work's deadline, and those around it, that a commit is in doubt.
+
+    ``UnitOfWork.commit`` calls it for a commit that failed and may have
+    been applied (``mark_in_doubt``), and each deadline then says so
+    (``Deadline.in_doubt``). A task the request started shares its
+    deadline, so a request cut off while such a task committed (a
+    ``BaseHTTPMiddleware``'s, a task group's) knows it, though its own
+    cancellation is not the commit's error.
+    """
+    deadline = _current.get()
+    while deadline is not None:
+        deadline.in_doubt = True
+        deadline = deadline._parent
 
 
 async def within[T](awaitable: Awaitable[T], seconds: float | None = None) -> T:
