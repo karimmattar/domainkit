@@ -79,5 +79,6 @@ documented health check restarted the relaying workers this decision
 relies on (audit A28-REL-02). [0187](0187-keep-the-workers-heartbeat-to-its-liveness-fail-deliveries-whose-task-ended-and-share-provider-clients.md) makes the heartbeat the worker's
 liveness alone, rewritten whatever its checks find, and reports the
 checks in `--ready-file`. A stopping relay waits for what is left of
-`DRAIN_TIMEOUT` only while it runs messages it claimed from the outbox;
-one still publishing gets `HELPER_GRACE` (A28-TEST-07).
+`DRAIN_TIMEOUT` only while it runs messages it claimed from the outbox,
+or its breaker is not closed; one still publishing gets `HELPER_GRACE`
+(A28-TEST-07).

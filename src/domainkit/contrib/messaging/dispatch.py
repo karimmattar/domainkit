@@ -182,8 +182,10 @@ class BrokerWorkers:
                 self.queues, self.config.CONCURRENCY, handle
             )
             helpers: list[asyncio.Task[None]] = []
-            # Each relay's messages from the outbox, run while the broker was away.
-            outboxes: dict[asyncio.Task[None], set[asyncio.Task[None]]] = {}
+            # Each relay's breaker, and the messages it runs from the outbox.
+            outboxes: dict[
+                asyncio.Task[None], tuple[Breaker, set[asyncio.Task[None]]]
+            ] = {}
             try:
                 if self.relays:
                     for worker in self.workers:
@@ -191,7 +193,7 @@ class BrokerWorkers:
                         relay = group.create_task(
                             self._relay_until(worker, broker, stop, ran)
                         )
-                        outboxes[relay] = ran
+                        outboxes[relay] = (self.breaker(worker.database), ran)
                         helpers.append(relay)
                         helpers.append(group.create_task(worker.clean_until(stop)))
                 await stop.wait()
@@ -203,10 +205,16 @@ class BrokerWorkers:
             drained_by = loop.time() + grace
             await finish(running, grace)
             # A relay running the outbox (the broker away) drains its own
-            # messages: it gets what is left of the drain, then the grace.
-            # The others, a relay still publishing among them, get the grace.
+            # messages: it gets what is left of the drain, then the grace. It
+            # is told by its breaker (open, or probing) as well as by what it
+            # runs: one still claiming runs nothing yet. The others, a relay
+            # still publishing among them, get the grace.
             left = max(drained_by - loop.time(), 0.0)
-            draining = [relay for relay, ran in outboxes.items() if ran]
+            draining = [
+                relay
+                for relay, (breaker, ran) in outboxes.items()
+                if ran or breaker.state != "closed"
+            ]
             await asyncio.gather(
                 wind_down(draining, left + HELPER_GRACE),
                 wind_down(

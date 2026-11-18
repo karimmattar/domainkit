@@ -3055,6 +3055,59 @@ async def test_a_relay_running_the_outbox_gets_the_drain(
     assert row["status"] == DONE
 
 
+@pytest.mark.usefixtures("broker_tables")
+async def test_a_relay_claiming_from_the_outbox_at_the_stop_gets_the_drain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A relay whose breaker is open is waited for, though it runs nothing yet.
+
+    The stop came while it claimed: what it claims then runs, and is done.
+    """
+
+    async def away(*args: object, **options: object) -> None:
+        raise BrokerUnavailable("connection refused")
+
+    broker = brokers["work"]
+    monkeypatch.setattr(broker, "publish", away)
+    monkeypatch.setattr(broker, "check", away)
+    monkeypatch.setattr(dispatch, "HELPER_GRACE", 0.05)
+    gate.open("claimed")
+    await enqueue(at_gate, name="claimed")
+    config = registry.settings(MessagingSettings).model_copy(
+        update={
+            "BREAKER_FAILURES": 1,
+            "BREAKER_COOLDOWN": 60.0,
+            "POLL_INTERVAL": 0.01,
+            "DRAIN_TIMEOUT": 10.0,
+            **SLOW,
+        }
+    )
+    worker = Worker(config)
+    claim = worker._claim
+    claiming, release = asyncio.Event(), asyncio.Event()
+
+    async def held(limit: int) -> list[Claimed]:
+        claiming.set()
+        await release.wait()
+        return await claim(limit)
+
+    monkeypatch.setattr(worker, "_claim", held)
+    stop = asyncio.Event()
+    running = asyncio.create_task(
+        BrokerWorkers([worker], ["default"], config).run(stop)
+    )
+    await within(claiming.wait())
+
+    stop.set()
+    await asyncio.sleep(0.3)  # Past HELPER_GRACE.
+    release.set()
+    await within(running)
+
+    assert gate.finished == ["claimed"]
+    (row,) = await rows()
+    assert row["status"] == DONE
+
+
 @pytest.mark.usefixtures("tables")
 async def test_a_stopping_worker_lets_its_cleanup_finish(
     monkeypatch: pytest.MonkeyPatch,
