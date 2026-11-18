@@ -4,6 +4,7 @@ import ast
 import json
 import re
 import shlex
+import tomllib
 from datetime import timedelta
 from importlib import import_module
 from pathlib import Path
@@ -1143,3 +1144,44 @@ def test_each_key_feature_says_when_to_use_it_and_what_instead(name: str) -> Non
     assert re.search(r"\*\*Do not (?:use|shard|read|keep)", when), name
     assert re.search(r"\]\([^)#]*\.md", when), f"{name}: link what to use instead"
     assert f"]({name}" in (DOCS / "choosing.md").read_text(encoding="utf-8")
+
+
+BUDGETS = ROOT / "benchmarks" / "budgets.toml"
+_RUNG_ROW = re.compile(
+    r"^\| `(?P<rung>[\w-]+)` \| [^|]+ \| (?P<calls>[\d,]+)(?: \([\d,]+\))? "
+    r"\| (?P<trips>\d+/\d+/\d+/\d+) \| (?P<modules>[\d,]+) \| [\d.,]+ \|$",
+    re.MULTILINE,
+)
+
+
+def test_the_ladders_table_shows_the_budgets_ci_holds() -> None:
+    """Each rung's calls, round trips, and modules are its budgets (A28-PERF-09)."""
+    page = (DOCS / "performance.md").read_text(encoding="utf-8")
+    written = tomllib.loads(BUDGETS.read_text(encoding="utf-8"))
+    budgets = written["rungs"]
+    shown = {
+        row["rung"]: (
+            int(row["calls"].replace(",", "")),
+            row["trips"],
+            int(row["modules"].replace(",", "")),
+        )
+        for row in _RUNG_ROW.finditer(section_of(page, "## What a request costs"))
+    }
+
+    assert shown == {
+        rung: (
+            budget["calls"],
+            "/".join(
+                str(budget[measure])
+                for measure in ("statements", "transactions", "checkouts", "pings")
+            ),
+            budget["modules"],
+        )
+        for rung, budget in budgets.items()
+    }
+    # The budgets the page quotes "as the file holds them now".
+    gate = section_of(page, "## Budgets and the CI gate")
+    [quoted] = re.findall(r"^```toml\n(.*?)^```$", gate, re.DOTALL | re.MULTILINE)
+    held = tomllib.loads(quoted)
+    assert held["tolerance"] == written["tolerance"]
+    assert held["rungs"] == {name: budgets[name] for name in held["rungs"]}

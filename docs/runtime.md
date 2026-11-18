@@ -827,8 +827,27 @@ certificate files.
 
 domainkit runs on free-threaded CPython 3.14 (`python3.14t`, without the
 GIL). Importing domainkit and its runtime dependencies keeps the GIL off.
-The `immudb` extra is the exception, because grpcio publishes no
-free-threaded build yet.
+An extension module that does not declare that it runs without the GIL
+turns it back on when it is first imported, for the rest of the process,
+and Python prints a `RuntimeWarning` that names it. Three extras bring
+such a module:
+
+- `documents`: `fill_docx` and `placeholders` import lxml (6.1) on their
+  first call. Its other helpers, pypdf and nh3 (`clean_html`), keep the
+  GIL off.
+- `saml`: the SAML routes import signxml and lxml when the first SAML
+  response comes.
+- `immudb`: grpcio publishes no free-threaded build yet.
+
+So a free-threaded process that fills a document or takes a SAML login
+runs with the GIL from then on, and its threads no longer run Python in
+parallel. Fill documents in a worker that serves only their queue
+([queues](contrib/messaging.md#queues)), so the server keeps the GIL
+off. A service that takes SAML logins gains nothing from a free-threaded
+build until lxml supports one. The checks of uploaded PDF and Office
+documents run in processes of their own
+([checking documents](uploads.md#checking-documents)), so they leave the
+server's GIL off.
 
 CI runs these tests on 3.14t with the GIL off throughout: the tests of the
 shared state below, and of the framework's own threads. It also runs the

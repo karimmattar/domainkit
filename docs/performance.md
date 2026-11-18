@@ -72,11 +72,20 @@ ledger posting counted against a limit. Requests go straight into the
 application, one at a time, with no server or socket. The database rungs
 run against PostgreSQL. Each rung runs in a process of its own.
 
-The table below was measured on this release: FastAPI 0.143.1, Starlette
-1.8.0, SQLAlchemy 2.1.4, asyncpg 0.32.0, Pydantic 2.14.1; Python 3.13.16
-on uvloop, the version CI's `bench` job is pinned to; PostgreSQL 16. It
-shows the highest calls and the best CPU of three ladder runs on a
-shared 4-vCPU machine. All figures are per request:
+The table holds two kinds of figure, all per request:
+
+- Calls, round trips, and modules are the budgets that CI's `bench` job
+  holds each rung to (`benchmarks/budgets.toml`), on Python 3.13.16, the
+  version that job is pinned to, with the locked dependencies.
+  `domainkit_tests/test_docs.py` checks that the table and the budgets
+  agree.
+- CPU is the best of three ladder runs on a shared 4-vCPU machine, with
+  FastAPI 0.143.1, Starlette 1.8.0, SQLAlchemy 2.1.4, asyncpg 0.32.0, and
+  Pydantic 2.14.1, on Python 3.13.16 with uvloop, and PostgreSQL 16. The
+  locked versions have moved since, and nothing gates the CPU, so read it
+  as a scale, not as this release's measure.
+
+Of the other columns:
 
 - the round trips are statements, transactions, checkouts, and pings;
 - the modules are what the rung's process holds once it has served;
@@ -86,25 +95,25 @@ shared 4-vCPU machine. All figures are per request:
 | Rung | Stack and request | Calls (0.8.0) | Round trips | Modules | CPU µs |
 | --- | --- | ---: | ---: | ---: | ---: |
 | `asgi` | A bare ASGI application: `GET /hello` | 5 (5) | 0/0/0/0 | 166 | 0.9 |
-| `fastapi` | Plain FastAPI: `GET /hello` | 234 (168) | 0/0/0/0 | 393 | 48 |
-| `bare` | domainkit, no middleware: `GET /hello` | 303 (1,653) | 0/0/0/0 | 782 | 60 |
-| `nested` | domainkit, no middleware, two routers deep: `GET /a/b/hello` | 303 (1,889) | 0/0/0/0 | 782 | 59 |
-| `default` | `DEFAULT_MIDDLEWARE`: `GET /hello` | 414 (1,825) | 0/0/0/0 | 783 | 105 |
-| `default-json` | `DEFAULT_MIDDLEWARE`, JSON access log: `GET /hello` | 551 (1,965) | 0/0/0/0 | 783 | 171 |
-| `template` | The `init` template's stack: `GET /hello` | 529 (2,018) | 0/0/0/0 | 785 | 135 |
-| `template-json` | The template's stack, JSON access log: `GET /hello` | 666 (2,158) | 0/0/0/0 | 785 | 207 |
-| `me` | Template stack, opaque token: `GET /me` | 673 (5,892) | 0/0/0/0 | 813 | 226 |
-| `read` | Template stack, token, `ModelPermissions`, read through a unit of work: `GET /items/{id}` | 1,715 (7,359) | 1/1/1/1 | 813 | 1,484 |
-| `write` | Template stack, token, `ModelPermissions`, write through a unit of work: `POST /items` | 2,054 (7,648) | 1/1/1/1 | 813 | 1,725 |
-| `resource-list` | Template stack, token, a `ResourceRouter` page of 20 items with a scope and `ModelActions`: `GET /resources/items`, measured before any rung writes | 2,765 | 1/1/1/1 | 817 | 2,167 |
-| `resource-read` | Template stack, token, a `ResourceRouter` read with a scope and `ModelActions`: `GET /resources/items/{id}` | 1,985 | 1/1/1/1 | 817 | 1,890 |
-| `resource-command` | Template stack, token, a `ResourceRouter` command on one item, with a scope: `POST /resources/items/{id}/rename` | 2,726 | 1/1/1/1 | 817 | 2,500 |
-| `keyed-write` | The write with an `Idempotency-Key` (`IdempotencyMiddleware` last): `POST /items` | 3,530 (10,977) | 4/3/3/3 | 814 | 3,548 |
-| `money-write` | Template stack, token, a `Money` field written through a unit of work: `POST /wallets` | 2,178 | 1/1/1/1 | 882 | 1,777 |
-| `posting` | Template stack, token, `post_entry` of two lines, the credited account's holder under a daily limit (`contrib.limits`): `POST /postings` | 8,049 | 14/1/1/1 | 889 | 7,216 |
-| `encrypted-read` | Template stack, token, a read of a field `Encrypted()` under the data key: `GET /cards/{id}` | 1,758 | 1/1/1/1 | 882 | 1,584 |
-| `step-up` | Template stack, a token that stepped up, a route behind `StepUp(max_age=...)`: `GET /stepped` | 1,580 | 1/1/1/1 | 882 | 1,348 |
-| `throttled` | Template stack, token, refused by `RATE_LIMIT` (429): `GET /me`; its message translated in one lookup since PERF-24 | 498 (4,401) | 0/0/0/0 | 813 | 188 |
+| `fastapi` | Plain FastAPI: `GET /hello` | 234 (168) | 0/0/0/0 | 394 | 48 |
+| `bare` | domainkit, no middleware: `GET /hello` | 303 (1,653) | 0/0/0/0 | 806 | 60 |
+| `nested` | domainkit, no middleware, two routers deep: `GET /a/b/hello` | 303 (1,889) | 0/0/0/0 | 806 | 59 |
+| `default` | `DEFAULT_MIDDLEWARE`: `GET /hello` | 414 (1,825) | 0/0/0/0 | 807 | 105 |
+| `default-json` | `DEFAULT_MIDDLEWARE`, JSON access log: `GET /hello` | 551 (1,965) | 0/0/0/0 | 807 | 171 |
+| `template` | The `init` template's stack: `GET /hello` | 529 (2,018) | 0/0/0/0 | 809 | 135 |
+| `template-json` | The template's stack, JSON access log: `GET /hello` | 666 (2,158) | 0/0/0/0 | 809 | 207 |
+| `me` | Template stack, opaque token: `GET /me` | 686 (5,892) | 0/0/0/0 | 838 | 226 |
+| `read` | Template stack, token, `ModelPermissions`, read through a unit of work: `GET /items/{id}` | 1,660 (7,359) | 1/1/1/0 | 838 | 1,484 |
+| `write` | Template stack, token, `ModelPermissions`, write through a unit of work: `POST /items` | 1,997 (7,648) | 1/1/1/0 | 838 | 1,725 |
+| `resource-list` | Template stack, token, a `ResourceRouter` page of 20 items with a scope and `ModelActions`: `GET /resources/items`, measured before any rung writes | 2,684 | 1/1/1/0 | 838 | 2,167 |
+| `resource-read` | Template stack, token, a `ResourceRouter` read with a scope and `ModelActions`: `GET /resources/items/{id}` | 1,920 | 1/1/1/0 | 838 | 1,890 |
+| `resource-command` | Template stack, token, a `ResourceRouter` command on one item, with a scope: `POST /resources/items/{id}/rename` | 2,659 | 1/1/1/0 | 838 | 2,500 |
+| `keyed-write` | The write with an `Idempotency-Key` (`IdempotencyMiddleware` last): `POST /items` | 3,394 (10,977) | 4/3/3/0 | 839 | 3,548 |
+| `money-write` | Template stack, token, a `Money` field written through a unit of work: `POST /wallets` | 2,126 | 1/1/1/0 | 907 | 1,777 |
+| `posting` | Template stack, token, `post_entry` of two lines, the credited account's holder under a daily limit (`contrib.limits`): `POST /postings` | 7,976 | 14/1/1/0 | 907 | 7,216 |
+| `encrypted-read` | Template stack, token, a read of a field `Encrypted()` under the data key: `GET /cards/{id}` | 1,703 | 1/1/1/0 | 907 | 1,584 |
+| `step-up` | Template stack, a token that stepped up, a route behind `StepUp(max_age=...)`: `GET /stepped` | 1,525 | 1/1/1/0 | 907 | 1,348 |
+| `throttled` | Template stack, token, refused by `RATE_LIMIT` (429): `GET /me`; its message translated in one lookup since PERF-24 | 505 (4,401) | 0/0/0/0 | 838 | 188 |
 
 The four money rungs came with the 0.15 audit (PERF-32). They install
 money's ledger, limits, keys, and a small domain of their own beside the
@@ -112,9 +121,8 @@ catalog's (`benchmarks/project/money_routes.py`). So they hold 69 modules
 more than the other database rungs, which install none of it.
 
 `benchmarks/budgets.toml` holds the gate for each rung
-([below](#budgets-and-the-ci-gate)). Its calls and round trips are the
-ones in this table. Its module budgets were written later, and are a few
-modules higher (7 on most rungs).
+([below](#budgets-and-the-ci-gate)). A change that rewrites a budget
+rewrites the rung's row here too.
 
 ### What each measure means
 
@@ -276,12 +284,12 @@ modules = 2
 memory = 0.1
 
 [rungs.me]
-calls = 673
+calls = 686
 statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
-modules = 831
+modules = 838
 memory = 94
 ```
 
@@ -343,7 +351,9 @@ python -m benchmarks --write-budgets
 
 Then review the diff of `budgets.toml`: every raised number is a cost
 the change adds. For the two JSON-log rungs, keep the highest of a few
-runs.
+runs. Copy each changed rung's calls, round trips, and modules into
+[the table](#what-a-request-costs), and the `me` rung's budget into the
+block above: `domainkit_tests/test_docs.py` fails until they agree.
 
 ## Under load
 
