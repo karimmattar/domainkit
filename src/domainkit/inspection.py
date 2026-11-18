@@ -132,6 +132,7 @@ from urllib.parse import unquote, unquote_to_bytes, urlsplit
 
 from domainkit.exceptions import DomainkitError, ImproperlyConfigured, ServiceBusy
 from domainkit.i18n.lazy import LazyString, gettext_lazy, ngettext_lazy, pgettext_lazy
+from domainkit.utils.text import IGNORABLE
 
 if TYPE_CHECKING:
     from pypdf import PdfReader
@@ -310,14 +311,6 @@ RESULT: Final = "\x00"
 """Stands for a field's result, whose own fields are not its instruction."""
 FIELD_QUOTES: Final = "\"'\u201c\u201d\u201e\u201f\u2018\u2019\u201a\u201b\u00ab\u00bb"
 """Quotes a field's name may be written in: straight, curly, low, and guillemets."""
-IGNORABLE: Final = (
-    "\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f"
-    "\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufff8"
-    "\U0001bca0-\U0001bca3\U0001d173-\U0001d17a\U000e0000-\U000e0fff"
-)
-"""Unicode's default ignorable code points, as a character class: what is never
-shown (a zero-width space or joiner, a soft hyphen, a byte order mark, a
-directional mark or override, a variation selector)."""
 IGNORED: Final = re.compile(f"[{IGNORABLE}]")
 FIELD_NAME: Final = re.compile(
     rf"([\s\\{FIELD_QUOTES}{IGNORABLE}]*)((?:[A-Za-z][{IGNORABLE}]*)+)"

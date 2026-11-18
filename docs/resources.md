@@ -1023,8 +1023,14 @@ f056550e-1f49-4cf9-b364-d942a15aded4,0,Big lamp,5
   caller may not see. Nested values are JSON. A text cell that a
   spreadsheet would run as a formula gets an apostrophe first: one that
   starts with `=`, `+`, `-`, `@`, a tab, or a carriage return, also behind
-  spaces of any kind or invisible characters, and in the full-width and
-  small forms of those signs. Numbers, such as `-1.50`, stay as they are.
+  white space, control characters, or characters that show nothing, and
+  in the full-width and small forms of those signs. Numbers, such as
+  `-1.50`, stay as they are. What shows nothing is each format character
+  (a directional mark, a soft hyphen) and each of Unicode's other default
+  ignorable code points (a variation selector, a tag), as screens and
+  `OfficeCheck` read them (since 2.9). LibreOffice 24.2 runs none of these
+  as a formula; other spreadsheets were not all checked, and the file may
+  be opened by any of them, so the apostrophe goes first all the same.
 - NDJSON has one document per line. The separators that would split a
   line elsewhere (U+0085, U+2028, U+2029) are escaped, as JSON allows.
 
