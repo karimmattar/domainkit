@@ -36,6 +36,34 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.8 to 2.9
+
+2.9 follows up the audit of 2.8. Each item of this list says what a
+project that relied on 2.8's behaviour changes, and what to run. No
+migration comes with these items.
+
+- **`check` warns of web names a gateway takes through an allowed
+  module** (`architecture.W001`). The infrastructure layer may import
+  `domainkit.http.client` and `domainkit.http.uploads`, but from 2.9
+  only the names their `__all__` lists, and not `uploads.serve`, without
+  a warning; 3.0 refuses the rest. `check` passes, and `check --deploy`
+  fails until each import changes, or `SILENCED_CHECKS` names the
+  warning. Type a route's file as `domainkit.http.uploads.Upload`, not
+  Starlette's `UploadFile`; import `StoredUpload` from
+  `domainkit.storage`; and serve a file from its route, with `serve`
+  there ([Layer rules](reference/settings.md#layer-rules)).
+- **`domainkit.contrib.objectpermissions` needs `domainkit.contrib.auth`
+  in `INSTALLED_DOMAINS`.** It always did, at its first grant; now
+  `setup()` says so (`apps.E001`).
+- **The ledger's triggers are checked as the audit trail's are.** Where
+  deployed, a trigger on the entries or postings given arguments fails
+  the startup check (`accounting.E001`), as it did on the trail. `migrate`
+  makes the triggers again.
+- **`AwsCredentials` is defined in `domainkit.cloud.aws`.** It and the
+  signing and credential functions still import from
+  `domainkit.keys.aws`, the same objects; what prints a class by its
+  module prints the new one.
+
 ## 2.7 to 2.8
 
 2.8 follows up 2.7. Each item of this list says what a project that

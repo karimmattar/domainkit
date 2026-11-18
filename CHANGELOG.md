@@ -9,6 +9,79 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `domainkit.db.protection`: one way to keep a table append-only on
+  PostgreSQL, which the audit trail and the ledger's entries now share.
+  `append_only_statements` writes the triggers of 2.8, the same function
+  names and bodies, so triggers made then still count;
+  `protect_append_only` makes them afresh after `migrate`;
+  `missing_append_only` and `unprotected` check them, in a database's own
+  schema and in each tenant's (`TENANCY.SCHEMA_DATABASES`)
+  ([Append-only tables](docs/databases.md#append-only-tables), ADR 0188)
+  (audit A28-ARCH-07).
+- `domainkit.db.affected_rows(result)`: the rows an `UPDATE` or `DELETE`
+  changed, without reading `rowcount` under `# type: ignore`; a
+  `TypeError` for a result that counts none
+  ([Units of work](docs/databases.md#units-of-work-and-their-repositories))
+  (audit A28-ARCH-E4).
+- `domainkit.utils.canonical.canonical_json(value)`: RFC 8785's canonical
+  JSON, in UTF-8, for new digests and signatures. It refuses NaN, the
+  infinities, integers past 2**53 - 1, lone surrogates, and keys that are
+  not strings. The digests the framework already stores keep their own
+  encoders ([Digests](docs/databases.md#digests), ADR 0188) (audit
+  A28-ARCH-E7).
+- Public names the contrib apps used before they were published:
+  `domainkit.context` (`current_request`, `bind_request`,
+  `RequestContext`, `SYSTEM_ACTOR`), `domainkit.utils.module_loading`
+  (`import_string`, `lazy_names`), `domainkit.utils.rates` (`parse_rate`,
+  `PERIODS`), `domainkit.utils.decimals.jsonable`,
+  `domainkit.db.routing.DatabaseRouter`, and
+  `domainkit.log.SECURITY_LOGGER`. `domainkit.http.errors` lists its
+  public names in `__all__`: `APIError`, `FieldError`, `ErrorResponse`,
+  `error_response`, `error_responses` (ADR 0188) (audit A28-ARCH-06,
+  A28-ARCH-E10).
+- `domainkit.contrib.mail.admins.reset_reports()` and
+  `domainkit.contrib.flags.declared_kept()`: public resets of the admins'
+  error reports and the declared dynamic settings, which the pytest
+  plugin calls around each test, so neither reaches the next test
+  ([What each test starts from](docs/testing.md#what-each-test-starts-from),
+  ADR 0113) (audit A28-ARCH-14).
+
+### Changed
+
+- AWS's Signature Version 4 and credential chain live in
+  `domainkit.cloud.aws`, which S3, SQS, SNS, SES, and KMS share.
+  `domainkit.keys.aws` still imports every name it held, the same
+  objects, and the chain raises the same errors (ADR 0188) (audit
+  A28-ARCH-11).
+- `domainkit.contrib.objectpermissions` requires `domainkit.contrib.auth`:
+  without it, `setup()` refuses to start (`apps.E001`) rather than the
+  first grant failing ([What each app needs](docs/contrib.md#what-each-app-needs))
+  (audit A28-ARCH-10).
+- The ledger's startup check of its append-only triggers is the audit
+  trail's: a trigger given arguments counts as changed
+  (`accounting.E001`), and `migrate` makes it again (ADR 0188) (audit
+  A28-ARCH-07).
+- The framework's own guards: the core's packages import their own layer
+  and those below, by five layers ADR 0188 writes down; contrib apps
+  import no ring of apps of any length, and only the core names an
+  `__all__` publishes, each from a list of what 2.8 had that may only
+  shrink. CI's lint gates a function's complexity (ruff C901, over 15),
+  arguments (PLR0913, over 10), and statements (PLR0915, over 50) (audit
+  A28-ARCH-04, A28-ARCH-05, A28-ARCH-06, A28-ARCH-E1, A28-ARCH-E3).
+
+### Deprecated
+
+- A name the infrastructure layer imports from `domainkit.http.client`
+  or `domainkit.http.uploads` that their `__all__` does not list, such
+  as Starlette's `UploadFile` or `StreamingResponse`, and
+  `domainkit.http.uploads.serve`, which answers a request: `check` warns
+  of each (`architecture.W001`, `domainkit.architecture.layer_warnings`),
+  so `check --deploy` fails until the import changes or the warning is
+  silenced. 3.0 refuses them ([Layer rules](docs/reference/settings.md#layer-rules),
+  ADR 0188) (audit A28-ARCH-03).
+
 ## [2.8.0] - 2026-11-18
 
 2.8 answers fourteen of a project's fifteen notes on 2.7 (the last,
