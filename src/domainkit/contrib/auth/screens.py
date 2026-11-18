@@ -43,7 +43,7 @@ from typing import Final
 from domainkit.apps.hooks import HookPoint
 from domainkit.ddd import BusinessRuleViolation
 from domainkit.i18n import ngettext, pgettext
-from domainkit.inspection import IGNORABLE
+from domainkit.utils.text import IGNORABLE
 
 from .repositories.authorizations import DETAIL_MAX_LENGTH, MAX_DETAILS
 from .settings import auth_settings

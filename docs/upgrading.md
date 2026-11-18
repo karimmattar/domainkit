@@ -62,6 +62,13 @@ project that relied on 2.8's behaviour notices, and what to change.
   com`, `example. com`), answers `422 link_not_shown`, and so do `the
   .NET team` and `the dot com era`. Under `"shown"`, the default, nothing
   changes.
+- **A CSV cell that starts with an invisible character and a formula's
+  sign gets an apostrophe.** A directional mark, a soft hyphen, a control
+  or any other character that shows nothing, before `=`, `+`, `-` or
+  `@`, now counts as the spaces before them did: a phone number written
+  with a left-to-right mark before its `+`, as right-to-left pages write
+  it, is exported with an apostrophe first, as `+1 555 0100` already
+  was. Numbers stay numbers.
 
 ## 2.7 to 2.8
 

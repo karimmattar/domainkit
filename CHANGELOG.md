@@ -31,6 +31,12 @@ and a status.
   word is another top-level domain (`Done. Info sent`, `a dot in the
   name`) holds none. The docs list what it still does not read
   (audit A28-SEC-05).
+- CSV exports guard a formula behind any character that shows nothing:
+  white space, a control, a format character (a directional mark, a soft
+  hyphen, the Arabic number sign), or another default ignorable code
+  point (a variation selector, a tag). Screens, Office documents' checks,
+  and CSV cells read one definition of what shows nothing
+  (audit A28-ARCH-13).
 
 ## [2.8.0] - 2026-11-18
 
