@@ -1,6 +1,6 @@
 # 0185. Bound keyset pages, index the user lookups, and read fewer grants
 
-- Status: Accepted
+- Status: Accepted; amended 2026-11-18 (at the end)
 - Date: 2026-11-18
 
 ## Context
@@ -186,3 +186,42 @@ To watch:
 - A backend that overrides `object_grants_beyond` must leave out exactly
   the grants of the permissions given, or the admin API's bound
   (AUTH-14) misses grants.
+
+## Amendment (2026-11-18): a field that may be missing, read in two parts
+
+The review of this work found the case the decision left out costly: a
+list ordered ascending by a field that may be missing read the index
+from its start on every page, and so did a descending one past a
+missing value. What follows such a position is the rest of its group,
+then the whole other group (the missing values ascending, the present
+ones descending), and no one range holds both.
+
+- `following_parts` gives each part a bound of its own: `>=` the value,
+  then `IS NULL`; past a missing value descending, `IS NULL`, then
+  `IS NOT NULL`. Past a missing value ascending, the bound is `IS NULL`.
+  `following` joins them, for a query without a limit.
+- `filter` and `values` read a limited query's parts in turn, each a
+  statement, the second only while the page is not full, for what is
+  left of it. Every other page is still one statement; the page that
+  crosses from one group to the other takes two. `explain` gives the plan
+  of each.
+- Measured on 300,000 rows, a tenth of them missing, with an index on
+  the field and the id: past a value ascending, 39 ms on PostgreSQL and
+  10 ms on SQLite, now 0.04 and 0.1 ms for the first part, 0.02 and
+  0.07 ms for the second; past a missing value descending, 12 and 22 ms,
+  now at most 0.03 and 0.4 ms a part. PostgreSQL needs that index made
+  descending for a descending list, `(field DESC, id)`: on `(field, id)`
+  it reads the missing values past the position, as a tie group's, and
+  sorts them (4 to 7 ms, 8 to 10 before).
+- Options weighed: a `UNION ALL` of the two parts in one statement,
+  which PostgreSQL merges with both seeks (`Merge Append`). It saves the
+  second round trip, but the repository loads aggregates, their
+  children, and row locks from one `SELECT` of the table, and each would
+  change. A row comparison serves neither group: a missing value makes
+  it unknown. Ordering a part of missing values by the rest of the
+  ordering, which PostgreSQL does not drop for `IS NULL`, would serve an
+  index on `(field, id)` under a descending ordering, but no longer one
+  made in the ordering's directions; it is not done.
+- Still read: the ties of the first field up to the position, as the
+  decision says; the missing values are one such group.
+

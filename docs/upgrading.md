@@ -389,10 +389,12 @@ Nothing to change; plans and costs change.
 
 - **A keyset page starts at its position.** What follows a position
   begins with a bound on the ordering's first field, so an index whose
-  first column is that field is read from the position. A list ordered
-  ascending by a field that may be missing still reads from the start:
-  order it descending, or put a field that is never missing first
-  ([Pages](queries.md#pages)).
+  first column is that field is read from the position. On a field that
+  may be missing, a page whose position's group is followed by the other
+  group (past a value ascending, past a missing one descending) reads
+  the rest of its group, then the other group in a second statement if
+  it is not full yet: a test that counts that page's statements
+  (`assert_num_queries`) counts one more ([Pages](queries.md#pages)).
 - **The admin API reads only the grants on objects that count.** A
   backend that reads its grants from a table can answer
   `object_grants_beyond(holder, permissions)` to leave out, in its query,

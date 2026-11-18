@@ -198,9 +198,14 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   of the ordering (`>=` ascending, `<=` descending, a money field's
   currency), so a database reads an index from the position instead of
   from its first row. It selects the same rows. A middle page of 300,000
-  rows took 13 to 20 ms on PostgreSQL, and now 0.03 to 0.1 ms. Ascending
-  on a field that may be missing still reads from the start (ADR 0185)
-  (audit A28-PERF-01).
+  rows took 13 to 20 ms on PostgreSQL, and now 0.03 to 0.1 ms. On a field
+  that may be missing, a page whose position's group is followed by the
+  other group (past a value ascending, past a missing one descending)
+  reads the rest of its group, then the other one in a second statement
+  while the page is not full, each from its own start. With an index in
+  the ordering's directions, such a page of 300,000 rows took 12 to 39 ms
+  on PostgreSQL and 10 to 22 ms on SQLite, and now 0.02 to 0.4 ms (ADR
+  0185) (audit A28-PERF-01).
 
 - The admin API's bound on grants on objects reads only the grants that
   count: none for a superuser, and for staff none of a permission they

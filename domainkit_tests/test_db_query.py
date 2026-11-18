@@ -877,6 +877,115 @@ async def test_a_page_after_a_position_reads_an_index_from_there(
         assert "MULTI-INDEX OR" not in plan
 
 
+@pytest.mark.parametrize(
+    ("ordering", "position", "searched"),
+    [
+        (
+            ("stock", "id"),
+            0,
+            (("(stock>?)", "(stock=?)"), ("(stock >= ", "(stock IS NULL)")),
+        ),
+        (
+            ("-stock", "id"),
+            None,
+            (
+                ("(stock=? AND id>?)", "(stock>?)"),
+                ("AND (id > ", "(stock IS NOT NULL)"),
+            ),
+        ),
+    ],
+    ids=["ascending-past-a-stock", "descending-past-a-missing-one"],
+)
+async def test_a_page_into_the_other_group_reads_each_from_its_start(
+    tables: None,
+    ordering: tuple[str, str],
+    position: int | None,
+    searched: tuple[tuple[str, ...], tuple[str, ...]],
+) -> None:
+    """Where the missing stocks follow the position's group, each is a statement.
+
+    Ascending past a stock come the stocks above it, then every missing
+    one; descending past a missing one, the missing ones after it, then
+    every stock. No one range of the index holds both: the one statement
+    of both read the index from its first row (ADR 0185). Each part starts
+    the index, made in the ordering's directions, at its own first row now.
+    """
+    await store(*dataset())
+    columns = ", ".join(
+        f"{name.lstrip('-')}{' DESC' * (name[0] == '-')}" for name in ordering
+    )
+    async with GadgetsUnitOfWork() as uow:
+        connection = await uow.gadgets.session.connection()
+        await connection.exec_driver_sql(
+            f"CREATE INDEX ix_test_keyset ON framework_test_gadgets ({columns})"
+        )
+        if ON_POSTGRES:  # Five rows: the plan a large table gets.
+            await connection.exec_driver_sql("SET LOCAL enable_seqscan = off")
+        total = tuple(map(Ordering.parse, ordering))
+        everything = await uow.gadgets.filter(Selection(ordering=total))
+        index = next(n for n, each in enumerate(everything) if each.stock == position)
+        after = position_of(everything[index], total)
+        plan = await uow.gadgets.explain(
+            Selection(ordering=total, after=after, limit=2)
+        )
+    lines = plan.splitlines()
+    if ON_POSTGRES:
+        bounds = [line for line in lines if "Index Cond:" in line]
+        assert len(bounds) == 2
+        assert all(map(str.__contains__, bounds, searched[1]))
+        assert not [line for line in lines if "Filter:" in line and "stock IS" in line]
+    else:
+        for part in searched[0]:
+            assert (
+                f"SEARCH framework_test_gadgets USING INDEX ix_test_keyset {part}"
+                in lines
+            )
+        assert "SCAN framework_test_gadgets USING INDEX ix_test_keyset" not in plan
+        assert "MULTI-INDEX OR" not in plan  # Every row of each, then sorted.
+
+
+@pytest.mark.parametrize(
+    ("ordering", "reads"),
+    [(("stock",), [1, 1, 2, 1]), (("-stock",), [1, 2, 1, 1])],
+    ids=["ascending", "descending"],
+)
+async def test_pages_through_missing_values_cover_each_once_in_order(
+    tables: None, ordering: tuple[str], reads: list[int]
+) -> None:
+    """Two at a time, either way: every gadget once, in order, as in memory.
+
+    The page that crosses from one group to the other (the stocks, then
+    the missing ones, ascending; the reverse, descending) reads its rows
+    in two statements, the second only for what the first left of the
+    page; every other page, in one.
+    """
+    stocks = [3, None, 1, None, 3, None, 0, 1]
+    items = [make_gadget(f"g{n}", stock=stock) for n, stock in enumerate(stocks)]
+    await store(*items)
+    fake = InMemoryGadgets(items)
+    query = Selection(ordering=ordering)
+    seen: list[object] = []
+    counted: list[int] = []
+    after = None
+    async with GadgetsUnitOfWork() as uow:
+        everything = [each.id for each in await uow.gadgets.filter(query)]
+        assert everything == [each.id for each in await fake.filter(query)]
+        while True:
+            with CapturedQueries() as queries:
+                page = await uow.gadgets.paginate(query, limit=2, after=after)
+            expected = await fake.paginate(query, limit=2, after=after)
+            assert [each.id for each in page.items] == [
+                each.id for each in expected.items
+            ]
+            assert page.next_position == expected.next_position
+            counted.append(sum("LIMIT" in each for each in queries.statements))
+            seen += [each.id for each in page.items]
+            if not page.has_more:
+                break
+            after = page.next_position
+    assert (seen, counted) == (everything, reads)
+
+
 async def test_a_count_stops_where_it_is_told(tables: None) -> None:
     """``count(at_most=n)``: never more than ``n``, and SQL reads no further.
 
