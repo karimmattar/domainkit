@@ -5,7 +5,7 @@ customer sees only its own data. Each customer is a
 [tenant](learning.md#words): a company, a school, a shop.
 `domainkit.tenancy` gives each request its tenant. It then scopes to that
 tenant what the framework keeps: rows, databases, caches, rate limits,
-logs, background tasks, and live events.
+logs, background tasks, live events, and approval requests.
 
 On this page you learn how to:
 
@@ -29,6 +29,7 @@ On this page you learn how to:
 | Logs | Every record names the tenant (`tenant`). |
 | Background tasks | A task runs as the tenant whose request queued it. |
 | Live events | An event reaches only the connections served as the tenant it was committed in. |
+| Approval requests | A request is read, decided, and run in the tenant it was submitted in. |
 
 ## A first example
 
@@ -672,6 +673,15 @@ no tenant reaches only the connections served as none. With
 route that serves every tenant on purpose, such as a back office's, says
 so with `per_tenant=False`; its `rule` alone then decides what each
 connection sees.
+
+**Approval requests.** With `domainkit.contrib.approvals`, a request
+belongs to the tenant it was submitted in. It is listed, read, approved,
+rejected, and cancelled where that tenant is served alone, by the routes
+and from code; another tenant's is not found, whatever keys a role holds
+there. Its command runs in its tenant, whichever tenant the message that
+runs it names. A request of no tenant is read where no tenant is served;
+code inside `all_tenants()` reads every tenant's
+([Requests and tenants](contrib/approvals.md#requests-and-tenants)).
 
 ## Reading the tenant in code
 

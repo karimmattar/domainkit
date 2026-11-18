@@ -27,6 +27,11 @@ says so with it.
 
 A guard ``by_maker`` queues nothing: its maker's own call runs the
 approved command (``run_by_maker``), spending the request first.
+
+A request belongs to the tenant it was submitted in. The services find
+the requests of the tenant being served alone (the repository's), and
+the approved command runs in the request's own tenant, whichever tenant
+the message that runs it names (ADR 0183).
 """
 
 import functools
@@ -49,6 +54,7 @@ from domainkit.apps import registry
 from domainkit.context import RequestContext, bind_request, current_request
 from domainkit.db import SqlAlchemyUnitOfWork
 from domainkit.ddd import Command, ConcurrentUpdate, Criteria, DomainError, F, Selection
+from domainkit.ddd.tenancy import all_tenants, current_tenant
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.money import MoneyError
 
@@ -73,7 +79,7 @@ from .models import (
 )
 from .rules import rule_instance
 from .settings import ApprovalsSettings
-from .uow import ApprovalsUnitOfWork, RequestRepository, approvals_alias
+from .uow import ApprovalsUnitOfWork, RequestRepository, approvals_alias, serving
 
 logger = logging.getLogger(__name__)
 AUTH: Final = "domainkit.contrib.auth"
@@ -169,6 +175,8 @@ async def _submit(
 ) -> ApprovalRequest:
     """Store ``command`` as a request of ``maker``'s under the policy that applies.
 
+    The request is of the tenant being served, or of none.
+
     Raises:
         ApprovalNotNeeded: As for ``_prepared``.
         InvalidArguments: As for ``_prepared``.
@@ -191,6 +199,7 @@ async def _submit(
         permission=policy.permission,
         group=policy.group,
         expires_at=clock.now() + (policy.expires_after or settings.EXPIRES_AFTER),
+        tenant_id=current_tenant(),
     )
     async with uow:
         await uow.requests.add(request)
@@ -767,8 +776,10 @@ async def check_cancellation(command: CancelRequest) -> ApprovalRequest:
 async def expire_requests() -> int:
     """Expire the pending requests whose time is up; how many there were.
 
-    One whose seal does not hold is left as it is, and logged: expiring it
-    would seal what someone changed around the application.
+    Every tenant's, each committed as its own tenant, so what its expiry
+    publishes is that tenant's. One whose seal does not hold is left as it
+    is, and logged: expiring it would seal what someone changed around the
+    application.
     """
     expired = 0
     tampered: set[RequestId] = set()
@@ -776,18 +787,22 @@ async def expire_requests() -> int:
         async with ApprovalsUnitOfWork() as uow:
             due = await uow.requests.due(clock.now(), EXPIRE_BATCH)
         for request_id in due:
-            async with ApprovalsUnitOfWork() as uow:
-                request = await uow.locked(request_id)
-                if request.status is not RequestStatus.PENDING:
-                    continue
-                try:
-                    request.expire()
-                except RequestTampered:
-                    logger.warning("Approval request %s is tampered with", request_id)
-                    tampered.add(request_id)
-                    continue
-                await uow.commit()
-                expired += 1
+            with all_tenants():
+                async with ApprovalsUnitOfWork() as uow:
+                    request = await uow.locked(request_id)
+                    if request.status is not RequestStatus.PENDING:
+                        continue
+                    try:
+                        request.expire()
+                    except RequestTampered:
+                        logger.warning(
+                            "Approval request %s is tampered with", request_id
+                        )
+                        tampered.add(request_id)
+                        continue
+                    with serving(request.tenant_id):
+                        await uow.commit()
+                    expired += 1
         if len(due) < EXPIRE_BATCH or set(due) <= tampered:
             return expired
 
@@ -828,10 +843,11 @@ async def _check_maker(guard: Guard, maker: str) -> None:
     must still be an active user, holding the guard's maker permission if
     it names one and passing its ``maker_rule`` if it has one (SEC-16b-7):
     a clerk dismissed, a customer frozen, or staff demoted after
-    submitting runs nothing. The rule sees the user on a connection of
-    no credentials (``_RUN``): a rule about the submitting request itself
-    (its scopes, a step-up) was checked when the request was submitted,
-    and one that needs such credentials refuses here. A maker that names
+    submitting runs nothing. It is asked in the request's tenant, where
+    the run is. The rule sees the user on a connection of no credentials
+    (``_RUN``): a rule about the submitting request itself (its scopes, a
+    step-up) was checked when the request was submitted, and one that
+    needs such credentials refuses here. A maker that names
     no user (a principal of the project's own) is left to the project.
 
     Raises:
@@ -1024,10 +1040,22 @@ async def execute_request(request_id: UUID, token: str | None = None) -> None:
     refusal of the use case's (a ``DomainError`` other than
     ``ConcurrentUpdate``), with the refusal's code. Anything else is
     raised, for the worker to retry.
+
+    It runs in the request's own tenant (none for a request of none),
+    whichever tenant the message names: the command, the maker's check,
+    and the request's end are that tenant's (ADR 0183).
     """
+    with all_tenants():  # Only to learn its tenant: nothing runs in here.
+        request = await _read(request_id)
+    with serving(request.tenant_id):
+        await _execute(request, token)
+
+
+async def _execute(request: ApprovalRequest, token: str | None) -> None:
+    """``execute_request``'s work, in the request's tenant."""
     from domainkit.contrib.messaging import AlreadyHandled
 
-    request = await _read(request_id)
+    request_id = request.id
     if request.status is not RequestStatus.APPROVED:
         return
     if not request.sealed():

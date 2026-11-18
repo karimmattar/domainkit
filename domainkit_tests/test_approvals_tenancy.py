@@ -1,0 +1,459 @@
+"""Approval requests and tenants: read, decided, and run in their own (ADR 0183).
+
+A request belongs to the tenant it was submitted in. It is listed, read,
+approved, rejected, and cancelled where that tenant is served alone, by
+the routes and by the services, and its command runs there, whatever
+tenant the message that runs it names. A request of no tenant, as every
+request stored before 2.8.1 is, is read where no tenant is served. The
+audit's reproducer (A28-SEC-02) is the first test.
+
+Members' roles come from ``MEMBER_PERMISSIONS``: ``MembershipBackend``
+grants them in the tenant served, beside what users hold everywhere.
+"""
+
+from collections.abc import Iterator
+from typing import Any, Final
+from uuid import UUID
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import select, update
+
+from domainkit.contrib.accounting import AccountingUnitOfWork
+from domainkit.contrib.approvals import (
+    ApprovalRequest,
+    ApprovalsUnitOfWork,
+    ApproveRequest,
+    CancelRequest,
+    Policy,
+    RejectRequest,
+    RequestExpired,
+    RequestId,
+    RequestNotFound,
+    RequestStatus,
+    RequestTampered,
+    approve_request,
+    cancel_request,
+    expire_requests,
+    guard,
+    reject_request,
+    requires_approval,
+)
+from domainkit.contrib.approvals.models import seal_of
+from domainkit.contrib.approvals.personal import erase_subject
+from domainkit.contrib.approvals.services import (
+    check_approval,
+    check_cancellation,
+    check_rejection,
+    held_request_waits,
+)
+from domainkit.contrib.approvals.tables import requests
+from domainkit.contrib.messaging.tables import messages
+from domainkit.contrib.messaging.testing import drain
+from domainkit.db import connections
+from domainkit.ddd import Command, event_bus
+from domainkit.ddd.tenancy import all_tenants, current_tenant, no_tenant
+from domainkit.http import get_asgi_application
+from domainkit.management.base import run_async
+from domainkit.tenancy import tenant
+from domainkit_tests.conftest import Migrated, Shape
+from domainkit_tests.test_approvals_api import APPROVALS_API, PROOF
+from domainkit_tests.test_approvals_viewers import person, submitted
+from domainkit_tests.test_auth_admin import token_for
+
+API: Final = "/approvals/requests"
+VIEW: Final = "approvals.view_approvalrequest"
+VIEW_EVERY: Final = "approvals.view_every_approvalrequest"
+APPROVER: Final = "accounting.add_account"
+ROLE: Final = frozenset({VIEW, VIEW_EVERY, "approvals.add_approvalrequest", APPROVER})
+"""A member's role in each of their tenants: maker, viewer, and approver."""
+MEMBERS: Final = {"maker": {"a", "b"}, "mia": {"a"}, "anna": {"a"}, "bob": {"b"}}
+ACTION: Final = "tests.noted"
+RAN: list[tuple[str, str | None]] = []
+"""What the guarded use case was run with: its note, and the tenant served."""
+
+
+def member_permissions(user: Any, tenant_id: str) -> frozenset[str] | None:  # noqa: ANN401 - a user.
+    """Each user's role, in their own tenants only."""
+    name = str(getattr(user, "username", ""))
+    return ROLE if tenant_id in MEMBERS.get(name, ()) else None
+
+
+class Noted(Command):
+    """What the sample use case notes when it runs."""
+
+    note: str
+
+
+async def note(command: Noted, uow: AccountingUnitOfWork) -> None:
+    """Note the command, and the tenant it runs in."""
+    RAN.append((command.note, current_tenant()))
+
+
+noted = requires_approval(ACTION)(note)
+
+_settings = dict(APPROVALS_API.settings)
+_middleware = list(_settings["MIDDLEWARE"])
+_middleware.insert(
+    _middleware.index("domainkit.contrib.auth.middleware.AuthenticationMiddleware") + 1,
+    "domainkit.tenancy.TenantMiddleware",
+)
+TENANTS: Final = Shape(
+    "approvals_tenancy",
+    "approvals",
+    {
+        **_settings,
+        "MIDDLEWARE": _middleware,
+        "TENANCY": {
+            "HEADER": "X-Tenant",
+            "REQUIRED": False,
+            "MEMBER_PERMISSIONS": f"{__name__}.member_permissions",
+        },
+        "AUTH": {
+            **_settings["AUTH"],
+            "BACKENDS": [
+                "domainkit.contrib.auth.backends.ModelBackend",
+                "domainkit.contrib.auth.backends.MembershipBackend",
+            ],
+        },
+    },
+)
+"""The approvals API's project, served per tenant by a header, with members' roles."""
+type Headers = dict[str, str]
+
+
+@pytest.fixture
+def client(migrated: Migrated) -> Iterator[TestClient]:
+    """The project's API, and a guard whose policy names its approvers by a key."""
+    RAN.clear()
+    with migrated(TENANTS), TestClient(get_asgi_application()) as test_client:
+        guard(
+            ACTION,
+            noted,
+            unit_of_work=AccountingUnitOfWork,
+            policies=[Policy("tests.by_permission", permission=APPROVER)],
+            permission=APPROVER,
+            domain="alpha",
+        )
+        for name in MEMBERS:
+            person(name)  # No permission anywhere: only a role in each tenant.
+        yield test_client
+
+
+def made_in(
+    tenant_id: str | None, maker: str = "maker", text: str = "x"
+) -> ApprovalRequest:
+    """A request of ``maker``'s, submitted in ``tenant_id`` (None: in none)."""
+    maker_id = user_id(maker)
+    with no_tenant() if tenant_id is None else tenant(tenant_id):
+        return submitted(ACTION, Noted(note=text), maker_id)
+
+
+def user_id(name: str) -> UUID:
+    """The id of the user ``name``."""
+    from domainkit.contrib.auth import AuthUnitOfWork
+
+    async def find() -> UUID:
+        async with AuthUnitOfWork() as uow:
+            found = await uow.users.get_by_natural_key(name)
+            assert found is not None
+            return found.id
+
+    return run_async(find())
+
+
+def as_member(name: str, tenant_id: str | None) -> Headers:
+    """Headers of ``name``, served as ``tenant_id`` (None: as no tenant)."""
+    headers = token_for(name)
+    return headers if tenant_id is None else {**headers, "X-Tenant": tenant_id}
+
+
+def listed(client: TestClient, headers: Headers) -> set[str]:
+    """The ids of the requests ``headers``' caller lists."""
+    found = client.get(API, headers=headers)
+    assert found.status_code == 200, found.json()
+    return {each["id"] for each in found.json()["items"]}
+
+
+def approve(client: TestClient, made: ApprovalRequest, headers: Headers) -> Any:  # noqa: ANN401 - a response.
+    """Approve ``made`` as ``headers`` say, stating its fingerprint."""
+    return client.post(
+        f"{API}/{made.id}/approve",
+        json={"fingerprint": made.fingerprint},
+        headers={**PROOF, **headers},
+    )
+
+
+def stored(request_id: UUID) -> ApprovalRequest:
+    """The request ``request_id`` as committed, whatever its tenant."""
+
+    async def read() -> ApprovalRequest:
+        with all_tenants():
+            async with ApprovalsUnitOfWork() as uow:
+                return await uow.requests.get(RequestId(request_id))
+
+    return run_async(read())
+
+
+# Over HTTP ---------------------------------------------------------------------------
+
+
+def test_a_role_in_one_tenant_reaches_no_request_of_another(client: TestClient) -> None:
+    """The audit's reproducer: Bob's role in b neither lists, reads, nor decides a's.
+
+    His role holds the view keys, every request's included, and the
+    policy's approver key; a's request is ``404`` to him, as one that does
+    not exist, on every route.
+    """
+    of_a, of_b = made_in("a"), made_in("b")
+    bob = as_member("bob", "b")
+
+    assert listed(client, bob) == {str(of_b.id)}
+    assert client.get(f"{API}/{of_a.id}", headers=bob).status_code == 404
+    assert approve(client, of_a, bob).status_code == 404
+    rejected = client.post(
+        f"{API}/{of_a.id}/reject", json={"reason": "no"}, headers={**PROOF, **bob}
+    )
+    assert rejected.status_code == 404
+    assert client.get(API, params={"action": ACTION}, headers=bob).json()["items"] == [
+        client.get(f"{API}/{of_b.id}", headers=bob).json()
+    ]
+    assert stored(of_a.id).status is RequestStatus.PENDING
+    assert stored(of_a.id).decisions == []
+
+
+def test_a_request_is_decided_in_its_own_tenant(client: TestClient) -> None:
+    """Anna, of a, lists, reads, and approves a's request; it runs as a."""
+    of_a = made_in("a", "mia", "of a")
+    anna = as_member("anna", "a")
+
+    assert listed(client, anna) == {str(of_a.id)}
+    assert client.get(f"{API}/{of_a.id}", headers=anna).status_code == 200
+    approved = approve(client, of_a, anna)
+    assert approved.status_code == 200, approved.json()
+    assert queued_tenants() == ["a"]
+    run_async(drain())
+
+    assert RAN == [("of a", "a")]
+    assert stored(of_a.id).status is RequestStatus.EXECUTED
+
+
+def queued_tenants() -> list[str | None]:
+    """The tenant each queued run of an approved command names."""
+
+    async def read() -> list[str | None]:
+        async with connections.engine().connect() as connection:
+            rows = await connection.execute(
+                select(messages.c.headers).where(
+                    messages.c.target == "domainkit.approvals.execute"
+                )
+            )
+        return [row.headers.get("tenant") for row in rows]
+
+    return run_async(read())
+
+
+def test_the_command_runs_in_the_requests_tenant_whatever_its_message_says(
+    client: TestClient,
+) -> None:
+    """A message that names another tenant runs the command as the request's.
+
+    Mia, the maker, holds the guard's key only through her role in a: the
+    run checks her there, so it passes, and the use case sees tenant a.
+    """
+    of_a = made_in("a", "mia", "moved")
+    assert approve(client, of_a, as_member("anna", "a")).status_code == 200
+
+    async def name_another_tenant() -> None:
+        async with connections.engine().begin() as connection:
+            await connection.execute(
+                update(messages)
+                .where(messages.c.target == "domainkit.approvals.execute")
+                .values(headers={"tenant": "b"})
+            )
+
+    run_async(name_another_tenant())
+    assert queued_tenants() == ["b"]
+    run_async(drain())
+
+    assert RAN == [("moved", "a")]
+    assert stored(of_a.id).status is RequestStatus.EXECUTED
+
+
+def test_a_maker_cancels_in_the_tenant_they_submitted_in(client: TestClient) -> None:
+    """The maker, of a and b, cancels a's request in a; in b it is not there."""
+    of_a = made_in("a")
+
+    in_b = client.post(
+        f"{API}/{of_a.id}/cancel", json={}, headers=as_member("maker", "b")
+    )
+    assert in_b.status_code == 404
+    in_a = client.post(
+        f"{API}/{of_a.id}/cancel", json={}, headers=as_member("maker", "a")
+    )
+    assert in_a.status_code == 200, in_a.json()
+    assert in_a.json()["status"] == "cancelled"
+
+
+def test_a_request_of_no_tenant_is_read_where_no_tenant_is_served(
+    client: TestClient,
+) -> None:
+    """Made outside a tenant: listed by a caller served as none, never in a tenant.
+
+    Bob holds nothing everywhere, so served as no tenant he lists only
+    his own; a user granted the view keys everywhere lists it, and none of
+    a's.
+    """
+    of_none, of_a = made_in(None), made_in("a")
+    person("auditor", VIEW, VIEW_EVERY)
+
+    assert listed(client, as_member("auditor", None)) == {str(of_none.id)}
+    assert str(of_none.id) not in listed(client, as_member("bob", "b"))
+    assert (
+        client.get(f"{API}/{of_a.id}", headers=as_member("auditor", None)).status_code
+        == 404
+    )
+    assert (
+        client.get(
+            f"{API}/{of_none.id}", headers=as_member("auditor", None)
+        ).status_code
+        == 200
+    )
+
+
+def test_a_request_moved_to_another_tenant_in_the_database_is_refused(
+    client: TestClient,
+) -> None:
+    """The seal covers the tenant: moved around the application, nothing decides it."""
+    of_a = made_in("a")
+
+    async def move() -> None:
+        async with connections.engine().begin() as connection:
+            await connection.execute(
+                update(requests).where(requests.c.id == of_a.id).values(tenant_id="b")
+            )
+
+    run_async(move())
+    refused = approve(client, of_a, as_member("bob", "b"))
+
+    assert refused.status_code == 409, refused.json()
+    assert refused.json()["code"] == RequestTampered.code
+
+
+# The services and the worker ---------------------------------------------------------
+
+
+def test_a_request_of_no_tenant_keeps_the_seal_it_had(client: TestClient) -> None:
+    """A request stored before the tenant was recorded verifies as it did."""
+    of_none = made_in(None)
+
+    assert of_none.tenant_id is None
+    assert of_none.seal == seal_of(
+        of_none.id,
+        of_none.action,
+        of_none.fingerprint,
+        of_none.maker,
+        of_none.policy,
+        of_none.required,
+        of_none.permission,
+        of_none.group,
+        of_none.expires_at.isoformat(),
+        of_none.status.value,
+        of_none.run_token,
+    )
+    assert made_in("a").tenant_id == "a"
+
+
+def test_the_services_find_no_request_of_another_tenant(client: TestClient) -> None:
+    """From code too: deciding, cancelling, or asking to, in b, of a's request."""
+    of_a = made_in("a")
+    bob, maker = str(user_id("bob")), str(user_id("maker"))
+    approval = ApproveRequest(
+        request_id=of_a.id, approver=bob, fingerprint=of_a.fingerprint
+    )
+    rejection = RejectRequest(request_id=of_a.id, approver=bob, reason="no")
+    cancellation = CancelRequest(request_id=of_a.id, maker=maker)
+
+    async def in_b() -> list[str]:
+        refused = []
+        with tenant("b"):
+            for attempt in (
+                approve_request(approval, ApprovalsUnitOfWork()),
+                reject_request(rejection, ApprovalsUnitOfWork()),
+                cancel_request(cancellation, ApprovalsUnitOfWork()),
+                check_approval(approval),
+                check_rejection(rejection),
+                check_cancellation(cancellation),
+            ):
+                with pytest.raises(RequestNotFound):
+                    await attempt
+                refused.append("refused")
+            refused.append(
+                str(await held_request_waits(f"approvals.request:{of_a.id}"))
+            )
+        with tenant("a"):
+            refused.append(
+                str(await held_request_waits(f"approvals.request:{of_a.id}"))
+            )
+        return refused
+
+    assert run_async(in_b()) == ["refused"] * 6 + ["False", "True"]
+    assert stored(of_a.id).status is RequestStatus.PENDING
+
+
+def test_code_that_reads_every_tenant_says_so(client: TestClient) -> None:
+    """Inside ``all_tenants()`` a's request is decided; it still runs as a."""
+    of_a = made_in("a", "mia", "back office")
+    anna = str(user_id("anna"))
+
+    async def decide() -> None:
+        with all_tenants():
+            await approve_request(
+                ApproveRequest(
+                    request_id=of_a.id, approver=anna, fingerprint=of_a.fingerprint
+                ),
+                ApprovalsUnitOfWork(),
+            )
+        await drain()
+
+    run_async(decide())
+
+    assert RAN == [("back office", "a")]
+
+
+def test_expiry_reaches_every_tenant_and_commits_as_each(client: TestClient) -> None:
+    """The periodic expiry, served as no tenant, expires a's, b's, and none's.
+
+    Each ``RequestExpired`` is published as its request's tenant, so live
+    events of it reach that tenant's connections.
+    """
+    from domainkit.clock import freeze_time
+
+    made = {name: made_in(name) for name in ("a", "b")} | {None: made_in(None)}
+    heard: list[tuple[UUID, str | None]] = []
+
+    async def note_expired(event: RequestExpired) -> None:
+        heard.append((event.request_id, current_tenant()))
+
+    event_bus.subscribe(RequestExpired, note_expired)
+    later = max(each.expires_at for each in made.values())
+    with freeze_time(later):
+        assert run_async(expire_requests()) == 3
+
+    assert sorted(heard, key=str) == sorted(
+        ((each.id, name) for name, each in made.items()), key=str
+    )
+    assert {stored(each.id).status for each in made.values()} == {RequestStatus.EXPIRED}
+
+
+def test_erasing_a_person_reaches_every_tenants_requests(client: TestClient) -> None:
+    """``privacy erase`` pseudonymises the maker in a's and b's requests alike."""
+    of_a, of_b = made_in("a"), made_in("b")
+    maker = str(user_id("maker"))
+
+    counts = run_async(erase_subject(maker))
+
+    assert counts == {"requests": 2, "cancelled": 2}
+    assert {stored(each.id).maker.startswith("erased:") for each in (of_a, of_b)} == {
+        True
+    }

@@ -379,6 +379,32 @@ service does.
 (`request_not_pending`, 409), and the worker marks it expired every
 `EXPIRE_EVERY`. `manage.py approvals expire` does it at once.
 
+### Requests and tenants
+
+With [multi-tenancy](../tenancy.md), a request belongs to the tenant it
+was submitted in (`tenant_id`), or to none, where no tenant was served.
+It is listed, read, approved, rejected, and cancelled where that tenant
+is served alone:
+
+- The requests' repository reads the tenant's requests alone, by id and
+  by query. Another tenant's request is `404
+  approval_request_not_found`, as one that does not exist, on every
+  route, its twins included, and `RequestNotFound` from the services,
+  whatever keys the caller holds there.
+- A request of no tenant is read where no tenant is served. Requests
+  stored before the tenant was recorded have none.
+- Code that works across tenants says so: inside `all_tenants()` every
+  request is read ([Outside a request](../tenancy.md#outside-a-request)).
+- The approved command runs in the request's tenant, whichever tenant
+  the message that runs it names: the maker's check, the command, and
+  the request's end are that tenant's. Expiry reaches every tenant's
+  requests, and `privacy erase` too.
+- The seal covers the tenant, where the request has one: a request moved
+  to another tenant in the database is neither decided nor run
+  (`request_tampered`). Do not set `tenant_id` on a stored request by
+  hand: its seal no longer holds. Decide or cancel it where no tenant is
+  served, or let it expire.
+
 ### Counting approvals once
 
 The approval that completes a request queues its command through the
@@ -399,7 +425,7 @@ approved:
 - **The request's seal**, and each decision's: an HMAC, under a key
   derived from `SECRET_KEY`, of the request's id, action, fingerprint,
   maker, policy, approvals needed, approvers (permission or group),
-  expiry, status, and run token. It is made again with each change of the
+  expiry, status, run token, and tenant, where it has one. It is made again with each change of the
   request's state. Each decision's seal covers its request, person,
   verdict, and fingerprint. A row changed or added in the database by
   someone without the key is neither decided (`request_tampered`, 409)
@@ -1232,7 +1258,8 @@ an account, a password reset, the reason staff act as someone. Since 2.4,
 
 Any other request is `404 approval_request_not_found`, as if it were not
 there. `approvals.view_every_approvalrequest` shows every request: give it
-to auditors. Approving, rejecting, and cancelling are not narrowed: their
+to auditors. With multi-tenancy, each of these is a request of the tenant
+being served ([Requests and tenants](#requests-and-tenants)). Approving, rejecting, and cancelling are not narrowed: their
 own rules answer, as before. Approval systems work the same way: an
 approver's list holds what is waiting for them, and administrators see
 everything (ADR 0154).
