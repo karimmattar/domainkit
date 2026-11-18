@@ -99,8 +99,8 @@ ALLOWED: Final = frozenset(
         ("domainkit.keys.gcp", CLIENT, "lazy"),
         ("domainkit.keys.huawei", CLIENT, "lazy"),
         ("domainkit.keys.vault", CLIENT, "lazy"),
-        ("domainkit.search.meilisearch", CLIENT, "lazy"),
-        ("domainkit.search.opensearch", CLIENT, "lazy"),
+        ("domainkit.search._http", CLIENT, "lazy"),  # Both engines' shared client.
+        ("domainkit.search._http", CLIENT, "typing"),
         ("domainkit.storage.azure", CLIENT, "lazy"),
         ("domainkit.storage.gcs", CLIENT, "lazy"),
         ("domainkit.storage.s3", CLIENT, "lazy"),

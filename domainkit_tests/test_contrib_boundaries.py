@@ -142,7 +142,6 @@ ALLOWED_CORE: Final = frozenset(
         "domainkit.http.ratelimit.address_key",
         "domainkit.http.ratelimit.client_group",
         "domainkit.http.ratelimit.refuse",
-        "domainkit.inspection.IGNORABLE",
         "domainkit.keys.ring.DATA",
         "domainkit.keys.ring.FORMAT",
         "domainkit.keys.ring.SUBJECT",
@@ -174,6 +173,16 @@ ALLOWED_CORE: Final = frozenset(
         "domainkit.utils.delivery.load_backend",
         "domainkit.utils.text.pluralize",
         "domainkit.utils.text.snake_case",
+        # The audit's fixes of 2.9 gave the apps these, before this list
+        # existed: tenant_alone is the tenancy's own (ADR 0183), the rest
+        # are shared definitions. Publish them, or import them from a module
+        # that publishes them, and remove them here.
+        "domainkit.context.caller_key",
+        "domainkit.db.derive.IDENTIFIER_LENGTH",
+        "domainkit.ddd.query.CriteriaLike",
+        "domainkit.ddd.query.as_criteria",
+        "domainkit.ddd.tenancy.tenant_alone",
+        "domainkit.utils.text.IGNORABLE",
     }
 )
 """Unpublished core names apps import, by the module they import them from.
