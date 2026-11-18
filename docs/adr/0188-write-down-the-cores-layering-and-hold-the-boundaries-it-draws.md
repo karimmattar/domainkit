@@ -167,6 +167,15 @@ accounting, and any domain of a project:
   that holds the first table, as audit's did, and names the place;
   `migrate_command(place)` says what makes it.
 
+The triggers are named after the table, so a table's name must be what
+PostgreSQL keeps unquoted (`[a-z_][a-z0-9_]*`), of at most 42 characters
+(`<table>_append_only_truncate` must fit 63), with no schema of its own
+(each tenant's schema gets its own triggers). Every function refuses
+another table with `ValueError`, on every database, before it makes or
+asks anything; a reserved word (`order`) is quoted. Quoting every name
+instead would have let any name through, but a mixed-case table would
+then get mixed-case triggers, and 2.8's statements would change.
+
 Audit and accounting keep their own names (`protect`, `missing_triggers`,
 `accounting.protection.missing`) on top of it. The ledger's check now
 refuses a trigger given arguments, as the trail's did.

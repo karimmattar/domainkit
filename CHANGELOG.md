@@ -17,9 +17,11 @@ and a status.
   names and bodies, so triggers made then still count;
   `protect_append_only` makes them afresh after `migrate`;
   `missing_append_only` and `unprotected` check them, in a database's own
-  schema and in each tenant's (`TENANCY.SCHEMA_DATABASES`)
-  ([Append-only tables](docs/databases.md#append-only-tables), ADR 0188)
-  (audit A28-ARCH-07).
+  schema and in each tenant's (`TENANCY.SCHEMA_DATABASES`). A table's
+  name must be lowercase letters, digits, and underscores, of at most 42
+  characters, with no schema of its own, or each refuses it with
+  `ValueError` ([Append-only tables](docs/databases.md#append-only-tables),
+  ADR 0188) (audit A28-ARCH-07).
 - `domainkit.db.affected_rows(result)`: the rows an `UPDATE` or `DELETE`
   changed, without reading `rowcount` under `# type: ignore`; a
   `TypeError` for a result that counts none

@@ -10,6 +10,7 @@ tenant's audit trail is checked in ``test_audit_tenants.py``.
 """
 
 import pytest
+from sqlalchemy import Column, Integer, MetaData, Table
 
 from domainkit.conf import override_settings
 from domainkit.contrib.accounting import protection as ledger
@@ -18,6 +19,7 @@ from domainkit.contrib.audit import protection as trail
 from domainkit.contrib.audit.tables import audit_log
 from domainkit.db import connections
 from domainkit.db.protection import (
+    MAX_TABLE_NAME,
     ROW_TRIGGER,
     TRUNCATE_TRIGGER,
     append_only_body,
@@ -161,3 +163,94 @@ async def test_a_trigger_given_arguments_counts_as_changed() -> None:
         remade = await ledger.missing(connection)
 
     assert (found, remade) == ([ENTRIES], [])
+
+
+def table(name: str, schema: str | None = None) -> Table:
+    """A table of one column, ``name``d, of a metadata of its own."""
+    return Table(
+        name, MetaData(), Column("id", Integer, primary_key=True), schema=schema
+    )
+
+
+LONGEST = "price_history_" + "x" * (MAX_TABLE_NAME - len("price_history_"))
+
+
+@pytest.mark.parametrize(
+    ("refused", "message"),
+    [
+        (table("PriceHistory"), "lowercase letters, digits, and underscores"),
+        (table("price-history"), "lowercase letters, digits, and underscores"),
+        (table("1st_prices"), "not starting with a digit"),
+        (table(LONGEST + "y"), "43 characters: its triggers' names would be cut"),
+        (table("price_history", schema="billing"), "'billing.price_history' names"),
+    ],
+    ids=["mixed-case", "dash", "digit-first", "long", "schema"],
+)
+@pytest.mark.anyio
+async def test_a_table_its_triggers_cannot_name_is_refused(
+    make_database: MakeDatabase, refused: Table, message: str
+) -> None:
+    """Before anything is made or asked, on every database (review of A28-ARCH-07).
+
+    Until then a long name gave triggers whose names PostgreSQL cut, and
+    which never counted as made; a mixed-case name gave no trigger at all;
+    and a table of a named schema protected the one ``search_path`` found.
+    """
+    with override_settings(DATABASES={"default": {"URL": make_database("names")}}):
+        for call in (trigger_names, append_only_body, append_only_statements):
+            with pytest.raises(ValueError, match=message):
+                call(refused)
+        async with connections.engine().begin() as connection:
+            with pytest.raises(ValueError, match=message):
+                await protect_append_only(connection, [entries, refused])
+            with pytest.raises(ValueError, match=message):
+                await missing_append_only(connection, [refused])
+        with pytest.raises(ValueError, match=message):
+            await unprotected("default", [refused])
+        await connections.close_all()
+
+    assert len(LONGEST) == MAX_TABLE_NAME == 42
+
+
+@pytest.mark.anyio
+async def test_no_tables_lack_nothing(make_database: MakeDatabase) -> None:
+    """``unprotected`` of no tables is empty, not an ``IndexError``."""
+    with override_settings(DATABASES={"default": {"URL": make_database("none")}}):
+        async with connections.engine().begin() as connection:
+            assert await protect_append_only(connection, []) == []
+            assert await missing_append_only(connection, []) == []
+        assert await unprotected("default", []) == {}
+        await connections.close_all()
+
+
+@pytest.mark.anyio
+async def test_the_longest_name_and_a_reserved_word_are_protected(
+    make_database: MakeDatabase,
+) -> None:
+    """42 characters keep the triggers' names whole; ``order`` is quoted."""
+    url = make_database("words")
+    if not url.startswith("postgresql"):
+        pytest.skip("the triggers are PostgreSQL's")
+    tables = [table(LONGEST), table("order")]
+    with override_settings(DATABASES={"default": {"URL": url}}):
+        async with connections.engine().begin() as connection:
+            for each in tables:
+                await connection.run_sync(each.create)
+                await connection.execute(each.insert().values(id=1))
+            protected = await protect_append_only(connection, tables)
+        lacking = await unprotected("default", tables)
+        refusals = []
+        for each in tables:
+            async with connections.engine().begin() as connection:
+                try:
+                    await connection.execute(each.delete())
+                except Exception as exc:  # noqa: BLE001 - the driver's refusal.
+                    refusals.append(f"{each.name} is append-only" in str(exc))
+        await connections.close_all()
+
+    assert protected == [LONGEST, "order"]
+    assert lacking == {}
+    assert refusals == [True, True]
+    assert append_only_statements(table("order"))[0][1] == (
+        'DROP TRIGGER IF EXISTS order_append_only ON "order"'
+    )

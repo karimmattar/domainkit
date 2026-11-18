@@ -1751,6 +1751,15 @@ async def protect_history(connection, database: str) -> None:
     await protect_append_only(connection, [price_history])
 ```
 
+The triggers are named after the table: `<table>_append_only` and
+`<table>_append_only_truncate`. So the table's name must be lowercase
+letters, digits, and underscores, not starting with a digit, of at most 42
+characters (`MAX_TABLE_NAME`, so the second name fits PostgreSQL's 63),
+and the table must name no schema: each tenant's schema gets its own
+triggers, on the table its `search_path` finds. Each function refuses
+another table with `ValueError`, on SQLite too, before it makes or asks
+anything. A name that is a reserved word, such as `order`, is quoted.
+
 | Name | What it does |
 | --- | --- |
 | `append_only_statements(table)` | The statements that protect `table`, and those that undo them, for a revision of its own. |

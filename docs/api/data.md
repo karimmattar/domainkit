@@ -127,6 +127,7 @@ Range partitioning of large PostgreSQL tables, managed by the framework.
 
 Keep tables append-only in the database itself (PostgreSQL).
 
+- `MAX_TABLE_NAME`: The longest table name whose triggers' names PostgreSQL keeps whole (63 bytes).
 - `ROW_TRIGGER`: `pg_trigger.tgtype` of `BEFORE UPDATE OR DELETE ... FOR EACH ROW`.
 - `TRUNCATE_TRIGGER`: `pg_trigger.tgtype` of `BEFORE TRUNCATE ... FOR EACH STATEMENT`.
 - `append_only_body`: The body of the triggers' function for `table`: refuse, whatever the change.

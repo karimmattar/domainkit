@@ -13,12 +13,21 @@ had its own copy, and the ledger's counted a trigger given arguments.
 
 On other databases nothing is made and nothing is missing: SQLite has no
 roles to keep out.
+
+A table is named as its triggers can name it: in lowercase letters,
+digits, and underscores, at most ``MAX_TABLE_NAME`` (42) characters, so
+that ``<table>_append_only_truncate`` fits PostgreSQL's 63, and with no
+schema of its own, so each tenant's schema gets its own triggers. Every
+function here refuses another table with ``ValueError``, on every
+database, before it makes or asks anything.
 """
 
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Final
 
 from sqlalchemy import Table, text
+from sqlalchemy.dialects.postgresql.base import RESERVED_WORDS
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from domainkit.conf import settings
@@ -26,6 +35,7 @@ from domainkit.db.connections import connections
 from domainkit.db.uow import tenant_schemas
 
 __all__ = [
+    "MAX_TABLE_NAME",
     "ROW_TRIGGER",
     "TRUNCATE_TRIGGER",
     "append_only_body",
@@ -45,6 +55,11 @@ The bits are ``ROW`` (1), ``BEFORE`` (2), ``DELETE`` (8), and ``UPDATE``
 TRUNCATE_TRIGGER: Final = 2 | 32
 """``pg_trigger.tgtype`` of ``BEFORE TRUNCATE ... FOR EACH STATEMENT``
 (``BEFORE``, 2, and ``TRUNCATE``, 32)."""
+MAX_TABLE_NAME: Final = 63 - len("_append_only_truncate")
+"""The longest table name whose triggers' names PostgreSQL keeps whole (63 bytes)."""
+_TABLE_NAME: Final = re.compile(r"[a-z_][a-z0-9_]*")
+"""What PostgreSQL keeps as written when it is not quoted, so every name
+made from it (the function, the triggers) is the same quoted or not."""
 FIRING: Final = frozenset({"O", "A"})
 """``tgenabled`` of a trigger that fires for the application's sessions.
 
@@ -95,13 +110,22 @@ def trigger_names(table: Table) -> tuple[str, str]:
     """The triggers that protect ``table``: of rows, and of truncation.
 
     The row trigger's name is its function's too: ``<table>_append_only``.
+
+    Raises:
+        ValueError: ``table`` has a schema of its own, or a name its
+            triggers cannot be named after (see the module).
     """
-    function = f"{table.name}_append_only"
+    function = f"{_checked(table)}_append_only"
     return function, f"{function}_truncate"
 
 
 def append_only_body(table: Table) -> str:
-    """The body of the triggers' function for ``table``: refuse, whatever the change."""
+    """The body of the triggers' function for ``table``: refuse, whatever the change.
+
+    Raises:
+        ValueError: As ``trigger_names``.
+    """
+    _checked(table)
     return f"""
     BEGIN
         RAISE EXCEPTION '{table.name} is append-only'
@@ -117,28 +141,34 @@ def append_only_statements(table: Table) -> tuple[tuple[str, ...], tuple[str, ..
     dropped and made again, so a trigger changed in place (disabled, under
     a ``WHEN``, running another function) is put back as it must be.
     Names are not qualified: they are the schema's ``search_path`` finds.
+    A table named by a reserved word (``order``) is quoted; the others are
+    written as 2.8 wrote them.
+
+    Raises:
+        ValueError: As ``trigger_names``.
     """
     function, truncate = trigger_names(table)
     body = append_only_body(table)
+    name = f'"{table.name}"' if table.name in RESERVED_WORDS else table.name
     protect = (
         f"""
     CREATE OR REPLACE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql
     AS $${body}$$
     """,
-        f"DROP TRIGGER IF EXISTS {function} ON {table.name}",
+        f"DROP TRIGGER IF EXISTS {function} ON {name}",
         (
-            f"CREATE TRIGGER {function} BEFORE UPDATE OR DELETE ON {table.name} "
+            f"CREATE TRIGGER {function} BEFORE UPDATE OR DELETE ON {name} "
             f"FOR EACH ROW EXECUTE FUNCTION {function}()"
         ),
-        f"DROP TRIGGER IF EXISTS {truncate} ON {table.name}",
+        f"DROP TRIGGER IF EXISTS {truncate} ON {name}",
         (
-            f"CREATE TRIGGER {truncate} BEFORE TRUNCATE ON {table.name} "
+            f"CREATE TRIGGER {truncate} BEFORE TRUNCATE ON {name} "
             f"FOR EACH STATEMENT EXECUTE FUNCTION {function}()"
         ),
     )
     unprotect = (
-        f"DROP TRIGGER IF EXISTS {truncate} ON {table.name}",
-        f"DROP TRIGGER IF EXISTS {function} ON {table.name}",
+        f"DROP TRIGGER IF EXISTS {truncate} ON {name}",
+        f"DROP TRIGGER IF EXISTS {function} ON {name}",
         f"DROP FUNCTION IF EXISTS {function}()",
     )
     return protect, unprotect
@@ -152,7 +182,11 @@ async def protect_append_only(
     Only on PostgreSQL, and only the tables the connection's ``search_path``
     finds (a tenant's schema, after ``migrate --tenant``): a table not
     made yet is left for the ``migrate`` that makes it.
+
+    Raises:
+        ValueError: As ``trigger_names``, for any of ``tables``.
     """
+    tables = [table for table in tables if _checked(table)]
     if connection.dialect.name != "postgresql":
         return []
     protected = []
@@ -176,11 +210,14 @@ async def missing_append_only(
     ``WHEN``, columns, or arguments, and running the PL/pgSQL function
     made for its table, its body the same but for whitespace. The tables
     are those ``search_path`` finds; a table there is not lacks both. None
-    on databases other than PostgreSQL.
+    on databases other than PostgreSQL, and for no tables.
+
+    Raises:
+        ValueError: As ``trigger_names``, for any of ``tables``.
     """
-    if connection.dialect.name != "postgresql":
-        return []
     expected = _expected(tables)
+    if connection.dialect.name != "postgresql" or not tables:
+        return []
     found = await connection.execute(
         _OWN_TRIGGERS, {"tables": [table.name for table in tables]}
     )
@@ -196,9 +233,15 @@ async def unprotected(database: str, tables: Sequence[Table]) -> dict[str, list[
     (``TENANCY.SCHEMA_DATABASES``); only where something is lacking. A
     database that keeps a schema per tenant, and holds no tables of its
     own (plain ``migrate`` leaves its own schema out), is not asked for
-    its own. Empty on databases other than PostgreSQL. Two round trips,
-    and two more for every tenant at once.
+    its own. Empty on databases other than PostgreSQL, and for no tables.
+    Two round trips, and two more for every tenant at once.
+
+    Raises:
+        ValueError: As ``trigger_names``, for any of ``tables``.
     """
+    _expected(tables)
+    if not tables:
+        return {}
     config = settings.TENANCY
     per_tenant = config is not None and database in config.SCHEMA_DATABASES
     first = tables[0].name
@@ -263,6 +306,32 @@ def migrate_command(place: str) -> str:
     prefix, _, suffix = config.SCHEMA.partition("{tenant}")
     tenant = schema.removeprefix(prefix).removesuffix(suffix)
     return f"migrate --tenant {tenant}"
+
+
+def _checked(table: Table) -> str:
+    """``table``'s name, if its triggers can be named after it.
+
+    Raises:
+        ValueError: It has a schema of its own, or a name that is not
+            ``[a-z_][a-z0-9_]*`` of at most ``MAX_TABLE_NAME`` characters.
+    """
+    if table.schema is not None:
+        raise ValueError(
+            f"Table {table.fullname!r} names its schema: protect the table of "
+            "the schema search_path finds, so each tenant's schema gets its own "
+            "triggers."
+        )
+    if not _TABLE_NAME.fullmatch(table.name):
+        raise ValueError(
+            f"Table {table.name!r} cannot name its triggers: use lowercase "
+            "letters, digits, and underscores, not starting with a digit."
+        )
+    if len(table.name) > MAX_TABLE_NAME:
+        raise ValueError(
+            f"Table {table.name!r} has {len(table.name)} characters: its "
+            f"triggers' names would be cut at 63; at most {MAX_TABLE_NAME}."
+        )
+    return table.name
 
 
 def _expected(tables: Iterable[Table]) -> Expected:
