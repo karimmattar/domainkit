@@ -246,14 +246,17 @@ def isolated_registries() -> Iterator[None]:
     """Restore process-wide registries (tasks, subscriptions, metrics) per test.
 
     Apps register tasks and handlers when they are installed; a test that
-    installs one must not leak them into the next test. Memory caches and
-    the principal cache start empty, too, and so do the throttled logs: an
-    app's shutdown writes what every one of them held back, so a line held
-    by an earlier test's app, still alive, would land in this test's log.
+    installs one must not leak them into the next test. Memory caches,
+    memory ledgers, and the principal cache start empty, too, and so do the
+    throttled logs: an app's shutdown writes what every one of them held
+    back, so a line held by an earlier test's app, still alive, would land
+    in this test's log.
     """
     caches.reset()
     invalidate_all()
     reset_throttled()
+    if (ledger := sys.modules.get("domainkit.ledger.handler")) is not None:
+        ledger.ledgers.reset()  # Memory ledgers keep what they hold until then.
     with registries_kept():
         yield
 

@@ -178,6 +178,13 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   ([upgrading.md](docs/upgrading.md#28-to-29), ADR 0192) (audit
   A28-DX-06).
 
+- A memory ledger (`memory://`) keeps what it holds when the ledgers
+  close. `outbox.run_queued()` in a sync test, a command, and an
+  application's shutdown close them, and the evidence a queued handler
+  had recorded was gone when the test read it. `ledgers.reset()`, which
+  the test plugin calls before each test, still empties them
+  ([Ledgers](docs/databases.md#ledgers-immudb)) (audit A28-DX-06).
+
 ## [2.8.0] - 2026-11-18
 
 2.8 answers fourteen of a project's fifteen notes on 2.7 (the last,

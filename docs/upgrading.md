@@ -68,6 +68,11 @@ project that relied on 2.8's behaviour changes, and what to run.
   can be sent to the superuser (to reset its password or enroll a phone)
   until its email address is verified: run ...". A script that matched
   2.8's wording matches this one instead.
+- **A memory ledger keeps what it holds when the ledgers close.** In
+  tests, evidence recorded before `outbox.run_queued()`, a command, or a
+  client's shutdown is still there after it. A test that relied on the
+  close to empty a `memory://` ledger calls `ledgers.reset()`; the test
+  plugin calls it before each test, as before.
 2.9 answers the audit of 2.8. Each part below says what a project that
 relied on 2.8's behaviour changes, and what to run.
 

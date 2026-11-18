@@ -37,6 +37,7 @@ from domainkit.ledger.immudb import (
     verified_append_after,
     verified_create,
 )
+from domainkit.management.base import run_async
 
 pytestmark = pytest.mark.anyio
 
@@ -718,6 +719,33 @@ async def test_failing_ledgers_fail_readiness() -> None:
     await handler.close_all()
 
 
+def test_a_memory_ledger_keeps_its_revisions_when_the_ledgers_close() -> None:
+    """A loop that closes what it opened (a command, ``run_queued``) keeps them.
+
+    As a server keeps what it holds when its clients go; ``reset`` forgets
+    them, as the test plugin does before each test.
+    """
+
+    async def write() -> MemoryLedger:
+        ledger = ledgers["scratch"]
+        assert isinstance(ledger, MemoryLedger)
+        await ledger.create(b"evidence", b"kept")
+        return ledger
+
+    async def read() -> bytes:
+        return (await ledgers["scratch"].read(b"evidence")).value
+
+    with override_settings(
+        DATABASES={"default": SQLITE}, LEDGERS={"scratch": {"URL": "memory://"}}
+    ):
+        written = run_async(write())  # Then closes the ledgers, as a command does.
+        assert run_async(read()) == b"kept"
+        assert ledgers["scratch"] is written
+        ledgers.reset()
+        with pytest.raises(LedgerKeyNotFound):
+            run_async(read())
+
+
 async def test_the_process_handler_builds_memory_ledgers() -> None:
     """``ledgers`` knows both schemes out of the box."""
     with override_settings(
@@ -743,6 +771,7 @@ def test_ready_checks_cover_ledgers(monkeypatch: pytest.MonkeyPatch) -> None:
         with TestClient(app) as client:
             ready = client.get("/ready")
         monkeypatch.setattr(ledgers, "_factories", {"memory": lambda config: Down()})
+        ledgers.reset()  # Kept since the first; the next use builds one down.
         with TestClient(app) as client:
             down = client.get("/ready")
 
