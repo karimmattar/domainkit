@@ -701,6 +701,12 @@ of making superusers, and of admin changes count their makers' and
 approvers' keys the same way, and show their requests to those who hold
 `approvals.view_every_approvalrequest` everywhere, not through a role.
 
+Users, groups, flags, webhooks, the audit trail, and the admin site's
+models that are not `TenantOwned` belong to no tenant either: their
+staff APIs count a staff member's permissions as they hold them
+everywhere. Staff who act there through a role are granted the keys
+everywhere, directly or through a group.
+
 Routes of your own over such rows say so with `everywhere=True`:
 
 ```python

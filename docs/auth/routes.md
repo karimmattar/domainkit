@@ -421,7 +421,11 @@ Every route needs a staff user (`is_staff`) or a superuser, with
 credentials that carry no scopes, and the model permission of its
 action: `view`, `add`, `change`, or `delete` on the user model
 (`auth.change_user`, or `accounts.change_account` for a custom user),
-`auth.*_group`, or `auth.view_permission`.
+`auth.*_group`, or `auth.view_permission`. The permission counts as the
+staff member holds it everywhere: with multi-tenancy, a member's role in
+the tenant served opens no route of the admin API, nor of the staff APIs
+of flags, webhooks, the audit trail, and the admin site
+([rows of no tenant](../tenancy.md#rows-of-no-tenant)).
 
 | Endpoint | Body | Answer |
 | --- | --- | --- |

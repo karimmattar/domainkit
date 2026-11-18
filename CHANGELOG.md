@@ -104,6 +104,15 @@ and a status.
   ([Rows of no tenant](docs/tenancy.md#rows-of-no-tenant),
   [upgrading.md](docs/upgrading.md#28-to-29), ADR 0183) (audit
   A28-SEC-04).
+- The staff APIs count a staff member's permissions as they hold them
+  everywhere: the admin API (users, groups, permissions), the staff APIs
+  of `domainkit.contrib.flags` and `domainkit.contrib.webhooks`, the
+  audit trail's history (`audit.view_history`), and the admin site's
+  models that are not `TenantOwned`. A role in the tenant served opens
+  none of them
+  ([Rows of no tenant](docs/tenancy.md#rows-of-no-tenant),
+  [upgrading.md](docs/upgrading.md#28-to-29), ADR 0183) (audit
+  A28-SEC-04).
 
 ## [2.8.0] - 2026-11-18
 
