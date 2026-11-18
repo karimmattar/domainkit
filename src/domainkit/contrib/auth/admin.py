@@ -55,7 +55,6 @@ from pydantic import (
 )
 from sqlalchemy import exists, func, select
 
-from domainkit.db.encrypted import EncryptedType
 from domainkit.ddd import DuplicateValue, PermissionDenied
 from domainkit.ddd.query import And, F
 from domainkit.ddd.query import Selection as Listing
@@ -118,6 +117,7 @@ from .models import (
 )
 from .repositories import GroupRepository, user_search
 from .settings import auth_settings, identifier_fields
+from .tables import listing_field
 from .throttling import Attempt, Limit, attempt
 from .tokens import LoginMethod, LoginOrigin, logging_in
 from .uow import AuthUnitOfWork
@@ -572,11 +572,7 @@ async def user_listing(
 
 def _ordered_by(model: type[AbstractBaseUser]) -> str:
     """The first identifier that is not encrypted, else the username, as before."""
-    columns = get_user_table().c
-    for name in identifier_fields(model):
-        if not isinstance(columns[name].type, EncryptedType):
-            return name
-    return model.USERNAME_FIELD
+    return listing_field(model, get_user_table())
 
 
 async def group_listing() -> Listing:

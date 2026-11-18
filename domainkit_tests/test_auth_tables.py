@@ -1,14 +1,18 @@
 """The auth tables: user columns (Django's lengths), indexes, and password hashes."""
 
+import asyncio
 import io
 import os
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Final
 
+import asyncpg  # type: ignore[import-untyped]
 import pytest
-from sqlalchemy import Column, MetaData, Table, event, inspect, make_url
+from sqlalchemy import Column, MetaData, String, Table, event, inspect, make_url
 from sqlalchemy.dialects import sqlite
 from sqlalchemy.schema import CreateTable
 
@@ -21,12 +25,15 @@ from domainkit.contrib.auth.tables import (
     PasswordHashType,
     abstract_base_user_columns,
     abstract_user_columns,
+    listing_field,
     lookup_indexes,
     user_link_tables,
     users,
 )
 from domainkit.contrib.auth.uow import AuthUnitOfWork
+from domainkit.contrib.auth.users import get_user_model, get_user_table
 from domainkit.db import connections
+from domainkit.db.migrations import include_object
 from domainkit.ddd.query import Selection
 from domainkit.management import call_command
 from domainkit.management.base import run_async
@@ -36,6 +43,7 @@ from domainkit_tests.conftest import (
     CONTENTTYPES,
     FAST_HASHER,
     POSTGRES_VARIABLE,
+    on_server,
 )
 from domainkit_tests.support.auth import create_user
 
@@ -164,67 +172,108 @@ def test_link_tables_follow_the_user_table() -> None:
 
 
 def test_lookup_indexes_follow_the_models_fields() -> None:
-    """``lower()`` of the address and the username, and ``(email, id)``.
+    """``lower()`` of each text column of the address and the username; the order.
 
-    A field the table lacks or encrypts gets none; a long table name is cut
-    to PostgreSQL's 63 characters with a digest (A28-PERF-02).
+    The admin's order, ``(listed, id)``, gets one unless the column is
+    unique. A column the table lacks, encrypts, or keeps as other than
+    text gets no ``lower()``; a table without an id, no order; a long table
+    name is cut to PostgreSQL's 63 characters with a digest (A28-PERF-02).
     """
     from domainkit.contrib.auth.models import User
-    from domainkit.db import EncryptedType
+    from domainkit.db import EncryptedType, ValueObjectType
     from domainkit_tests.sample_domains.members.models import Member
+    from domainkit_tests.sample_domains.sealed.tables import sealed
 
-    assert lookup_indexes(User, users, lambda name: f'"{name}"') == {
+    assert lookup_indexes(User, users, "email", lambda name: f'"{name}"') == {
         "ix_domainkit_users_email_lower": 'lower("email")',
         "ix_domainkit_users_username_lower": 'lower("username")',
         "ix_domainkit_users_email_id": '"email", "id"',
     }
-    assert lookup_indexes(Member, users) == {  # Logs in by its address: once.
+    assert list(lookup_indexes(User, users, "username")) == [  # Unique already.
+        "ix_domainkit_users_email_lower",
+        "ix_domainkit_users_username_lower",
+    ]
+    assert lookup_indexes(Member, users, "email") == {  # Logs in by address: once.
         "ix_domainkit_users_email_lower": "lower(email)",
         "ix_domainkit_users_email_id": "email, id",
     }
     bare = Table("bare", MetaData(), *abstract_base_user_columns())
-    assert lookup_indexes(Member, bare) == {}
-    sealed = Table(
-        "sealed",
+    assert lookup_indexes(Member, bare, "email") == {}
+    hidden = Table(
+        "hidden",
         MetaData(),
         Column("email", EncryptedType()),
         *(column for column in abstract_user_columns() if column.name != "email"),
     )
-    assert list(lookup_indexes(User, sealed)) == ["ix_sealed_username_lower"]
+    assert list(lookup_indexes(User, hidden, "email")) == ["ix_hidden_username_lower"]
+    assert list(lookup_indexes(User, sealed, "email")) == [  # Bytes: no lower().
+        "ix_sealed_users_username_lower",
+        "ix_sealed_users_email_id",
+    ]
+    wrapped = Table(
+        "wrapped",
+        MetaData(),
+        Column("email", ValueObjectType(PasswordHash, String(254))),
+        *(c for c in abstract_user_columns() if c.name not in {"email", "id"}),
+    )
+    assert list(lookup_indexes(User, wrapped, "email")) == [  # Text, wrapped.
+        "ix_wrapped_email_lower",
+        "ix_wrapped_username_lower",
+    ]
     long = Table("a" * 60, MetaData(), *abstract_user_columns())
-    names = list(lookup_indexes(User, long))
+    names = list(lookup_indexes(User, long, "email"))
     assert [len(name) for name in names] == [63, 63, 63]
     assert len(set(names)) == 3
 
 
 ACCOUNTS: Final = "domainkit_tests.sample_domains.accounts"
-CUSTOM: Final = {
-    "USER_MODEL": f"{ACCOUNTS}.models.Account",
-    "USER_TABLE": f"{ACCOUNTS}.tables.accounts",
+SEALED: Final = "domainkit_tests.sample_domains.sealed"
+USERS: Final = {
+    "default": ("domainkit_users", None, {}),
+    "custom": (
+        "accounts_users",
+        ACCOUNTS,
+        {
+            "USER_MODEL": f"{ACCOUNTS}.models.Account",
+            "USER_TABLE": f"{ACCOUNTS}.tables.accounts",
+        },
+    ),
+    "sealed": (
+        "sealed_users",
+        SEALED,
+        {
+            "USER_MODEL": f"{SEALED}.models.Sealed",
+            "USER_TABLE": f"{SEALED}.tables.sealed",
+        },
+    ),
 }
+"""Each user table: its name, the domain that declares it, and ``AUTH``'s keys."""
 
 
-@pytest.fixture(params=["default", "custom"])
+@pytest.fixture(params=["default", "custom", "sealed"])
 def migrated(
     request: pytest.FixtureRequest, database_url: str, tmp_path: Path
 ) -> Iterator[str]:
-    """Auth migrated, addresses identifying users: the default user or a custom one."""
-    custom = request.param == "custom"
+    """Auth migrated, addresses identifying users, the user table's name.
+
+    The default user, a project's own, or one whose address is bytes.
+    """
+    table, domain, named = USERS[request.param]
     registry.clear()
     with override_settings(
-        INSTALLED_DOMAINS=[CONTENTTYPES, AUTH, ALPHA, *([ACCOUNTS] if custom else [])],
+        INSTALLED_DOMAINS=[CONTENTTYPES, AUTH, ALPHA, *([domain] if domain else [])],
         DATABASES={"default": {"URL": database_url}},
         MIGRATIONS_DIR=tmp_path / "migrations",
         AUTH={
             "PASSWORD_HASHERS": [FAST_HASHER],
             "IDENTIFIERS": ("email", "username"),
-            **(CUSTOM if custom else {}),
+            **named,
         },
     ):
         setup()
         call_command("makemigrations", "-m", "auth", stdout=io.StringIO())
         call_command("migrate", stdout=io.StringIO())
-        yield "accounts_users" if custom else "domainkit_users"
+        yield table
     registry.clear()
 
 
@@ -239,23 +288,77 @@ async def index_names(table: str) -> set[str]:
 
 
 def test_migrate_makes_the_lookup_indexes_on_postgresql(migrated: str) -> None:
-    """Three indexes on PostgreSQL, none on SQLite; revisions leave them alone.
+    """The indexes a table can take on PostgreSQL, none on SQLite.
 
     ``migrate`` makes them on the user table, the project's own too, once:
     a second ``migrate`` keeps them, and ``makemigrations`` finds nothing.
+    An address kept as bytes gets no ``lower()``, and fails nothing.
     """
     call_command("migrate", stdout=io.StringIO())
     checked = io.StringIO()
     call_command("makemigrations", "--check", stdout=checked)
     present = run_async(index_names(migrated))
 
-    wanted = {
-        f"ix_{migrated}_email_lower",
-        f"ix_{migrated}_username_lower",
-        f"ix_{migrated}_email_id",
-    }
-    assert present & wanted == (wanted if ON_POSTGRES else set())
+    folded = f"ix_{migrated}_email_lower"
+    wanted = {f"ix_{migrated}_username_lower", f"ix_{migrated}_email_id"}
+    if migrated != "sealed_users":  # Its address is bytes.
+        wanted.add(folded)
+    assert present & (wanted | {folded}) == (wanted if ON_POSTGRES else set())
     assert checked.getvalue() == "No changes detected.\n"
+
+
+def test_revisions_leave_alone_only_the_lookup_indexes_by_name(migrated: str) -> None:
+    """A project's index whose name starts like one of them stays its own."""
+    table = SimpleNamespace(name=migrated)
+
+    def left(name: str) -> bool:
+        return not include_object(
+            SimpleNamespace(table=table), name, "index", True, None
+        )
+
+    assert left(f"ix_{migrated}_email_id")
+    assert left(f"ix_{migrated}_username_lower")
+    assert not left(f"ix_{migrated}_email_idx")
+    assert listing_field(get_user_model(), get_user_table()) == "email"
+
+
+@pytest.mark.skipif(not ON_POSTGRES, reason=f"set {POSTGRES_VARIABLE}: SQLite has none")
+@pytest.mark.parametrize("migrated", ["default"], indirect=True)
+def test_migrate_waits_for_no_writer_once_the_indexes_are_made(
+    migrated: str, database_url: str
+) -> None:
+    """A ``migrate`` with no index to make takes no lock on the users table.
+
+    ``CREATE INDEX IF NOT EXISTS`` locks the table against writes before it
+    finds the index: a ``migrate`` on a deploy waited behind any open write,
+    and the writes after queued behind it (A28-PERF-02).
+    """
+    url = make_url(database_url)
+    dsn = url.set(drivername="postgresql").render_as_string(hide_password=False)
+    held, done = threading.Event(), threading.Event()
+
+    def write() -> None:
+        async def hold() -> None:
+            connection = await asyncpg.connect(dsn)
+            async with connection.transaction():
+                await connection.execute("UPDATE domainkit_users SET email = email")
+                held.set()
+                await asyncio.to_thread(done.wait)
+            await connection.close()
+
+        asyncio.run(hold())
+
+    writer = threading.Thread(target=write)
+    writer.start()
+    try:
+        assert held.wait(10)
+        on_server(
+            database_url, f"ALTER DATABASE \"{url.database}\" SET lock_timeout = '2s'"
+        )
+        call_command("migrate", stdout=io.StringIO())
+    finally:
+        done.set()
+        writer.join()
 
 
 def test_migrate_before_any_revision_makes_no_index(
@@ -310,6 +413,7 @@ async def plan(statement: str, values: Any) -> str:  # noqa: ANN401 - the driver
 
 
 @pytest.mark.skipif(not ON_POSTGRES, reason=f"set {POSTGRES_VARIABLE}: SQLite has none")
+@pytest.mark.parametrize("migrated", ["default", "custom"], indirect=True)
 def test_user_lookups_read_their_indexes(migrated: str) -> None:
     """Login, signup, the taken checks, and the admin's order use an index.
 
