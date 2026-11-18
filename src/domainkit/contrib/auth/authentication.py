@@ -623,9 +623,15 @@ async def may_impersonate(staff_id: UUID, user_id: UUID) -> bool:
     of them when it was issued (``staff_rules``), asked again. So does a
     grant to the user that the staff member lacks: staff only act as users
     whose every permission they hold (the admin API's ``may_change``).
+
+    The right to change users counts as the staff member holds it
+    everywhere, whatever tenant the request is served as: users belong to
+    no tenant, so a member's role in one keeps no impersonation going
+    (since 2.9).
     """
     # Here, not at the top: resources, users, and admin import this module.
     from domainkit.ddd import DomainError
+    from domainkit.ddd.tenancy import no_tenant
     from domainkit.resources.access import content_type_of
 
     from .admin import may_change
@@ -642,7 +648,9 @@ async def may_impersonate(staff_id: UUID, user_id: UUID) -> bool:
         if not (staff.is_superuser or getattr(staff, "is_staff", False)):
             return False
         domain, model = content_type_of(get_user_model())
-        if not await staff.ahas_perms([f"{domain}.change_{model}"]):
+        with no_tenant():  # Held everywhere: no tenant's role counts.
+            allowed = await staff.ahas_perms([f"{domain}.change_{model}"])
+        if not allowed:
             return False
         user = await uow.users.find(UserId(user_id))
         if user is None:

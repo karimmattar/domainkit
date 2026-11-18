@@ -22,7 +22,7 @@ from typing import Any, Final
 from urllib.parse import quote
 
 from . import SearchBackend, SearchError, SearchResult, check_page
-from ._http import call
+from ._http import call, shared_client
 
 __all__ = ["OpenSearchBackend"]
 
@@ -41,14 +41,12 @@ class OpenSearchBackend(SearchBackend):
         timeout: float = 10.0,
     ) -> None:
         """Call ``url``, as ``username`` (HTTP Basic) if given."""
-        from domainkit.http.client import HttpClient
-
         self.url = url.rstrip("/")
         self._headers: dict[str, str] = {}
         if username is not None:
             secret = base64.b64encode(f"{username}:{password or ''}".encode()).decode()
             self._headers["Authorization"] = f"Basic {secret}"
-        self.client = HttpClient(base_url=self.url, timeout=timeout, propagate=False)
+        self.client = shared_client(self.url, timeout)
         self.fields: dict[str, list[str]] = {}
 
     def __repr__(self) -> str:

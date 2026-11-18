@@ -123,6 +123,27 @@ def no_tenant() -> Iterator[None]:
 
 
 @contextmanager
+def tenant_alone(tenant_id: str | None) -> Iterator[None]:
+    """Serve ``tenant_id`` alone inside the block, None for no tenant.
+
+    ``all_tenants()`` around it does not reach in: rows are that tenant's
+    only. For one tenant's work that code across tenants does, such as
+    the expiry of every tenant's approval requests: what it commits, and
+    the handlers its commit runs, see that tenant's rows alone (ADR 0183).
+
+    Raises:
+        ValueError: ``tenant_id`` is not a tenant id.
+    """
+    current = _current.set(None if tenant_id is None else check_tenant_id(tenant_id))
+    everyone = _everyone.set(False)
+    try:
+        yield
+    finally:
+        _everyone.reset(everyone)
+        _current.reset(current)
+
+
+@contextmanager
 def all_tenants() -> Iterator[None]:
     """Read and change every tenant's rows inside the block, on purpose.
 

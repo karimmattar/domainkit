@@ -88,6 +88,7 @@ from domainkit.apps import registry
 from domainkit.conf import settings
 from domainkit.db.models import model_key
 from domainkit.ddd import PermissionDenied
+from domainkit.ddd.tenancy import no_tenant
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.errors import APIError
 from domainkit.http.live import record_check
@@ -534,19 +535,33 @@ class HasScope(BasePermission):
 
 
 class HasPermissions(BasePermission):
-    """Principals granted every permission named (``<domain>.<codename>``)."""
+    """Principals granted every permission named (``<domain>.<codename>``).
+
+    ``everywhere=True`` counts what the principal holds where no tenant is
+    served: a member's keys in the tenant being served (``MembershipBackend``)
+    do not count. For routes over rows that belong to no tenant, which a
+    role held in one tenant must not reach (ADR 0183).
+    """
 
     bounds_scopes: ClassVar[bool] = True
+    everywhere: bool = False
+    """Whether only the permissions held where no tenant is served count."""
 
-    def __init__(self, *perms: str) -> None:
-        """Require ``perms``."""
+    def __init__(self, *perms: str, everywhere: bool = False) -> None:
+        """Require ``perms``; held everywhere, with ``everywhere``."""
         if not perms:
             raise ImproperlyConfigured("HasPermissions needs at least one permission.")
         self.perms = perms
+        self.everywhere = everywhere
 
     async def has_permission(self, request: HTTPConnection, user: Principal) -> bool:
         """The principal holds every permission, and the scopes allow them."""
-        return _within(request, self.perms) and await user.ahas_perms(self.perms)
+        if not _within(request, self.perms):
+            return False
+        if not self.everywhere:
+            return await user.ahas_perms(self.perms)
+        with no_tenant():
+            return await user.ahas_perms(self.perms)
 
 
 class HasObjectPermissions(HasPermissions):
@@ -571,7 +586,12 @@ class HasObjectPermissions(HasPermissions):
         self, request: HTTPConnection, user: Principal, obj: object
     ) -> bool:
         """The principal holds every permission on ``obj``, within the scopes."""
-        return _within(request, self.perms) and await user.ahas_perms(self.perms, obj)
+        if not _within(request, self.perms):
+            return False
+        if not self.everywhere:
+            return await user.ahas_perms(self.perms, obj)
+        with no_tenant():
+            return await user.ahas_perms(self.perms, obj)
 
 
 class ModelPermissions(BasePermission):

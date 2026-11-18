@@ -576,8 +576,9 @@ def include_object(
     uninstalling never proposes a destructive drop. Partitions (``partitions``)
     are managed by ``manage.py partitions``, not by revisions, and so are the
     indexes a table names in ``info={"unmanaged_indexes": (prefix, ...)}``
-    (the audit trail's history indexes, which ``migrate`` makes): a revision
-    never drops one.
+    (the audit trail's history indexes, which ``migrate`` makes), or by
+    exact name in ``info={"unmanaged_index_names": (name, ...)}`` (the user
+    lookups' indexes): a revision never drops one.
     """
     if type_ == "index" and reflected:
         return not _unmanaged_index(obj, name)
@@ -597,10 +598,12 @@ def _unmanaged_index(obj: object, name: str | None) -> bool:
     """Whether a reflected index is one its table says revisions leave alone."""
     table = getattr(obj, "table", None)
     known = metadata.tables.get(getattr(table, "name", ""))
-    prefixes: tuple[str, ...] = (
-        () if known is None else known.info.get("unmanaged_indexes", ())
+    info = {} if known is None else known.info
+    prefixes: tuple[str, ...] = info.get("unmanaged_indexes", ())
+    names: tuple[str, ...] = info.get("unmanaged_index_names", ())
+    return name is not None and (
+        name in names or any(name.startswith(prefix) for prefix in prefixes)
     )
-    return name is not None and any(name.startswith(prefix) for prefix in prefixes)
 
 
 @comparators.dispatch_for("table")

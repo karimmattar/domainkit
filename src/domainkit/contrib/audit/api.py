@@ -44,8 +44,11 @@ PAGE_SIZE: Final = 50
 VIEW_HISTORY: Final = "audit.view_history"
 
 router = APIRouter(tags=["audit"])
-staff = Require(IsAdminUser() | IsSuperuser(), HasPermissions(VIEW_HISTORY))
-"""Staff, or superusers, granted ``audit.view_history``."""
+staff = Require(
+    IsAdminUser() | IsSuperuser(), HasPermissions(VIEW_HISTORY, everywhere=True)
+)
+"""Staff, or superusers, granted ``audit.view_history`` everywhere: the trail
+belongs to no tenant, so a member's role opens it to none (ADR 0183)."""
 
 
 class FieldChangeOut(BaseModel):
@@ -97,6 +100,7 @@ class HistoryPageOut(BaseModel):
 
 @router.get(
     "/history",
+    name="audit_read_history",
     responses=error_responses(
         status.HTTP_401_UNAUTHORIZED,
         status.HTTP_403_FORBIDDEN,

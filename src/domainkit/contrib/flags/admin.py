@@ -127,7 +127,7 @@ ONE: Final = (*COMMON, status.HTTP_404_NOT_FOUND)
 CHANGE: Final = (*ONE, status.HTTP_409_CONFLICT, status.HTTP_422_UNPROCESSABLE_CONTENT)
 
 
-@router.get("/flags", responses=_errors(*COMMON))
+@router.get("/flags", name="flags_list_flags", responses=_errors(*COMMON))
 async def list_flags(
     actor: Annotated[AnyUser, staff("view", lambda: Flag)],
 ) -> list[FlagOut]:
@@ -136,7 +136,12 @@ async def list_flags(
         return [FlagOut.of(flag) for flag in await uow.flags.all()]
 
 
-@router.post("/flags", status_code=status.HTTP_201_CREATED, responses=_errors(*CHANGE))
+@router.post(
+    "/flags",
+    name="flags_create_flag",
+    status_code=status.HTTP_201_CREATED,
+    responses=_errors(*CHANGE),
+)
 async def create_flag(
     body: FlagIn, actor: Annotated[AnyUser, staff("add", lambda: Flag)]
 ) -> FlagOut:
@@ -149,7 +154,7 @@ async def create_flag(
     return FlagOut.of(flag)
 
 
-@router.put("/flags/{name}", responses=_errors(*CHANGE))
+@router.put("/flags/{name}", name="flags_change_flag", responses=_errors(*CHANGE))
 async def change_flag(
     name: Name,
     body: FlagRules,
@@ -164,7 +169,10 @@ async def change_flag(
 
 
 @router.delete(
-    "/flags/{name}", status_code=status.HTTP_204_NO_CONTENT, responses=_errors(*ONE)
+    "/flags/{name}",
+    name="flags_delete_flag",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses=_errors(*ONE),
 )
 async def delete_flag(
     name: Name, actor: Annotated[AnyUser, staff("delete", lambda: Flag)]
@@ -177,20 +185,21 @@ async def delete_flag(
         await uow.commit()
 
 
-@router.get("/settings", responses=_errors(*COMMON))
+@router.get("/settings", name="flags_list_settings", responses=_errors(*COMMON))
 async def list_settings(
     actor: Annotated[AnyUser, staff("view", lambda: DynamicSetting)],
 ) -> list[SettingOut]:
-    """Every declared dynamic setting, with its stored value or default."""
+    """Every declared dynamic setting, with its stored value or default.
+
+    The stored values are read in one statement, not one per setting.
+    """
+    definitions = declared_settings()
     async with FlagsUnitOfWork() as uow:
-        found = []
-        for definition in declared_settings():
-            stored = await uow.settings.find(definition.key)
-            found.append(SettingOut.of(definition, stored))
-    return found
+        stored = await uow.settings.get_many(each.key for each in definitions)
+        return [SettingOut.of(each, stored.get(each.key)) for each in definitions]
 
 
-@router.put("/settings/{key}", responses=_errors(*CHANGE))
+@router.put("/settings/{key}", name="flags_change_setting", responses=_errors(*CHANGE))
 async def change_setting(
     key: Name,
     body: SettingIn,
@@ -210,7 +219,10 @@ async def change_setting(
 
 
 @router.delete(
-    "/settings/{key}", status_code=status.HTTP_204_NO_CONTENT, responses=_errors(*ONE)
+    "/settings/{key}",
+    name="flags_reset_setting",
+    status_code=status.HTTP_204_NO_CONTENT,
+    responses=_errors(*ONE),
 )
 async def reset_setting(
     key: Name, actor: Annotated[AnyUser, staff("change", lambda: DynamicSetting)]

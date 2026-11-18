@@ -1,16 +1,20 @@
 """Support staff acting as a user, audited and bounded (``AUTH.IMPERSONATION_TTL``)."""
 
 from datetime import timedelta
-from typing import Any
+from typing import Any, Final
 from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.datastructures import Headers
+from starlette.types import ASGIApp, Receive, Scope, Send
 
+from domainkit.conf import override_settings
 from domainkit.contrib.auth import StepUp
 from domainkit.contrib.auth.authentication import Credentials, may_impersonate
+from domainkit.ddd.tenancy import tenant
 from domainkit.management.base import run_async
-from domainkit_tests.conftest import Api
+from domainkit_tests.conftest import MIDDLEWARE, Api
 from domainkit_tests.support.auth import audited, bearer, create_user
 from domainkit_tests.test_auth_access import request, user
 from domainkit_tests.test_auth_admin import details, error, staff, token_for
@@ -156,6 +160,86 @@ def test_an_impersonation_of_a_user_who_is_gone_ends(api: Api) -> None:
 
     assert run_async(may_impersonate(clerk_id, ann))
     assert not run_async(may_impersonate(clerk_id, uuid4()))
+
+
+SERVED: Final = "X-Served-Tenant"
+"""The tenant ``ServedBeforeAuthentication`` serves the request as."""
+
+
+class ServedBeforeAuthentication:
+    """Serve the tenant ``X-Served-Tenant`` names before authentication runs.
+
+    As a project's own layer may (a tenant named by its host), and as an
+    open connection's credentials are checked again inside its tenant.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        """Wrap ``app``."""
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Serve the tenant the request names, if any."""
+        named = Headers(scope=scope).get(SERVED) if scope["type"] == "http" else None
+        if named is None:
+            await self.app(scope, receive, send)
+            return
+        with tenant(named):
+            await self.app(scope, receive, send)
+
+
+def member_permissions(user: object, tenant_id: str) -> set[str] | None:
+    """The clerk's role in tenant ``a`` changes users; no one else's does."""
+    if getattr(user, "username", None) == "clerk" and tenant_id == "a":
+        return {"auth.change_user"}
+    return None
+
+
+def member_tenants(user: object) -> set[str]:
+    """The clerk belongs to tenant ``a``; no one else to any."""
+    return {"a"} if getattr(user, "username", None) == "clerk" else set()
+
+
+def test_an_impersonation_counts_the_keys_its_staff_member_holds_everywhere(
+    api: Api,
+) -> None:
+    """A tenant role's key keeps no impersonation going, in that tenant either.
+
+    Users belong to no tenant: the check made again on each request counts
+    what the staff member holds everywhere, as the admin API counted when
+    it issued the token (review of the tenancy fixes, A28-SEC-04).
+    """
+    middleware = list(MIDDLEWARE)
+    middleware.insert(
+        middleware.index("domainkit.contrib.auth.middleware.AuthenticationMiddleware"),
+        f"{__name__}.ServedBeforeAuthentication",
+    )
+    tenancy = {
+        "HEADER": "X-Tenant",
+        "MEMBER_PERMISSIONS": f"{__name__}.member_permissions",
+        "MEMBER_TENANTS": f"{__name__}.member_tenants",
+    }
+    backends = [
+        "domainkit.contrib.auth.backends.ModelBackend",
+        "domainkit.contrib.auth.backends.MembershipBackend",
+    ]
+    with override_settings(MIDDLEWARE=middleware, TENANCY=tenancy):
+        client = api(**ON, BACKENDS=backends)
+        root = staff("root", is_superuser=True)
+        clerk = staff("clerk", "auth.change_user")
+        ann = create_user("ann")
+        clerk_id = client.get("/auth/me", headers=clerk).json()["id"]
+        as_ann = bearer(impersonate(client, ann, clerk).json()["access_token"])
+        in_a = {**as_ann, SERVED: "a"}
+        before = client.get("/auth/me", headers=in_a)
+        client.put(
+            f"/admin/auth/users/{clerk_id}/permissions",
+            json={"permissions": []},
+            headers=root,
+        )
+        after = [client.get("/auth/me", headers=each) for each in (in_a, as_ann)]
+
+    assert before.json()["username"] == "ann"
+    assert [each.status_code for each in after] == [401, 401]
 
 
 def test_an_impersonation_cannot_impersonate(api: Api) -> None:

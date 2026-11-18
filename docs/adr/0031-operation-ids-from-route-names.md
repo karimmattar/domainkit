@@ -1,6 +1,6 @@
 # 0031. Operation ids from route names, for new projects
 
-- Status: Accepted
+- Status: Accepted; amended by [0192](0192-start-a-contrib-routers-route-names-with-its-app.md)
 - Date: 2026-10-19
 
 ## Context

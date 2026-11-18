@@ -411,7 +411,13 @@ async def test_failures_retry_then_dead_letter(
     assert row["finished_at"] is not None
     dead = [r for r in caplog.records if r.levelname == "ERROR"]
     assert [(r.getMessage(), bool(r.exc_info)) for r in dead] == [
-        ("Dead-lettered task tests.always_fails after 3 attempts", True)
+        (
+            (
+                f"Dead-lettered task tests.always_fails (message {row['id']}) "
+                "after 3 attempts"
+            ),
+            True,
+        )
     ]
     flush_reports()  # Reporters run on their own thread.
     assert reported == [
@@ -506,7 +512,8 @@ async def test_retries_wait_for_their_backoff(
     assert available_at <= datetime.now(UTC) + timedelta(seconds=60)
     (record,) = [r for r in caplog.records if r.exc_info]
     assert record.getMessage() == (
-        "task tests.always_fails failed (attempt 1 of 3); retrying in 60.0s"
+        f"task tests.always_fails (message {row['id']}) failed (attempt 1 of 3); "
+        "retrying in 60.0s"
     )
 
 
@@ -2328,8 +2335,8 @@ async def test_a_message_the_outbox_cannot_take_back_waits_for_its_lock(
     assert row["lock_id"] is not None
     target = "domainkit_tests.test_messaging.wait_at_gate"
     logged = (
-        f"Could not give back task {target} after stopping it; it runs again "
-        "once its lock expires"
+        f"Could not give back task {target} (message {row['id']}) after stopping "
+        "it; it runs again once its lock expires"
     )
     assert caplog.messages == [logged]
     cause = caplog.records[0].exc_info
@@ -2646,8 +2653,8 @@ async def test_unrecorded_outcomes_run_again_later(
     assert len(ran) == 1
     assert caplog.messages == [
         (
-            f"Could not record the outcome of task {claimed.target}; it runs "
-            "again once its lock expires"
+            f"Could not record the outcome of task {claimed.target} (message "
+            f"{claimed.id}); it runs again once its lock expires"
         )
     ]
     assert caplog.records[0].exc_info

@@ -668,7 +668,9 @@ AUDIT = {"HISTORY_FIELDS": ["account_id", "entry_id", "request_id"]}
 
 Staff read histories over HTTP, with `audit.view_history` (a permission
 that `migrate` creates for the trail's `AuditEntry` model) and
-`is_staff`, or as superusers. Mount the router next to the admin API:
+`is_staff`, or as superusers. The permission counts as they hold it
+everywhere: a member's role in the tenant served does not
+([rows of no tenant](../tenancy.md#rows-of-no-tenant)). Mount the router next to the admin API:
 
 ```python
 from domainkit.contrib.audit.api import router as audit_router

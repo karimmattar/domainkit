@@ -282,6 +282,14 @@ unique. `check` lists clashes (`openapi.E001`), and staging and
 production refuse to start with any. A route with several methods has one
 id, as FastAPI makes it (and warns). See ADR 0031.
 
+The routes of the contrib apps that serve a project's records start
+with their app's name, so a resource of the project's own named as
+theirs clashes with none: `accounting_list_accounts`,
+`approvals_approve_request`, `limits_set_limit`,
+`webhooks_list_subscriptions`, `flags_list_settings`, the auth admin's
+`auth_admin_list_users`, and the audit trail's `audit_read_history`
+(since 2.9, ADR 0192).
+
 ### Breaking changes: `openapi --diff`
 
 `python manage.py openapi` prints the schema, and

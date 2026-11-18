@@ -195,6 +195,7 @@ OUTBOXES: Final = (
 """Where the memory backends keep what they sent: (module, list)."""
 RESETS: Final = (
     ("domainkit.contrib.auth.principals", "invalidate_all"),
+    ("domainkit.http.client", "reset_circuits"),
     ("domainkit.ledger.handler", "ledgers.reset"),
     ("domainkit.storage.handler", "storages.reset"),
 )

@@ -58,18 +58,21 @@ from domainkit.ddd.query import (
     Selection,
     Sum,
     Within,
+    position_of,
 )
 from domainkit.ddd.repository import default_ordering
 from domainkit.http.errors import install_exception_handlers
 from domainkit.http.filters import Filter, FilterSet
 from domainkit.money import Money
 from domainkit.testing import AsyncTestClient, assert_num_queries
+from domainkit.testing.queries import CapturedQueries
 from domainkit_tests.conftest import POSTGRES_VARIABLE
 from domainkit_tests.gadgets import (
     MADE,
     Color,
     Gadget,
     GadgetMade,
+    GadgetRepository,
     GadgetsUnitOfWork,
     InMemoryGadgets,
     Label,
@@ -832,6 +835,77 @@ async def test_explain_gives_the_plan_with_values_bound(tables: None) -> None:
             assert "gadgets" in plan.lower()
             with pytest.raises(ValueError, match="PostgreSQL's"):
                 await uow.gadgets.explain(query, analyze=True)
+
+
+@pytest.mark.parametrize(
+    ("ordering", "start"),
+    [
+        (("name",), ("name>?", "(name)::text >= ")),
+        (("-made_at",), ("made_at<?", "made_at <= ")),
+    ],
+)
+async def test_a_page_after_a_position_reads_an_index_from_there(
+    tables: None, ordering: tuple[str], start: tuple[str, str]
+) -> None:
+    """The keyset criteria bound the first field, so the index starts there.
+
+    Without the bound, SQLite read every row and sorted them, and PostgreSQL
+    read the index from its first row (ADR 0185).
+    """
+    await store(*dataset())
+    async with GadgetsUnitOfWork() as uow:
+        connection = await uow.gadgets.session.connection()
+        await connection.exec_driver_sql(
+            "CREATE INDEX ix_test_keyset ON framework_test_gadgets (name, id)"
+            if ordering == ("name",)
+            else "CREATE INDEX ix_test_keyset ON framework_test_gadgets (made_at)"
+        )
+        if ON_POSTGRES:  # Five rows: the plan a large table gets.
+            await connection.exec_driver_sql("SET LOCAL enable_seqscan = off")
+        (middle,) = await uow.gadgets.filter(
+            Selection(ordering=[*ordering, "id"], offset=2, limit=1)
+        )
+        total = (Ordering.parse(ordering[0]), Ordering("id"))
+        after = position_of(middle, total)
+        plan = await uow.gadgets.explain(
+            Selection(ordering=total, after=after, limit=2)
+        )
+    if ON_POSTGRES:
+        assert f"Index Cond: ({start[1]}" in plan
+    else:
+        assert f"USING INDEX ix_test_keyset ({start[0]})" in plan
+        assert "MULTI-INDEX OR" not in plan
+
+
+async def test_a_count_stops_where_it_is_told(tables: None) -> None:
+    """``count(at_most=n)``: never more than ``n``, and SQL reads no further.
+
+    The matches are counted in a subquery with ``LIMIT n``, so a large
+    table is read only so far (A28-PERF-08); in memory, alike.
+    """
+    items = dataset()
+    await store(*items)
+    fake = InMemoryGadgets(items)
+    cases = [(None, 3, 3), (None, 9, 5), (F("stock") >= 0, 9, 3), (None, 0, 0)]
+    async with GadgetsUnitOfWork() as uow:
+        for criteria, at_most, expected in cases:
+            with CapturedQueries() as queries:
+                assert await uow.gadgets.count(criteria, at_most=at_most) == expected
+            assert "LIMIT" in queries.statements[0]
+            assert await fake.count(criteria, at_most=at_most) == expected
+        with pytest.raises(ValueError, match="0 or more, not -1"):
+            await uow.gadgets.count(at_most=-1)
+        doubled = Doubled(uow.gadgets.session)  # Counts its own way: asked so.
+        assert await doubled.count(at_most=7) == 7
+        assert await doubled.count(at_most=20) == 10
+
+
+class Doubled(GadgetRepository):
+    """A repository that counts in a way of its own."""
+
+    async def _count(self, criteria: Criteria | None) -> int:
+        """Twice the matches."""
+        return 2 * await super()._count(criteria)
 
 
 async def test_get_or_create_reads_or_stores_one(tables: None) -> None:

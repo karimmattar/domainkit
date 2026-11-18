@@ -13,7 +13,10 @@ periods, and a period's reports); creating, ``add_<model>``. The other
 actions have permissions of their own: ``close_account``,
 ``reconcile_account`` (importing statements and reconciling; reading the
 breaks needs ``view_account``), ``reverse_entry``, ``capture_hold``,
-``release_hold``, and ``close_period``.
+``release_hold``, and ``close_period``. The ledger belongs to no tenant:
+each permission counts only as the user holds it everywhere, never
+through a member's role in the tenant served (``everywhere=True``, ADR
+0183).
 
 Refusals answer as every domain error does: ``404`` for what is not
 there, ``409`` for a reference reused, ``422`` for an entry the books
@@ -95,14 +98,23 @@ __all__ = [
 
 PAGES: Final = Pagination(default_limit=50, max_limit=200)
 TAGS: Final = ["accounting"]
+NAMES: Final = "accounting_"
+"""What every route's name starts with, and so its operation id: a project's
+resource of the same name clashes with none of them (ADR 0192)."""
 MAX_STATEMENT_BYTES: Final = 10 * 1024 * 1024
 """The largest statement ``POST /accounts/{id}/statements`` takes."""
 Source = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9_.:-]{0,63}$")]
 Reference = Annotated[str, Field(min_length=1, max_length=128)]
 Text = Annotated[str, Field(max_length=MAX_TEXT)]
-VIEW_PERIODS: Final = Depends(Require(HasModelPermission("view", Period)))
-VIEW_ACCOUNTS: Final = Depends(Require(HasModelPermission("view", Account)))
-RECONCILE: Final = Depends(Require(HasModelPermission("reconcile", Account)))
+VIEW_PERIODS: Final = Depends(
+    Require(HasModelPermission("view", Period, everywhere=True))
+)
+VIEW_ACCOUNTS: Final = Depends(
+    Require(HasModelPermission("view", Account, everywhere=True))
+)
+RECONCILE: Final = Depends(
+    Require(HasModelPermission("reconcile", Account, everywhere=True))
+)
 """The rules of the routes that are not a resource's own: its model's permissions."""
 
 
@@ -256,8 +268,9 @@ accounts = ResourceRouter(
     repository=lambda uow: uow.accounts,
     filters=AccountFilters,
     pagination=PAGES,
-    rule=ModelActions(Account),
+    rule=ModelActions(Account, everywhere=True),
     tags=TAGS,
+    name_prefix=NAMES,
 )
 """The chart of accounts: list, read, open, close, and reconcile."""
 accounts.command_route(OpenAccount, service=open_account, body=AccountIn)
@@ -274,8 +287,9 @@ entries = ResourceRouter(
     repository=lambda uow: uow.entries,
     filters=EntryFilters,
     pagination=PAGES,
-    rule=ModelActions(Entry),
+    rule=ModelActions(Entry, everywhere=True),
     tags=TAGS,
+    name_prefix=NAMES,
 )
 """Journal entries: list, read, post, and reverse; never change or delete."""
 entries.command_route(PostEntry, service=post_from_body, body=EntryIn)
@@ -297,8 +311,9 @@ holds = ResourceRouter(
     repository=lambda uow: uow.holds,
     filters=HoldFilters,
     pagination=PAGES,
-    rule=ModelActions(Hold),
+    rule=ModelActions(Hold, everywhere=True),
     tags=TAGS,
+    name_prefix=NAMES,
 )
 """Holds: list, read, place, capture, and release."""
 holds.command_route(PlaceHold, service=place_from_body, body=HoldIn)
@@ -322,8 +337,9 @@ periods = ResourceRouter(
     repository=lambda uow: uow.periods,
     filters=PeriodFilters,
     pagination=PAGES,
-    rule=ModelActions(Period),
+    rule=ModelActions(Period, everywhere=True),
     tags=TAGS,
+    name_prefix=NAMES,
 )
 """Accounting periods: list, read, open, close, and their reports."""
 periods.command_route(OpenPeriod, service=open_period, body=PeriodIn)
