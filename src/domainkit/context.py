@@ -132,6 +132,20 @@ def current_request() -> RequestContext | None:
     return _current.get()
 
 
+def caller_key(actor: str, impersonating: str | None = None) -> str:
+    """Whom a request of ``actor``'s keeps what it is answered for (since 2.9).
+
+    ``actor`` itself, unless the actor acts as the user ``impersonating``
+    (staff impersonating one): then ``<staff id>:as:<user id>``, apart
+    from the staff member, from the user, and from each other user the
+    staff member acts as. Cached pages (``vary_on_user``) and idempotency
+    keys are kept by it. The trail names the actor, and what counts a
+    caller's use (rate limits, throttles, live connections, outbound
+    lookups) counts the actor: one person, one budget.
+    """
+    return actor if impersonating is None else f"{actor}:as:{impersonating}"
+
+
 def current_actor() -> Actor | None:
     """Who acts in the request or job being served, as events name them.
 

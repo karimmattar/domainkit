@@ -807,6 +807,13 @@ What the token may do:
   and decided in one's own name only."). Otherwise one person could make
   a request and decide it, under two names.
 - **It is never refreshed.** Logging out with it ends it at once.
+- **What it is answered is kept apart.** A page cached per user
+  (`cache_page(vary_on_user=True)`) and a response kept for an
+  `Idempotency-Key` are kept for the staff member acting as that user,
+  apart from the staff member's own, the user's, and those of each other
+  user the staff member acts as (since 2.9). A kept response is about
+  the user too: erasing them drops it. Rate limits, throttles, and live
+  connections count the staff member, whomever they act as.
 
 `impersonated(request)`, in `domainkit.contrib.auth.integration`, tells a
 route of yours whether staff act as the user, and `request.auth.impersonator`

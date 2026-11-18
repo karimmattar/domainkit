@@ -52,8 +52,9 @@ The route is like any FastAPI WebSocket route. What domainkit adds is in
 gives every connection these limits:
 
 - **Caps.** A process holds at most `LIVE_MAX_CONNECTIONS` live
-  connections, and a caller (a user, or an address for anonymous callers)
-  at most `LIVE_MAX_CONNECTIONS_PER_CALLER`. One more is refused at once,
+  connections, and a caller (a user, or an address for anonymous callers;
+  staff acting as a user count as themselves) at most
+  `LIVE_MAX_CONNECTIONS_PER_CALLER`. One more is refused at once,
   with 503 and `Retry-After`.
 - **Limited sending.** At most `LIVE_SEND_QUEUE` messages wait for a
   client. A client that takes longer than `LIVE_SEND_TIMEOUT` seconds to
