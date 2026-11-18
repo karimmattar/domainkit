@@ -663,6 +663,28 @@ def test_binds_is_a_function_that_reads_what_json_holds_and_never_commits() -> N
     assert ActionRecordChanged().status_code == 409
 
 
+@pytest.mark.parametrize(
+    "subject",
+    ["bad", "notes.note:a b", f"notes.note:{'1' * 200}", None],
+    ids=["no-type", "a-space", "too-long", "not-text"],
+)
+def test_a_subject_is_a_type_and_an_id(subject: object) -> None:
+    """``subject(...)`` answers ``"<type>:<id>"``, short and plain, or is refused.
+
+    The subject is stored, shown, and audited with the act (A28-TEST-02).
+    """
+    action = Action(
+        "notes.publish",
+        command=Note,
+        subject=lambda command: subject,
+        show=lambda command: Shown("Publish a note"),
+    )
+
+    assert noting().subject_of(Note(note_id=NOTE)) == f"notes.note:{NOTE}"
+    with pytest.raises(ImproperlyConfigured, match=r"must return '<type>:<id>'"):
+        action.subject_of(Note(note_id=NOTE))
+
+
 # The table, from the release before ---------------------------------------------
 
 

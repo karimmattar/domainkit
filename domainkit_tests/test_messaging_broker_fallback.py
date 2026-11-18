@@ -97,6 +97,40 @@ async def test_a_relay_runs_the_outbox_while_the_broker_is_away(
     )
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [ConnectionError("the outbox is away"), asyncio.CancelledError()],
+    ids=["error", "cancelled"],
+)
+async def test_a_claim_that_fails_gives_its_slots_back(
+    broker_tables: MemoryBroker,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: BaseException,
+) -> None:
+    """While the broker is away, a claim that raises keeps none of the budget.
+
+    Its slots are taken while it claims, and given back when it fails or
+    is cancelled: kept, each failure would leave fewer, until the worker
+    starved (A28-TEST-02).
+    """
+    config = quick()
+    worker = Worker(config)
+    runner = BrokerWorkers([worker], ["default"], config)
+    taken: list[int] = []
+
+    async def claim(slots: int) -> list[Any]:
+        taken.append(worker.budget.used)
+        raise failure
+
+    monkeypatch.setattr(worker, "_claim", claim)
+    async with asyncio.TaskGroup() as group:
+        with pytest.raises(type(failure)):
+            await runner._run_due(worker, group, set(), asyncio.Event())
+
+    assert taken == [min(config.BATCH_SIZE, config.CONCURRENCY)]
+    assert worker.budget.used == 0
+
+
 async def test_the_relay_publishes_again_once_the_broker_answers(
     broker_tables: MemoryBroker,
     monkeypatch: pytest.MonkeyPatch,

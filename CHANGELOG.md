@@ -17,6 +17,14 @@ and a status.
   that moves a fixed step each time it is read. A slow runner failed
   them, and a limit firing in another's place passed them (audit
   A28-TEST-01).
+- Refusals and destructive paths that no test ran have tests: an
+  impersonation ends when its staff member loses the staff flag, or its
+  user is gone; an approved command that names someone other than its
+  maker fails as it is run; an act asked under a JSON Web Token is bound
+  to that login; a malformed act subject is refused; a tenant's schema
+  is downgraded alone, and a tenant database out of reach is named; a
+  failed claim gives the messaging worker's slots back (audit
+  A28-TEST-02).
 
 ## [2.8.0] - 2026-11-18
 
