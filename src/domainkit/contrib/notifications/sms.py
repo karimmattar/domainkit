@@ -99,11 +99,7 @@ class ProviderSmsBackend(SmsBackend):
             if isinstance(options, self.Options)
             else self.Options.model_validate(options)
         )
-        from domainkit.http.client import HttpClient
-
-        self.client: HttpClient = HttpClient(
-            timeout=self.options.TIMEOUT, propagate=False
-        )
+        self.client: HttpClient = shared_client(self.options.TIMEOUT)
 
     async def send_messages(self, messages: Sequence[SmsMessage]) -> int:
         """Send each message; return how many were sent.
