@@ -512,7 +512,12 @@ async def push_invoice(invoice_id: UUID) -> None:
   it twice. A run's timeout is its deadline (`domainkit.deadlines`). On
   PostgreSQL its transactions lower `statement_timeout` to the time left,
   and its calls through `domainkit.http.client` are limited by it, as in
-  a request.
+  a request. What follows each of its commits (the in-process handlers
+  and the domains' after-commit hooks, up to `EVENT_HANDLER_TIMEOUT` each)
+  does not count against it, since 2.9, so the timeout no longer bounds a
+  run's whole time. A commit renews the claim; keep `VISIBILITY_TIMEOUT`
+  above what follows a commit too, or another worker may claim a run
+  still in its handlers, and run it again.
 - **Priorities** order the due messages of a queue: higher first, then
   the oldest. They do not reorder queues; give urgent work a queue of its
   own. On RabbitMQ, each message also carries its priority, and the
@@ -1034,7 +1039,7 @@ other settings.
 | `RETRY_BASE_SECONDS` | `2.0` | The first retry's delay; it doubles per attempt (at most 365 days). |
 | `RETRY_MAX_SECONDS` | `3600.0` | The longest retry delay (at most 365 days). |
 | `TASK_TIMEOUT` | `240.0` | Seconds a message may run; longer counts as a failure (at most a day). |
-| `VISIBILITY_TIMEOUT` | `300.0` | Seconds a claim lasts; must be more than `TASK_TIMEOUT` (at most 2 days). A message whose worker died runs again after it: with auth's codes, keep it under half of `AUTH.CODE_TTL`, or a code cut short arrives expired (`auth.W009` where deployed). |
+| `VISIBILITY_TIMEOUT` | `300.0` | Seconds a claim lasts; must be more than `TASK_TIMEOUT` (at most 2 days), and, since 2.9, more than what follows a commit of a task: its in-process handlers and the domains' after-commit hooks, up to `EVENT_HANDLER_TIMEOUT` each. A message whose worker died runs again after it: with auth's codes, keep it under half of `AUTH.CODE_TTL`, or a code cut short arrives expired (`auth.W009` where deployed). |
 | `POLL_INTERVAL` | `1.0` | Seconds an idle worker waits before looking again (at most an hour). |
 | `POLL_INTERVAL_IDLE` | `None` | While commits wake the worker (`NOTIFY`, on PostgreSQL), or publish themselves to the broker (`PUBLISH_ON_COMMIT`, for the relay): the longest it waits between polls, from `POLL_INTERVAL` to an hour. Each poll that finds nothing doubles the wait up to this; work or a commit starts again from `POLL_INTERVAL`. A message that no commit announces (a retry, a delay, an expired lock) can wait this long. `None`: every wait is `POLL_INTERVAL`. |
 | `BATCH_SIZE` | `50` | The most messages claimed at once (1 to 10,000). |

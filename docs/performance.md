@@ -104,13 +104,13 @@ Of the other columns:
 | `template-json` | The template's stack, JSON access log: `GET /hello` | 666 (2,158) | 0/0/0/0 | 809 | 207 |
 | `me` | Template stack, opaque token: `GET /me` | 686 (5,892) | 0/0/0/0 | 838 | 226 |
 | `read` | Template stack, token, `ModelPermissions`, read through a unit of work: `GET /items/{id}` | 1,660 (7,359) | 1/1/1/0 | 838 | 1,484 |
-| `write` | Template stack, token, `ModelPermissions`, write through a unit of work: `POST /items` | 1,997 (7,648) | 1/1/1/0 | 838 | 1,725 |
+| `write` | Template stack, token, `ModelPermissions`, write through a unit of work: `POST /items` | 2,049 (7,648) | 1/1/1/0 | 838 | 1,725 |
 | `resource-list` | Template stack, token, a `ResourceRouter` page of 20 items with a scope and `ModelActions`: `GET /resources/items`, measured before any rung writes | 2,684 | 1/1/1/0 | 838 | 2,167 |
 | `resource-read` | Template stack, token, a `ResourceRouter` read with a scope and `ModelActions`: `GET /resources/items/{id}` | 1,920 | 1/1/1/0 | 838 | 1,890 |
-| `resource-command` | Template stack, token, a `ResourceRouter` command on one item, with a scope: `POST /resources/items/{id}/rename` | 2,659 | 1/1/1/0 | 838 | 2,500 |
-| `keyed-write` | The write with an `Idempotency-Key` (`IdempotencyMiddleware` last): `POST /items` | 3,394 (10,977) | 4/3/3/0 | 839 | 3,548 |
-| `money-write` | Template stack, token, a `Money` field written through a unit of work: `POST /wallets` | 2,126 | 1/1/1/0 | 907 | 1,777 |
-| `posting` | Template stack, token, `post_entry` of two lines, the credited account's holder under a daily limit (`contrib.limits`): `POST /postings` | 7,976 | 14/1/1/0 | 907 | 7,216 |
+| `resource-command` | Template stack, token, a `ResourceRouter` command on one item, with a scope: `POST /resources/items/{id}/rename` | 2,720 | 1/1/1/0 | 838 | 2,500 |
+| `keyed-write` | The write with an `Idempotency-Key` (`IdempotencyMiddleware` last): `POST /items` | 3,450 (10,977) | 4/3/3/0 | 839 | 3,548 |
+| `money-write` | Template stack, token, a `Money` field written through a unit of work: `POST /wallets` | 2,176 | 1/1/1/0 | 907 | 1,777 |
+| `posting` | Template stack, token, `post_entry` of two lines, the credited account's holder under a daily limit (`contrib.limits`): `POST /postings` | 8,059 | 14/1/1/0 | 907 | 7,216 |
 | `encrypted-read` | Template stack, token, a read of a field `Encrypted()` under the data key: `GET /cards/{id}` | 1,703 | 1/1/1/0 | 907 | 1,584 |
 | `step-up` | Template stack, a token that stepped up, a route behind `StepUp(max_age=...)`: `GET /stepped` | 1,525 | 1/1/1/0 | 907 | 1,348 |
 | `throttled` | Template stack, token, refused by `RATE_LIMIT` (429): `GET /me`; its message translated in one lookup since PERF-24 | 505 (4,401) | 0/0/0/0 | 838 | 188 |

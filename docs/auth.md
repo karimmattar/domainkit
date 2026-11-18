@@ -119,7 +119,7 @@ print(config.TOKEN_TTL, config.JWT.ACCESS_TOKEN_TTL)
 | `CREDENTIAL_CHANGE_DEVICE_LOGINS` | `"end"` | What the user's password change (`/password`), reset (`/password-reset/code`), or turning the second factor on (`/mfa/totp/confirm`) does to the logins of their bound devices: `"end"` ends them with the other logins, `"keep"` keeps them, `"ask"` does as the request's `keep_device_logins` says (true by default). Every other login ends in each case ([Credential changes and the phone](auth/logging-in.md#credential-changes-and-the-phone)). |
 | `BACKENDS` | `["domainkit.contrib.auth.backends.ModelBackend"]` | Authentication and permission backends, asked in order; at least one. |
 | `AUTHENTICATION_CLASSES` | `["domainkit.contrib.auth.authentication.TokenAuthentication"]` | How requests prove who sent them, tried in order (at least one); the first issues login tokens. |
-| `AUTHENTICATION_EXEMPT_PATHS` | `["/health", "/ready", "/metrics"]` | Paths served without looking at credentials. |
+| `AUTHENTICATION_EXEMPT_PATHS` | `()` | Paths served without looking at credentials, besides `PROBE_PATHS` (the probes and the metrics scrape). Until 2.9 its default named the probes. |
 | `TOKEN_TTL` | 14 days | How long a login's opaque token works; `None`: until revoked. |
 | `TOKEN_PREFIX` | `"dkt_"` | Starts every opaque token. Changing it makes existing tokens invalid. |
 | `MAX_LOGINS` | `100` | Logins a user holds at once: login tokens, browser sessions, and JSON Web Token logins (1 to 10,000). A new one past it ends the oldest; personal tokens neither count nor end ([Sessions](auth/logging-in.md#sessions)). |

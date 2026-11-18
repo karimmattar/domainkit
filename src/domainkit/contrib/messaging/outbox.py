@@ -10,6 +10,7 @@ A message with an ordering key takes its key's turn first, and is written
 ``held`` when an earlier message of the key still waits (``ordering``).
 """
 
+import asyncio
 import logging
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -20,13 +21,14 @@ from sqlalchemy import BindParameter, Insert, func, insert, literal, select
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
-from domainkit import clock
+from domainkit import clock, deadlines
 from domainkit.apps import registry
+from domainkit.conf import settings
 from domainkit.context import current_request
 from domainkit.db import UTCDateTime, connections, dbclock
 from domainkit.db.hooks import on_stage_transaction, on_transaction_committed
 from domainkit.db.routing import router
-from domainkit.ddd import DeferredTask, DomainEvent, EventBus
+from domainkit.ddd import DeferredTask, DomainEvent, EventBus, HandlerTimedOut
 from domainkit.ddd.tenancy import current_tenant
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.reporting import report_error
@@ -340,7 +342,9 @@ async def enqueue(
     they join a unit of work's (``on_stage_transaction`` and
     ``on_transaction_committed``, ``domainkit.db.hooks``): inside a request with an
     ``Idempotency-Key``, the queued task holds the key as a commit does,
-    so a retry does not queue it again.
+    so a retry does not queue it again. What follows the commit runs free
+    of the deadline, as a unit of work's does (``deadlines.after_commit``):
+    each ``on_transaction_committed`` hook within ``EVENT_HANDLER_TIMEOUT``.
     """
     config = registry.settings(MessagingSettings)
     task = DeferredTask(function, kwargs, delay, dedupe_key, ordering_key)
@@ -349,13 +353,23 @@ async def enqueue(
         await write(connection, connection.dialect.name, rows)
         for staged in on_stage_transaction:
             await staged.call(connection, config.DATABASE)
-    for hook in on_transaction_committed:
-        try:
-            await hook.call(config.DATABASE)
-        except Exception as exc:  # The task is queued: report, carry on.
-            logger.exception("After-commit work of %r failed", hook.domain)
-            report_error(exc, domain=hook.domain)
-    await notify_committed(config, config.DATABASE, rows)
+    seconds = settings.EVENT_HANDLER_TIMEOUT
+    with deadlines.after_commit():
+        for hook in on_transaction_committed:
+            try:
+                async with asyncio.timeout(seconds) as limit:
+                    await hook.call(config.DATABASE)
+            except Exception as exc:  # The task is queued: report, carry on.
+                if not limit.expired():
+                    logger.exception("After-commit work of %r failed", hook.domain)
+                    report_error(exc, domain=hook.domain)
+                    continue
+                cut = HandlerTimedOut(
+                    f"After-commit work of {hook.domain!r} took more than {seconds:g}s"
+                )
+                logger.error("%s; cut off", cut)
+                report_error(cut, domain=hook.domain)
+        await notify_committed(config, config.DATABASE, rows)
 
 
 async def notify_committed(

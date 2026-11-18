@@ -11,6 +11,7 @@ from fastapi.telemetry import TelemetryConfig
 from starlette.types import Message, Receive, Scope, Send
 
 from domainkit import setup
+from domainkit.apps import registry
 from domainkit.apps.hooks import on_check_application
 from domainkit.checks import CheckFailed, CheckMessage, describe
 from domainkit.conf import settings
@@ -73,6 +74,8 @@ BUILT_PROBLEMS: Final = "domainkit_problems"
 """``app.state`` key: the problems found when the application was built."""
 SERVER: Final = b"server"
 """The ``Server`` header's name, as ASGI carries it."""
+CONTRIB: Final = "domainkit.contrib."
+"""The packages of the optional apps, each a domain to install."""
 
 
 class Application(FastAPI):
@@ -245,13 +248,15 @@ def application_problems(app: FastAPI) -> list[str]:
     Every route must declare who may call it (``REQUIRE_ROUTE_RULES``),
     whatever authenticates requests; a route that takes its tenant from
     its path must name a parameter it has, before its rules
-    (``tenancy.E001``, ``tenancy.E002``). Domains report through
+    (``tenancy.E001``, ``tenancy.E002``); an optional app's middleware
+    needs the app (``apps.E003``). Domains report through
     ``domainkit.apps.hooks.on_check_application``.
     """
     problems: list[str] = [
         CheckMessage("openapi.E001", problem)
         for problem in duplicate_operation_ids(app)
     ]
+    problems.extend(middleware_without_its_app())
     if settings.REQUIRE_ROUTE_RULES:
         problems.extend(
             CheckMessage("security.E101", problem)
@@ -261,6 +266,29 @@ def application_problems(app: FastAPI) -> list[str]:
     problems.extend(
         problem for hook in on_check_application for problem in hook.call(app)
     )
+    return problems
+
+
+def middleware_without_its_app() -> list[str]:
+    """``apps.E003``: each ``MIDDLEWARE`` entry of an optional app not installed.
+
+    Its settings, tables, and startup are the app's: without the app the
+    middleware fails on its first call, and every request with it.
+    """
+    problems: list[str] = []
+    for path in settings.MIDDLEWARE:
+        if not path.startswith(CONTRIB):
+            continue
+        app = ".".join(path.split(".")[:3])
+        if not registry.is_installed(app):
+            problems.append(
+                CheckMessage(
+                    "apps.E003",
+                    f"MIDDLEWARE lists {path!r}, but {app!r} is not in "
+                    f"INSTALLED_DOMAINS: every request would fail. Install "
+                    f"{app!r}, or remove the middleware.",
+                )
+            )
     return problems
 
 

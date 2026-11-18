@@ -9,7 +9,7 @@ the command too.
 
 from argparse import ArgumentParser
 from collections.abc import Callable, Iterable
-from typing import Any
+from typing import Any, Final
 
 from fastapi import FastAPI
 
@@ -44,7 +44,8 @@ class Command(BaseCommand):
     help = (
         "Validate settings, installed domains, routes and their access rules, "
         "middleware, the dependency rules between domain layers, and the "
-        "migration history; warn about route handlers and dependencies that "
+        "migration history; warn about migrations a database does not have yet "
+        "(outside staging and production), route handlers and dependencies that "
         "run on the thread pool, and event handlers and tasks that would "
         "block the event loop, and about weak choices in staging and "
         "production, and say how HTTPS reaches the application there. With "
@@ -135,6 +136,9 @@ def _warnings(app: FastAPI) -> list[str]:
     warnings += _tagged("blocking.W001", sync_calls(app, _project_domains()))
     warnings += _tagged("blocking.W002", awaited_sync(_event_handlers()))
     warnings += _tagged("tenancy.W001", unsaid_throttles(app))
+    warnings += _tagged("probes.W001", _partial_probe_lists())
+    if not deployed:  # A deployment migrates as it rolls out, after its checks.
+        warnings += _tagged("migrations.W001", migrations.unapplied_warnings())
     warnings += shared_apps()
     return warnings
 
@@ -185,6 +189,38 @@ def https_statement() -> CheckMessage:
 def _is_info(message: str) -> bool:
     """Whether ``message`` is an info (``<label>.I001``), which never fails a check."""
     return isinstance(message, CheckMessage) and message.level is Level.INFO
+
+
+PROBE_LISTS: Final = (
+    "RATE_LIMIT_EXEMPT_PATHS",
+    "CONCURRENCY_EXEMPT_PATHS",
+    "ACCESS_LOG_QUIET_PATHS",
+)
+"""The lists of exact paths that add to ``PROBE_PATHS`` (ADR 0186)."""
+
+
+def _partial_probe_lists() -> list[str]:
+    """``probes.W001``: a list that names some of ``PROBE_PATHS``, not all.
+
+    Before 2.9 such a list left the others out on purpose, or kept the old
+    default (``/metrics`` was logged at INFO); since, ``PROBE_PATHS``
+    exempts them all, whatever it says.
+    """
+    probes = settings.PROBE_PATHS
+    found: list[str] = []
+    for name in PROBE_LISTS:
+        listed = set(getattr(settings, name))
+        named = [path for path in probes if path in listed]
+        left = [path for path in probes if path not in listed]
+        if named and left:
+            others = ", ".join(left)
+            found.append(
+                f"{name} names {', '.join(named)} of PROBE_PATHS, but not "
+                f"{others}: since 2.9, PROBE_PATHS exempts every probe it names "
+                f"from it too. To leave {others} out, take it out of PROBE_PATHS, "
+                "and add it to each list that should still exempt it."
+            )
+    return found
 
 
 def _tagged(check_id: str, messages: Iterable[str]) -> list[str]:
