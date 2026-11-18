@@ -214,7 +214,8 @@ returns the approved command being run here, if any, and
 `approved(action, command)` says whether `command` is it.
 
 `maker_rule` is asked again when the approved command runs, on the maker
-as a user, on a call of its own with no credentials (an `OfflineContext`,
+as a user, on a call of its own with no credentials (since 2.8.2; an
+`OfflineContext` since 2.9,
 [Rules asked outside a request](../auth/routes.md#rules-asked-outside-a-request)).
 Rules about the submitting request's scopes (`HasScope`, `IsUnscoped`,
 `AllowScoped`) are checked when the request is submitted over HTTP. At
@@ -1370,10 +1371,10 @@ users who may decide it now:
 - the members of its group;
 - for an approver rule, the superusers and staff the rule lets through,
   asked about the user alone, on a call of its own without credentials
-  (`OfflineContext`); a rule that raises leaves the user out, and is
-  logged, but a transient error (a timeout, a connection lost, an outgoing
-  call that may succeed later, a database busy or out of reach) is
-  raised;
+  (since 2.8.2; an `OfflineContext` since 2.9); a rule that raises leaves
+  the user out, and is logged, but a transient error (a timeout, a
+  connection lost, an outgoing call that may succeed later, a database
+  busy or out of reach) is raised;
 - never its maker, a party to its command, or someone who decided it
   already.
 

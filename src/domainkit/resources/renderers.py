@@ -10,7 +10,7 @@ apostrophe instead, as OWASP advises: text starting with ``=``, ``+``,
 ``-``, ``@``, a tab, or a carriage return, also behind white space,
 controls, and characters that show nothing (Unicode's format characters
 and other default ignorables: a directional mark, a soft hyphen; since
-2.9), and in their full-width and small forms (U+FF1D, U+FE62). Numbers
+2.8.1), and in their full-width and small forms (U+FF1D, U+FE62). Numbers
 stay numbers. NDJSON escapes the separators other than its newline that split
 lines (U+0085, U+2028, U+2029), so each document is one line.
 """

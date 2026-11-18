@@ -616,7 +616,7 @@ async def may_impersonate(staff_id: UUID, user_id: UUID) -> bool:
     The right to change users counts as the staff member holds it
     everywhere, whatever tenant the request is served as: users belong to
     no tenant, so a member's role in one keeps no impersonation going
-    (since 2.9).
+    (since 2.8.1).
     """
     # Here, not at the top: resources, users, and admin import this module.
     from domainkit.ddd import DomainError

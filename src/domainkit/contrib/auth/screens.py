@@ -113,7 +113,7 @@ SPACED: Final = (
     (re.compile(r"(?<=\w)\s+dot\s+(?=com(?![^\W\d_]))", re.IGNORECASE), "."),
 )
 """A name spaced out so that it is not a link and still reads as one (since
-2.9), in the text as typed, never in a cut of it: ``evil . com``, white
+2.8.1), in the text as typed, never in a cut of it: ``evil . com``, white
 space, new lines too, on both sides of the dot, but before a capital (a
 sentence: ``Rejected . No receipt``); and before ``com`` alone, ``evil
 .com``, ``evil. com`` (in lower or upper case) and ``evil dot com``. Other
@@ -129,7 +129,7 @@ DEFANGED: Final = (
 )
 """A name written so that it is not a link and still reads as one, and what
 each part stands for: ``example[.]com``, ``ann[at]example.com``, ``hxxp[:]//``;
-since 2.9, ``example<dot>com``, ``example (dot) com``, ``https : //``, white
+since 2.8.1, ``example<dot>com``, ``example (dot) com``, ``https : //``, white
 space and new lines around them, and ``example (.) com`` before ``com``
 alone (``a period (.) at the end`` is prose)."""
 SCHEME: Final = re.compile(
@@ -267,7 +267,7 @@ def holds_link(text: str) -> bool:
     be links (``example[.]com``, ``ann[at]example.com``, ``example (dot)
     com``) or spaced out (``example . com``, and before ``com``, ``example
     .com``, ``example. com`` and ``example dot com``: ``SPACED``; since
-    2.9) read as the link they spell. It holds one where it holds a scheme
+    2.8.1) read as the link they spell. It holds one where it holds a scheme
     (``https://``, ``tel:``, ``mailto:``), an at sign before a letter or a
     digit, four numbers joined by dots, a name ending in a top-level domain IANA
     lists (``evil.example.com``, ``www.anything``, the same with Cyrillic

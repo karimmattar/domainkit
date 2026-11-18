@@ -367,7 +367,7 @@ gets `304` and no body.
   with no actor bound, each user id) has entries of their own, and
   anonymous callers share theirs. Staff acting as a user
   ([impersonation](auth/routes.md#impersonation)) have entries apart for
-  each user they act as, apart from their own and the user's (since 2.9).
+  each user they act as, apart from their own and the user's (since 2.8.1).
   Credentials with neither an actor nor a user id are never cached either
   way.
 - **Browsers and proxies.** The framework answers `Cache-Control:

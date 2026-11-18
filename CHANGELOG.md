@@ -63,28 +63,6 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   neither, so a backend that overrides `object_grants` alone keeps every
   grant it adds (ADR 0185) (audit A28-PERF-05).
 
-- `per_tenant=False` on `live_events.stream`, `forward`, and
-  `subscribe`: a route that serves every tenant on purpose, such as a
-  back office's, hears every tenant's events, its rule alone deciding.
-  By default a subscription hears the tenant it is served as
-  ([Live committed events](docs/live.md#live-committed-events), ADR 0183)
-  (audit A28-SEC-01).
-
-- `everywhere=True` on `HasPermissions` (and `HasObjectPermissions`),
-  `HasModelPermission`, `ModelActions`, and approvals' `guard()`
-  (`Guard.everywhere`): only the permissions a user holds where no
-  tenant is served count, never a member's role, for routes and guarded
-  commands over rows every tenant shares. Unset, nothing changes
-  ([Rows of no tenant](docs/tenancy.md#rows-of-no-tenant), ADR 0183)
-  (audit A28-SEC-04).
-
-- `tenancy.I001`: with `TENANCY` set, `check` names the installed apps
-  whose rows every tenant shares, `domainkit.contrib.accounting` and
-  `domainkit.contrib.limits`. It is an info, which `check --deploy` lists
-  and never refuses
-  ([Rows of no tenant](docs/tenancy.md#rows-of-no-tenant), ADR 0183)
-  (audit A28-SEC-04).
-
 - `runworker --ready-file PATH`: the worker's readiness. Each round of
   `--heartbeat-interval` rewrites the file while `/ready`'s checks and
   the broker's hold, and removes it when one fails; it goes when the
@@ -764,93 +742,6 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 
 ### Security
 
-- Live events are scoped to the tenant they were committed in: an event
-  reaches only the connections served as that tenant, and one committed
-  as no tenant only the connections served as none. With `LIVE_FANOUT`,
-  the message between processes names the tenant too. Another tenant's
-  events no longer count against a connection's buffers. A project
-  without `TENANCY` sees no change
-  ([upgrading.md](docs/upgrading.md#28-to-29), ADR 0183) (audit
-  A28-SEC-01).
-
-- Approval requests are scoped to the tenant they were submitted in:
-  they are listed, read, approved, rejected, and cancelled where that
-  tenant is served alone, by the routes and from code, and the approved
-  command runs in that tenant, whichever tenant the message that runs it
-  names. Expiry, erasure, and decisions made inside `all_tenants()`
-  commit each request as its tenant alone, a maker's call spends a
-  request of the tenant it is served as, and a run checks the seal
-  before it serves the request's tenant. The requests table gains a
-  nullable `tenant_id`, which the seal covers where it is set: run
-  `makemigrations` and `migrate` before the new code serves. A request
-  stored before has no tenant, keeps its seal, and is read where no
-  tenant is served
-  ([Requests and tenants](docs/contrib/approvals.md#requests-and-tenants),
-  [upgrading.md](docs/upgrading.md#28-to-29), ADR 0183) (audit
-  A28-SEC-02).
-
-- The routes of `domainkit.contrib.limits` and
-  `domainkit.contrib.accounting`, and approvals' guards of postings,
-  captures, reversals, making superusers, and admin changes, count only
-  the permissions a user holds everywhere: a member's role in the tenant
-  served reaches none of their rows, nor reads those guards' requests
-  through `approvals.view_every_approvalrequest`
-  ([Rows of no tenant](docs/tenancy.md#rows-of-no-tenant),
-  [upgrading.md](docs/upgrading.md#28-to-29), ADR 0183) (audit
-  A28-SEC-04).
-
-- The staff APIs count a staff member's permissions as they hold them
-  everywhere: the admin API (users, groups, permissions), the staff APIs
-  of `domainkit.contrib.flags` and `domainkit.contrib.webhooks`, the
-  audit trail's history (`audit.view_history`), and the admin site's
-  models that are not `TenantOwned`. A role in the tenant served opens
-  none of them
-  ([Rows of no tenant](docs/tenancy.md#rows-of-no-tenant),
-  [upgrading.md](docs/upgrading.md#28-to-29), ADR 0183) (audit
-  A28-SEC-04).
-
-- Staff acting as a user (an impersonation) have pages cached per user
-  (`cache_page(vary_on_user=True)`) and responses kept for an
-  `Idempotency-Key` of their own for each user they act as, apart from
-  their own and the user's. A response so kept is about the user too:
-  `privacy erase` drops it, and the user's export lists it, withheld. The
-  trail still names the staff member, and rate limits, throttles, and
-  live connections still count them (audit A28-SEC-03).
-
-- The SAML ACS bounds a response before it checks its signature: 50,000
-  nodes, counted on its bytes, no DTD or entity, 32 levels, 32 namespace
-  declarations on the path to an element, each of a URI of 128 characters
-  at most, and 32 attributes on it, and 32 elements and 16 KiB in a
-  `SignedInfo`; it reads the XML as UTF-8. It parses each response in a
-  thread of its own, which ends with it, never on the event loop's
-  thread, and at most 4 at once on a loop;
-  a response that waits more than 5 seconds for one is refused. The
-  names lxml keeps for a thread go with it, and the loop serves other
-  requests meanwhile. What lxml or signxml raise of a response refuses
-  it (`saml_refused`) (audit A28-PERF-03).
-
-- `holds_link` reads a name spaced out or bracketed as the link it
-  spells, so `TYPED_LINKS = "refused"` refuses it: `example . com`
-  (but before a capital), `example (dot) com`, `example<dot>com`,
-  `https : //`, white space and new lines around them, and, before `com`,
-  `example .com`, `example. com`, `example (.) com` and `example dot
-  com`. It reads these in the text as typed, not in the cuts a screen
-  may show. Prose whose next word is a top-level domain (`vs. net`,
-  `Done. Info sent`, `Rejected . No receipt`) holds none. The docs list
-  what it still does not read (audit A28-SEC-05).
-
-- CSV exports guard a formula behind any character that shows nothing:
-  white space, a control, a format character (a directional mark, a soft
-  hyphen, the Arabic number sign), or another default ignorable code
-  point (a variation selector, a tag). Screens, Office documents' checks,
-  and CSV cells read one definition of what shows nothing
-  (audit A28-ARCH-13).
-
-- Each request of an impersonation checks the staff member's right to
-  change users as they hold it everywhere, whatever tenant the request is
-  served as: users belong to no tenant, so a member's role in one keeps no
-  impersonation going (audit A28-SEC-04).
-
 - A failed approval request keeps the seal it had when that seal did not
   hold: failing makes the seal again only if it held, as an erasure's
   pseudonym does. The failed record of a request changed around the
@@ -868,6 +759,17 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   ([diffsettings](docs/reference/commands.md#diffsettings-show-the-settings),
   [upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-10).
 
+## [2.8.2] - 2026-11-18
+
+2.8.2 is a security release of 2.8. A unit of work cut off by a
+cancellation gives its database connection back to the pool, with
+asyncpg and aiosqlite, however it was cancelled. Approvals asks each
+maker and approver rule on a request context of its own. No migration
+and no setting: read [upgrading.md](docs/upgrading.md#281-to-282) before
+you deploy.
+
+### Security
+
 - A unit of work cut off by a cancellation gives its database connection
   back to the pool as it closes, within `SETTLE_TIMEOUT` (2 seconds),
   with asyncpg and aiosqlite, however it was cancelled: once, by a
@@ -877,12 +779,128 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   its slot back at once; an asyncpg one closes in a task of its own,
   within the same 2 seconds
   ([Request deadlines](docs/runtime.md#request-deadlines),
-  [upgrading.md](docs/upgrading.md#28-to-29), ADR 0048) (audit
+  [upgrading.md](docs/upgrading.md#281-to-282), ADR 0048) (audit
   A28-SEC-06).
-- Approvals asks each maker and approver rule on a request context of
-  its own when an approved command runs and when its approvers are
-  found, so nothing a rule keeps on it reaches another call (audit
-  A28-SEC-07).
+- Approvals asks each maker and approver rule on a request context of its
+  own when an approved command runs, so nothing a rule keeps on it
+  reaches another call (audit A28-SEC-07).
+
+## [2.8.1] - 2026-11-18
+
+2.8.1 is a security release of 2.8. With `TENANCY`, live events and
+approval requests keep to the tenant they were made in; the staff APIs,
+the routes of the ledger and of limits, and approvals' guards of rows
+every tenant shares count only the permissions a user holds everywhere
+(ADR 0183). An impersonation keeps answers for each user it acts as, and
+checks the staff member's right to change users, held everywhere, on
+each request. The SAML ACS bounds a response before it checks its
+signature (ADR 0181). Typed links spelled out are read as links, and a
+CSV formula behind a character that shows nothing is guarded. With
+`domainkit.contrib.approvals` installed, one migration: read
+[upgrading.md](docs/upgrading.md#280-to-281) before you deploy.
+
+### Added
+
+- `per_tenant=False` on `live_events.stream`, `forward`, and
+  `subscribe`: a route that serves every tenant on purpose, such as a
+  back office's, hears every tenant's events, its rule alone deciding.
+  By default a subscription hears the tenant it is served as
+  ([Live committed events](docs/live.md#live-committed-events), ADR 0183)
+  (audit A28-SEC-01).
+- `everywhere=True` on `HasPermissions` (and `HasObjectPermissions`),
+  `HasModelPermission`, `ModelActions`, and approvals' `guard()`
+  (`Guard.everywhere`): only the permissions a user holds where no
+  tenant is served count, never a member's role, for routes and guarded
+  commands over rows every tenant shares. Unset, nothing changes
+  ([Rows of no tenant](docs/tenancy.md#rows-of-no-tenant), ADR 0183)
+  (audit A28-SEC-04).
+- `tenancy.I001`: with `TENANCY` set, `check` names the installed apps
+  whose rows every tenant shares, `domainkit.contrib.accounting` and
+  `domainkit.contrib.limits`. It is an info, which `check --deploy` lists
+  and never refuses
+  ([Rows of no tenant](docs/tenancy.md#rows-of-no-tenant), ADR 0183)
+  (audit A28-SEC-04).
+
+### Security
+
+- Live events are scoped to the tenant they were committed in: an event
+  reaches only the connections served as that tenant, and one committed
+  as no tenant only the connections served as none. With `LIVE_FANOUT`,
+  the message between processes names the tenant too. Another tenant's
+  events no longer count against a connection's buffers. A project
+  without `TENANCY` sees no change
+  ([upgrading.md](docs/upgrading.md#280-to-281), ADR 0183) (audit
+  A28-SEC-01).
+- Approval requests are scoped to the tenant they were submitted in:
+  they are listed, read, approved, rejected, and cancelled where that
+  tenant is served alone, by the routes and from code, and the approved
+  command runs in that tenant, whichever tenant the message that runs it
+  names. Expiry, erasure, and decisions made inside `all_tenants()`
+  commit each request as its tenant alone, a maker's call spends a
+  request of the tenant it is served as, and a run checks the seal
+  before it serves the request's tenant. The requests table gains a
+  nullable `tenant_id`, which the seal covers where it is set: run
+  `makemigrations` and `migrate` before the new code serves. A request
+  stored before has no tenant, keeps its seal, and is read where no
+  tenant is served
+  ([Requests and tenants](docs/contrib/approvals.md#requests-and-tenants),
+  [upgrading.md](docs/upgrading.md#280-to-281), ADR 0183) (audit
+  A28-SEC-02).
+- Staff acting as a user (an impersonation) have pages cached per user
+  (`cache_page(vary_on_user=True)`) and responses kept for an
+  `Idempotency-Key` of their own for each user they act as, apart from
+  their own and the user's. A response so kept is about the user too:
+  `privacy erase` drops it, and the user's export lists it, withheld. The
+  trail still names the staff member, and rate limits, throttles, and
+  live connections still count them (audit A28-SEC-03).
+- Each request of an impersonation checks the staff member's right to
+  change users as they hold it everywhere, whatever tenant the request is
+  served as: users belong to no tenant, so a member's role in one keeps no
+  impersonation going (audit A28-SEC-04).
+- The routes of `domainkit.contrib.limits` and
+  `domainkit.contrib.accounting`, and approvals' guards of postings,
+  captures, reversals, making superusers, and admin changes, count only
+  the permissions a user holds everywhere: a member's role in the tenant
+  served reaches none of their rows, nor reads those guards' requests
+  through `approvals.view_every_approvalrequest`
+  ([Rows of no tenant](docs/tenancy.md#rows-of-no-tenant),
+  [upgrading.md](docs/upgrading.md#280-to-281), ADR 0183) (audit
+  A28-SEC-04).
+- The staff APIs count a staff member's permissions as they hold them
+  everywhere: the admin API (users, groups, permissions), the staff APIs
+  of `domainkit.contrib.flags` and `domainkit.contrib.webhooks`, the
+  audit trail's history (`audit.view_history`), and the admin site's
+  models that are not `TenantOwned`. A role in the tenant served opens
+  none of them
+  ([Rows of no tenant](docs/tenancy.md#rows-of-no-tenant),
+  [upgrading.md](docs/upgrading.md#280-to-281), ADR 0183) (audit
+  A28-SEC-04).
+- `holds_link` reads a name spaced out or bracketed as the link it
+  spells, so `TYPED_LINKS = "refused"` refuses it: `example . com`
+  (but before a capital), `example (dot) com`, `example<dot>com`,
+  `https : //`, white space and new lines around them, and, before `com`,
+  `example .com`, `example. com`, `example (.) com` and `example dot
+  com`. It reads these in the text as typed, not in the cuts a screen
+  may show. Prose whose next word is a top-level domain (`vs. net`,
+  `Done. Info sent`, `Rejected . No receipt`) holds none. The docs list
+  what it still does not read (audit A28-SEC-05).
+- The SAML ACS bounds a response before it checks its signature: 50,000
+  nodes, counted on its bytes, no DTD or entity, 32 levels, 32 namespace
+  declarations on the path to an element, each of a URI of 128 characters
+  at most, and 32 attributes on it, and 32 elements and 16 KiB in a
+  `SignedInfo`; it reads the XML as UTF-8. It parses each response in a
+  thread of its own, which ends with it, never on the event loop's
+  thread, and at most 4 at once on a loop;
+  a response that waits more than 5 seconds for one is refused. The
+  names lxml keeps for a thread go with it, and the loop serves other
+  requests meanwhile. What lxml or signxml raise of a response refuses
+  it (`saml_refused`) (audit A28-PERF-03).
+- CSV exports guard a formula behind any character that shows nothing:
+  white space, a control, a format character (a directional mark, a soft
+  hyphen, the Arabic number sign), or another default ignorable code
+  point (a variation selector, a tag). Screens, Office documents' checks,
+  and CSV cells read one definition of what shows nothing
+  (audit A28-ARCH-13).
 
 ## [2.8.0] - 2026-11-18
 
@@ -9673,7 +9691,9 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.8.0...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.8.2...HEAD
+[2.8.2]: https://github.com/karimmattar/domainkit/compare/v2.8.1...v2.8.2
+[2.8.1]: https://github.com/karimmattar/domainkit/compare/v2.8.0...v2.8.1
 [2.8.0]: https://github.com/karimmattar/domainkit/compare/v2.7.0...v2.8.0
 [2.7.0]: https://github.com/karimmattar/domainkit/compare/v2.6.0...v2.7.0
 [2.6.0]: https://github.com/karimmattar/domainkit/compare/v2.5.0...v2.6.0

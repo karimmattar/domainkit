@@ -147,7 +147,7 @@ def current_request() -> RequestContext | None:
 
 
 def caller_key(actor: str, impersonating: str | None = None) -> str:
-    """Whom a request of ``actor``'s keeps what it is answered for (since 2.9).
+    """Whom a request of ``actor``'s keeps what it is answered for (since 2.8.1).
 
     ``actor`` itself, unless the actor acts as the user ``impersonating``
     (staff impersonating one): then ``<staff id>:as:<user id>``, apart

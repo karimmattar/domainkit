@@ -299,7 +299,7 @@ What the ACS believes:
 - **Encrypted assertions are not read.**
 
 Anyone may post to the ACS, so what it reads is bounded before the
-signature is checked (since 2.9):
+signature is checked (since 2.8.1):
 
 - At most 1,000,000 base64 characters, and 50,000 nodes, counted on the
   XML's bytes as a Word document's are ([The XML parsed](../documents.md#the-xml-parsed)):
