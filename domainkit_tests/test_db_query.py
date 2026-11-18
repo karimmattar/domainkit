@@ -20,6 +20,7 @@ from sqlalchemy import (
     create_engine,
     false,
     select,
+    update,
 )
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -984,6 +985,72 @@ async def test_pages_through_missing_values_cover_each_once_in_order(
                 break
             after = page.next_position
     assert (seen, counted) == (everything, reads)
+
+
+@postgres_only
+async def test_a_row_that_moves_between_the_parts_is_read_once(
+    tables: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The second part leaves out what the first read.
+
+    Each statement reads a snapshot of its own on PostgreSQL (``READ
+    COMMITTED``): a gadget read in the first part, whose stock another
+    request takes away before the second, would be read there again.
+    SQLite keeps one snapshot for the transaction, and the other request
+    waits for it.
+    """
+    items = [make_gadget(f"g{n}", stock=s) for n, s in enumerate([1, 2, None, None])]
+    await store(*items)
+    moved = items[1]
+    read = GadgetRepository._filter
+    calls: list[int] = []
+
+    async def racing(self: GadgetRepository, query: Selection) -> list[Gadget]:
+        found = await read(self, query)
+        calls.append(len(found))
+        if len(calls) == 1:  # Another request commits between the two parts.
+            async with connections.engine().begin() as other:
+                await other.execute(
+                    update(gadgets).where(gadgets.c.id == moved.id).values(stock=None)
+                )
+        return found
+
+    ordering = (Ordering("stock"), Ordering("id"))
+    async with GadgetsUnitOfWork(readonly=True) as uow:
+        everything = await uow.gadgets.filter(Selection(ordering=ordering))
+        after = position_of(everything[0], ordering)
+        monkeypatch.setattr(GadgetRepository, "_filter", racing)
+        found = await uow.gadgets.filter(
+            Selection(ordering=ordering, after=after, limit=9)
+        )
+    names = [each.name for each in found]
+    assert (names[0], sorted(names)) == ("g1", ["g1", "g2", "g3"])
+    assert calls == [1, 2]
+
+
+@pytest.mark.parametrize("fields", [("name",), ("name", "id")])
+async def test_values_through_missing_values_cover_each_once(
+    tables: None, fields: tuple[str, ...]
+) -> None:
+    """``values`` reads the parts as ``filter`` does, and gives the fields asked.
+
+    It reads the ids too, to tell the parts apart, and leaves them out of
+    the rows when they were not asked for. Past the last stock, the first
+    part finds nothing, and the second reads the missing ones.
+    """
+    stocks = [3, None, 1, None, 0]
+    await store(*[make_gadget(f"g{n}", stock=s) for n, s in enumerate(stocks)])
+    ordering = (Ordering("stock"), Ordering("id"))
+    async with GadgetsUnitOfWork(readonly=True) as uow:
+        everything = await uow.gadgets.filter(Selection(ordering=ordering))
+        for index in (0, 2):  # Past the first stock, and past the last.
+            after = position_of(everything[index], ordering)
+            query = Selection(ordering=ordering, after=after, limit=9)
+            rows = await uow.gadgets.values(query, *fields)
+            assert [tuple(row) for row in rows] == [fields] * len(rows)
+            assert [row["name"] for row in rows] == [
+                each.name for each in everything[index + 1 :]
+            ]
 
 
 async def test_a_count_stops_where_it_is_told(tables: None) -> None:

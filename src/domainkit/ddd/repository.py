@@ -290,7 +290,9 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
             PreconditionFailed: The use case expects another version of an
                 aggregate found.
         """
-        found = await self._read(self._ordered(as_query(query)), self._filter)
+        found = await self._read(
+            self._ordered(as_query(query)), self._filter, lambda each: each.id
+        )
         for aggregate in found:
             check_expected(aggregate, self._expected)
             self._track(aggregate)
@@ -432,7 +434,16 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
                     f"{model.__name__}.{name} is encrypted: load the aggregate "
                     "to read it."
                 )
-        return await self._read(base, lambda part: self._values(part, fields))
+        read = fields
+        if base.after is not None and ID not in fields:  # Parts are told apart by it.
+            read = (*fields, ID)
+        rows = await self._read(
+            base, lambda part: self._values(part, read), lambda row: row[ID]
+        )
+        if read is not fields:
+            for row in rows:
+                del row[ID]
+        return rows
 
     async def stream(
         self, query: Selection | CriteriaLike | None = None, *, batch: int = 500
@@ -665,12 +676,18 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
         return query.replace(ordering=default) if default else query
 
     async def _read[T](
-        self, query: Selection, read: Callable[[Selection], Awaitable[list[T]]]
+        self,
+        query: Selection,
+        read: Callable[[Selection], Awaitable[list[T]]],
+        key: Callable[[T], object],
     ) -> list[T]:
         """What ``read`` finds of ``query``'s parts (``_parts``), up to its limit.
 
         Each part after the first is read only while the limit is not
-        reached, and for what is left of it.
+        reached, for what is left of it, and without the ids read before
+        (``key`` gives one's): each statement may read a snapshot of its
+        own (PostgreSQL's ``READ COMMITTED``), where a row whose ordering
+        field moved to the next part since would be read twice.
         """
         first, *others = self._parts(query)
         found = await read(first)
@@ -678,7 +695,11 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
             limit = cast("int", part.limit)  # Only a limited query has parts.
             if len(found) >= limit:
                 break
-            found += await read(part.replace(limit=limit - len(found)))
+            rest = part.replace(limit=limit - len(found))
+            if found:
+                read_before = ~F(ID).in_([key(each) for each in found])
+                rest = rest.where(read_before.bind(self.aggregate_type))
+            found += await read(rest)
         return found
 
     def _parts(self, query: Selection) -> list[Selection]:
