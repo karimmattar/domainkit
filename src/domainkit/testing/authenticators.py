@@ -176,6 +176,7 @@ def authorize_act(
     json: Any = None,  # noqa: ANN401 - the act's body.
     password: str | None = None,
     prefix: str = AUTH_PREFIX,
+    if_match: str | None = None,
 ) -> str:
     """Ask for an authorization of the act at ``url``, and confirm it; return it.
 
@@ -184,13 +185,15 @@ def authorize_act(
     ``app`` (and ``password`` where the act asks it), or, without ``app``,
     what the act asks, proved in the test. Send the act with the answer in
     ``Action-Authorization``. The user needs a way to confirm the act, as
-    to ask for it outside tests.
+    to ask for it outside tests. ``if_match``, the ``ETag`` the page read,
+    is sent as ``If-Match``: send the act with the same.
 
     Raises:
         UnexpectedResponse: The twin or the confirm route refused (``409
             no_second_factor`` for a user with no way to confirm it).
     """
-    asked = client.post(f"{url}/authorization", json=json)
+    headers = None if if_match is None else {"If-Match": if_match}
+    asked = client.post(f"{url}/authorization", json=json, headers=headers)
     if asked.status_code != HTTPStatus.CREATED:
         raise UnexpectedResponse("Asking for an authorization of the act", asked)
     found: dict[str, Any] = asked.json()
