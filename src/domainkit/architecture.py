@@ -239,9 +239,14 @@ class LayerRules:
         Under the default exceptions: a project's ``domainkit.http`` entry
         for the infrastructure layer left the client to it in 2.8, as the
         exception for ``domainkit.http.client`` lifted it, and leaves
-        ``domainkit.outbound.client`` to it now.
+        ``domainkit.outbound.client`` to it now. An entry these rules hold
+        already for the layer adds nothing: a project that repeats a default
+        rule asks for no more than the default.
         """
+        held = self.forbidden_libraries.get(layer, ())
         for entry in entries:
+            if entry in held:
+                continue
             for old, new in MOVED.items():
                 if _within(entry, (old,)):
                     yield new + entry.removeprefix(old)
