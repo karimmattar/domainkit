@@ -411,6 +411,23 @@ def test_an_act_elsewhere_spends_it_before_and_a_failure_needs_a_new_one(
     assert reasons() == ["invalid_authorization"]  # The rule saw it spent.
 
 
+def test_code_that_spends_it_twice_elsewhere_is_refused_and_says_so(
+    web: Web,
+) -> None:
+    """Off auth's database, the second spend finds it spent: 403, ``used``."""
+    asked = web.client.post(
+        f"/notes/{NOTE}/archive/authorization", headers=web.headers
+    ).json()
+    confirmed = web.confirm(asked["id"]).json()["authorization"]
+    headers = {**web.headers, "Action-Authorization": confirmed}
+
+    twice = web.client.post(f"/notes/{NOTE}/archive/twice", headers=headers)
+
+    assert code_of(twice) == (403, "action_not_authorized")
+    assert len(audited("auth.action_authorization_used")) == 1
+    assert reasons() == ["used"]
+
+
 def test_an_authorization_no_service_spent_fails_the_request_in_tests(
     web: Web,
 ) -> None:

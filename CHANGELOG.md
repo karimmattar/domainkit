@@ -133,6 +133,12 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   one per declared setting: 100 settings took 76 ms, now 9 ms
   (audit A28-PERF-07).
 
+- Tests cover two refusals that none reached: an act's authorization
+  spent a second time in code off auth's database, refused and told to
+  the trail as `used`, and a relay's probe that finds the broker away,
+  which opens the breaker again before any row is leased. Found in
+  review.
+
 ### Fixed
 
 - The tutorial and the recipes name the file each block makes or
