@@ -542,7 +542,8 @@ provider's address. The worker makes a backend per message, and the
 backends of one `TIMEOUT` share one client: its connections are reused,
 and after `HTTP_CLIENT.BREAKER_FAILURES` failures in a row a provider
 that is down is not called again for `BREAKER_COOLDOWN` seconds. Text
-messages shared it from 2.9, as push did before.
+messages shared it from 2.9, as push did before. Its metrics name it
+`notifications`, and mail's client `mail`.
 
 ```python
 NOTIFICATIONS = {

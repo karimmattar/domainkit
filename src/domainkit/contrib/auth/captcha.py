@@ -106,7 +106,7 @@ def _verifier() -> "HttpClient":
     """
     from domainkit.http.client import HttpClient
 
-    return HttpClient(propagate=False)
+    return HttpClient(propagate=False, name="captcha")
 
 
 def _failed() -> APIError:

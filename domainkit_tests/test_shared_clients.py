@@ -280,6 +280,21 @@ def test_a_captcha_provider_that_is_down_opens_its_circuit(identity: Api) -> Non
     assert provider.calls == FAILURES
 
 
+def test_shared_clients_are_named_in_their_metrics() -> None:
+    """Their calls and circuits are counted under their name, not ``other``."""
+    from domainkit.contrib.auth import captcha
+    from domainkit.contrib.mail.providers import PostmarkBackend
+
+    sms = TwilioSmsBackend(TWILIO)
+    mail = PostmarkBackend({"SERVER_TOKEN": "token"})
+    oidc = make_provider("idp", ProviderSettings(**OIDC))
+
+    assert sms.client.name == "notifications"
+    assert mail.client.name == "mail"
+    assert oidc.client.name == "identity"
+    assert captcha._verifier().name == "captcha"
+
+
 @pytest.mark.anyio
 @pytest.mark.usefixtures("no_retries")
 async def test_reset_circuits_closes_every_clients_circuits() -> None:

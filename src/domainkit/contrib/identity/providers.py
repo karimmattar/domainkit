@@ -404,7 +404,7 @@ def _client() -> "HttpClient":
     """
     from domainkit.http.client import HttpClient
 
-    return HttpClient(propagate=False)
+    return HttpClient(propagate=False, name="identity")
 
 
 def forget() -> None:

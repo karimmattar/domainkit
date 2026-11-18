@@ -62,12 +62,17 @@ _clients: dict[tuple[float, bool], "HttpClient"] = {}
 
 
 def shared_client(timeout: float, *, http2: bool = False) -> "HttpClient":
-    """One client per timeout, shared by every backend made: its pool is kept."""
+    """One client per timeout, shared by every backend made: its pool is kept.
+
+    Text messages and push share it; its metrics call it ``notifications``.
+    """
     from domainkit.http.client import HttpClient
 
     key = (timeout, http2)
     if key not in _clients:
-        _clients[key] = HttpClient(timeout=timeout, propagate=False, http2=http2)
+        _clients[key] = HttpClient(
+            timeout=timeout, propagate=False, http2=http2, name="notifications"
+        )
     return _clients[key]
 
 
