@@ -20,6 +20,14 @@ books with idempotency keys, maker-checker approvals with each act
 confirmed, and an outbox with signed webhooks. Two more, a multi-tenant
 service and an upload pipeline, wait for the tenancy fixes of 2.9.
 
+Left out of the audit's list, to keep each example to one problem:
+closing a period and reconciling a CSV statement (payments-ledger),
+confirming on a bound device or by the phone's sign-in approval rather
+than with an authenticator's code (maker-checker), and ordering keys and
+a worker on RabbitMQ (outbox-webhooks). The reference pages cover each;
+an example may take one up later. The two deferred examples,
+`saas-tenancy` and `document-intake`, are named in the index as planned.
+
 Examples rot unless something runs them. Other projects show both ends:
 FastAPI keeps its documentation's code in `docs_src/` and imports each
 file from `tests/test_tutorial/` [1]; SQLAlchemy ships an `examples/`
@@ -96,9 +104,11 @@ The questions, and the options weighed for each:
   README, the licence, `pyproject.toml`) [4]; there is no `include`.
   deptry leaves `examples/` out (each declares what it needs), and
   mutmut's copy holds it, since the suite reads it.
-- **They follow the framework.** An example's range is the one `init`
-  wrote on 2.8, `>=2.8.0,<3`. A change to the framework that breaks one
-  fails CI, and is fixed in the same pull request.
+- **They follow the framework.** An example's range is `>=2.8.0,<3`:
+  `init` writes the version installed where it runs, and the range was
+  raised by hand to 2.8.0, the release the examples were made on. A
+  change to the framework that breaks one fails CI, and is fixed in the
+  same pull request.
 
 ## Consequences
 
@@ -108,9 +118,15 @@ The questions, and the options weighed for each:
   working, or change it. That is the point; it costs those pull requests
   some work.
 - The suite runs three more projects: each plays ruff, mypy, migrations,
-  and a dozen or so tests in subprocesses, about 15 seconds of a
-  worker's time, and 5 to 9 more on PostgreSQL. The jobs that run the
-  suite pay it. A pull request that changes only `docs/` runs
+  and a dozen or so tests in subprocesses: 17 to 31 seconds of a
+  worker's time per example, measured on a shared 4-core machine, and 6
+  to 17 more on PostgreSQL.
+  Every job that runs the suite pays it. Running the examples' ruff,
+  mypy, and `check` in the lint job alone was weighed and left: that
+  job's commands are the Makefile's `lint` target and the pre-commit
+  hooks' too (`test_ci.py` holds the three equal), `check` needs each
+  project's settings, and the fintech profile's test pays the same in
+  every job. A pull request that changes only `docs/` runs
   `test_docs.py`, which checks the examples' links.
 - Renovate's `config:recommended` ignores `examples/` [5], and the
   workflows inside an example never run on GitHub. The action pins of

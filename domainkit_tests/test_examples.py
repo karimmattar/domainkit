@@ -17,6 +17,7 @@ import shlex
 import shutil
 import textwrap
 import tomllib
+from fnmatch import fnmatch
 from importlib.util import find_spec
 from pathlib import Path
 from uuid import uuid4
@@ -32,17 +33,16 @@ from domainkit_tests.test_init_fintech import Project
 
 EXAMPLES = ROOT / "examples"
 PASSED = {
-    "payments-ledger": ("LEDGER_API_", 12),
-    "maker-checker": ("PAYOUTS_API_", 15),
-    "outbox-webhooks": ("TRANSFERS_API_", 11),
+    "payments-ledger": ("LEDGER_API_", 13),
+    "maker-checker": ("PAYOUTS_API_", 17),
+    "outbox-webhooks": ("TRANSFERS_API_", 13),
 }
 """Each example, its settings' prefix, and how many of its tests pass."""
 PLANNED = ("saas-tenancy", "document-intake")
 """Examples the index names as planned, which have no directory yet."""
-LEFT_BEHIND = shutil.ignore_patterns(
-    "migrations", "__pycache__", ".*_cache", ".env", ".venv", "*.sqlite3*"
-)
-"""What a reader's own runs leave in an example: never copied."""
+LEFT = ("migrations", "__pycache__", ".*_cache", ".env", ".venv", "*.sqlite3*")
+"""What a reader's own runs leave in an example: never copied nor read."""
+LEFT_BEHIND = shutil.ignore_patterns(*LEFT)
 _PYTHON = re.compile(r"^```python\n(.*?)^```$", re.DOTALL | re.MULTILINE)
 
 
@@ -205,16 +205,17 @@ def test_an_examples_walkthrough_quotes_its_code(name: str) -> None:
     """
     readme = (EXAMPLES / name / "README.md").read_text(encoding="utf-8")
     code = [
-        unindented(path.read_text(encoding="utf-8"))
+        f"\n{unindented(path.read_text(encoding='utf-8'))}\n"
         for path in (EXAMPLES / name).rglob("*.py")
+        if not any(fnmatch(part, pattern) for part in path.parts for pattern in LEFT)
     ]
     blocks = [textwrap.dedent(block) for block in _PYTHON.findall(readme)]
 
     assert blocks, "a walkthrough shows its code"
-    assert [
+    assert [  # Whole lines: a block may not start or end inside one.
         block.splitlines()[0]
         for block in blocks
-        if not any(unindented(block) in text for text in code)
+        if not any(f"\n{unindented(block)}\n" in text for text in code)
     ] == []
     for block in blocks:  # Whole statements, not a cut through one.
         compile(block, name, "exec", ast.PyCF_ONLY_AST | ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)

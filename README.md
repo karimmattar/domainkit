@@ -218,7 +218,7 @@ how many cores a load needs.
 
 ## Examples
 
-[examples/](https://github.com/karimmattar/domainkit/tree/main/examples)
+[examples/](https://github.com/karimmattar/domainkit/blob/main/examples/README.md)
 holds projects made with `domainkit init`, each solving one problem, with
 a walkthrough and tests that CI runs: payments in double-entry books under
 idempotency keys, large payouts approved with each act confirmed, and an

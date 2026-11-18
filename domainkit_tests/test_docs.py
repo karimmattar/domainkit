@@ -192,7 +192,8 @@ def pages() -> list[Path]:
         ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md",
         # The ADR template's links are placeholders.
         *sorted(set(DOCS.rglob("*.md")) - {DOCS / "adr" / "template.md"}),
-        *sorted((ROOT / "examples").glob("**/README.md")),
+        ROOT / "examples" / "README.md",
+        *sorted((ROOT / "examples").glob("*/README.md")),
     ]
 
 

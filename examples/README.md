@@ -12,7 +12,7 @@ problem, and tests.
 | [maker-checker](maker-checker/README.md) | One person moves a large payout alone, or approves something other than what they read. | Approvals, action authorizations (`StepUp(for_=...)`), the audit trail. |
 | [outbox-webhooks](outbox-webhooks/README.md) | Another service hears of a change that rolled back, or never hears of one that committed, and cannot tell a real webhook from a forged one. | The outbox, durable handlers, the inbox, signed webhooks, retries, dead letters. |
 
-Two more are planned, once the fixes to tenancy they need are released:
+Two more are planned, after the tenancy fixes of 2.9 land:
 `saas-tenancy`, a multi-tenant service with organizations in the path,
 and `document-intake`, an upload pipeline with checks.
 
@@ -22,7 +22,8 @@ Each example runs against the domainkit of this checkout. Its README's
 "Run it" gives the commands: a virtual environment, domainkit installed
 from `../..` with the extras the example needs, its migrations made, and
 its tests. An example holds no migrations: they are written for the
-domainkit installed, as a project's are after an upgrade. Nor does it
+domainkit installed, as a project's are after an upgrade. A project made
+from an example commits the migrations it writes, as every project does. Nor does it
 hold the `.env` that `init` writes, which names the settings module: each
 README exports the variable instead.
 
