@@ -36,6 +36,14 @@ Read the guides in this order. Each one builds on the ones before it.
 9. **[Deploying](deploying.md)** and **[operations](operations.md)**:
    from a project whose checks pass to one that serves in production.
 
+**A complete example.** `domainkit init bankAPI --profile fintech`
+writes a whole project with a bank's controls on and wired, and their
+tests: step-up, transfers confirmed for their amount and payee, an
+`Idempotency-Key`, limits, approvals over 1,000.00, encrypted card
+numbers, and each transfer booked as a balanced entry in the ledger with
+its evidence recorded. Read it after the tutorial, beside
+[fintech](fintech.md), which maps each control to its page and its test.
+
 If you know Django or FastAPI, [coming from Django](from-django.md) and
 [coming from FastAPI](from-fastapi.md) map each of their names to
 domainkit's. If you have one task to do, the

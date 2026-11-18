@@ -1,0 +1,97 @@
+"""Reactions to payments events; ``apps.py`` subscribes them.
+
+Durable handlers run in the worker, at least once: each is idempotent.
+"""
+
+from datetime import date, timedelta
+from typing import Final
+
+from domainkit.contrib.accounting import (
+    AccountCodeTaken,
+    AccountId,
+    AccountingUnitOfWork,
+    AccountType,
+    Line,
+    OpenAccount,
+    OpenPeriod,
+    PeriodNameTaken,
+    PeriodsOverlap,
+    PostEntry,
+    open_account,
+    open_period,
+    post_entry,
+)
+from domainkit.ddd import F
+
+from domains.payments.domain.model import TransferMade
+
+DUE_FROM_CUSTOMERS: Final = "1200"
+DUE_TO_NETWORKS: Final = "2100"
+CHART: Final = {
+    DUE_FROM_CUSTOMERS: ("Transfers due from customers", AccountType.ASSET),
+    DUE_TO_NETWORKS: ("Transfers due to card networks", AccountType.LIABILITY),
+}
+"""The books' accounts a transfer posts to, one per currency, opened on first use."""
+
+
+async def book_transfer(event: TransferMade) -> None:
+    """Post the transfer's balanced entry in the books, once per transfer.
+
+    The customer owes the amount sent, and the bank owes it to the card
+    network until it settles. The transfer's id is the entry's reference:
+    a second run returns the entry the first posted.
+    """
+    currency = event.amount.currency.code
+    booked_on = event.occurred_at.date()
+    await open_month(booked_on)
+    debit = await ledger_account(DUE_FROM_CUSTOMERS, currency)
+    credit = await ledger_account(DUE_TO_NETWORKS, currency)
+    await post_entry(
+        PostEntry(
+            source="payments.transfer",
+            reference=str(event.transfer_id),
+            booked_on=booked_on,
+            description="Transfer to a card",
+            lines=(Line.debit(debit, event.amount), Line.credit(credit, event.amount)),
+        ),
+        AccountingUnitOfWork(),
+    )
+
+
+async def ledger_account(code: str, currency: str) -> AccountId:
+    """The id of the books' account ``code`` in ``currency``, opened on first use."""
+    full_code = f"{code}-{currency}"
+    async with AccountingUnitOfWork() as books:
+        found = await books.accounts.first(F("code") == full_code)
+    if found is not None:
+        return found.id
+    name, kind = CHART[code]
+    try:
+        opened = await open_account(
+            OpenAccount(code=full_code, name=name, type=kind, currency=currency),
+            AccountingUnitOfWork(),
+        )
+    except AccountCodeTaken:  # Another run opened it first.
+        return await ledger_account(code, currency)
+    return opened.id
+
+
+async def open_month(day: date) -> None:
+    """Open the accounting period of ``day``'s month, unless a period covers it.
+
+    The bank's finance team opens and closes periods as it chooses; a
+    transfer dated in a period it closed is refused, and waits in the
+    outbox's dead letters.
+    """
+    async with AccountingUnitOfWork() as books:
+        if await books.periods.covering(day) is not None:
+            return
+    first = day.replace(day=1)
+    last = (first + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+    try:
+        await open_period(
+            OpenPeriod(name=f"{first:%Y-%m}", starts_on=first, ends_on=last),
+            AccountingUnitOfWork(),
+        )
+    except (PeriodNameTaken, PeriodsOverlap):  # Opened meanwhile.
+        return

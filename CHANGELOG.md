@@ -20,6 +20,16 @@ and a status.
   through the outbox, and a receiver that verifies it)
   ([the tutorial](docs/tutorial.md)) (audit A28-DX-07).
 
+### Changed
+
+- `domainkit init --profile fintech`: the sample transfer is booked in
+  the double-entry books once it commits, as a balanced entry posted by
+  a durable handler (`domains/payments/application/handlers.py`), which
+  opens the month's accounting period when none covers the date; and its
+  facts are recorded as evidence (`defer_evidence`). Its tests prove both.
+  `docs/learning.md` names the profile as a complete example
+  ([fintech](docs/fintech.md)) (audit A28-DX-06).
+
 ### Fixed
 
 - The first examples of approvals, action authorizations, messaging,

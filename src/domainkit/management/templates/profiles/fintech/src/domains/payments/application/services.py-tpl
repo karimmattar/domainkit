@@ -3,6 +3,8 @@
 from typing import Final
 
 from domainkit.contrib.approvals import requires_approval
+from domainkit.contrib.evidence import Evidence
+from domainkit.contrib.evidence.tasks import defer_evidence
 
 from domains.payments.application.commands import MakeTransfer, RegisterCard
 from domains.payments.application.unit_of_work import PaymentsUnitOfWork
@@ -33,7 +35,8 @@ async def make_transfer(command: MakeTransfer, uow: PaymentsUnitOfWork) -> Trans
 
     Over the approval threshold it runs only once approved (the guard in
     ``apps.py``); the limits count it in the same transaction, so a refused
-    one moved nothing.
+    one moved nothing. Its evidence is recorded once it commits, and its
+    event is booked in the books (``handlers.book_transfer``).
     """
     async with uow:
         card = await uow.cards.get(CardId(command.card_id))
@@ -46,5 +49,20 @@ async def make_transfer(command: MakeTransfer, uow: PaymentsUnitOfWork) -> Trans
             key=f"payments.transfer:{transfer.id}",
         )
         await uow.transfers.add(transfer)
+        defer_evidence(uow, transfer_evidence(transfer))
         await uow.commit()
     return transfer
+
+
+def transfer_evidence(transfer: Transfer) -> Evidence:
+    """What proves the transfer later, on the evidence ledger: ids and the amount."""
+    return Evidence(
+        kind="payments.transfer_made",
+        subject=f"transfer:{transfer.id}",
+        facts={
+            "maker": str(transfer.maker_id),
+            "card": str(transfer.card_id),
+            "amount": transfer.amount.amount,
+            "currency": transfer.amount.currency.code,
+        },
+    )

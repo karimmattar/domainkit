@@ -45,6 +45,7 @@ FINTECH_FILES = {
     "src/domains/payments/api/routes.py",
     "src/domains/payments/application/__init__.py",
     "src/domains/payments/application/commands.py",
+    "src/domains/payments/application/handlers.py",
     "src/domains/payments/application/services.py",
     "src/domains/payments/application/unit_of_work.py",
     "src/domains/payments/apps.py",
@@ -289,7 +290,7 @@ def test_a_fintech_project_passes_its_ci_workflow(bank: Project) -> None:
         'python manage.py makemigrations --check -m "unused"',
         "pytest",
     ]
-    assert "17 passed" in ended["pytest"].stdout
+    assert "18 passed" in ended["pytest"].stdout
     assert "--strict" not in ended["mypy"].args  # pyproject.toml's strict = true.
 
 
@@ -487,7 +488,7 @@ def test_the_fintech_tests_pass_on_postgresql_as_the_applications_role(
         on_server(server.render_as_string(hide_password=False), f'DROP ROLE "{role}"')
 
     assert tested.returncode == 0, f"{tested.stdout}{tested.stderr}"
-    assert "17 passed" in tested.stdout
+    assert "18 passed" in tested.stdout
 
 
 def test_init_says_what_each_argument_is() -> None:
