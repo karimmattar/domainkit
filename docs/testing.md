@@ -1219,7 +1219,7 @@ class; `tests/payments/test_transfers.py` uses it.
 | `Authenticator.code()` | A code that never repeats a 30-second step: the service refuses a step it has seen, so a second code in one step moves a frozen clock to the next step's start. It refuses without a frozen clock. |
 | `step_up(client, app, *, prefix="/auth")` | Steps the user up with a code. |
 | `confirm_sca(client, challenge, app, *, prefix="/auth")` | Confirms an SCA challenge with a code; returns the authorization. |
-| `authorize_act(client, url, app=None, *, json=None, password=None, prefix="/auth")` | *New in 2.5.* Asks for an authorization of the act at `url` (`POST <url>/authorization`, with the act's body), confirms it, and returns `<id>.<code>` for its `Action-Authorization` header. |
+| `authorize_act(client, url, app=None, *, json=None, password=None, prefix="/auth", if_match=None)` | *New in 2.5.* Asks for an authorization of the act at `url` (`POST <url>/authorization`, with the act's body, and `If-Match` if given, since 2.8), confirms it, and returns `<id>.<code>` for its `Action-Authorization` header. |
 | `confirm_authorization(client, authorization_id, app=None, *, password=None, prefix="/auth")` | *New in 2.5.* Confirms an action authorization asked elsewhere; returns `<id>.<code>`. |
 | `approve_request(client, url)` | Reads the approval request's fingerprint, then approves that version; returns the answer. |
 

@@ -15,6 +15,8 @@ who asks (field policies) and in which language.
 - A resource may require ``If-Match`` on its writes: without one, or
   with ``*``, which names no version, they are ``428
   precondition_required``.
+- A twin, which asks for an authorization of an act, reads the one tag
+  its page read (``asked_versions``, ADR 0178).
 """
 
 import hashlib
@@ -22,6 +24,7 @@ import re
 from typing import Final
 
 from fastapi import status
+from fastapi.exceptions import RequestValidationError
 
 from domainkit.http.errors import APIError
 from domainkit.utils.headers import EntityTag, parse_tags
@@ -63,3 +66,39 @@ def expected_versions(header: str) -> frozenset[int] | None:
         if match is not None:
             versions.add(int(match[1]))
     return frozenset(versions)
+
+
+def asked_versions(header: str | None) -> frozenset[int] | None:
+    """The version a twin's ``If-Match`` names: the one its page read (ADR 0178).
+
+    None without one, an empty one, or ``*``; otherwise as
+    ``expected_versions`` reads it, so a tag that names no version, or a
+    malformed value, matches nothing. A page reads one version: a list
+    of several tags, counted by the commas between them, however many,
+    is refused. Several header lines are one list (RFC 9110, 5.3): join
+    them with ``", "`` first.
+
+    Raises:
+        RequestValidationError: The value lists more than one tag (422).
+    """
+    if header is None or not header.strip():
+        return None
+    count = sum(1 for part in header.split(",") if part.strip())
+    if count > 1:
+        raise RequestValidationError(
+            [
+                {
+                    "type": "too_long",
+                    "loc": ("header", "if-match"),
+                    "msg": f"List should have at most 1 item after validation, "
+                    f"not {count}",
+                    "input": header,
+                    "ctx": {
+                        "field_type": "List",
+                        "max_length": 1,
+                        "actual_length": count,
+                    },
+                }
+            ]
+        )
+    return expected_versions(header)

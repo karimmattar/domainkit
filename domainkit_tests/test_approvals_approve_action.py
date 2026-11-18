@@ -352,6 +352,38 @@ def test_a_treasurer_asks_confirms_with_a_code_and_approves_once(
     )
 
 
+def test_an_approval_asked_with_if_match_is_bound_to_the_request_as_read(
+    api: TestClient, frozen: FrozenClock
+) -> None:
+    """The approve twin passes ``If-Match`` on: the act must send the same.
+
+    Asked with the request's ``ETag``, approving without it is refused, and
+    with it is made; a tag read before another approval is ``412`` at the
+    twin. Its OpenAPI says the act is bound to it, as it is for rejecting
+    and cancelling (ADR 0178, user report A25).
+    """
+    maker = Person(api, frozen, "maker", treasurer=False)
+    ann = Person(api, frozen, "ann")
+    bob = Person(api, frozen, "bob")
+    request = maker.submit()
+    page = api.get(f"{API}/{request['id']}", headers=bob.headers)
+    etag = page.headers["etag"]
+
+    unbound = ann.approve(request, ann.authorized(request, **{"If-Match": etag}))
+    bound = ann.authorized(request, **{"If-Match": etag})
+    approved = ann.approve(request, bound, **{"If-Match": etag})
+    stale = bob.ask(request, **{"If-Match": etag})
+    paths = api.get("/openapi.json").json()["paths"]
+
+    problem(unbound, 403, "action_not_authorized")
+    assert approved.status_code == 200, approved.json()
+    problem(stale, 412, "precondition_failed")
+    for step in ("approve", "reject", "cancel"):
+        twin = paths[f"{API}/{{request_id}}/{step}/authorization"]["post"]
+        [header] = [each for each in twin["parameters"] if each["in"] == "header"]
+        assert "the act is bound to it" in header["description"], step
+
+
 def test_the_approval_spends_the_authorization_with_its_commit(
     api: TestClient, frozen: FrozenClock
 ) -> None:

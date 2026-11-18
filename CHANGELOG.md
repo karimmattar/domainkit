@@ -66,6 +66,20 @@ and a status.
   an app that holds acts keep a held authorization to its request ([Grants made elsewhere](docs/contrib/approvals.md#grants-made-elsewhere))
   (user report A17).
 
+- `Action(require_if_match=True)` (off by default): asking for an
+  authorization of the act, and the act, need `If-Match` naming the
+  version the page read; without one, with `*`, or with an empty one,
+  `428 precondition_required`, before anything is stored, and the act
+  voids nothing. A collection route given such an action is refused
+  when declared. `request_action_authorization(..., if_match=...)` lets
+  a route of the project's own bind it, refused unless the unit of work
+  it lends checked the version; `Action.digest_of(..., versions)`
+  computes the digest; a rule's `ask_authorization(..., if_match=...)`
+  is given the twin's header; `asked_versions` reads it as a twin does;
+  and `authorize_act(..., if_match=...)` sends it to a twin in tests
+  ([The version the page read](docs/auth/actions.md#the-version-the-page-read),
+  ADR 0178) (user report A25).
+
 ### Changed
 
 - The layer rules let the infrastructure layer import
@@ -163,6 +177,26 @@ and a status.
   had spent the approval. A value the user holds already is not checked
   again; one taken between the check and the commit is still refused by
   the commit, the approval spent (ADR 0179) (user report A17).
+
+- An act binds the version its page read, not only the record as its
+  twin reads it. A reviewer opened file A, the company stored B under
+  its name, and the twin bound B, which the phone showed in the same
+  lines: B was approved. A twin of an act on one aggregate now holds
+  `If-Match` as its act does: an aggregate at none of the versions it
+  names is `412 precondition_failed`, after the rules and the reach
+  check and before the phone is asked, and again where `show` and
+  `binds` read. The digest covers those versions, so an act sent
+  without the same `If-Match`, or with another, is refused (`403
+  action_not_authorized`) and voids the authorization; a `binds` that
+  loads the record at another version voids it too (`412`). A twin
+  documents the header in OpenAPI, and takes one tag (`422` for
+  several). Approvals' approve, reject, and cancel twins pass it on. An
+  act whose unit of work is not held to the version its authorization
+  holds is refused, never made on another. A twin asked without
+  `If-Match` binds as in 2.7, and authorizations stored before hold
+  ([upgrading.md](docs/upgrading.md#27-to-28),
+  [The version the page read](docs/auth/actions.md#the-version-the-page-read),
+  ADR 0178) (user report A25).
 
 ## [2.7.0] - 2026-11-17
 

@@ -575,6 +575,15 @@ class UnitOfWork(ABC):
         """Roll the underlying transaction back."""
 
 
+def expectations_of(uow: UnitOfWork) -> tuple[Expectation, ...]:
+    """What the open ``expect`` blocks hold ``uow`` to now, outermost first.
+
+    A function, not an attribute: a project's unit of work may name its
+    own attributes as it likes.
+    """
+    return tuple(uow._expected)
+
+
 def _clean(aggregates: Iterable[Any]) -> None:
     """Run each aggregate's ``before_save()``, ``clean()``, then ``Meta.checks``.
 

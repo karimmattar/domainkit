@@ -24,7 +24,7 @@ installed (``ApprovalsConfig.ready`` refuses it otherwise).
 """
 
 from collections.abc import Iterable, Mapping
-from typing import Any, Final
+from typing import Any, Final, cast
 
 from starlette.requests import HTTPConnection
 
@@ -39,6 +39,7 @@ from domainkit.contrib.auth.actions import (
     requires_authorization,
 )
 from domainkit.contrib.auth.screens import fitted, laid_out
+from domainkit.ddd import UnitOfWork
 from domainkit.i18n import gettext, gettext_noop, ngettext
 
 from .guards import Guard, guard_for, policy_of
@@ -277,12 +278,26 @@ def register(config: ApprovalsSettings) -> None:
             register_action(action)
 
 
-async def ask(request: HTTPConnection, setting: str, command: object) -> dict[str, Any]:
+async def ask(
+    request: HTTPConnection,
+    setting: str,
+    command: object,
+    *,
+    uow: object = None,
+    if_match: str | None = None,
+) -> dict[str, Any]:
     """Store an authorization of the act ``command`` makes; what the client sees.
 
     The act is the action ``setting`` turns on. It is refused as
     ``request_action_authorization`` refuses, and as the action's ``show``
-    does.
+    does. ``uow``, the twin's, held to ``if_match``, binds the act to the
+    version the page read (ADR 0178).
     """
-    asked = await request_action_authorization(request, ACTIONS[setting], command)
+    asked = await request_action_authorization(
+        request,
+        ACTIONS[setting],
+        command,
+        unit_of_work=None if uow is None else lambda: cast(UnitOfWork, uow),
+        if_match=if_match,
+    )
     return ActionAuthorizationOut.of(asked).model_dump()
