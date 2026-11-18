@@ -54,7 +54,7 @@ async def test_a_monthly_task_runs_once_per_month_across_worker_restarts() -> No
             restarted = Worker()
             ran_again = await restarted.run_once()
     finally:
-        tasks._tasks.pop("tests.audit15.monthly")
+        tasks.unregister_task("tests.audit15.monthly")
 
     # Safe behaviour: the slot already ran; on d126394 it runs a second time.
     assert ran_again == 0

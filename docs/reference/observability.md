@@ -125,11 +125,11 @@ application's route.
 Each `HttpClient` counts its calls under its name, never a URL: give it
 one with `HttpClient(name="rates")`. Without one, it is the host of its
 `base_url` (`rates.example.com`), else `other`; the ready
-`domainkit.http.client.client` is `default`. A name is up to 128 letters,
+`domainkit.outbound.client.client` is `default`. A name is up to 128 letters,
 digits, `.`, `_`, `:`, or `-`. Clients of one name are counted together.
 
 ```python
-from domainkit.http.client import HttpClient
+from domainkit.outbound.client import HttpClient
 
 rates = HttpClient(base_url="https://rates.example.com/v1", name="rates")
 ```

@@ -1262,7 +1262,7 @@ jobs:
             mutants: >-
               domainkit.http.application.* domainkit.http.blocking.*
               domainkit.http.errors.* domainkit.http.problems.* domainkit.http.filters.*
-              domainkit.http.guard.*
+              domainkit.http.guard.* domainkit.outbound.guard.*
               domainkit.http.live_events.* domainkit.http.live_fanout.*
               domainkit.http.locale.*
               domainkit.http.metrics.* domainkit.http.openapi.* domainkit.http.tracing.*
@@ -1271,7 +1271,9 @@ jobs:
               domainkit.http.access.*
           - name: http-2
             mutants: >-
-              domainkit.http.client.* domainkit.http.deadlines.* domainkit.http.health.*
+              domainkit.http.client.* domainkit.outbound.client.*
+              domainkit.http._moved.*
+              domainkit.http.deadlines.* domainkit.http.health.*
               domainkit.http.live.* domainkit.http.middleware.*
               domainkit.http.pagination.* domainkit.http.responses.*
               domainkit.http.routers.*

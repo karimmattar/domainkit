@@ -1,6 +1,6 @@
 # 0188. Write down the core's layering, and hold the boundaries it draws
 
-- Status: Accepted
+- Status: Accepted; amended by [0195](0195-move-the-outgoing-client-below-the-adapters-and-hold-module-state-to-its-resets.md) on 2026-11-18 (at the end)
 - Date: 2026-11-18
 - Amends: [0003](0003-enforced-layer-rules.md), [0140](0140-auth-asks-other-apps-through-hooks.md), [0182](0182-let-a-gateway-raise-a-routes-problems-and-name-users-by-the-fields-a-project-chooses.md)
 
@@ -270,3 +270,16 @@ Options weighed:
    <https://docs.astral.sh/ruff/rules/too-many-arguments/>
 6. AWS, *Signature Version 4 for API requests*:
    <https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_sigv.html>
+
+## Amendment (2026-11-18, 2.9)
+
+- `outbound`, the outgoing client and its guard, is a layer 2 package
+  ([0195](0195-move-the-outgoing-client-below-the-adapters-and-hold-module-state-to-its-resets.md)). The 16 adapters' imports of `domainkit.http.client` are gone
+  from the edges that stay, and so is the settings' import of the
+  checker: the four built-in layer names are the settings' own, which
+  `domainkit.architecture` imports. 4 edges are left.
+- `ALLOWED_CORE` loses `DEPLOYED_ENVIRONMENTS` (from `domainkit.conf`),
+  `CURSOR_PATTERN` (from `domainkit.http`), `client_group` (from
+  `domainkit.context`), and its eight entries for the guard's names:
+  `domainkit.outbound.guard` publishes ten names (ADR 0195), and webhooks
+  no longer imports the bare lookup.

@@ -34,13 +34,13 @@ from domainkit.contrib.privacy import erase_subject, export_subject
 from domainkit.db import connections
 from domainkit.db.encrypted import Ciphertext
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.http.client import stub
 from domainkit.keys import LocalKeyProvider
 from domainkit.keys.aws import AwsKmsKeyProvider
 from domainkit.keys.ring import keyring
 from domainkit.keys.vault import VaultTransitKeyProvider
 from domainkit.management import call_command
 from domainkit.management.base import CommandError, run_async
+from domainkit.outbound.client import stub
 from domainkit.signing import derive_key
 from domainkit_tests.conftest import (
     ALPHA,

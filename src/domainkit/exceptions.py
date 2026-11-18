@@ -49,7 +49,7 @@ class UpstreamError(DomainkitError):
     The HTTP layer answers it with ``status_code`` (502, 503, or 504), its
     ``code`` and ``detail``, which name no host or URL, and ``Retry-After``
     when ``retry_after`` is set; it is logged where it happened, never
-    reported per request as a bug (WEB-23). ``domainkit.http.client``'s
+    reported per request as a bug (WEB-23). ``domainkit.outbound.client``'s
     ``CircuitOpen``, ``CallTimeout``, and ``ResponseTooLarge`` are ones.
     """
 

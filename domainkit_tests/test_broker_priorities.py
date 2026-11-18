@@ -159,7 +159,7 @@ def test_priorities_a_broker_drops_are_warned_about_where_deployed(
             assert config_.unkept_priorities() == []  # The outbox orders them.
     finally:
         for name in ("tests.priorities.urgent", "tests.priorities.plain"):
-            tasks._tasks.pop(name)
+            tasks.unregister_task(name)
 
     assert found.id == "messaging.W004"
     assert "'tests.priorities.urgent'" in found.message

@@ -24,8 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from domainkit.apps import registry
 from domainkit.checks import CheckFailed, CheckMessage
-from domainkit.conf import settings
-from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
+from domainkit.conf import DEPLOYED_ENVIRONMENTS, settings
 from domainkit.db.protection import ROW_TRIGGER as ROW_TRIGGER
 from domainkit.db.protection import TRUNCATE_TRIGGER as TRUNCATE_TRIGGER
 from domainkit.db.protection import (

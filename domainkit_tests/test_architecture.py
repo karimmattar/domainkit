@@ -544,6 +544,196 @@ def test_infrastructure_may_call_other_services_through_the_http_client(
     }
 
 
+def test_infrastructure_calls_out_through_domainkit_outbound_with_no_exception(
+    make_package: MakePackage,
+) -> None:
+    """The client's home since 2.9 is no web library: no rule names it there.
+
+    The application layer may not call out by its new path either, as by
+    its old one; the domain layer imports neither (ADR 0195, audit
+    A28-ARCH-04).
+    """
+    make_package(
+        "arch.rates",
+        {
+            "domain/model.py": "from domainkit.outbound.guard import UnsafeURL\n",
+            "application/services.py": """
+                from domainkit.outbound.client import HttpClient
+            """,
+            "infrastructure/feed.py": """
+                import domainkit.outbound
+                from domainkit.outbound import guard
+                from domainkit.outbound.client import CircuitOpen, HttpClient, httpx2
+            """,
+        },
+    )
+    make_package(
+        "arch.quotes",
+        {"models.py": "from domainkit.outbound.client import HttpClient\n"},
+    )
+    rules = LayerRules()
+
+    found = {
+        (v.module.removeprefix("arch.rates."), v.imported, v.rule)
+        for v in check_domains(["arch.rates", "arch.quotes"], rules)
+    }
+
+    assert not any(
+        library.startswith("domainkit.outbound")
+        for library in rules.forbidden_libraries["infrastructure"]
+    )
+    assert {(module, imported) for module, imported, _ in found} == {
+        ("domain.model", "domainkit.outbound.guard"),
+        ("domain.model", "domainkit.outbound.guard.UnsafeURL"),
+        ("application.services", "domainkit.outbound.client"),
+        ("application.services", "domainkit.outbound.client.HttpClient"),
+    }
+    assert {rule for module, _, rule in found if module.startswith("app")} == {
+        "the application layer must not use domainkit"
+    }
+    assert layer_warnings(["arch.rates", "arch.quotes"], rules) == []
+
+
+def test_a_project_rule_on_a_2_8_path_covers_the_2_9_home_too(
+    make_package: MakePackage,
+) -> None:
+    """``domainkit.http`` or ``domainkit.http.client`` in a rule keeps the client out.
+
+    A project's own layer that forbade ``domainkit.http``, or an
+    infrastructure layer that forbade the client by name, kept the client
+    out in 2.8; its new path is kept out too (ADR 0195, review B2).
+    """
+    new, old = (
+        "from domainkit.outbound.client import X\n",
+        "from domainkit.http.client import X\n",
+    )
+    make_package(
+        "arch.proj.billing",
+        {
+            "infrastructure/feed.py": new,
+            "infrastructure/feed28.py": old,
+            "ports/gateway.py": new,
+            "ports/gateway28.py": old,
+            "ports/checks.py": "from domainkit.outbound.guard import checked_url\n",
+        },
+    )
+    rules = LayerRules().extend(
+        layers=("ports",),
+        forbidden_libraries={
+            "ports": ("domainkit.http",),
+            "infrastructure": ("domainkit.http.client",),
+        },
+    )
+
+    found = {
+        v.module.removeprefix("arch.proj.billing.")
+        for v in check_domains(["arch.proj.billing"], rules)
+    }
+
+    assert found == {
+        "infrastructure.feed",
+        "infrastructure.feed28",
+        "ports.gateway",
+        "ports.gateway28",
+        "ports.checks",
+    }
+    assert rules.forbidden_libraries["ports"] == (
+        "domainkit.http",
+        "domainkit.outbound.client",
+        "domainkit.outbound.guard",
+    )
+
+
+def test_a_rule_on_the_http_package_leaves_a_layer_the_client_its_exception_lifts() -> (
+    None
+):
+    """In 2.8 the exception for ``domainkit.http.client`` lifted such a rule.
+
+    ``domainkit.http``, where the rules do not hold it yet, forbade the
+    guard, which no exception lifted, and left the client: the new paths
+    follow. A rule under the old path carries its rest over.
+    """
+    rules = LayerRules(forbidden_libraries={"infrastructure": ("fastapi",)}).extend(
+        forbidden_libraries={
+            "infrastructure": ("domainkit.http", "domainkit.http.guard.lookup"),
+            "api": ("domainkit",),
+        }
+    )
+
+    assert rules.forbidden_libraries["infrastructure"] == (
+        "fastapi",
+        "domainkit.http",
+        "domainkit.http.guard.lookup",
+        "domainkit.outbound.guard",
+        "domainkit.outbound.guard.lookup",
+    )
+    assert rules.forbidden_libraries["api"] == (
+        "domainkit",
+        "domainkit.outbound.client",
+        "domainkit.outbound.guard",
+    )
+
+
+def test_a_rule_on_all_of_domainkit_leaves_infrastructure_the_client_on_either_path(
+    make_package: MakePackage,
+) -> None:
+    """The exception that lifted ``domainkit.http.client`` lifts its new home.
+
+    A project that keeps all of ``domainkit`` out of its infrastructure
+    layer kept the client there in 2.8, through the exception; it keeps it
+    on either path, and the guard and the rest stay out (review).
+    """
+    make_package(
+        "arch.proj3.billing",
+        {
+            "infrastructure/callbacks.py": """
+                from domainkit.http.client import HttpClient
+                from domainkit.outbound.client import CircuitOpen
+                from domainkit.outbound.guard import checked_url
+            """
+        },
+    )
+    rules = LayerRules().extend(forbidden_libraries={"infrastructure": ("domainkit",)})
+
+    found = {
+        (violation.module, violation.imported)
+        for violation in check_domains(["arch.proj3.billing"], rules)
+    }
+    assert found == {
+        ("arch.proj3.billing.infrastructure.callbacks", "domainkit.outbound.guard"),
+        (
+            "arch.proj3.billing.infrastructure.callbacks",
+            "domainkit.outbound.guard.checked_url",
+        ),
+    }
+
+
+def test_a_project_that_repeats_a_default_rule_asks_for_no_more(
+    make_package: MakePackage,
+) -> None:
+    """``domainkit.http`` for the infrastructure layer is a default rule already.
+
+    Repeated in a project's ``ARCHITECTURE``, it adds no rule on the new
+    paths: the guard stays the infrastructure layer's, as by default
+    (review).
+    """
+    make_package(
+        "arch.proj2.billing",
+        {
+            "infrastructure/callbacks.py": """
+                from domainkit.outbound.guard import checked_url
+                from domainkit.outbound.client import HttpClient
+            """
+        },
+    )
+    repeated = LayerRules().extend(
+        forbidden_libraries={"infrastructure": ("domainkit.http",)}
+    )
+
+    assert repeated.forbidden_libraries == LayerRules().forbidden_libraries
+    assert check_domains(["arch.proj2.billing"], repeated) == []
+
+
 def test_a_file_gateway_may_check_and_store_uploads(
     make_package: MakePackage,
 ) -> None:

@@ -13,7 +13,7 @@
     pdf = await renderer().html_to_pdf(html, assets={"logo.png": logo})
 
 Each rendering is one ``POST`` of a multipart form through
-``domainkit.http.client`` (``domainkit[httpclient]``): bounded by
+``domainkit.outbound.client`` (``domainkit[httpclient]``): bounded by
 ``TIMEOUT`` and by the deadline of the work it serves, retried after a
 network error or a 502, 503, or 504 answer (rendering changes nothing,
 so it may be sent twice), and refused at once while Gotenberg's circuit
@@ -55,7 +55,7 @@ from domainkit.documents.base import (
     RenderingRefused,
 )
 from domainkit.exceptions import UpstreamError
-from domainkit.http.client import HttpClient
+from domainkit.outbound.client import HttpClient
 
 if TYPE_CHECKING:
     from domainkit.conf.global_settings import RendererConfig

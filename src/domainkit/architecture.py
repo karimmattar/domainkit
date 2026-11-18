@@ -13,17 +13,19 @@ domain layer), ``controllers.py`` (application), ``models.py``
   ``domainkit.money``, ``domainkit.i18n.lazy`` (to mark its texts for
   translation), and its own domain layer. No frameworks, no I/O, no
   settings.
-- ``application``: no ``infrastructure`` or ``api`` code, and no web or
-  database libraries; it reaches storage through repository ports.
-- ``infrastructure``: no ``api`` code and no web libraries, but the
-  outgoing HTTP client (``domainkit.http.client``): calling another
-  service is what an adapter does; and the checks and storing of uploads
-  (``domainkit.http.uploads``), which a file gateway runs on what its
-  route hands it, typed as ``Upload`` rather than Starlette's
-  ``UploadFile`` (ADR 0177); and the problems a route raises
-  (``domainkit.http.problems``: ``APIError``, ``FieldError``), so a file
-  gateway refuses a file with the code a route would (ADR 0182), and
-  only the names its ``__all__`` lists. The rest of
+- ``application``: no ``infrastructure`` or ``api`` code, no web or
+  database libraries, and no outgoing calls (``domainkit.outbound``); it
+  reaches storage and other services through ports.
+- ``infrastructure``: no ``api`` code and no web libraries. It calls other
+  services through ``domainkit.outbound`` (the outgoing HTTP client):
+  calling another service is what an adapter does. Of ``domainkit.http``
+  it may import the client's 2.8 path (``domainkit.http.client``, ADR
+  0195); the checks and storing of uploads (``domainkit.http.uploads``),
+  which a file gateway runs on what its route hands it, typed as
+  ``Upload`` rather than Starlette's ``UploadFile`` (ADR 0177); and the
+  problems a route raises (``domainkit.http.problems``: ``APIError``,
+  ``FieldError``), so a file gateway refuses a file with the code a route
+  would (ADR 0182), and only the names its ``__all__`` lists. The rest of
   ``domainkit.http.errors``, which builds responses, stays out.
 - Another domain may be used only through its ``application`` layer or its
   ``domain.events`` (bounded contexts stay decoupled).
@@ -46,6 +48,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final, Self
 
+from domainkit.conf.global_settings import LAYERS as LAYERS
+
 if TYPE_CHECKING:
     from domainkit.conf.global_settings import ArchitectureConfig
 
@@ -61,9 +65,6 @@ __all__ = [
     "check_domains",
     "layer_warnings",
 ]
-
-LAYERS: Final = ("domain", "application", "infrastructure", "api")
-"""Layer packages of a domain, innermost first."""
 
 LAYER_MODULES: Final = MappingProxyType(
     {
@@ -92,6 +93,7 @@ FORBIDDEN_LIBRARIES: Final = {
         "redis",
         "domainkit.db",
         "domainkit.http",
+        "domainkit.outbound",
     ),
     "infrastructure": ("fastapi", "starlette", "domainkit.http"),
 }
@@ -100,6 +102,7 @@ FORBIDDEN_LIBRARIES: Final = {
 ALLOWED_MODULES: Final = {
     "infrastructure": (
         "domainkit.http.client",
+        "domainkit.outbound.client",
         "domainkit.http.uploads",
         "domainkit.http.problems",
     )
@@ -107,7 +110,23 @@ ALLOWED_MODULES: Final = {
 """Modules a layer may import although a library it must not use holds them.
 
 An entry lifts only a library entry less specific than itself: a project
-that forbids ``domainkit.http.client`` by name forbids it.
+that forbids ``domainkit.http.client`` by name forbids it. That module is
+the client's path of 2.8; the client lives in ``domainkit.outbound``,
+which no default rule names for the infrastructure layer, and which the
+exception lifts as it lifts the old path, from a project's rule on all of
+``domainkit`` (ADR 0195).
+"""
+
+MOVED: Final = MappingProxyType(
+    {
+        "domainkit.http.client": "domainkit.outbound.client",
+        "domainkit.http.guard": "domainkit.outbound.guard",
+    }
+)
+"""Modules that left ``domainkit.http`` in 2.9, by their 2.8 path (ADR 0195).
+
+A project's rule that names an old path, or a package that held it, names
+the new one too: it keeps applying to the same code.
 """
 
 _PUBLIC_ONLY: Final = ("domainkit.http.problems",)
@@ -197,20 +216,47 @@ class LayerRules:
         """These rules with more entries; nothing already here is removed.
 
         Nothing extends ``allowed_modules``: a project adds rules, never
-        exceptions to them.
+        exceptions to them. A library entry that names a module's path of
+        2.8 (``domainkit.http.client``), or a package that held it
+        (``domainkit.http``), names its 2.9 home too (``MOVED``), where the
+        entry kept a layer from the old path.
         """
+        more = {
+            layer: (*entries, *self._moved(layer, entries))
+            for layer, entries in (forbidden_libraries or {}).items()
+        }
         return type(self)(
             layers=_merged(self.layers, layers),
             domain_allowed=_merged(self.domain_allowed, domain_allowed),
-            forbidden_libraries=_merged_table(
-                self.forbidden_libraries, forbidden_libraries or {}
-            ),
+            forbidden_libraries=_merged_table(self.forbidden_libraries, more),
             allowed_modules=self.allowed_modules,
             forbidden_layers=_merged_table(
                 self.forbidden_layers, forbidden_layers or {}
             ),
             public_surface=_merged(self.public_surface, public_surface),
         )
+
+    def _moved(self, layer: str, entries: Iterable[str]) -> Iterator[str]:
+        """The 2.9 homes of what ``entries`` forbade ``layer`` at a path of 2.8.
+
+        Under the default exceptions: a project's ``domainkit.http`` entry
+        for the infrastructure layer left the client to it in 2.8, as the
+        exception for ``domainkit.http.client`` lifted it, and leaves
+        ``domainkit.outbound.client`` to it now. An entry these rules hold
+        already for the layer adds nothing: a project that repeats a default
+        rule asks for no more than the default.
+        """
+        held = self.forbidden_libraries.get(layer, ())
+        for entry in entries:
+            if entry in held:
+                continue
+            for old, new in MOVED.items():
+                if _within(entry, (old,)):
+                    yield new + entry.removeprefix(old)
+                elif _within(old, (entry,)):
+                    exception = _closest(old, self.allowed_modules.get(layer, ()))
+                    if exception is None or len(exception) <= len(entry):
+                        yield new
 
     @classmethod
     def from_config(cls, config: "ArchitectureConfig") -> Self:
@@ -230,7 +276,7 @@ def project_rules() -> LayerRules:
     Without a settings module (a script, a test of the rules themselves) the
     defaults apply.
     """
-    from domainkit.conf import settings  # The settings import this module.
+    from domainkit.conf import settings  # Read only when the rules are asked for.
     from domainkit.exceptions import ImproperlyConfigured
 
     try:

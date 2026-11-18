@@ -1106,7 +1106,7 @@ password has appeared in a data breach: choose another one."
   so the answer's size does not tell the prefix, and the ending is
   compared here. domainkit's logs name the API's origin, never the
   prefix.
-- **It goes through the outgoing client** (`domainkit.http.client`, the
+- **It goes through the outgoing client** (`domainkit.outbound.client`, the
   `httpclient` extra), so the call is bounded by `TIMEOUT` (2 seconds,
   retries included) and by the request's deadline, and after
   `HTTP_CLIENT.BREAKER_FAILURES` failures in a row it fails at once for
@@ -1125,7 +1125,7 @@ The routes that check a password inside their transaction (a reset, a
 signup's code, a change at the first login) hold their database
 connection for the check, `TIMEOUT` at most.
 
-In tests, fake the API with `domainkit.http.client.stub`, or leave the
+In tests, fake the API with `domainkit.outbound.client.stub`, or leave the
 check off in the test settings: tests never call it on their own.
 
 ## Users in tests

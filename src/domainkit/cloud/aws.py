@@ -32,7 +32,7 @@ from domainkit.keys import KeyProviderError
 if TYPE_CHECKING:
     import httpx2
 
-    from domainkit.http.client import HttpClient
+    from domainkit.outbound.client import HttpClient
 
 __all__ = [
     "ALGORITHM",
@@ -212,7 +212,7 @@ def web_identity_credentials(
     """
 
     async def fetch() -> AwsCredentials:
-        from domainkit.http.client import HttpClient
+        from domainkit.outbound.client import HttpClient
 
         token = (await asyncio.to_thread(token_file.read_text)).strip()
         sts = HttpClient(
@@ -266,7 +266,7 @@ def container_credentials(
     """
 
     async def fetch() -> AwsCredentials:
-        from domainkit.http.client import HttpClient
+        from domainkit.outbound.client import HttpClient
 
         endpoint = HttpClient(propagate=False, breaker=False)
         headers = {} if authorization is None else {"Authorization": authorization}

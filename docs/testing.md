@@ -151,7 +151,8 @@ a project's `conftest.py` never needs a private name:
 | The throttled logs (`domainkit.log.ThrottledLog`) have forgotten what they held back, so a test's first line is written. | `domainkit.log.reset_throttled()` |
 | The principal cache is empty: a user is read from the database again. | `domainkit.contrib.auth.principals.invalidate_all()` |
 | The admins' error reports have forgotten what went out lately, so a test's first report is sent (*new in 2.9*). | `domainkit.contrib.mail.admins.reset_reports()` |
-| Every outgoing HTTP client's circuits are closed: a client that mail, text messages, push, search, identity, or captcha share between calls carries no open circuit into the next test (New in 2.9). | `domainkit.http.client.reset_circuits()` |
+| Every outgoing HTTP client's circuits are closed: a client that mail, text messages, push, search, identity, or captcha share between calls carries no open circuit into the next test (New in 2.9). | `domainkit.outbound.client.reset_circuits()` |
+| The push backends have forgotten the tokens they keep between sends (FCM's accounts, APNs' signed tokens, Push Kit's apps), so a token one test's stub answered never reaches the next test (*new in 2.9*). | `domainkit.contrib.notifications.push.reset_tokens()` |
 | Memory ledgers (`memory://` in `LEDGERS`) and memory storages are empty, as the databases' ids start again after `db`. Within the test they keep what they hold when the ledgers close: after a command, `outbox.run_queued()`, or a client's shutdown (since 2.9). Ledgers that hold connections (immudb's) stay open. | `ledgers.reset()`, `storages.reset()` |
 | The databases are refused unless the test requested them ([Database access](#database-access)). | `database_blocker` |
 
@@ -159,6 +160,10 @@ a project's `conftest.py` never needs a private name:
 | --- | --- |
 | The subscriptions, hooks (`on_ready(check, domain=...)` and every other hook point), tasks, dynamic settings (*new in 2.9*), metric refreshers, and currencies that the test added are dropped, and those it removed come back. When the test's fixtures load the domains (a client, `db`), what their `ready()` registered stays and what the test's body adds is dropped. A test whose body loads the domains itself keeps what it registers, because its registrations cannot be told from theirs. | `event_bus.subscriptions_kept()`, `domainkit.apps.hooks.hooks_kept()`, `domainkit.contrib.flags.declared_kept()`, `domainkit.contrib.messaging.tasks_kept()`, `domainkit.http.metrics.refreshers_kept()`, `domainkit.money.currencies_kept()` |
 | Its error reports are sent and its logs written ([Error reports and logs](#error-reports-and-logs)). | `flush_reports()`, `flush_logs()` |
+
+Within a test, `domainkit.contrib.messaging.unregister_task(key)` forgets
+one task, as a worker of an older release would not know it (*new in
+2.9*).
 
 What a module-scoped or session-scoped fixture sends to an outbox is gone
 by the time a test runs: send it in the test, or in a function-scoped
@@ -1296,7 +1301,7 @@ def test_the_transfer_is_audited(client: TestClient) -> None:
 **Key services.** `domainkit.testing.kms` has `FakeKms` (AWS KMS's JSON
 API, which checks each request's SigV4 signature) and `FakeVault`
 (Vault's transit engine). They are handlers for
-`domainkit.http.client.stub`, so `KEYS["PROVIDER"] = "aws-kms"` or
+`domainkit.outbound.client.stub`, so `KEYS["PROVIDER"] = "aws-kms"` or
 `"vault"` can be tested without the service:
 
 ```python
@@ -1304,7 +1309,7 @@ from collections.abc import Iterator
 
 import pytest
 
-from domainkit.http.client import stub
+from domainkit.outbound.client import stub
 from domainkit.testing.kms import FakeKms, FakeVault
 
 
@@ -1330,15 +1335,19 @@ these helpers (TEST-21).
 
 ## Outgoing calls
 
-Code that calls other services through `domainkit.http.client` is tested
+Code that calls other services through `domainkit.outbound.client` is tested
 without them. `stub(handler)` sends every call made in its block (and in
 tasks it starts) to `handler`, a function of an `httpx2.Request` that
-returns an `httpx2.Response` ([runtime.md](runtime.md#outgoing-http-calls)):
+returns an `httpx2.Response` ([runtime.md](runtime.md#outgoing-http-calls)).
+A test patches one of the client's names in `domainkit.outbound.client`,
+the module that reads it. A 2.8 test that patches `domainkit.http.client`,
+the client's path until 2.9, still reaches it: a name set there is set
+on the new module ([upgrading.md](upgrading.md#28-to-29)):
 
 ```python
 import httpx2
 
-from domainkit.http.client import stub
+from domainkit.outbound.client import stub
 from domainkit.testing import TestClient
 
 

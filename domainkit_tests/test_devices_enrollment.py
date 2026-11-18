@@ -324,8 +324,8 @@ def test_a_breached_new_password_is_refused_before_the_code(app: App) -> None:
     """The breached-password check runs where the new password is checked."""
     from domainkit.contrib.auth import AuthUnitOfWork
     from domainkit.contrib.auth.models import UserId
-    from domainkit.http.client import stub
     from domainkit.management.base import run_async
+    from domainkit.outbound.client import stub
 
     client = app(PHONE)
     alice = create_user("alice", email="alice@example.com", proved=True)

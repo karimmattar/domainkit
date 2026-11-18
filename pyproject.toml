@@ -92,20 +92,20 @@ testing = [
 # Outgoing webhooks (domainkit.contrib.webhooks) send with httpx2 and encrypt
 # subscription secrets with AES-GCM.
 webhooks = ["httpx2 (>=2.13.0,<3.0.0)", "cryptography (>=50.0.2,<51.0.0)"]
-# Outgoing HTTP calls (domainkit.http.client): pooled, bounded by the
+# Outgoing HTTP calls (domainkit.outbound.client): pooled, bounded by the
 # request's deadline, retried, with a circuit breaker per host.
 # httpcore2 (httpx2's transport) for its pool and network backend.
 httpclient = ["httpx2 (>=2.13.0,<3.0.0)", "httpcore2 (>=2.13.0,<3.0.0)"]
 # Encrypted fields and their keys (domainkit.keys, domainkit.contrib.keys):
 # AES-GCM, and the key services (AWS KMS, Vault) reached through
-# domainkit.http.client (INFRA-19, DSGN-31).
+# domainkit.outbound.client (INFRA-19, DSGN-31).
 keys = [
     "cryptography (>=50.0.2,<51.0.0)",
     "httpx2 (>=2.13.0,<3.0.0)",
     "httpcore2 (>=2.13.0,<3.0.0)",
 ]
 # Cloud adapters (domainkit.cloud, domainkit.storage's S3, GCS, and Azure
-# storages): their calls go through domainkit.http.client, and Google's
+# storages): their calls go through domainkit.outbound.client, and Google's
 # service accounts sign with RSA.
 cloud = [
     "cryptography (>=50.0.2,<51.0.0)",
@@ -114,7 +114,7 @@ cloud = [
 ]
 # Logging in through identity providers (domainkit.contrib.identity):
 # OpenID Connect ID tokens verified with PyJWT, providers called through
-# domainkit.http.client.
+# domainkit.outbound.client.
 identity = [
     "pyjwt[crypto] (>=2.15.0,<3.0.0)",
     "httpx2 (>=2.13.0,<3.0.0)",

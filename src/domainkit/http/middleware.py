@@ -36,6 +36,8 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from domainkit import clock
 from domainkit.conf import settings
+from domainkit.context import ADDRESS_CACHE as ADDRESS_CACHE
+from domainkit.context import MAX_CACHED_ADDRESS as MAX_CACHED_ADDRESS
 from domainkit.context import UNMATCHED_PATH as UNMATCHED_PATH
 from domainkit.context import (
     RequestContext,
@@ -101,12 +103,6 @@ INVALID_DATA: Final = 1007
 type _Network = ipaddress.IPv4Network | ipaddress.IPv6Network
 type RawHeaders = list[tuple[bytes, bytes]]
 """Headers as ASGI messages carry them: lowercase names, latin-1 values."""
-
-ADDRESS_CACHE: Final = 4096
-"""Addresses each cache of parsed client addresses keeps, the latest used."""
-MAX_CACHED_ADDRESS: Final = 64
-"""Longer texts are parsed every time, never kept: an IPv6 zone can be any length."""
-
 
 UNIX: Final = "unix"
 """In ``TRUSTED_PROXIES``: the peer of a unix socket, which has no address."""

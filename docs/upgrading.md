@@ -206,7 +206,7 @@ project that relied on 2.8's behaviour changes, and what to run.
   messages and push), `identity`, `captcha`, and `mail`, where they were
   `other`: change a dashboard or an alert on `client="other"`. The test
   plugin closes every client's circuits before each test; a test suite
-  that does not use it calls `domainkit.http.client.reset_circuits()`
+  that does not use it calls `domainkit.outbound.client.reset_circuits()`
   between tests, or a circuit one test opens refuses the next one's
   calls.
 - **The worker's log lines about a failing message name its id**, after
@@ -375,6 +375,30 @@ No migration.
   `default_credentials` calls `environment_credentials` from
   `domainkit.cloud.aws`, so patch it there
   (`monkeypatch.setattr("domainkit.cloud.aws.environment_credentials", ...)`).
+- **The outgoing client is defined in `domainkit.outbound.client`, and its
+  guard in `domainkit.outbound.guard`.** Every name still imports from
+  `domainkit.http.client` and `domainkit.http.guard`, the same objects,
+  and neither path warns in 2.9; a later minor release may deprecate the
+  old ones. What prints a class by its module prints the new one
+  (`domainkit.outbound.client.CircuitOpen`, in a trace's
+  `exception.type` or an admins' report). A test that patches a name of
+  an old path still reaches the code, which reads it from the new one;
+  write new patches against `domainkit.outbound.client` and
+  `domainkit.outbound.guard`. The calls still log as
+  `domainkit.http.client`. The layer rules let an infrastructure layer
+  import `domainkit.outbound` with no exception, and keep it out of the
+  application layer, as the old path was; a rule of the project's that
+  names `domainkit.http`, `domainkit.http.client`, or
+  `domainkit.http.guard` covers the new path too. Webhooks no longer
+  imports the guard's lookup: a test that faked DNS by patching `lookup`
+  in `domainkit.contrib.webhooks.guard` patches it in
+  `domainkit.outbound.guard` instead, the module that calls it. `lifecycle.register("guard
+  lookups", ...)` raises `ValueError`: shutdown closes the guard's lookup
+  threads itself, under that name.
+- **The plugin forgets the push services' tokens before each test**
+  (`domainkit.contrib.notifications.push.reset_tokens()`). A test that
+  counted on a token an earlier test's stub answered gets asked for one
+  again: answer the token request in its own stub.
 
 ### `migrate` makes the user lookups' indexes, on PostgreSQL
 

@@ -143,7 +143,7 @@ class ServiceAccount(GoogleAccount):
 
     async def _fetch(self, scope: str) -> tuple[str, float]:
         """Trade a signed assertion for a token."""
-        from domainkit.http.client import HttpClient
+        from domainkit.outbound.client import HttpClient
 
         token_endpoint = HttpClient(propagate=False)
         try:
@@ -175,7 +175,7 @@ class MetadataAccount(GoogleAccount):
 
     async def _fetch(self, scope: str) -> tuple[str, float]:
         """``GET .../token?scopes=``, with ``Metadata-Flavor: Google``."""
-        from domainkit.http.client import HttpClient
+        from domainkit.outbound.client import HttpClient
 
         server = HttpClient(propagate=False, breaker=False)
         try:

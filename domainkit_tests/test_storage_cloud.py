@@ -19,7 +19,7 @@ from domainkit.clock import freeze_time
 from domainkit.cloud import CloudAuthError, TokenSource
 from domainkit.cloud.azure import EntraApplication, ManagedIdentity, shared_key
 from domainkit.cloud.google import MetadataAccount, ServiceAccount
-from domainkit.http.client import stub
+from domainkit.outbound.client import stub
 from domainkit.storage import FileMissing, StorageError
 from domainkit.storage.azure import AzureBlobStorage
 from domainkit.storage.gcs import SCOPE, GCSStorage

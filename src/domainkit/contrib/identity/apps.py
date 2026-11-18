@@ -5,8 +5,7 @@ from collections.abc import Mapping
 from domainkit.apps import DomainConfig, registry
 from domainkit.apps.hooks import on_erase_subject, on_export_subject
 from domainkit.checks import CheckFailed, CheckMessage
-from domainkit.conf import settings
-from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
+from domainkit.conf import DEPLOYED_ENVIRONMENTS, settings
 from domainkit.db.routing import router
 from domainkit.ddd import event_bus
 from domainkit.exceptions import ImproperlyConfigured

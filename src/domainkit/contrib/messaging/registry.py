@@ -320,6 +320,16 @@ def tasks_kept() -> Iterator[None]:
         _tasks.update(kept)
 
 
+def unregister_task(key: str) -> None:
+    """Forget the task registered as ``key``; an unknown key is ignored (*new in 2.9*).
+
+    For tests: one that plays a worker which does not know a task, as an
+    old release's would not, registers it, queues it, and forgets it.
+    ``tasks_kept`` puts back every task a block registered.
+    """
+    _tasks.pop(key, None)
+
+
 def queues() -> frozenset[str]:
     """Every queue this process knows: ``default`` and the tasks' queues."""
     return frozenset({DEFAULT_QUEUE, *(spec.queue for spec in _tasks.values())})

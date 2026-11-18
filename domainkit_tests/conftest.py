@@ -259,7 +259,7 @@ def isolated_registries() -> Iterator[None]:
     reset_throttled()
     if (ledger := sys.modules.get("domainkit.ledger.handler")) is not None:
         ledger.ledgers.reset()  # Memory ledgers keep what they hold until then.
-    if (client := sys.modules.get("domainkit.http.client")) is not None:
+    if (client := sys.modules.get("domainkit.outbound.client")) is not None:
         client.reset_circuits()
     with registries_kept():
         yield

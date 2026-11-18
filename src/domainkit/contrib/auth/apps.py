@@ -19,8 +19,8 @@ from domainkit.apps.hooks import (
     on_export_subject,
 )
 from domainkit.checks import CheckFailed, CheckMessage, probes_left_out
-from domainkit.conf import settings
-from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS, REDIS_SCHEMES
+from domainkit.conf import DEPLOYED_ENVIRONMENTS, settings
+from domainkit.conf.global_settings import REDIS_SCHEMES
 from domainkit.contrib.contenttypes.sync import has_tables
 from domainkit.db import SqlAlchemyUnitOfWork, metadata
 from domainkit.db.hooks import on_committed, on_migrated, on_stage

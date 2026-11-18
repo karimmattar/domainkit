@@ -26,10 +26,8 @@ the global limit, with the same backends::
 
 import contextlib
 import dataclasses
-import functools
 import hashlib
 import inspect
-import ipaddress
 import logging
 import math
 import re
@@ -49,16 +47,12 @@ from domainkit.cache import CacheError, CacheUnavailable, caches
 from domainkit.clock import monotonic
 from domainkit.conf import settings
 from domainkit.conf.global_settings import REDIS_SCHEMES
+from domainkit.context import client_group as client_group
 from domainkit.context import current_request
 from domainkit.ddd.tenancy import scoped_key, shared_keys
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.errors import APIError, error_response
-from domainkit.http.middleware import (
-    ADDRESS_CACHE,
-    MAX_CACHED_ADDRESS,
-    request_path,
-    set_headers,
-)
+from domainkit.http.middleware import request_path, set_headers
 from domainkit.utils.module_loading import import_string
 from domainkit.utils.rates import parse_rate
 
@@ -545,54 +539,6 @@ def _quota(limit: int, decision: Decision) -> dict[str, str]:
         "RateLimit-Remaining": str(decision.remaining),
         "RateLimit-Reset": str(math.ceil(decision.reset_after)),
     }
-
-
-def client_group(host: str) -> str:
-    """The address a client is counted by: IPv4 as is, IPv6 by its network.
-
-    IPv4-mapped IPv6 addresses count as their IPv4 address. Hosts that are
-    not addresses (a test client's name) are returned unchanged.
-
-    Groups are remembered for the latest ``ADDRESS_CACHE`` hosts, so a
-    client seen again is not parsed again (an IPv6 network takes about
-    25 µs to work out): by host, and for IPv6 by host and
-    ``RATE_LIMIT_IPV6_PREFIX``, which only IPv6 hosts read.
-    """
-    remembered = len(host) <= MAX_CACHED_ADDRESS
-    group = _cached_address_group(host) if remembered else _address_group(host)
-    if group is not None:
-        return group
-    prefix = settings.RATE_LIMIT_IPV6_PREFIX
-    return _cached_network(host, prefix) if remembered else _network(host, prefix)
-
-
-@functools.lru_cache(maxsize=ADDRESS_CACHE)
-def _cached_address_group(host: str) -> str | None:
-    """``_address_group``, remembered for the latest hosts."""
-    return _address_group(host)
-
-
-@functools.lru_cache(maxsize=ADDRESS_CACHE)
-def _cached_network(host: str, prefix: int) -> str:
-    """``_network``, remembered for the latest IPv6 hosts and prefixes."""
-    return _network(host, prefix)
-
-
-def _address_group(host: str) -> str | None:
-    """``host``'s group if no prefix is needed; None for an IPv6 address."""
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
-        return host
-    if isinstance(address, ipaddress.IPv6Address):
-        return None if address.ipv4_mapped is None else str(address.ipv4_mapped)
-    return str(address)
-
-
-def _network(host: str, prefix: int) -> str:
-    """The network of ``prefix`` bits that IPv6 ``host`` is in."""
-    address = ipaddress.IPv6Address(host)
-    return str(ipaddress.IPv6Interface((address, prefix)).network)
 
 
 _SCOPE: Final = re.compile(r"[A-Za-z0-9_.-]{1,128}")

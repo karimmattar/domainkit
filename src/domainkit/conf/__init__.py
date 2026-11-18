@@ -20,6 +20,7 @@ from domainkit.conf.env import Env
 from domainkit.conf.global_settings import (
     DEFAULT_CACHE_ALIAS,
     DEFAULT_DB_ALIAS,
+    DEPLOYED_ENVIRONMENTS,
     ArchitectureConfig,
     BrokerConfig,
     CacheConfig,
@@ -58,6 +59,7 @@ use_settings: Final = _lazy.use
 __all__ = [
     "DEFAULT_CACHE_ALIAS",
     "DEFAULT_DB_ALIAS",
+    "DEPLOYED_ENVIRONMENTS",
     "SETTINGS_MODULE_VARIABLE",
     "UNSET",
     "ArchitectureConfig",

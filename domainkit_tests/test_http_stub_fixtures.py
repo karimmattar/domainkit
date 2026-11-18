@@ -16,9 +16,9 @@ import httpx2
 import pytest
 from fastapi import FastAPI
 
-from domainkit.http import client as client_module
 from domainkit.http.access import Public
-from domainkit.http.client import HttpClient, stub
+from domainkit.outbound import client as client_module
+from domainkit.outbound.client import HttpClient, stub
 from domainkit.testing import AsyncTestClient, TestClient
 
 RATES = HttpClient(base_url="https://rates.invalid", retries=0)

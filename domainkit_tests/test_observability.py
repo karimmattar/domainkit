@@ -493,10 +493,10 @@ def test_metrics_wiring_edges(monkeypatch: pytest.MonkeyPatch) -> None:
     async def refresh() -> None:
         return None
 
-    metrics.register_refresher(refresh)
-    metrics.register_refresher(refresh)
-    assert metrics._refreshers.count(refresh) == 1
-    metrics._refreshers.remove(refresh)
+    with metrics.refreshers_kept():
+        metrics.register_refresher(refresh)
+        metrics.register_refresher(refresh)
+        assert metrics._refreshers.count(refresh) == 1
 
     with (
         override_settings(MIDDLEWARE=METRICS_MIDDLEWARE),
@@ -536,14 +536,12 @@ def test_route_templates_and_failing_refreshers(
     async def broken() -> None:
         raise RuntimeError("gauge source down")
 
-    metrics.register_refresher(broken)
-    try:
+    with metrics.refreshers_kept():
+        metrics.register_refresher(broken)
         with override_settings(MIDDLEWARE=METRICS_MIDDLEWARE):
             client = TestClient(get_asgi_application())
             client.get("/ok")
             response = client.get("/metrics")
-    finally:
-        metrics._refreshers.remove(broken)
 
     assert response.status_code == 200
     assert "Metrics refresher" in caplog.text

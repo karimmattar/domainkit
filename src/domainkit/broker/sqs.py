@@ -8,7 +8,7 @@ visible again at once (``ChangeMessageVisibility`` to 0) to requeue it;
 unanswered within ``REDELIVER_AFTER``, it is handed out again. Bodies are
 sent as base64, the message id as an attribute.
 
-Calls go through ``domainkit.http.client`` (the ``cloud`` extra), signed
+Calls go through ``domainkit.outbound.client`` (the ``cloud`` extra), signed
 with SigV4: credentials from the URL (``sqs://KEY:SECRET@eu-west-1``)
 or the environment (variables, a web identity, a container or instance
 role). ``?endpoint=https://...`` names another endpoint (a VPC
@@ -41,7 +41,7 @@ class SqsBroker(PullBroker):
         """Call the region's endpoint, or the URL's ``endpoint``."""
         super().__init__()
         from domainkit.cloud.aws import credential_source
-        from domainkit.http.client import HttpClient
+        from domainkit.outbound.client import HttpClient
 
         self.config = config
         self.publish_timeout = config.PUBLISH_TIMEOUT

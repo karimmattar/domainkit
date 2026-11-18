@@ -30,9 +30,10 @@ from domainkit.clock import freeze_time
 from domainkit.conf import Settings, override_settings, settings
 from domainkit.context import RequestContext, bind_request
 from domainkit.exceptions import UpstreamError
-from domainkit.http import client as client_module
-from domainkit.http import guard
-from domainkit.http.client import (
+from domainkit.log import build_logging_config, configure_logging, flush_logs
+from domainkit.outbound import client as client_module
+from domainkit.outbound import guard
+from domainkit.outbound.client import (
     BREAKER_HOSTS,
     CallTimeout,
     CircuitBreaker,
@@ -47,7 +48,6 @@ from domainkit.http.client import (
     stub,
     tls_context,
 )
-from domainkit.log import build_logging_config, configure_logging, flush_logs
 from domainkit_tests.test_drivers import client_certificate  # noqa: F401 - fixture.
 from domainkit_tests.test_observability import tracer_provider  # noqa: F401 - fixture.
 
@@ -518,14 +518,14 @@ def test_backoff_spreads_waits_up_to_a_doubling_bound(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Full jitter: anywhere from 0 up to base times 2^attempt, capped."""
-    monkeypatch.setattr("domainkit.http.client.random.random", lambda: 1.0)
+    monkeypatch.setattr("domainkit.outbound.client.random.random", lambda: 1.0)
     assert [backoff(attempt, 0.1, 0.5) for attempt in range(4)] == [
         0.1,
         0.2,
         0.4,
         0.5,
     ]
-    monkeypatch.setattr("domainkit.http.client.random.random", lambda: 0.5)
+    monkeypatch.setattr("domainkit.outbound.client.random.random", lambda: 0.5)
     assert backoff(2, 0.1, 10.0) == pytest.approx(0.2)
 
 
@@ -1288,8 +1288,8 @@ def test_pools_are_built_from_http_client(
 async def test_the_lifespan_needs_no_client_module(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Without domainkit.http.client imported, there is nothing to close."""
-    monkeypatch.delitem(sys.modules, "domainkit.http.client")
+    """Without domainkit.outbound.client imported, there is nothing to close."""
+    monkeypatch.delitem(sys.modules, "domainkit.outbound.client")
     await lifecycle.close_http_clients()
 
 

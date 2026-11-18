@@ -4,6 +4,8 @@ The context lives in a ``ContextVar``, so concurrent requests never see each
 other's values, and tasks started inside a request inherit them.
 """
 
+import functools
+import ipaddress
 from collections.abc import Iterator, MutableMapping
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
@@ -18,6 +20,7 @@ __all__ = [
     "SYSTEM_ACTOR",
     "RequestContext",
     "bind_request",
+    "client_group",
     "current_request",
 ]
 
@@ -25,6 +28,10 @@ SYSTEM_ACTOR: Final = events.SYSTEM_ACTOR
 """The actor of work no caller asked for: periodic tasks, commands' messages."""
 UNMATCHED_PATH: Final = "unmatched"
 """The path logs show for a request no route matched (``ACCESS_LOG_PATH``)."""
+ADDRESS_CACHE: Final = 4096
+"""Addresses each cache of parsed client addresses keeps, the latest used."""
+MAX_CACHED_ADDRESS: Final = 64
+"""Longer texts are parsed every time, never kept: an IPv6 zone can be any length."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +158,59 @@ def caller_key(actor: str, impersonating: str | None = None) -> str:
     lookups) counts the actor: one person, one budget.
     """
     return actor if impersonating is None else f"{actor}:as:{impersonating}"
+
+
+def client_group(host: str) -> str:
+    """The address a client is counted by: IPv4 as is, IPv6 by its network.
+
+    IPv4-mapped IPv6 addresses count as their IPv4 address. Hosts that are
+    not addresses (a test client's name) are returned unchanged. The
+    network has ``RATE_LIMIT_IPV6_PREFIX`` bits (a /64), which only IPv6
+    hosts read: one customer usually holds a whole network. What counts a
+    caller's use by its address counts this, so it is one caller to each:
+    the rate limit, auth's throttles, the outgoing guard's lookups
+    (``domainkit.outbound.guard``), and a project's own throttles. Public
+    since 2.9; it was the rate limit's, which imports it from here.
+
+    Groups are remembered for the latest ``ADDRESS_CACHE`` hosts, so a
+    client seen again is not parsed again (an IPv6 network takes about
+    25 µs to work out): by host, and for IPv6 by host and prefix.
+    """
+    remembered = len(host) <= MAX_CACHED_ADDRESS
+    group = _cached_address_group(host) if remembered else _address_group(host)
+    if group is not None:
+        return group
+    prefix = settings.RATE_LIMIT_IPV6_PREFIX
+    return _cached_network(host, prefix) if remembered else _network(host, prefix)
+
+
+@functools.lru_cache(maxsize=ADDRESS_CACHE)
+def _cached_address_group(host: str) -> str | None:
+    """``_address_group``, remembered for the latest hosts."""
+    return _address_group(host)
+
+
+@functools.lru_cache(maxsize=ADDRESS_CACHE)
+def _cached_network(host: str, prefix: int) -> str:
+    """``_network``, remembered for the latest IPv6 hosts and prefixes."""
+    return _network(host, prefix)
+
+
+def _address_group(host: str) -> str | None:
+    """``host``'s group if no prefix is needed; None for an IPv6 address."""
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return host
+    if isinstance(address, ipaddress.IPv6Address):
+        return None if address.ipv4_mapped is None else str(address.ipv4_mapped)
+    return str(address)
+
+
+def _network(host: str, prefix: int) -> str:
+    """The network of ``prefix`` bits that IPv6 ``host`` is in."""
+    address = ipaddress.IPv6Address(host)
+    return str(ipaddress.IPv6Interface((address, prefix)).network)
 
 
 def current_actor() -> Actor | None:
