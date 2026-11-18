@@ -23,6 +23,10 @@ Every step here is run as written by `domainkit_tests/test_recipes.py`.
 
 ### Step 1: make a project with a resource
 
+The domain is layered (`--minimal` is a small layered domain), as a
+service large enough for a replica often is. In the tutorial's four-file
+layout, the same change goes in `routes.py`:
+
 ```bash
 domainkit init shopAPI shop
 cd shop

@@ -27,7 +27,10 @@ here is run as written by `domainkit_tests/test_recipes.py`.
 ### Step 1: make a wallet with two commands
 
 Make a project, a `wallets` domain, and two commands: a deposit, and a
-payment to another wallet:
+payment to another wallet. The domain is layered (`--minimal` is a small
+layered domain): `addcommand` writes a reference to another aggregate
+(`to:ref:Wallet`) only in a layered domain, not in the tutorial's four
+files:
 
 ```bash
 domainkit init payAPI pay

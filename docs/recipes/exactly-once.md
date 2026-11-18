@@ -24,7 +24,9 @@ here is run as written by `domainkit_tests/test_recipes.py`.
 
 ### Step 1: make an account to credit
 
-Make a project with an `accounts` domain:
+Make a project with an `accounts` domain. It is layered (`--minimal` is
+a small layered domain), so the task gets a layer of its own,
+`infrastructure`, apart from the rules:
 
 ```bash
 domainkit init ledgerAPI ledger
