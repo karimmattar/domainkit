@@ -106,7 +106,7 @@ def waiting(now: dbclock.Moment) -> ColumnElement[bool]:
     return and_(messages.c.status == PENDING, not_(running(now)))
 
 
-def unfinished_arguments(target: str, argument: str) -> Select[tuple[str]]:
+def unfinished_arguments(target: str, argument: str) -> Select[str]:
     """A query of ``argument`` in each unfinished message of ``target`` (New in 2.9).
 
     Unfinished: pending (running and published included) or held; not
