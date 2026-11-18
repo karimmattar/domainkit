@@ -195,7 +195,7 @@ statuses, and the amendments they name.
 | [0182](0182-let-a-gateway-raise-a-routes-problems-and-name-users-by-the-fields-a-project-chooses.md) | Let a gateway raise a route's problems, and name users by the fields a project chooses | Accepted |
 | [0183](0183-keep-live-events-and-approval-requests-to-their-tenant-and-rows-of-no-tenant-to-keys-held-everywhere.md) | Keep live events and approval requests to their tenant, and rows of no tenant to keys held everywhere | Accepted; amended 2026-11-18 (at the end) |
 | [0185](0185-bound-keyset-pages-index-the-user-lookups-and-read-fewer-grants.md) | Bound keyset pages, index the user lookups, and read fewer grants | Accepted |
-| [0186](0186-answer-a-commit-as-committed-a-lost-database-as-unavailable-start-loudly-and-name-the-probes-once.md) | Answer a commit as committed, a lost database as unavailable, start loudly, and name the probes once | Accepted |
+| [0186](0186-answer-a-commit-as-committed-a-lost-database-as-unavailable-start-loudly-and-name-the-probes-once.md) | Answer a commit as committed, a lost database as unavailable, start loudly, and name the probes once | Accepted; amended 2026-11-18 (at the end) |
 | [0187](0187-keep-the-workers-heartbeat-to-its-liveness-fail-deliveries-whose-task-ended-and-share-provider-clients.md) | Keep the worker's heartbeat to its liveness, fail deliveries whose task ended, and share provider clients | Accepted |
 | [0189](0189-publish-the-documentation-site-from-the-newest-releases-tag.md) | Publish the documentation site from the newest release's tag | Accepted |
 | [0190](0190-keep-runnable-examples-as-projects-that-domainkits-tests-run.md) | Keep runnable examples as projects that domainkit's tests run | Accepted |

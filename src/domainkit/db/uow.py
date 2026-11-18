@@ -449,25 +449,11 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         return isinstance(exc, DBAPIError) and sqlstate_of(exc) in CONFLICTS
 
     def _refused(self, exc: BaseException) -> bool:
-        """Whether the commit surely stored nothing.
+        """Whether the commit surely stored nothing: the domain or the database refused.
 
-        A constraint, a stale version, a lost race, or another error the
-        server sent back; SQLAlchemy's own errors that come before a
-        ``COMMIT`` is sent (``REFUSED_BEFORE_COMMIT``); and a statement it
-        could not build or bind. A connection lost or cut off (SQLSTATE
-        class ``08``), a timeout, or a cancellation leaves the outcome
-        unknown: the server may have applied the ``COMMIT`` whose answer
-        never came. So do SQLAlchemy's other errors (``InvalidRequestError``,
-        ``MissingGreenlet``): a session's ``after_commit`` listener may raise
-        them once the ``COMMIT`` landed.
+        What the database refuses is ``refused_commit``'s.
         """
-        if super()._refused(exc) or isinstance(exc, REFUSED_BEFORE_COMMIT):
-            return True
-        if isinstance(exc, DBAPIError):
-            return not exc.connection_invalidated and not (
-                sqlstate_of(exc) or ""
-            ).startswith(CONNECTION_EXCEPTION)
-        return isinstance(exc, StatementError)  # Built or bound: never sent.
+        return super()._refused(exc) or refused_commit(exc)
 
     async def _begin_savepoint(self) -> Savepoint:
         """``SAVEPOINT`` in the session's transaction (flushing first)."""
@@ -480,6 +466,29 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         if isinstance(exc, IntegrityError):
             return duplicate_value(exc, metadata)
         return None
+
+
+def refused_commit(exc: BaseException) -> bool:
+    """Whether ``exc``, raised as a transaction committed, says it stored nothing.
+
+    A constraint, a stale version, a lost race, or another error the
+    server sent back; SQLAlchemy's own errors that come before a
+    ``COMMIT`` is sent (``REFUSED_BEFORE_COMMIT``); and a statement it
+    could not build or bind. A connection lost or cut off (SQLSTATE class
+    ``08``), a timeout, or a cancellation leaves the outcome unknown: the
+    server may have applied the ``COMMIT`` whose answer never came. So do
+    SQLAlchemy's other errors (``InvalidRequestError``, ``MissingGreenlet``):
+    a session's ``after_commit`` listener may raise them once the
+    ``COMMIT`` landed. The unit of work asks it, and so does a commit made
+    outside one (``enqueue``'s).
+    """
+    if isinstance(exc, REFUSED_BEFORE_COMMIT):
+        return True
+    if isinstance(exc, DBAPIError):
+        return not exc.connection_invalidated and not (
+            sqlstate_of(exc) or ""
+        ).startswith(CONNECTION_EXCEPTION)
+    return isinstance(exc, StatementError)  # Built or bound: never sent.
 
 
 STALE_TABLE: Final = re.compile(r"\bstatement on table '([^']+)'")

@@ -378,8 +378,13 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 
 - A request whose commit is in doubt (the deadline passed, or the
   connection was lost, as its `COMMIT` was sent) answers 503 without
-  `Retry-After`, with a detail that says the change may have been made
-  (audit A28-REL-01, A28-REL-03).
+  `Retry-After`, with a detail that says the change may have been made.
+  So it does whichever of its tasks committed (a task group's, the one a
+  `BaseHTTPMiddleware` serves the route in), as the deadline they share
+  says (`Deadline.in_doubt`), and when `enqueue`'s own commit was cut
+  off. Only that commit's error is in doubt, not another equal to it
+  ([The request flow](docs/request-flow.md#8-commit)) (audit A28-REL-01,
+  A28-REL-03, A28-REL-04).
 
 - A database that cannot be reached, or cannot serve now (class `08`,
   `57P01` to `57P03`, `53300`, or a connection refused as the pool opens

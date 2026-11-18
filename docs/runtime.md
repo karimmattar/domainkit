@@ -1385,6 +1385,11 @@ The deadline itself is a `deadlines.Deadline`:
 - `deadline.reset(seconds)` moves it to `seconds` after the work
   started, and `deadline.clear()` removes it. The timer that enforces
   the deadline follows.
+- `deadline.in_doubt` says whether a commit of the work failed and may
+  have been applied (the deadline passed, or the connection was lost, as
+  it committed), in whichever task shares the deadline: a request cut
+  off then is answered without `Retry-After`
+  ([The request flow](request-flow.md#8-commit)).
 - `deadlines.enforced()` says whether a timer cuts the running task off
   when the deadline passes: true in the task that entered a `timeout`
   block (an HTTP request included), false in a task that only shares a

@@ -28,8 +28,10 @@ from domainkit.context import current_request
 from domainkit.db import UTCDateTime, connections, dbclock
 from domainkit.db.hooks import on_stage_transaction, on_transaction_committed
 from domainkit.db.routing import router
+from domainkit.db.uow import refused_commit
 from domainkit.ddd import DeferredTask, DomainEvent, EventBus, HandlerTimedOut
 from domainkit.ddd.tenancy import current_tenant
+from domainkit.ddd.uow import mark_in_doubt
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.reporting import report_error
 from domainkit.tracing import trace_headers
@@ -345,14 +347,24 @@ async def enqueue(
     so a retry does not queue it again. What follows the commit runs free
     of the deadline, as a unit of work's does (``deadlines.after_commit``):
     each ``on_transaction_committed`` hook within ``EVENT_HANDLER_TIMEOUT``.
+    A commit that fails and may have been applied (the connection lost, or
+    the deadline passed, as it committed) marks its error as a unit of
+    work's does (``mark_in_doubt``): the request is not told to retry.
     """
     config = registry.settings(MessagingSettings)
     task = DeferredTask(function, kwargs, delay, dedupe_key, ordering_key)
     rows = rows_for((), [task], EventBus(), config)
-    async with connections.engine(config.DATABASE).begin() as connection:
-        await write(connection, connection.dialect.name, rows)
-        for staged in on_stage_transaction:
-            await staged.call(connection, config.DATABASE)
+    committing = False
+    try:
+        async with connections.engine(config.DATABASE).begin() as connection:
+            await write(connection, connection.dialect.name, rows)
+            for staged in on_stage_transaction:
+                await staged.call(connection, config.DATABASE)
+            committing = True  # The block commits as it ends.
+    except BaseException as exc:
+        if committing and not refused_commit(exc):
+            mark_in_doubt(exc)  # As a unit of work's: it may be queued.
+        raise
     seconds = settings.EVENT_HANDLER_TIMEOUT
     with deadlines.after_commit():
         for hook in on_transaction_committed:

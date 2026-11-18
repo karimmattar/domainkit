@@ -7,7 +7,8 @@ authentication, reading the body, the handler, and what they wait on (the
 database, outgoing calls). When it passes, that work is cancelled, the
 request is answered 503 ``deadline_exceeded`` with ``Retry-After``, and one
 warning is logged. A request cut off as it committed gets no
-``Retry-After``: its change may have been made (``failed_in_doubt``).
+``Retry-After``: its change may have been made (``failed_in_doubt``, or
+``Deadline.in_doubt`` when a task the request started committed).
 
 Once the response starts, the deadline is lifted: a streamed response (an
 export, Server-Sent Events) and background tasks that run after the
@@ -103,7 +104,10 @@ class DeadlineMiddleware:
                 logged_path(scope),
                 _given(bound),
             )
-            await _answer(scope, receive, send, in_doubt=failed_in_doubt(exc))
+            # A commit in a task the request started (a BaseHTTPMiddleware's)
+            # leaves its error there: the deadline they share notes it.
+            noted = bound.deadline is not None and bound.deadline.in_doubt
+            await _answer(scope, receive, send, in_doubt=noted or failed_in_doubt(exc))
 
 
 def lift(bound: deadlines.Timeout) -> None:

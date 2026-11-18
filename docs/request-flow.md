@@ -231,7 +231,10 @@ passes during it, or a connection lost before its answer came, leaves
 the outcome unknown: the change may have been made. The unit of work
 counts such a commit in `uow.in_doubt`, and the request answers 503
 (`deadline_exceeded` or `database_unavailable`) without `Retry-After`,
-with a detail that says to check before sending it again. A client
+with a detail that says to check before sending it again. So it does
+whichever of the request's tasks committed: one the route started (a
+task group), or the one a `BaseHTTPMiddleware` serves the route in, and
+so does `enqueue`, which commits on its own. A client
 retries a write safely only with an
 [`Idempotency-Key`](contrib/idempotency.md): the retry gets the first
 answer, or `409 idempotency_response_unavailable` once the first

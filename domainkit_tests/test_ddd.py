@@ -509,6 +509,13 @@ class FrozenFailure(Exception):
     reason: str
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class SlottedFailure(Exception):
+    """An error that takes neither an attribute nor a weak reference."""
+
+    reason: str
+
+
 class Sealed(Exception):
     """An error that takes no attribute and has no hash."""
 
@@ -523,17 +530,19 @@ class Sealed(Exception):
     ("failure", "marked"),
     [
         (FrozenFailure("the reply was lost"), True),
-        (Sealed("the reply was lost"), False),
+        (Sealed("the reply was lost"), True),
+        (SlottedFailure("the reply was lost"), False),
     ],
-    ids=["frozen-dataclass", "unhashable"],
+    ids=["frozen-dataclass", "unhashable", "no-weak-reference"],
 )
 async def test_an_error_that_takes_no_attribute_is_raised_as_it_was(
     failure: Exception, marked: bool
 ) -> None:
     """Marking the error in doubt never replaces it.
 
-    A frozen dataclass's error is marked aside; one that is not hashable
-    either stays unmarked. Both are raised as they were, and counted.
+    A frozen dataclass's error is marked aside, by its identity, and so is
+    one that is not hashable; one that takes no weak reference either
+    stays unmarked. Each is raised as it was, and counted.
     """
     uow = LosesItsAnswer(failure)
 
@@ -546,6 +555,24 @@ async def test_an_error_that_takes_no_attribute_is_raised_as_it_was(
     assert caught.value is failure
     assert uow.in_doubt == 1
     assert failed_in_doubt(failure) is marked
+
+
+async def test_an_error_equal_to_one_in_doubt_is_not_in_doubt() -> None:
+    """The mark is the error's own, not its value's.
+
+    A frozen dataclass's error equals, and hashes as, another of the same
+    fields. The commit's error is in doubt while it lives; an equal error
+    raised elsewhere, by a refused commit say, is not.
+    """
+    failure = FrozenFailure("the reply was lost")
+    twin = FrozenFailure("the reply was lost")
+    assert (twin == failure, hash(twin) == hash(failure)) == (True, True)
+    uow = LosesItsAnswer(failure)
+
+    with pytest.raises(FrozenFailure):
+        async with uow:
+            await uow.commit()
+    assert (failed_in_doubt(failure), failed_in_doubt(twin)) == (True, False)
 
 
 async def test_handlers_a_cancellation_stops_are_logged_and_reported(
