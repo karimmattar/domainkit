@@ -16,6 +16,8 @@ Its links to groups and permissions get tables of their own, named after
 it (``accounts_users_groups``, ``accounts_users_permissions``).
 """
 
+import hashlib
+from collections.abc import Callable
 from functools import partial
 from typing import Any
 
@@ -52,6 +54,8 @@ from domainkit.db import (
     metadata,
     register_column_type,
 )
+from domainkit.db.derive import IDENTIFIER_LENGTH
+from domainkit.db.encrypted import EncryptedType
 
 from .exceptions import GroupNameTaken, MobileNumberTaken, UsernameTaken
 from .models import (
@@ -198,6 +202,43 @@ users = Table(
     info={"domain": "auth", "guarded": True},
 )
 """The default user's table; unused while ``AUTH.USER_TABLE`` names another."""
+
+
+def lookup_indexes(
+    model: type[AbstractBaseUser], table: Table, quote: Callable[[str], str] = str
+) -> dict[str, str]:
+    """The indexes ``migrate`` makes on PostgreSQL for the user lookups (since 2.9).
+
+    By name, each with what it indexes, as SQL (``quote`` quotes a name).
+    Logins, signups, and the checks for a taken address or username compare
+    ``lower()`` of ``EMAIL_FIELD`` and ``USERNAME_FIELD``; the admin API
+    lists users by the address, then the id, where addresses identify them.
+    A field the table lacks, or keeps encrypted, gets none.
+    """
+    plain = {
+        column.name
+        for column in table.columns
+        if not isinstance(column.type, EncryptedType)
+    }
+    email, username = model.EMAIL_FIELD, model.USERNAME_FIELD
+    found = {
+        _index_name(table.name, f"{field}_lower"): f"lower({quote(field)})"
+        for field in dict.fromkeys((email, username))
+        if field in plain
+    }
+    if email in plain:
+        found[_index_name(table.name, f"{email}_id")] = f"{quote(email)}, {quote('id')}"
+    return found
+
+
+def _index_name(table: str, suffix: str) -> str:
+    """``ix_<table>_<suffix>``, cut to PostgreSQL's 63 characters with a digest."""
+    name = f"ix_{table}_{suffix}"
+    if len(name) <= IDENTIFIER_LENGTH:
+        return name
+    digest = hashlib.sha256(name.encode()).hexdigest()[:8]
+    return f"{name[: IDENTIFIER_LENGTH - 9]}_{digest}"
+
 
 groups = Table(
     "domainkit_groups",

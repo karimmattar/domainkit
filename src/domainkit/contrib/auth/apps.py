@@ -55,7 +55,13 @@ from .permissions import declared_permissions, sync_permissions
 from .principals import invalidate_all, stamp_committed, stamp_pending, watch
 from .routing import AccountRoutes, on_account_routes
 from .settings import PRINCIPAL_TTL, AuthSettings, auth_settings
-from .tables import DEFAULT_USER_TABLES, permissions, start_mappers, users
+from .tables import (
+    DEFAULT_USER_TABLES,
+    lookup_indexes,
+    permissions,
+    start_mappers,
+    users,
+)
 from .validators import get_password_validators, preset_contradictions
 
 CONTENTTYPES = "domainkit.contrib.contenttypes"
@@ -126,6 +132,8 @@ class AuthConfig(DomainConfig):
         on_stage(self.stamp_changes)
         on_committed(self.after_commit)
         on_migrated(self.create_permissions)
+        self._leave_lookup_indexes()
+        on_migrated(self.index_lookups)
         invalidate_all()  # Settings, models, or databases may have changed.
         declared_permissions()
         if registry.is_installed(MESSAGING):
@@ -561,6 +569,36 @@ class AuthConfig(DomainConfig):
         # The permissions table's foreign key needs the content types one.
         if database == self.database and await has_tables(connection, permissions):
             await sync_permissions(connection)
+
+    async def index_lookups(self, connection: AsyncConnection, database: str) -> None:
+        """Make the user lookups' indexes after ``migrate``, on PostgreSQL.
+
+        ``lower()`` of the address and the username, and the admin's order
+        (``lookup_indexes``), each where missing. Not on SQLite, which
+        cannot reflect an index on ``lower()``: such an index would warn at
+        every ``makemigrations`` and snapshot, so they are not declared on
+        the table either, and revisions leave them alone (A28-PERF-02).
+        """
+        if database != self.database or connection.dialect.name != "postgresql":
+            return
+        if not await has_tables(connection, self.user_table):
+            return
+        preparer = connection.dialect.identifier_preparer
+        table = preparer.format_table(self.user_table)
+        wanted = lookup_indexes(self.user_model, self.user_table, preparer.quote)
+        for name, indexed in wanted.items():
+            await connection.exec_driver_sql(
+                f"CREATE INDEX IF NOT EXISTS {preparer.quote(name)} "
+                f"ON {table} ({indexed})"
+            )
+
+    def _leave_lookup_indexes(self) -> None:
+        """Have revisions leave the lookups' indexes alone (``unmanaged_indexes``)."""
+        info = self.user_table.info
+        names = lookup_indexes(self.user_model, self.user_table)
+        info["unmanaged_indexes"] = (
+            *dict.fromkeys((*info.get("unmanaged_indexes", ()), *names)),
+        )
 
     def _check_routing(self) -> None:
         """Users, their links, and content types must share one target.

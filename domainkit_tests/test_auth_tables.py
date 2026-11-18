@@ -1,17 +1,45 @@
-"""The auth tables: user columns (Django's lengths) and password hashes."""
+"""The auth tables: user columns (Django's lengths), indexes, and password hashes."""
 
-from sqlalchemy import Column, MetaData, Table, make_url
+import io
+import os
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any, Final
+
+import pytest
+from sqlalchemy import Column, MetaData, Table, event, inspect, make_url
 from sqlalchemy.dialects import sqlite
 from sqlalchemy.schema import CreateTable
 
-from domainkit.contrib.auth import PasswordHash
+from domainkit import setup
+from domainkit.apps import registry
+from domainkit.conf import override_settings
+from domainkit.contrib.auth import AbstractUser, PasswordHash
 from domainkit.contrib.auth.exceptions import UsernameTaken
 from domainkit.contrib.auth.tables import (
     PasswordHashType,
     abstract_base_user_columns,
     abstract_user_columns,
+    lookup_indexes,
     user_link_tables,
+    users,
 )
+from domainkit.contrib.auth.uow import AuthUnitOfWork
+from domainkit.db import connections
+from domainkit.ddd.query import Selection
+from domainkit.management import call_command
+from domainkit.management.base import run_async
+from domainkit_tests.conftest import (
+    ALPHA,
+    AUTH,
+    CONTENTTYPES,
+    FAST_HASHER,
+    POSTGRES_VARIABLE,
+)
+from domainkit_tests.support.auth import create_user
+
+ON_POSTGRES: Final = bool(os.environ.get(POSTGRES_VARIABLE))
 
 type ColumnSpec = tuple[str, str, bool | None, bool, bool]
 BASE_USER: list[ColumnSpec] = [
@@ -133,3 +161,159 @@ def test_link_tables_follow_the_user_table() -> None:
         ("permission_id", "Integer()", True, "domainkit_permissions.id", "CASCADE"),
     ]
     assert user_link_tables(people) == (user_groups, user_permissions)
+
+
+def test_lookup_indexes_follow_the_models_fields() -> None:
+    """``lower()`` of the address and the username, and ``(email, id)``.
+
+    A field the table lacks or encrypts gets none; a long table name is cut
+    to PostgreSQL's 63 characters with a digest (A28-PERF-02).
+    """
+    from domainkit.contrib.auth.models import User
+    from domainkit.db import EncryptedType
+    from domainkit_tests.sample_domains.members.models import Member
+
+    assert lookup_indexes(User, users, lambda name: f'"{name}"') == {
+        "ix_domainkit_users_email_lower": 'lower("email")',
+        "ix_domainkit_users_username_lower": 'lower("username")',
+        "ix_domainkit_users_email_id": '"email", "id"',
+    }
+    assert lookup_indexes(Member, users) == {  # Logs in by its address: once.
+        "ix_domainkit_users_email_lower": "lower(email)",
+        "ix_domainkit_users_email_id": "email, id",
+    }
+    bare = Table("bare", MetaData(), *abstract_base_user_columns())
+    assert lookup_indexes(Member, bare) == {}
+    sealed = Table(
+        "sealed",
+        MetaData(),
+        Column("email", EncryptedType()),
+        *(column for column in abstract_user_columns() if column.name != "email"),
+    )
+    assert list(lookup_indexes(User, sealed)) == ["ix_sealed_username_lower"]
+    long = Table("a" * 60, MetaData(), *abstract_user_columns())
+    names = list(lookup_indexes(User, long))
+    assert [len(name) for name in names] == [63, 63, 63]
+    assert len(set(names)) == 3
+
+
+ACCOUNTS: Final = "domainkit_tests.sample_domains.accounts"
+CUSTOM: Final = {
+    "USER_MODEL": f"{ACCOUNTS}.models.Account",
+    "USER_TABLE": f"{ACCOUNTS}.tables.accounts",
+}
+
+
+@pytest.fixture(params=["default", "custom"])
+def migrated(
+    request: pytest.FixtureRequest, database_url: str, tmp_path: Path
+) -> Iterator[str]:
+    """Auth migrated, addresses identifying users: the default user or a custom one."""
+    custom = request.param == "custom"
+    registry.clear()
+    with override_settings(
+        INSTALLED_DOMAINS=[CONTENTTYPES, AUTH, ALPHA, *([ACCOUNTS] if custom else [])],
+        DATABASES={"default": {"URL": database_url}},
+        MIGRATIONS_DIR=tmp_path / "migrations",
+        AUTH={
+            "PASSWORD_HASHERS": [FAST_HASHER],
+            "IDENTIFIERS": ("email", "username"),
+            **(CUSTOM if custom else {}),
+        },
+    ):
+        setup()
+        call_command("makemigrations", "-m", "auth", stdout=io.StringIO())
+        call_command("migrate", stdout=io.StringIO())
+        yield "accounts_users" if custom else "domainkit_users"
+    registry.clear()
+
+
+async def index_names(table: str) -> set[str]:
+    """The names of ``table``'s indexes, as the database has them."""
+
+    def read(connection: Any) -> set[str]:  # noqa: ANN401 - a sync connection.
+        return {str(index["name"]) for index in inspect(connection).get_indexes(table)}
+
+    async with connections.engine().connect() as connection:
+        return await connection.run_sync(read)
+
+
+def test_migrate_makes_the_lookup_indexes_on_postgresql(migrated: str) -> None:
+    """Three indexes on PostgreSQL, none on SQLite; revisions leave them alone.
+
+    ``migrate`` makes them on the user table, the project's own too, once:
+    a second ``migrate`` keeps them, and ``makemigrations`` finds nothing.
+    """
+    call_command("migrate", stdout=io.StringIO())
+    checked = io.StringIO()
+    call_command("makemigrations", "--check", stdout=checked)
+    present = run_async(index_names(migrated))
+
+    wanted = {
+        f"ix_{migrated}_email_lower",
+        f"ix_{migrated}_username_lower",
+        f"ix_{migrated}_email_id",
+    }
+    assert present & wanted == (wanted if ON_POSTGRES else set())
+    assert checked.getvalue() == "No changes detected.\n"
+
+
+@contextmanager
+def statements() -> Iterator[list[tuple[str, Any]]]:
+    """Each statement the default database runs in the block, with its values."""
+    seen: list[tuple[str, Any]] = []
+    engine = connections.engine().sync_engine
+
+    def keep(*args: Any) -> None:  # noqa: ANN401 - SQLAlchemy's event arguments.
+        seen.append((args[2], args[3]))
+
+    event.listen(engine, "before_cursor_execute", keep)
+    try:
+        yield seen
+    finally:
+        event.remove(engine, "before_cursor_execute", keep)
+
+
+async def plan(statement: str, values: Any) -> str:  # noqa: ANN401 - the driver's.
+    """PostgreSQL's plan for ``statement``, as it would read a large table."""
+    async with connections.engine().connect() as connection:
+        await connection.exec_driver_sql("SET enable_seqscan = off")
+        rows = await connection.exec_driver_sql("EXPLAIN " + statement, values)
+        return "\n".join(str(row[0]) for row in rows)
+
+
+@pytest.mark.skipif(not ON_POSTGRES, reason=f"set {POSTGRES_VARIABLE}: SQLite has none")
+def test_user_lookups_read_their_indexes(migrated: str) -> None:
+    """Login, signup, the taken checks, and the admin's order use an index.
+
+    Each statement that compares ``lower()`` of an address or a username is
+    planned on its index, as the repository writes it (A28-PERF-02).
+    """
+    create_user("ada", email="Ada@Example.com")
+
+    async def look_up() -> list[tuple[str, Any]]:
+        with statements() as seen:
+            async with AuthUnitOfWork() as uow:
+                await uow.users.find_by_email("ada@example.com")
+                await uow.users.username_taken("ADA")
+                user = await uow.users.get_by_natural_key("ada")
+                assert isinstance(user, AbstractUser)
+                user.email = "ADA2@example.com"
+                await uow.commit()
+            async with AuthUnitOfWork() as uow:
+                await uow.users.filter(Selection(ordering=["email"], limit=51))
+        return seen
+
+    seen = run_async(look_up())
+    plans = {
+        statement: run_async(plan(statement, values))
+        for statement, values in seen
+        if f"FROM {migrated}" in statement
+        and ("lower(" in statement or "ORDER BY" in statement)
+    }
+
+    folded = [each for statement, each in plans.items() if "lower(" in statement]
+    listed = [each for statement, each in plans.items() if "lower(" not in statement]
+    assert len(folded) == 3  # The address, the username, the taken address.
+    assert all("_lower" in each for each in folded), folded
+    assert any(f"ix_{migrated}_email_id" in each for each in listed), listed
