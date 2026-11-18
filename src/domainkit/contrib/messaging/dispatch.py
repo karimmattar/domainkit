@@ -182,12 +182,17 @@ class BrokerWorkers:
                 self.queues, self.config.CONCURRENCY, handle
             )
             helpers: list[asyncio.Task[None]] = []
+            # Each relay's messages from the outbox, run while the broker was away.
+            outboxes: dict[asyncio.Task[None], set[asyncio.Task[None]]] = {}
             try:
                 if self.relays:
                     for worker in self.workers:
-                        helpers.append(
-                            group.create_task(self._relay_until(worker, broker, stop))
+                        ran: set[asyncio.Task[None]] = set()
+                        relay = group.create_task(
+                            self._relay_until(worker, broker, stop, ran)
                         )
+                        outboxes[relay] = ran
+                        helpers.append(relay)
                         helpers.append(group.create_task(worker.clean_until(stop)))
                 await stop.wait()
             finally:
@@ -199,8 +204,16 @@ class BrokerWorkers:
             await finish(running, grace)
             # A relay running the outbox (the broker away) drains its own
             # messages: it gets what is left of the drain, then the grace.
+            # The others, a relay still publishing among them, get the grace.
             left = max(drained_by - loop.time(), 0.0)
-            await wind_down(helpers, left + HELPER_GRACE)
+            draining = [relay for relay, ran in outboxes.items() if ran]
+            await asyncio.gather(
+                wind_down(draining, left + HELPER_GRACE),
+                wind_down(
+                    [helper for helper in helpers if helper not in draining],
+                    HELPER_GRACE,
+                ),
+            )
 
     async def _handle(
         self,
@@ -241,20 +254,24 @@ class BrokerWorkers:
         return max(deadline - loop.time(), 0.0)
 
     async def _relay_until(
-        self, worker: Worker, broker: Broker, stop: asyncio.Event
+        self,
+        worker: Worker,
+        broker: Broker,
+        stop: asyncio.Event,
+        running: set[asyncio.Task[None]] | None = None,
     ) -> None:
         """Schedule and relay until ``stop``; poll (or wait for a commit) when idle.
 
         While the relay's breaker is open, run the due messages instead
-        (``_run_due``); those still running at ``stop`` get
-        ``DRAIN_TIMEOUT``, as a polling worker's do.
+        (``_run_due``), kept in ``running`` while they run; those still
+        running at ``stop`` get ``DRAIN_TIMEOUT``, as a polling worker's do.
         """
         outage = worker.outage()
         wake = Wake()
         polls = IdlePolls(self.config)
         breaker = self.breaker(worker.database)
         watched = Watched(broker, breaker)
-        running: set[asyncio.Task[None]] = set()
+        running = set() if running is None else running
         async with asyncio.TaskGroup() as group:
             helpers = [
                 group.create_task(set_when(stop, wake)),

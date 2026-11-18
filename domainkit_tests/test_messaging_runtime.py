@@ -2993,17 +2993,66 @@ async def test_a_stopping_relay_finishes_its_round(
 async def test_a_relay_that_will_not_stop_is_cancelled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """After HELPER_GRACE, a relay still publishing is cancelled; it gives back."""
+    """After HELPER_GRACE, a relay still publishing is cancelled; it gives back.
+
+    It is not given ``DRAIN_TIMEOUT`` (20 seconds) first: that is for a
+    relay that runs messages from the outbox while the broker is away, and
+    this broker answers (audit A28-TEST-07).
+    """
     broker = Holding()
     monkeypatch.setattr(BrokerHandler, "__getitem__", lambda self, alias: broker)
     monkeypatch.setattr(dispatch, "HELPER_GRACE", 0.05)
     stop, running = await relaying_into(broker)
 
     stop.set()
-    await within(running)
+    async with asyncio.timeout(5):  # Room for a loaded runner; 20 is the drain.
+        await running
 
     (row,) = await rows()
     assert (row["lock_id"], row["locked_until"]) == (None, None)
+
+
+@pytest.mark.usefixtures("broker_tables")
+async def test_a_relay_running_the_outbox_gets_the_drain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """While the broker is away, the relay's own messages get ``DRAIN_TIMEOUT``.
+
+    Not only ``HELPER_GRACE``: a message it runs from the outbox is waited
+    for as a delivery is, and is done, not cut short.
+    """
+
+    async def away(*args: object, **options: object) -> None:
+        raise BrokerUnavailable("connection refused")
+
+    broker = brokers["work"]
+    monkeypatch.setattr(broker, "publish", away)
+    monkeypatch.setattr(broker, "check", away)
+    monkeypatch.setattr(dispatch, "HELPER_GRACE", 0.05)
+    await enqueue(at_gate, name="drained")
+    config = registry.settings(MessagingSettings).model_copy(
+        update={
+            "BREAKER_FAILURES": 1,
+            "BREAKER_COOLDOWN": 60.0,
+            "POLL_INTERVAL": 0.01,
+            "DRAIN_TIMEOUT": 10.0,
+            **SLOW,
+        }
+    )
+    stop = asyncio.Event()
+    running = asyncio.create_task(
+        BrokerWorkers([Worker(config)], ["default"], config).run(stop)
+    )
+    await gate.until(lambda: gate.started == ["drained"])
+
+    stop.set()
+    await asyncio.sleep(0.3)  # Past HELPER_GRACE.
+    gate.open()
+    await within(running)
+
+    assert gate.finished == ["drained"]
+    (row,) = await rows()
+    assert row["status"] == DONE
 
 
 @pytest.mark.usefixtures("tables")
