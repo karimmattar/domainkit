@@ -380,10 +380,22 @@ are shown as the domain's schema validated them, with its defaults
 filled in, so you can read the values a project runs with. *Changed in
 2.9:* they were hidden whole.
 
-Secrets stay hidden: secret values (URLs, `SecretStr` keys and tokens),
-settings and entries named like secrets (`password`, `secret`, `token`,
-`key`, `credential`, `auth`), and passwords in URLs. A class or function
-inside a setting, as in `LOGGING`, is shown by its dotted path.
+Secrets stay hidden:
+
+- values typed as secrets (`SecretStr`, bytes), such as connection URLs,
+  keys, and tokens;
+- settings and entries named like secrets: `password`, `secret`,
+  `token`, `key`, `credential`, `auth`, `sid`, or `pin`;
+- a URL's password, and its user when it may be a key, and
+  `password=...` pairs, as in a query or a libpq connection string;
+- in a domain's settings, all text that no type describes: in a mapping,
+  or a value typed `Any`, such as `NOTIFICATIONS["SMS_OPTIONS"]`, only
+  the keys, numbers, and booleans show. A provider's options are read by
+  the provider, so `diffsettings` cannot tell its secrets from the rest.
+
+Type the secrets of your own domains' settings as `SecretStr`, so that
+they stay hidden wherever they are read. A class or function inside a
+setting, as in `LOGGING`, is shown by its dotted path.
 
 In a new project, `python manage.py diffsettings` prints (long lines cut):
 

@@ -44,9 +44,15 @@ project that relied on 2.8's behaviour changes, and what to run.
 - **`diffsettings` shows each domain's settings.** `AUTH`, `APPROVALS`,
   `LIMITS`, and every other installed domain's setting print as the
   domain's schema validated them, with its defaults, where 2.8 printed
-  `'**********'`. Secret values and entries named like secrets stay
-  hidden. A script that reads the command's output sees these lines, and
-  `--all` lists a domain's setting left at its defaults with `###`.
+  `'**********'`. A script that reads the command's output sees these
+  lines, and `--all` lists a domain's setting left at its defaults with
+  `###`. What stays hidden: values typed `SecretStr` or bytes, names that
+  suggest a secret, URL passwords and `password=` pairs, and all text in
+  a mapping or a value typed `Any`. A project whose own domains declare
+  settings types each secret among them as `SecretStr`, as the
+  framework's schemas do: a secret in a field typed `str`, under a name
+  such as `ENDPOINT`, would print
+  ([diffsettings](reference/commands.md#diffsettings-show-the-settings)).
 - **The application's problems are logged one to a record.** In
   development and tests, each problem found as the application is built
   or starts (`security.E101`, a route without an access rule, say) is a

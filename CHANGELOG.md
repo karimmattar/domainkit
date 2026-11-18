@@ -40,11 +40,13 @@ and a status.
 
 - `diffsettings` shows each installed domain's settings (`AUTH`,
   `APPROVALS`, `LIMITS`, ...) as its schema validated them, defaults
-  filled in, and marks those left at their defaults under `--all`.
-  Secret values, and entries named like secrets, stay hidden; 2.8 hid a
-  domain's settings whole
-  ([diffsettings](docs/reference/commands.md#diffsettings-show-the-settings))
-  (audit A28-DX-10).
+  filled in, and marks those left at their defaults under `--all`; 2.8
+  hid a domain's settings whole. It fails closed: values typed as
+  secrets, names that suggest one (`sid` and `pin` now among them), URL
+  passwords and `password=` pairs, and all text in a mapping or a value
+  typed `Any` (a provider's options) stay hidden
+  ([diffsettings](docs/reference/commands.md#diffsettings-show-the-settings),
+  [upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-10).
 - In development and tests, each problem the application finds at its
   build or start (a route without an access rule, say) is logged as a
   warning of its own, on one line; 2.8 logged them in one record, which
