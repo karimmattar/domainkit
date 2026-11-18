@@ -34,9 +34,10 @@ reads it (since 2.9): ``MAX_RESPONSE`` base64 characters, and
 counts a Word document's (each ``<`` twice, each ``=`` once). A DTD or
 an entity is refused before parsing, and it is read as UTF-8 only, so
 the count sees what is parsed. It is then read once for what makes
-canonicalization cost: ``MAX_NAMESPACES`` namespaces in scope and
-``MAX_ATTRIBUTES`` attributes on an element, and ``MAX_SIGNED_INFO``
-elements and ``MAX_SIGNED_INFO_BYTES`` bytes in a ``SignedInfo``. It is
+canonicalization cost: ``MAX_DEPTH`` levels, ``MAX_DECLARATIONS``
+namespace declarations on the path to an element and ``MAX_ATTRIBUTES``
+attributes on it, and ``MAX_SIGNED_INFO`` elements and
+``MAX_SIGNED_INFO_BYTES`` bytes in a ``SignedInfo``. It is
 parsed in a thread of its own, which ends with it and takes with it the
 names lxml keeps for the thread, never on the event loop's; ``PARSES``
 at most at once on a loop, the others waiting ``SLOT_WAIT`` seconds at
@@ -93,11 +94,16 @@ MAX_NODES: Final = 50_000
 """The most nodes a SAMLResponse's XML may make, counted before it is parsed.
 
 A thousand group values make some 7,000."""
-MAX_NAMESPACES: Final = 32
-"""The most namespaces in scope on an element: its prefixes, and the default.
+MAX_DEPTH: Final = 64
+"""How deep an element may sit, the response's root at 1.
 
-Identity providers write fewer than ten, repeated on many elements
-(``xmlns:xs`` on each attribute value) as they may be."""
+Identity providers write under ten levels."""
+MAX_DECLARATIONS: Final = 32
+"""The most namespace declarations on the path from the root to an element,
+the element's own included, a prefix declared again counted again.
+
+Identity providers write about five on a path. Okta declares ``xs`` and
+``xsi`` again on each attribute value: on siblings, each path holds them once."""
 MAX_ATTRIBUTES: Final = 32
 """The most attributes an element may hold, its namespace declarations aside.
 
@@ -250,8 +256,8 @@ def verified_claims(
 
     Bounded before it is parsed: ``MAX_RESPONSE`` characters, ``MAX_NODES``
     nodes, no DTD or entity; read as UTF-8. Then bounded before signxml
-    reads it: ``MAX_NAMESPACES``, ``MAX_ATTRIBUTES``, ``MAX_SIGNED_INFO``
-    and ``MAX_SIGNED_INFO_BYTES`` (``_shaped``).
+    reads it: ``MAX_DEPTH``, ``MAX_DECLARATIONS``, ``MAX_ATTRIBUTES``,
+    ``MAX_SIGNED_INFO`` and ``MAX_SIGNED_INFO_BYTES`` (``_shaped``).
     CPU-bound, and lxml keeps each name it parses for the thread's life:
     the ACS calls it in a thread of its own.
 
@@ -354,23 +360,25 @@ def _shaped(document: bytes) -> None:
     """Refuse a response whose canonicalization would cost, before signxml runs.
 
     Read once, as signxml's parser reads it (UTF-8, no entity): each
-    element's namespaces in scope, each prefix once however often it is
-    declared, and its attributes, which canonicalization sorts, in the
-    signed part signxml canonicalizes before it checks a digest as well as
-    in a ``SignedInfo``; and each ``SignedInfo``'s elements and bytes,
-    which signxml canonicalizes before it checks a signature.
+    element's depth, the namespace declarations on its path, each one
+    counted, which canonicalization walks for each element, and its
+    attributes, which it sorts; in the signed part signxml canonicalizes
+    before it checks a digest as well as in a ``SignedInfo``. And each
+    ``SignedInfo``'s elements and bytes, which signxml canonicalizes
+    before it checks a signature. The declarations on a path bound the
+    namespaces in scope too.
 
     Raises:
-        AssertionRefused: An element has more than ``MAX_NAMESPACES`` in
-            scope or ``MAX_ATTRIBUTES`` attributes, or a ``SignedInfo``
-            more than ``MAX_SIGNED_INFO`` elements or
-            ``MAX_SIGNED_INFO_BYTES`` bytes.
+        AssertionRefused: An element sits deeper than ``MAX_DEPTH``, has
+            more than ``MAX_DECLARATIONS`` on its path or
+            ``MAX_ATTRIBUTES`` attributes, or a ``SignedInfo`` more than
+            ``MAX_SIGNED_INFO`` elements or ``MAX_SIGNED_INFO_BYTES`` bytes.
         lxml.etree.XMLSyntaxError: It is not well-formed.
     """
     from lxml import etree
 
-    scopes: list[frozenset[str]] = [frozenset()]
-    declared: list[str] = []
+    paths = [0]  # The declarations on the path to each open element, by depth.
+    declared = 0
     signed, opened = 0, -1  # The open SignedInfo's elements, and its depth.
     for event, item in etree.iterparse(
         io.BytesIO(document),
@@ -381,29 +389,31 @@ def _shaped(document: bytes) -> None:
         huge_tree=False,
     ):
         if event == "start-ns":
-            declared.append(item[0])
+            declared += 1
         elif event == "start":
-            scope = scopes[-1].union(declared) if declared else scopes[-1]
-            declared = []
-            if len(scope) > MAX_NAMESPACES:
+            path, declared = paths[-1] + declared, 0
+            if len(paths) > MAX_DEPTH:
+                raise AssertionRefused(f"an element deeper than {MAX_DEPTH} levels")
+            if path > MAX_DECLARATIONS:
                 raise AssertionRefused(
-                    f"an element with more than {MAX_NAMESPACES} namespaces in scope"
+                    f"more than {MAX_DECLARATIONS} namespace declarations on the "
+                    "path to an element"
                 )
             if len(item.attrib) > MAX_ATTRIBUTES:
                 raise AssertionRefused(
                     f"an element with more than {MAX_ATTRIBUTES} attributes"
                 )
-            scopes.append(scope)
+            paths.append(path)
             if signed or item.tag == SIGNED_INFO:
-                opened = len(scopes) - 1 if not signed else opened
+                opened = len(paths) - 1 if not signed else opened
                 signed += 1
                 if signed > MAX_SIGNED_INFO:
                     raise AssertionRefused(
                         f"a SignedInfo of more than {MAX_SIGNED_INFO} elements"
                     )
         else:
-            scopes.pop()
-            if len(scopes) == opened:  # The SignedInfo ends, read whole.
+            paths.pop()
+            if len(paths) == opened:  # The SignedInfo ends, read whole.
                 size = len(etree.tostring(item, with_tail=False))
                 if size > MAX_SIGNED_INFO_BYTES:
                     raise AssertionRefused(

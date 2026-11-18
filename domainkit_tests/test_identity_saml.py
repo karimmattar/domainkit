@@ -500,16 +500,21 @@ def signature(references: int = 1) -> str:
     )
 
 
-def declaring(count: int, *, nested: int = 1, inside: str = "") -> str:
+def declaring(
+    count: int, *, nested: int = 1, inside: str = "", again: bool = False
+) -> str:
     """A response whose elements declare ``count`` namespaces, over ``nested`` levels.
 
-    ``samlp`` and ``ds`` are in scope besides, where ``inside`` is.
+    ``samlp`` is declared on the root besides, and ``ds`` where ``inside``
+    is a signature. ``again`` declares the same prefixes at each level, of
+    other URIs.
     """
     per = count // nested
     opened = [
         "<e "
         + " ".join(
-            f'xmlns:p{level}x{index}="urn:p{level}x{index}"' for index in range(per)
+            f'xmlns:{"" if again else f"p{level}"}x{index}="urn:p{level}x{index}"'
+            for index in range(per)
         )
         + ">"
         for level in range(nested)
@@ -524,11 +529,12 @@ def declaring(count: int, *, nested: int = 1, inside: str = "") -> str:
 def test_canonicalization_is_bounded_before_signxml_runs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Namespaces in scope on an element, and a SignedInfo's elements (lead review).
+    """Declarations on an element's path, its depth, a SignedInfo's elements.
 
-    Counted before signxml reads the response, within ``MAX_NODES``: a
-    prefix counts once however often it is declared, so 32 in scope pass,
-    flat or nested, and a ``SignedInfo`` of 32 elements does.
+    Counted before signxml reads the response, within ``MAX_NODES`` (lead
+    review): a prefix declared again on the path counts again, so 32
+    declarations pass, flat, nested, or declaring the same prefixes again;
+    64 levels pass; a ``SignedInfo`` of 32 elements does.
     """
     config = SamlSettings(**OKTA)
     now = datetime.now(UTC)
@@ -539,10 +545,13 @@ def test_canonicalization_is_bounded_before_signxml_runs(
         raise etree.XMLSyntaxError("stop here", 1, 1, 1)
 
     monkeypatch.setattr(XMLVerifier, "verify", verify)
+    over = "more than 32 namespace declarations"
     refused = [
-        ("more than 32 namespaces", declaring(31, inside=signature())),
-        ("more than 32 namespaces", declaring(12_000, inside=signature(40))),
-        ("more than 32 namespaces", declaring(40, nested=10, inside=signature())),
+        (over, declaring(31, inside=signature())),
+        (over, declaring(12_000, inside=signature(40))),
+        (over, declaring(40, nested=10, inside=signature())),
+        (over, declaring(290, nested=10, inside=signature(), again=True)),
+        ("deeper than 64 levels", declaring(0, nested=60, inside=signature())),
         ("more than 32 elements", declaring(0, inside=signature(10))),
     ]
     for reason, encoded in refused:
@@ -551,8 +560,9 @@ def test_canonicalization_is_bounded_before_signxml_runs(
     passed = [
         declaring(30, inside=signature()),
         declaring(30, nested=10, inside=signature()),
+        declaring(30, nested=10, inside=signature(), again=True),
         declaring(0, inside=signature(9)),
-        declaring(0, nested=200, inside=signature()),
+        declaring(0, nested=59, inside=signature()),
     ]
     for encoded in passed:
         with pytest.raises(saml.AssertionRefused, match="no valid signature"):
@@ -654,6 +664,56 @@ def test_a_signed_response_whose_signed_part_holds_too_many_attributes_is_refuse
         saml.AssertionRefused, match=r"no valid signature \(InvalidDigest"
     ):
         saml.verified_claims(config, added(32), "_x", now)
+
+
+def deep(levels: int, leaves: int) -> str:
+    """``levels`` nested elements declaring 29 prefixes again, and ``leaves`` in them.
+
+    Each level declares the same prefixes, of other URIs; the empty leaves
+    are in the deepest.
+    """
+    opened = "".join(
+        "<d "
+        + " ".join(f'xmlns:p{index}="urn:{level}:{index}"' for index in range(29))
+        + ">"
+        for level in range(levels)
+    )
+    return f"{opened}{'<e/>' * leaves}{'</d>' * levels}"
+
+
+def test_namespaces_declared_again_deep_are_refused_signed_or_not(
+    app: App, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """29 prefixes in scope, declared again at each of 250 levels (lead review).
+
+    Unsigned, or in the signed part of a response the provider signed and
+    that was then changed, whose ``SignedInfo`` holds: refused before signxml
+    reads it, and through the ACS.
+    """
+    client = app(SAML={"okta": OKTA}, SIGNUP=True, FRONTEND_URL=FRONTEND)
+    config = SamlSettings(**OKTA)
+    now = datetime.now(UTC)
+    signed = base64.b64decode(response("_x"))
+    changed = signed.replace(
+        b"<samlp:Status>", f"<samlp:Status>{deep(250, 20_000)}".encode()
+    )
+    root = f'<samlp:Response xmlns:samlp="{saml.PROTOCOL}">'
+    unsigned = f"{root}{deep(250, 20_000)}{signature()}</samlp:Response>"
+
+    _, relay = start(client)
+    sent = acs(client, base64.b64encode(changed).decode(), relay)
+    parsed: list[bytes] = []
+    monkeypatch.setattr(
+        XMLVerifier, "verify", lambda self, data, **_: parsed.append(data)
+    )
+    for xml in (changed, unsigned.encode()):
+        with pytest.raises(
+            saml.AssertionRefused, match="more than 32 namespace declarations"
+        ):
+            saml.verified_claims(config, base64.b64encode(xml).decode(), "_x", now)
+
+    assert sent == {"error": "saml_refused"}
+    assert parsed == []
 
 
 def test_an_okta_response_that_declares_namespaces_again_logs_in(app: App) -> None:
