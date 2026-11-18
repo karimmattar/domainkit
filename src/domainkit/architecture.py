@@ -102,6 +102,7 @@ FORBIDDEN_LIBRARIES: Final = {
 ALLOWED_MODULES: Final = {
     "infrastructure": (
         "domainkit.http.client",
+        "domainkit.outbound.client",
         "domainkit.http.uploads",
         "domainkit.http.problems",
     )
@@ -111,7 +112,9 @@ ALLOWED_MODULES: Final = {
 An entry lifts only a library entry less specific than itself: a project
 that forbids ``domainkit.http.client`` by name forbids it. That module is
 the client's path of 2.8; the client lives in ``domainkit.outbound``,
-which the infrastructure layer imports with no exception (ADR 0195).
+which no default rule names for the infrastructure layer, and which the
+exception lifts as it lifts the old path, from a project's rule on all of
+``domainkit`` (ADR 0195).
 """
 
 MOVED: Final = MappingProxyType(

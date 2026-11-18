@@ -151,7 +151,9 @@ not call out through `domainkit.http.client`, and it cannot by the new
 path either. The domain layer's allowlist leaves it out. The exception for
 `domainkit.http.client` in `ALLOWED_MODULES` stays, and so does
 `architecture.W001` for the names its `__all__` does not list: a project
-that imports the old path changes nothing in 2.9.
+that imports the old path changes nothing in 2.9. `domainkit.outbound.client`
+joins it there, so a project rule that keeps all of `domainkit` out of the
+infrastructure layer leaves the client on its new path as on its old one.
 
 ### The settings and the checker
 

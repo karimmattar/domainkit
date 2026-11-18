@@ -578,7 +578,10 @@ def test_infrastructure_calls_out_through_domainkit_outbound_with_no_exception(
         for v in check_domains(["arch.rates", "arch.quotes"], rules)
     }
 
-    assert "domainkit.outbound" not in str(rules.allowed_modules)
+    assert not any(
+        library.startswith("domainkit.outbound")
+        for library in rules.forbidden_libraries["infrastructure"]
+    )
     assert {(module, imported) for module, imported, _ in found} == {
         ("domain.model", "domainkit.outbound.guard"),
         ("domain.model", "domainkit.outbound.guard.UnsafeURL"),
@@ -669,6 +672,40 @@ def test_a_rule_on_the_http_package_leaves_a_layer_the_client_its_exception_lift
         "domainkit.outbound.client",
         "domainkit.outbound.guard",
     )
+
+
+def test_a_rule_on_all_of_domainkit_leaves_infrastructure_the_client_on_either_path(
+    make_package: MakePackage,
+) -> None:
+    """The exception that lifted ``domainkit.http.client`` lifts its new home.
+
+    A project that keeps all of ``domainkit`` out of its infrastructure
+    layer kept the client there in 2.8, through the exception; it keeps it
+    on either path, and the guard and the rest stay out (review).
+    """
+    make_package(
+        "arch.proj3.billing",
+        {
+            "infrastructure/callbacks.py": """
+                from domainkit.http.client import HttpClient
+                from domainkit.outbound.client import CircuitOpen
+                from domainkit.outbound.guard import checked_url
+            """
+        },
+    )
+    rules = LayerRules().extend(forbidden_libraries={"infrastructure": ("domainkit",)})
+
+    found = {
+        (violation.module, violation.imported)
+        for violation in check_domains(["arch.proj3.billing"], rules)
+    }
+    assert found == {
+        ("arch.proj3.billing.infrastructure.callbacks", "domainkit.outbound.guard"),
+        (
+            "arch.proj3.billing.infrastructure.callbacks",
+            "domainkit.outbound.guard.checked_url",
+        ),
+    }
 
 
 def test_a_project_that_repeats_a_default_rule_asks_for_no_more(
