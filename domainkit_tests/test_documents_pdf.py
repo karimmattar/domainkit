@@ -11,7 +11,6 @@ shown. So a rotated page that shifted the overlay would fail here.
 import base64
 import io
 import struct
-import time
 import tracemalloc
 import zlib
 from typing import Any, Final, TypedDict
@@ -668,21 +667,30 @@ def test_streams_decoded_in_python_store_a_bounded_amount_in_all() -> None:
     ]
 
 
-def test_many_small_streams_decoded_in_python_are_refused_fast() -> None:
+def test_many_small_streams_decoded_in_python_are_refused_fast(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A 32 MB file of 64 object streams of ASCII85, each half a MiB stored.
 
     Each fits; together they took 5 seconds a call, LZW 17. Refused once
-    they pass 1 MiB in all: two are decoded, the rest never.
+    they pass 1 MiB in all: two are decoded, the rest never. pypdf's
+    decoder counts them, not a stopwatch (TEST-01).
     """
     one = base64.a85encode(bytes(range(256)) * 1600) + b"~>"
     document = streamed(extras=((b"/ASCII85Decode", one),) * 64)
     assert len(document) > 30 * MiB
+    decoded: list[int] = []
+    decode = pypdf.filters.ASCII85Decode.decode
 
-    started = time.perf_counter()
+    def counted(data: bytes, *args: object, **kwargs: object) -> bytes:
+        decoded.append(len(data))
+        return decode(data, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(pypdf.filters.ASCII85Decode, "decode", staticmethod(counted))
     with pytest.raises(DocumentError, match="store more than 1,048,576 bytes in all"):
         page_sizes(document)
 
-    assert time.perf_counter() - started < 2
+    assert decoded == [len(one)] * 2
 
 
 @pytest.mark.parametrize(
@@ -753,13 +761,17 @@ def test_cross_reference_streams_list_a_bounded_number_of_entries(
         "/Note (stream startxref) /Prev {at}",
     ],
 )
-def test_a_chain_of_cross_reference_sections_is_bounded(link: str) -> None:
+def test_a_chain_of_cross_reference_sections_is_bounded(
+    monkeypatch: pytest.MonkeyPatch, link: str
+) -> None:
     """32 sections, as a file and the saves added to it make, and not one more.
 
     pypdf follows every ``/Prev`` and ``/XRefStm``: 500 sections of 1 MiB
     took it 0.8 s and 540 MiB, with a predictor 47 s. They are counted
     where pypdf reads them, so a name escaped, a comment, or a string that
-    looks like a keyword hides none.
+    looks like a keyword hides none. Of the 500, the reader reads the 33rd,
+    which refuses, and no more: the tally counts them, not a stopwatch
+    (TEST-01).
     """
     assert page_sizes(chained(32, link=link)) == [(300.0, 400.0)]
     assert page_sizes(chained(32, streams=True, link=link)) == [(300.0, 400.0)]
@@ -777,16 +789,21 @@ def test_a_chain_of_cross_reference_sections_is_bounded(link: str) -> None:
         )
 
     long = chained(500, streams=True, link=link)
+    tallies: list[Tally] = []
+
+    def kept(**options: Any) -> Tally:  # noqa: ANN401 - Tally's fields.
+        tallies.append(Tally(**options))
+        return tallies[-1]
+
+    monkeypatch.setattr(pdf_module, "Tally", kept)
     tracemalloc.start()
     try:
-        started = time.perf_counter()
         with pytest.raises(DocumentError, match="more than 32 cross-reference"):
             page_sizes(long)
-        took = time.perf_counter() - started
         peak = tracemalloc.get_traced_memory()[1]
     finally:
         tracemalloc.stop()
-    assert took < 1
+    assert [tally.read for tally in tallies] == [33]
     assert peak < 4 * MiB
 
 

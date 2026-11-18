@@ -21,6 +21,7 @@ from typing import Final
 
 import pytest
 
+from domainkit import inspection
 from domainkit.inspection import (
     ACTIONS,
     COMPLEX,
@@ -30,6 +31,7 @@ from domainkit.inspection import (
     OfficeCheck,
     PdfCheck,
 )
+from domainkit_tests.support.clocks import Stepped
 from domainkit_tests.support.documents import R, W, document, office, pdf, relationships
 
 MIB: Final = 1024 * 1024
@@ -313,19 +315,34 @@ PREDICTED: Final = " /DecodeParms << /Predictor 12 /Columns 249999 /Colors 16 >>
         pytest.param(paged([0], stream(b"q Q", "null")), id="a-null-filter"),
     ],
 )
-def test_page_content_is_decoded_as_overlay_pdf_decodes_it(data: bytes) -> None:
+def test_page_content_is_decoded_as_overlay_pdf_decodes_it(
+    monkeypatch: pytest.MonkeyPatch, data: bytes
+) -> None:
     """One policy: what overlay_pdf would refuse to decode, the check refuses.
 
     A predictor (pypdf pads each row: 292 KB made 3.8 GB); a filter pypdf
     runs in Python after deflate (60 KB of ASCII85 made 5.7 GB); more
     stored for Python's filters than their share; an image's filter;
     content a page names more often than the check reads values. Each is
-    refused in well under the check's time.
+    refused by the policy, never by the clock (TEST-01). The clock moves
+    0.1 ms a look, so the check's 10 seconds are 100,000 looks, of which
+    these take 6,200 at most: a slow runner cannot reach the deadline.
     """
-    started = time.perf_counter()
+    monkeypatch.setattr(inspection, "time", Stepped(0.0001))
+    by_clock: list[float] = []
+    look = inspection._Clock.check
+
+    def watched(clock: inspection._Clock) -> None:
+        try:
+            look(clock)
+        except FileRefused:
+            by_clock.append(clock.deadline)
+            raise
+
+    monkeypatch.setattr(inspection._Clock, "check", watched)
 
     assert verdict(PdfCheck(), data) == COMPLEX
-    assert time.perf_counter() - started < 5
+    assert by_clock == []
 
 
 def written_in_the_page(contents: str) -> bytes:

@@ -12,13 +12,13 @@ import base64
 import gzip
 import io
 import random
-import time
 import urllib.parse
 import zlib
 from typing import Final
 
 import pytest
 
+from domainkit import inspection
 from domainkit.inspection import (
     ACTIONS,
     COMPLEX,
@@ -28,6 +28,7 @@ from domainkit.inspection import (
     NotOfType,
     OfficeCheck,
 )
+from domainkit_tests.support.clocks import Stepped
 from domainkit_tests.support.documents import OOXML, R, W, document, office
 
 BACKSLASH: Final = chr(0x5C)
@@ -538,12 +539,18 @@ def test_an_svg_inflating_past_the_budget_is_refused() -> None:
     assert verdict(pictured(bomb, name="media/a.svgz")) == COMPLEX
 
 
-def test_an_expensive_svg_is_refused_within_the_deadline() -> None:
+def test_an_expensive_svg_is_refused_within_the_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Each value, match and escape of an SVG counts towards a look at the clock.
 
     Four elements, each a style of 100,000 ``url(data:,%3C...)``, 7.7 MB
     deflating to 1.5 MB: the clock was read every 1,024 elements, and the
-    check ran three seconds past a deadline of 0.3.
+    check ran three seconds past a deadline of 0.3. With a clock that moves
+    a second a look, a deadline of 100 seconds is the 101st look, which a
+    check that looked once an element would never make; that look refuses,
+    and none comes after it (TEST-01). The whole check looks about 800
+    times.
     """
     numbers = random.Random(3)  # noqa: S311 - a style's bulk, not a secret.
     rects = "".join(
@@ -553,10 +560,11 @@ def test_an_expensive_svg_is_refused_within_the_deadline() -> None:
         for _ in range(4)
     )
     data = pictured(svg(rects))
-    started = time.monotonic()
+    clock = Stepped(1.0)
+    monkeypatch.setattr(inspection, "time", clock)
 
-    assert verdict(data, check=OfficeCheck("docx", max_seconds=0.2)) == COMPLEX
-    assert time.monotonic() - started < 1.5
+    assert verdict(data, check=OfficeCheck("docx", max_seconds=100)) == COMPLEX
+    assert clock.past(100) == 1
 
 
 def test_a_long_data_url_is_unquoted_whole() -> None:

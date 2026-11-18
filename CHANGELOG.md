@@ -9,6 +9,15 @@ and a status.
 
 ## [Unreleased]
 
+### Fixed
+
+- The upload and PDF tests no longer time their checks with a stopwatch.
+  Each says which limit stopped a check: the clock or a signal, from the
+  log; the decoder's or the cross-reference reader's count; or a clock
+  that moves a fixed step each time it is read. A slow runner failed
+  them, and a limit firing in another's place passed them (audit
+  A28-TEST-01).
+
 ## [2.8.0] - 2026-11-18
 
 2.8 answers fourteen of a project's fifteen notes on 2.7 (the last,

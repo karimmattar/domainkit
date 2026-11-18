@@ -14,10 +14,10 @@ import json
 import logging
 import os
 import pickle
+import re
 import struct
 import sys
 import threading
-import time
 import tracemalloc
 import zlib
 from collections.abc import Iterator
@@ -95,13 +95,31 @@ def slots() -> Iterator[None]:
         yield
 
 
-async def refusal(data: bytes, kind: FileType) -> tuple[int, str, str, float]:
-    """``save_upload``'s refusal of ``data``: status, code, detail, seconds taken."""
-    started = time.monotonic()
+async def refusal(data: bytes, kind: FileType) -> tuple[int, str, str]:
+    """``save_upload``'s refusal of ``data``: status, code, detail."""
     with pytest.raises(UploadRefused) as refused:
         await save_upload(data, types=[kind], max_size=10**8, storage=MemoryStorage())
     error = refused.value
-    return error.status_code, error.code, error.detail, time.monotonic() - started
+    return error.status_code, error.code, error.detail
+
+
+def stopped(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """What ended each check's process, as logged: ``clock``, or a signal's name.
+
+    The clock logs that it killed the process, and a signal is logged by
+    its name. A check's own refusal, memory refused included, is the
+    process's answer, and is not logged.
+    """
+    found = []
+    for record in caplog.records:
+        if record.name != "domainkit.inspection":
+            continue
+        message = record.getMessage()
+        if message.startswith("A check of an upload ran past "):
+            found.append("clock")
+        elif signal := re.match(r"A check of an upload was ended by (\S+):", message):
+            found.append(signal[1])
+    return found
 
 
 # What pypdf does before, or between, any bound in its process --------------------
@@ -212,50 +230,74 @@ def unended_strings(headers: int, filler: int) -> bytes:
 
 
 @pytest.mark.parametrize(
-    ("data", "seconds", "expected"),
+    ("data", "seconds", "expected", "ends"),
     [
-        (xref_chain(12), 30.0, ("unsafe_file", COMPLEX)),
-        (reparsed_index(40_000, 5_000), 1.0, ("unreadable_file", TOO_LONG)),
-        (unended_strings(2_000, 400_000), 1.0, ("unreadable_file", TOO_LONG)),
+        (xref_chain(12), 30.0, ("unsafe_file", COMPLEX), [[]]),
+        (
+            reparsed_index(40_000, 5_000),
+            1.0,
+            ("unreadable_file", TOO_LONG),
+            [["clock"], ["SIGXCPU"]],
+        ),
+        (
+            unended_strings(2_000, 400_000),
+            1.0,
+            ("unreadable_file", TOO_LONG),
+            [["clock"], ["SIGXCPU"]],
+        ),
     ],
     ids=["xref-chain", "reparsed-index", "unended-strings"],
 )
 async def test_what_pypdf_does_unbounded_is_stopped_by_the_system(
-    data: bytes, seconds: float, expected: tuple[str, str]
+    caplog: pytest.LogCaptureFixture,
+    data: bytes,
+    seconds: float,
+    expected: tuple[str, str],
+    ends: list[list[str]],
 ) -> None:
-    """Memory or time: 422 within a few seconds, never stored.
+    """Memory or time: 422, never stored.
 
     A chain of cross-reference streams, which pypdf decodes and keeps as
     it opens a file, took the system's memory limit to stop; since 2.7
     the decoding policy refuses it first: each stream decodes to 8 bytes
-    an entry at most (ADR 0176).
+    an entry at most (ADR 0176). pypdf's loops are ended by the clock or
+    the CPU limit, whichever comes first. What ended the process is read
+    from the log, not from a stopwatch (TEST-01).
     """
     with limited(seconds):
-        status, code, said, taken = await refusal(data, CHECKED_PDF)
+        status, code, said = await refusal(data, CHECKED_PDF)
 
     assert (status, code, said) == (422, *expected)
-    assert taken < 10
+    assert stopped(caplog) in ends
 
 
 @pytest.mark.parametrize(
-    ("check", "seconds", "detail"),
+    ("check", "seconds", "detail", "ended"),
     [
-        (hooks.spin, 1.0, TOO_LONG),
-        (hooks.hog, 30.0, TOO_MUCH),
-        (hooks.over_cpu, 30.0, TOO_LONG),
+        (hooks.asleep, 1.0, TOO_LONG, ["clock"]),
+        (hooks.hog, 30.0, TOO_MUCH, []),
+        (hooks.over_cpu, 30.0, TOO_LONG, ["SIGXCPU"]),
     ],
+    ids=["clock", "memory", "cpu"],
 )
 async def test_a_check_past_its_limits_is_a_refusal(
+    caplog: pytest.LogCaptureFixture,
     check: Any,  # noqa: ANN401 - a check.
     seconds: float,
     detail: str,
+    ended: list[str],
 ) -> None:
-    """The clock, the memory, the CPU: each ends the process, and refuses the file."""
+    """The clock, the memory, the CPU: each ends the process, and refuses the file.
+
+    Which limit ended it is read from the log, not from a stopwatch
+    (TEST-01). The clock's check sleeps, so its CPU limit cannot come
+    first.
+    """
     with limited(seconds):
-        status, code, said, taken = await refusal(b"anything", typed(check))
+        status, code, said = await refusal(b"anything", typed(check))
 
     assert (status, code, said) == (422, "unreadable_file", detail)
-    assert taken < 10
+    assert stopped(caplog) == ended
 
 
 async def test_a_blank_page_fits_the_least_memory_and_less_is_refused() -> None:
@@ -280,7 +322,7 @@ async def test_a_checks_process_gets_no_secret_and_a_session_of_its_own(
     monkeypatch.setenv("MY_SECRET_KEY", "hunter2")
     monkeypatch.setenv("LC_ALL", "C.UTF-8")
 
-    status, code, said, _ = await refusal(b"x", typed(hooks.surroundings))
+    status, code, said = await refusal(b"x", typed(hooks.surroundings))
     seen = json.loads(said)
 
     assert (status, code) == (422, "seen")
@@ -799,7 +841,7 @@ async def test_a_process_a_signal_ended_refuses_the_file_and_is_logged(
     said: str,
 ) -> None:
     """A crash, or a kill no one can tell from the OOM killer's: could not be read."""
-    status, code, detail, _ = await refusal(b"x", typed(check))
+    status, code, detail = await refusal(b"x", typed(check))
 
     assert (status, code, detail) == (422, "unreadable_file", DAMAGED)
     (record,) = [each for each in caplog.records if each.name == "domainkit.inspection"]
@@ -971,13 +1013,30 @@ def test_a_process_limits_itself_where_the_system_can(
     assert len(asked) == 2
 
 
-async def test_a_check_costs_a_process_start(slots: None) -> None:
-    """What isolation costs an upload, here: a fraction of a second."""
-    started_at = time.monotonic()
+async def test_a_check_costs_a_process_start(
+    slots: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What isolation costs an upload: one process for its checks.
+
+    Counted, not timed: a runner's clock says nothing of the cost (TEST-01).
+    """
+    started: list[object] = []
+    start = asyncio.create_subprocess_exec
+
+    async def counted(
+        program: str,
+        *args: str,
+        **kwargs: Any,  # noqa: ANN401 - create_subprocess_exec's options.
+    ) -> asyncio.subprocess.Process:
+        started.append(program)
+        return await start(program, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", counted)
     received = await receive_upload(b"x", types=[typed(hooks.chatty)], max_size=10)
     received.close()
 
-    assert time.monotonic() - started_at < 5
+    assert started == [sys.executable]
+    assert received.kind.inspect is hooks.chatty
 
 
 def test_an_office_part_is_scanned_in_its_bytes() -> None:

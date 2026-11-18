@@ -39,10 +39,9 @@ def held(file: IO[bytes]) -> None:
         time.sleep(0.01)
 
 
-def spin(file: IO[bytes]) -> None:
-    """Never end: only a limit stops it."""
-    while True:
-        pass
+def asleep(file: IO[bytes]) -> None:
+    """Sleep a minute, on no CPU: only the clock ends it sooner."""
+    time.sleep(60)
 
 
 def hog(file: IO[bytes]) -> None:
