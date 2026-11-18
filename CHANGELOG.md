@@ -460,9 +460,9 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 - `domainkit.http.client` and `domainkit.http.guard` are views of
   `domainkit.outbound.client` and `domainkit.outbound.guard`: every name
   reads from the new module, the same object, with one set of clients,
-  circuits, metrics, and lookup threads, and a name a test sets or
-  deletes on an old path (`monkeypatch.setattr`, `mock.patch`) is set or
-  deleted where the code reads it. The framework imports the new paths;
+  circuits, metrics, and lookup threads, and a name a test sets on an old
+  path (`monkeypatch.setattr`, `mock.patch`) is set where the code reads
+  it, and put back as the patch ends. The framework imports the new paths;
   the calls still log as `domainkit.http.client`. Shutdown closes the
   guard's lookup threads as one of the framework's kinds, `guard
   lookups`. The layer rules keep `domainkit.outbound` out of the

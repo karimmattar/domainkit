@@ -101,8 +101,8 @@ process that calls no service needs no `httpclient` extra.
 ### The 2.8 paths
 
 `domainkit.http.client` and `domainkit.http.guard` stay, as modules that
-import every name of the new ones: the public names by name, for type
-checkers, and any other through a module `__getattr__`. Each is the same
+read every name of the new ones through a module `__getattr__`, and
+import the public names by name for type checkers only. Each is the same
 object, so `is`, `isinstance`, and `except` hold either way, and there is
 one set of clients, circuits, metrics, and lookup threads. They are not
 deprecated in 2.9; a later minor release may deprecate them, with a
@@ -111,14 +111,22 @@ warning, before 3.0 removes them. `domainkit.http.client` keeps its
 without one, internal as it was.
 
 Each old module is a view of its new one (a `ModuleType` subclass set as
-its class, in a private module of `domainkit.http`): it keeps no name of
-its own, and a name set or deleted on it, by a 2.8 test's
-`monkeypatch.setattr` or `mock.patch`, is set or deleted on the new
-module, where the client, the guard, and the adapters read it. A 2.8 test
-that faked the adapters by replacing `domainkit.http.client.HttpClient`
-still fakes them, and undoing the patch leaves no copy on either module.
-New code patches the new path. What prints a class by its module prints
-the new one.
+its class, in a private module of `domainkit.http`). It keeps no name of
+the new module's, and a name set on it, by a 2.8 test's
+`monkeypatch.setattr` or `mock.patch`, is set on the new module, where
+the client, the guard, and the adapters read it: a 2.8 test that faked
+the adapters by replacing `domainkit.http.client.HttpClient` still fakes
+them. A delete through the view of a name the new module defined, while
+something replaced it, puts back the value the name had when the old
+path was first imported, rather than deleting it: `mock.patch` deletes
+what it set on a name the view does not hold, and with `create=True`
+puts nothing back, which would leave the adapters without `HttpClient`
+for the rest of the process. For the names the module never rebinds
+(its classes, functions, and constants), that value is the one the patch
+replaced. A name that was not replaced, or that the module never had, is
+deleted (`monkeypatch.delattr`; `create=True` on a new name). New code
+patches the new path. What prints a class by its module prints the new
+one.
 
 Every import the framework makes is of the new package, its tests'
 included, but for the tests of the old paths themselves. The plugin
@@ -135,7 +143,9 @@ or `domainkit.http.guard`, or a name under one, names the same under
 `domainkit.outbound` too; one that names `domainkit.http` names both new
 modules, unless, in that layer, the exception for `domainkit.http.client`
 lifted it from the client in 2.8, as it does in the infrastructure
-layer. The rule keeps covering the code it covered. The application layer may not
+layer. An entry the layer's rules hold already, such as the default
+`domainkit.http` of the infrastructure layer repeated, adds nothing. The
+rule keeps covering the code it covered. The application layer may not
 (`FORBIDDEN_LIBRARIES["application"]` adds `domainkit.outbound`): it could
 not call out through `domainkit.http.client`, and it cannot by the new
 path either. The domain layer's allowlist leaves it out. The exception for
