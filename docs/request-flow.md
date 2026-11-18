@@ -218,12 +218,24 @@ and returns it.
 4. After the commit, the events are published in the process, to their
    handlers. Nothing is published for work that did not commit.
 
-An error answer does not always mean that nothing committed. A request
-cut off by its deadline (`503 deadline_exceeded`), or a connection lost,
-while its `COMMIT` is on the way may find that the database applied it.
-So a client retries a write only with an `Idempotency-Key`, which makes
-the retry get the first answer, or `409 idempotency_response_unavailable`
-once the first committed ([idempotency](contrib/idempotency.md)).
+Once the database has committed, the request's deadline is lifted, as
+when the response starts, whichever of the request's tasks committed.
+The in-process handlers and the domains' after-commit hooks all run,
+each within its own `EVENT_HANDLER_TIMEOUT`, and the request answers what
+it committed, however late. Before 2.9, the deadline could cut the
+handlers off and answer `503 deadline_exceeded` with `Retry-After: 1`
+for a change that was made.
+
+A deadline that passes before the `COMMIT` rolls the work back. One that
+passes during it, or a connection lost before its answer came, leaves
+the outcome unknown: the change may have been made. The unit of work
+counts such a commit in `uow.in_doubt`, and the request answers 503
+(`deadline_exceeded` or `database_unavailable`) without `Retry-After`,
+with a detail that says to check before sending it again. A client
+retries a write safely only with an
+[`Idempotency-Key`](contrib/idempotency.md): the retry gets the first
+answer, or `409 idempotency_response_unavailable` once the first
+committed.
 
 ## 9. The answer
 
@@ -282,7 +294,7 @@ these gains.
 | 5 | 422 `invalid_field` | A command field breaks its markers. |
 | 6 | 404, 409 `concurrent_update`, 412 `precondition_failed`, 428 `precondition_required` | Out of reach, changed since the rule looked, a stale `If-Match`, or no `If-Match`. |
 | 7 | 404, 409, 422 | The domain refused. |
-| 8 | 409 `concurrent_update`, 409 `duplicate_value`, 422 `check_violation` | A lost race, a taken value, or a broken check. |
+| 8 | 409 `concurrent_update`, 409 `duplicate_value`, 422 `check_violation`, 503 `database_unavailable` | A lost race, a taken value, a broken check, or a database out of reach. |
 
 ## Common mistakes
 

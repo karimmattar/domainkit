@@ -103,8 +103,8 @@ These hooks come from `domainkit.db.hooks`, and are registered in
 | To add | Implement | Register with |
 | --- | --- | --- |
 | Work staged with each commit | `async def hook(uow, events, tasks)`, typed on `SqlAlchemyUnitOfWork` | `on_stage(hook)` (called by the [unit of work](../learning.md#words); only domains that registered are called) |
-| Work after each commit | `async def hook(uow)` | `on_committed(hook)` (called by the unit of work; failures are reported, never raised) |
-| The same, for a commit outside a unit of work | `async def hook(connection, database)` / `async def hook(database)` | `on_stage_transaction(hook)` / `on_transaction_committed(hook)` (called by `messaging.enqueue` around its own transaction; idempotency uses them to hold the key) |
+| Work after each commit | `async def hook(uow)` | `on_committed(hook)` (called by the unit of work, each within `EVENT_HANDLER_TIMEOUT`, free of the request's deadline; failures and hooks cut off, `HandlerTimedOut`, are reported, never raised) |
+| The same, for a commit outside a unit of work | `async def hook(connection, database)` / `async def hook(database)` | `on_stage_transaction(hook)` / `on_transaction_committed(hook)` (called by `messaging.enqueue` around its own transaction, the second within `EVENT_HANDLER_TIMEOUT`; idempotency uses them to hold the key) |
 | Rows after each `migrate` (Django's `post_migrate`) | `async def hook(connection, database)` | `on_migrated(hook)` (called by `migrate` for each database it upgraded, in one transaction as the schema owner, and by `flush`) |
 
 ```python

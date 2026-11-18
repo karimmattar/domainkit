@@ -111,7 +111,7 @@ modules = 838
 memory = 94
 
 [rungs.write]
-calls = 1997
+calls = 2049
 statements = 1
 transactions = 1
 checkouts = 1
@@ -129,7 +129,7 @@ modules = 838
 memory = 94
 
 [rungs.resource-command]
-calls = 2659
+calls = 2720
 statements = 1
 transactions = 1
 checkouts = 1
@@ -138,7 +138,7 @@ modules = 838
 memory = 94
 
 [rungs.keyed-write]
-calls = 3394
+calls = 3450
 statements = 4
 transactions = 3
 checkouts = 3
@@ -147,7 +147,7 @@ modules = 839
 memory = 94
 
 [rungs.money-write]
-calls = 2126
+calls = 2176
 statements = 1
 transactions = 1
 checkouts = 1
@@ -156,7 +156,7 @@ modules = 907
 memory = 109
 
 [rungs.posting]
-calls = 7976
+calls = 8059
 statements = 14
 transactions = 1
 checkouts = 1

@@ -364,14 +364,26 @@ class _Starting:
     async def _lifespan(
         self, scope: MutableMapping[str, Any], receive: _Receive, send: _Send
     ) -> None:
-        """Run the lifespan, signalling ``main`` once its startup failed."""
+        """Run the lifespan, signalling ``main`` once its startup failed.
+
+        A startup fails by saying so, or by raising before it says it is
+        complete: a middleware that refuses the configuration raises as
+        the lifespan reaches it.
+        """
+        said: set[str] = set()
 
         async def sending(message: MutableMapping[str, Any]) -> None:
+            said.add(message["type"])
             if message["type"] == "lifespan.startup.failed":
                 _failed(self.main)
             await send(message)
 
-        await self.application(scope, receive, sending)
+        try:
+            await self.application(scope, receive, sending)
+        except Exception:
+            if not said & {"lifespan.startup.complete", "lifespan.startup.failed"}:
+                _failed(self.main)
+            raise
 
 
 def _failed(main: int) -> None:
@@ -410,4 +422,6 @@ def uvicorn_options(
         "log_config": portable(settings.LOGGING, "LOGGING"),
         "access_log": False,
         "reload": False,
+        # A lifespan that raises stops the worker, as a failed startup does.
+        "lifespan": "on",
     }

@@ -8,7 +8,9 @@ Application services use it as an async context manager::
         await uow.commit()
 
 Leaving the block without ``commit()`` rolls back. After a successful commit,
-the events recorded by every aggregate the repositories saw are published.
+the events recorded by every aggregate the repositories saw are published,
+free of the deadline (``deadlines.after_commit``): a request that committed
+is answered as committed.
 
 ``defer(task, **kwargs)`` queues background work that is stored with the
 same commit and run by a worker afterwards (``domainkit.contrib.messaging``).
@@ -59,15 +61,16 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import timedelta
 from types import TracebackType
 from typing import Any, Final, Self
+from weakref import WeakSet
 
 from domainkit import clock, deadlines
 from domainkit.ddd.events import DomainEvent, EventBus, event_bus
-from domainkit.ddd.exceptions import CheckFailed
+from domainkit.ddd.exceptions import CheckFailed, DomainError
 from domainkit.ddd.preconditions import Expectation, check_loaded, expectation
 from domainkit.ddd.query import RowLock, declared_checks
 from domainkit.ddd.repository import Mark, Repository, RowLocks
@@ -82,6 +85,12 @@ NAMED_LOCKS: Final = RowLocks()
 one database would be for every transaction."""
 logger = logging.getLogger(__name__)
 _random = secrets.SystemRandom()
+_IN_DOUBT: Final = "domainkit_commit_in_doubt"
+"""The attribute that marks the error of a commit in doubt (``failed_in_doubt``)."""
+_MARKED: Final[WeakSet[BaseException]] = WeakSet()
+"""Errors of commits in doubt that take no attribute (a frozen dataclass's)."""
+_CAUSES: Final = 16
+"""How far ``failed_in_doubt`` follows the errors an error was raised from."""
 
 
 class ReadOnlyError(RuntimeError, DomainkitError):
@@ -222,6 +231,10 @@ class UnitOfWork(ABC):
     committed: int = 0
     """How many times this unit of work has committed: what a test checks
     after a use case (``assert uow.committed == 1``)."""
+    in_doubt: int = 0
+    """How many of its commits failed without saying whether the database
+    applied them: the connection was lost, or the work cut off, as it
+    committed. What such a commit names may be stored."""
     _commits: _Commits | None = None
     """Counted while ``run`` runs. Set on the instance only then, as is
     ``_named_locks``: ``repositories()`` walks the instance's attributes."""
@@ -347,6 +360,12 @@ class UnitOfWork(ABC):
     async def commit(self) -> None:
         """Store changes and durable work together, then publish the events.
 
+        Once the database committed, no deadline cuts off what follows: the
+        ``_committed`` hooks and the in-process handlers run to the end,
+        each handler within its own timeout (``deadlines.after_commit``).
+        A commit that fails without the database's refusal counts in
+        ``in_doubt``: it may have been applied.
+
         Raises:
             ReadOnlyError: The unit of work is read-only.
             RuntimeError: A savepoint is still open, or an aggregate that
@@ -365,7 +384,13 @@ class UnitOfWork(ABC):
         events = [event for aggregate in seen for event in aggregate.pull_events()]
         deferred, self._deferred = self._deferred, []
         await self._stage(events, deferred)
-        await self._commit()
+        try:
+            await self._commit()
+        except BaseException as exc:
+            if not self._refused(exc):
+                self.in_doubt += 1
+                _mark_in_doubt(exc)  # What answers the request reads it.
+            raise
         self.committed += 1
         if self._commits is not None:
             self._commits.count += 1
@@ -373,8 +398,9 @@ class UnitOfWork(ABC):
             self._accept_committed()
         self._finish()
         self._begun = self._run_marks()  # What is committed stays.
-        await self._committed()
-        await self.events.publish_all(events)
+        with deadlines.after_commit():
+            await self._committed()
+            await self.events.publish_all(events)
 
     async def rollback(self) -> None:
         """Discard changes and deferred tasks that were not committed.
@@ -519,6 +545,14 @@ class UnitOfWork(ABC):
         """Whether ``exc`` says the transaction lost a race; in memory, none does."""
         return False
 
+    def _refused(self, exc: BaseException) -> bool:
+        """Whether ``exc``, raised by ``_commit``, says nothing was committed.
+
+        A domain's refusal does; anything else, a cancellation included,
+        leaves it unknown. The SQL unit of work knows the database's answers.
+        """
+        return isinstance(exc, DomainError)
+
     def _run_marks(self) -> list[tuple[Repository[Any, Any], Mark]]:
         """What a run of ``run`` that failed puts back: every repository's state."""
         return [(each, each._mark()) for each in self.repositories()]
@@ -573,6 +607,46 @@ class UnitOfWork(ABC):
     @abstractmethod
     async def _rollback(self) -> None:
         """Roll the underlying transaction back."""
+
+
+def failed_in_doubt(exc: BaseException) -> bool:
+    """Whether ``exc`` comes from a commit that may have been applied.
+
+    The error ``UnitOfWork.commit`` counted in ``in_doubt``, or one raised
+    from it, directly or not (a cancellation the deadline turned into a
+    timeout, say). A client must not take such a failure for a refusal,
+    nor send the change again without an ``Idempotency-Key``.
+    """
+    seen: BaseException | None = exc
+    for _ in range(_CAUSES):
+        if seen is None:
+            return False
+        if getattr(seen, _IN_DOUBT, False) or _marked(seen):
+            return True
+        seen = seen.__cause__ or seen.__context__
+    return False
+
+
+def _mark_in_doubt(exc: BaseException) -> None:
+    """Mark ``exc`` for ``failed_in_doubt``; never raise in its place.
+
+    By an attribute, or, for an error that takes none (a frozen
+    dataclass's), in ``_MARKED``. One that is neither hashable nor takes an
+    attribute stays unmarked: the commit still counts in ``in_doubt``.
+    """
+    try:
+        setattr(exc, _IN_DOUBT, True)
+    except (AttributeError, TypeError):
+        with suppress(TypeError):
+            _MARKED.add(exc)
+
+
+def _marked(exc: BaseException) -> bool:
+    """Whether ``_MARKED`` holds ``exc``; False for an error that is not hashable."""
+    try:
+        return exc in _MARKED
+    except TypeError:
+        return False
 
 
 def expectations_of(uow: UnitOfWork) -> tuple[Expectation, ...]:

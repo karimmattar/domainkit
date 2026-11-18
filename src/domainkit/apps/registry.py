@@ -1,5 +1,6 @@
 """The registry of installed domains (``django.apps.apps``)."""
 
+import sys
 import threading
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator
 from contextlib import asynccontextmanager
@@ -121,7 +122,8 @@ class DomainRegistry:
         config = next((c for c in self if c.settings_class is settings_class), None)
         if config is None:
             raise ImproperlyConfigured(
-                f"No installed domain declares {settings_class.__qualname__}."
+                f"No installed domain declares {settings_class.__qualname__}: "
+                f"install {_declaring_package(settings_class)!r} in INSTALLED_DOMAINS."
             )
         current = unwrap_settings()
         raw = getattr(current, config.settings_name, None)
@@ -299,3 +301,16 @@ def _describe_unknown(name: str, known: list[str]) -> str:
 
 registry: Final = DomainRegistry()
 """The process-wide registry populated by ``domainkit.setup()``."""
+
+
+def _declaring_package(settings_class: type) -> str:
+    """The package of the domain that declares ``settings_class``: what to install.
+
+    The package that holds the class's module (``domainkit.contrib.idempotency``
+    for ``domainkit.contrib.idempotency.settings``), or the module itself when
+    it is a package.
+    """
+    module = settings_class.__module__
+    if hasattr(sys.modules.get(module), "__path__"):
+        return module
+    return module.rpartition(".")[0] or module
