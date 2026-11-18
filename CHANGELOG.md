@@ -9,6 +9,17 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- Three parts continue the tutorial's bank, each walked by
+  `domainkit_tests/test_walkthroughs.py`: money that moves (a transfer
+  under an `Idempotency-Key`, a locked row, a daily limit, and entries in
+  double-entry books), four eyes (large transfers held for another
+  clerk's approval, confirmed as one act with a code, and the audit
+  trail), and telling others (each transfer sent as a signed webhook
+  through the outbox, and a receiver that verifies it)
+  ([the tutorial](docs/tutorial.md)) (audit A28-DX-07).
+
 ## [2.8.0] - 2026-11-18
 
 2.8 answers fourteen of a project's fifteen notes on 2.7 (the last,

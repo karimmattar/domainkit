@@ -3,7 +3,7 @@
 In this part you install domainkit, create a project, and add one route
 that anyone may call. You call the route with `curl`, and you write a
 test for it. You learn no new words here, only the commands. This part
-comes before the five parts that build a small bank
+comes before the parts that build a small bank
 ([the tutorial](../tutorial.md)). Each part ends with a project that
 works, and the next part starts from it.
 

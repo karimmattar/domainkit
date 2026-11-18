@@ -15,10 +15,11 @@ On this page you find:
 
 Read the guides in this order. Each one builds on the ones before it.
 
-1. **[The tutorial](tutorial.md)**: six parts of about 15 minutes each.
+1. **[The tutorial](tutorial.md)**: nine parts of about 15 minutes each.
    You build a project and one route, then a domain, rules, permissions,
    an event that the worker handles, tests, and the checks production
-   runs.
+   runs. The last three parts add transfers booked in double-entry
+   books, approvals by a second person, and signed webhooks.
 2. **[Resources](resources.md)** and **[validation](validation.md)**:
    more aggregates, the routes made from them, and the limits a field or
    an aggregate keeps.

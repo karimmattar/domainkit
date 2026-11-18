@@ -19,6 +19,7 @@ import shlex
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,9 @@ PARTS = (
     "3-permissions.md",
     "4-events.md",
     "5-testing-and-deploying.md",
+    "6-moving-money.md",
+    "7-four-eyes.md",
+    "8-telling-others.md",
 )
 """The getting-started path, in the order a newcomer reads it."""
 ENVIRONMENT_LINES = (
@@ -44,8 +48,15 @@ ENVIRONMENT_LINES = (
     "pip install --group dev",
 )
 """Lines that build the environment this interpreter already is."""
+LATER_ENVIRONMENT = {
+    "7-four-eyes.md": ('pip install "domainkit[mfa]"',),
+    "8-telling-others.md": ('pip install "domainkit[webhooks]"',),
+}
+"""Parts that add an extra to the environment, which this interpreter has."""
 TYPED = {"PASSWORD": "correct-horse-battery", "CLERK_PASSWORD": "staple-lantern-oak"}
 """What the user types at each ``read -rsp`` prompt of the pages."""
+APP_CODES = {"CODE": "CLERK_SECRET"}
+"""Prompts answered with an authenticator app's code: the secret's variable."""
 QUIET = ("-p", "no:cacheprovider")
 """The generated project's tests leave no cache behind."""
 STEP_TIMEOUT = 120
@@ -125,6 +136,8 @@ class Walk:
     """The names its processes inherit."""
     printed: dict[str, str] = field(default_factory=dict)
     """What each line printed, by line."""
+    steps: dict[str, int] = field(default_factory=dict)
+    """The last step an authenticator app gave a code of, by secret."""
 
     @property
     def env(self) -> dict[str, str]:
@@ -203,11 +216,13 @@ class Walk:
     def requests(self, lines: list[str]) -> list[dict[str, Any]]:
         """Send the ``curl`` lines to the application, as a server would get them."""
         results = self.cwd.parent / "walkthrough-results.jsonl"
+        codes = {name: {"totp": secret} for name, secret in APP_CODES.items()}
         given = {
             "lines": lines,
-            "typed": TYPED,
+            "typed": {**TYPED, **codes},
             "variables": self.variables,
             "exported": sorted(self.exported),
+            "steps": self.steps,
         }
         done = subprocess.run(  # noqa: S603 - this interpreter and the driver.
             [sys.executable, str(DRIVER), str(results)],
@@ -225,6 +240,7 @@ class Walk:
             for result in results.read_text(encoding="utf-8").splitlines()
         ]
         self.variables, self.exported = state["variables"], set(state["exported"])
+        self.steps = state["steps"]
         return answered
 
     def play(self, page: list[tuple[str, str]]) -> list[dict[str, Any]]:
@@ -260,13 +276,13 @@ class Walk:
         return results
 
 
-def without_environment(page: list[tuple[str, str]]) -> list[tuple[str, str]]:
-    """The page's steps without its environment lines, which must be ours."""
-    skipped = [
-        step for where, step in page if where == "$" and step in ENVIRONMENT_LINES
-    ]
-    assert skipped == list(ENVIRONMENT_LINES)
-    return [(where, step) for where, step in page if step not in ENVIRONMENT_LINES]
+def without_environment(
+    page: list[tuple[str, str]], lines: tuple[str, ...] = ENVIRONMENT_LINES
+) -> list[tuple[str, str]]:
+    """The page's steps without its environment ``lines``, which must be ours."""
+    skipped = [step for where, step in page if where == "$" and step in lines]
+    assert skipped == list(lines)
+    return [(where, step) for where, step in page if step not in lines]
 
 
 @dataclass
@@ -339,6 +355,8 @@ class Tutorial:
             page = steps((TUTORIAL / earlier).read_text(encoding="utf-8"))
             if earlier == PARTS[0]:
                 page = without_environment(page)
+            elif earlier in LATER_ENVIRONMENT:
+                page = without_environment(page, LATER_ENVIRONMENT[earlier])
             self.failed = earlier
             self.answers[earlier] = self.shell.play(page)
             self.failed = None
@@ -459,8 +477,8 @@ def test_part_5_tests_the_rules_and_passes_the_production_checks(
     assert "def test_deposits_must_be_positive" in domain_tests
     printed = tutorial.shell.printed["pytest"]
     # Three times: in part 0, after part 2, and with part 5's five tests
-    # (one of them twice).
-    _, first, second = re.findall(r"(\d+) passed", printed)
+    # (one of them twice); the later parts run them again.
+    _, first, second = re.findall(r"(\d+) passed", printed)[:3]
     assert int(second) == int(first) + 6
     [check] = [
         output
@@ -471,6 +489,85 @@ def test_part_5_tests_the_rules_and_passes_the_production_checks(
     for warned in ("deploy.W004", "deploy.W006"):
         assert f"Warning: {warned}: " in check
     assert "auth." not in check  # Guesses are counted in Redis (auth.E105).
+
+
+@WALKED
+def test_part_6_moves_money_once_and_within_its_limit(tutorial: Tutorial) -> None:
+    """A transfer, its retry replayed, two refusals, and the entries it booked."""
+    deposited, sent, replayed, reused, limited, entries = tutorial.through(PARTS[6])
+    printed = tutorial.shell.printed
+
+    assert body(deposited)["balance"] == {"amount": "3125.00", "currency": "USD"}
+    assert body(sent)["balance"] == {"amount": "2875.00", "currency": "USD"}
+    assert "\nidempotent-replayed: true\n" in replayed["output"]
+    assert body(replayed) == body(sent)
+    assert body(reused)["code"] == "idempotency_key_reused"
+    assert body(limited)["code"] == "limit_exceeded"
+    assert "The books balance." in printed["python manage.py accounting verify"]
+    lines = [line for entry in body(entries)["items"] for line in entry["lines"]]
+    assert sorted((line["side"], line["amount"]["amount"]) for line in lines) == [
+        ("credit", "250.00"),
+        ("credit", "3000.00"),
+        ("debit", "250.00"),
+        ("debit", "3000.00"),
+    ]
+    # Its three tests join the 17 of part 5.
+    assert re.findall(r"(\d+) passed", printed["pytest"])[3] == "20"
+
+
+@WALKED
+def test_part_7_holds_a_large_transfer_for_a_second_person(tutorial: Tutorial) -> None:
+    """403 pending; the clerk confirms the approval with a code; the trail says so."""
+    answers = tutorial.through(PARTS[7])
+    granted, secret, enrolled, pending, request, fingerprint, *rest = answers
+    unauthorized, asked, shown, confirmed, approved = rest
+    clerk, printed = tutorial.shell.variables["CLERK"], tutorial.shell.printed
+
+    assert body(granted)["permissions"] == [
+        "accounts.approve_transfer",
+        "accounts.view_account",
+        "approvals.view_approvalrequest",
+    ]
+    assert secret["output"].strip() == tutorial.shell.variables["CLERK_SECRET"]
+    assert len(body(enrolled)["recovery_codes"]) == 10
+    assert pending["status"] == 403
+    assert body(request)["status"] == "pending"
+    assert body(request)["fingerprint"] == fingerprint["output"].strip()
+    assert body(unauthorized)["code"] == "authorization_required"
+    assert asked["status"] == 201
+    assert body(shown)["shown"]["title"] == "Approve a request"
+    assert confirmed["output"].startswith(body(shown)["id"] + ".")
+    assert body(approved)["status"] == "approved"
+    assert [each["approver"] for each in body(approved)["decisions"]] == [clerk]
+    trail = printed["python manage.py audit log --limit 10"].splitlines()
+    actors = {line.split()[3]: line.split()[2] for line in trail}
+    assert actors["approvals.approval_given"] == clerk
+    assert actors["accounts.account_transferred"] == body(request)["maker"]
+    assert "limits, audit, approvals." in printed["python manage.py check"]
+    # Part 6's transfers need no approval; then the new test joins them.
+    assert re.findall(r"(\d+) passed", printed["pytest"])[4:6] == ["20", "21"]
+
+
+@WALKED
+def test_part_8_sends_each_transfer_as_a_signed_webhook(tutorial: Tutorial) -> None:
+    """A subscription and its secret; the transfer's webhook waits in the outbox."""
+    subscribed, sent = tutorial.through(PARTS[8])
+    printed = tutorial.shell.printed
+
+    assert subscribed["status"] == 201
+    assert tutorial.shell.variables["BANK_API_RECEIVER_SECRET"].startswith("whsec_")
+    assert body(sent)["balance"] == {"amount": "1275.00", "currency": "USD"}
+    [subscription] = printed["python manage.py webhooks subscriptions"].splitlines()
+    assert subscription.split()[1:] == ["active", "127.0.0.1", "transfer.made"]
+    pending = printed["python manage.py messages list pending --limit 10"]
+    assert [line.split()[2] for line in pending.splitlines()] == [
+        "accounts.book_transfer",
+        "domainkit.contrib.webhooks.fan_out",
+    ]
+    # The receiver's two tests, one of them through a live server.
+    assert re.findall(r"(\d+) passed", printed["pytest"])[6] == "23"
+    # Kept for the server the reader starts, never handed to a process.
+    assert "BANK_API_RECEIVER_SECRET" not in tutorial.shell.env
 
 
 @pytest.mark.parametrize(
@@ -517,6 +614,32 @@ def test_the_driver_forgets_an_unset_name(monkeypatch: pytest.MonkeyPatch) -> No
         walkthrough_driver.run_line(
             None, "curl http://127.0.0.1:8000/$PASSWORD", variables
         )
+
+
+def test_the_driver_types_each_code_of_an_app_once() -> None:
+    """The step's code, then the next step's, after the wait a person would make."""
+    from domainkit.testing import totp_code
+    from domainkit_tests import walkthrough_driver
+
+    secret = "JBSWY3DPEHPK3PXP"
+    clock = [3010.0]  # In the step that starts at 3000 seconds.
+    steps: dict[str, int] = {}
+
+    def code() -> str:
+        return walkthrough_driver.typed_value(
+            {"totp": "SECRET"},
+            {"SECRET": secret},
+            steps,
+            now=lambda: clock[0],
+            sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+        )
+
+    first, second = code(), code()
+
+    assert first == totp_code(secret, datetime.fromtimestamp(3000, UTC))
+    assert second == totp_code(secret, datetime.fromtimestamp(3030, UTC))
+    assert (steps, clock) == ({secret: 101}, [3030.0])
+    assert walkthrough_driver.typed_value("typed", {}, steps) == "typed"
 
 
 ORIGINAL = '''"""A module a generator wrote."""

@@ -76,6 +76,9 @@ nav:
       - tutorial/3-permissions.md
       - tutorial/4-events.md
       - tutorial/5-testing-and-deploying.md
+      - tutorial/6-moving-money.md
+      - tutorial/7-four-eyes.md
+      - tutorial/8-telling-others.md
   - How-to:
       - recipes.md
       - from-django.md
