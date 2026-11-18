@@ -45,9 +45,15 @@ to `.ci/`. `make services-down` stops them and drops their data.
   error, in random order. Async tests use `@pytest.mark.anyio`. Never wait
   on the wall clock: use `domainkit.clock.freeze_time`, events, or fakes
   that block until released. New code is covered 100%, branches included,
-  by the runs with and without servers together: CI's `coverage` job fails
-  on a line a pull request adds that no test ran
-  ([ADR 0191](docs/adr/0191-gate-the-lines-a-change-adds.md)). A helper
+  by the runs with and without servers together: on a pull request to
+  `stg`, CI's `coverage` job fails on a line it adds or changes under
+  `src/` that no job ran, or that left a branch untaken
+  ([ADR 0191](docs/adr/0191-gate-the-lines-a-change-adds.md)); the
+  release's pull request to `main` is not held to it (`make cov
+  BASE=origin/main` checks a release by hand). An old line partly covered
+  that you edit counts as added; a branch only a timing reaches, or a line
+  only `test (3.14t)`, `newest` or `oldest` runs (they gather no
+  coverage), takes a test or `# pragma: no cover` with its reason. A helper
   more than one test file needs goes in `domainkit_tests/support/`, by
   area, not in the test file that used it first (`test_support.py`
   checks the ones that are there); so does a fixture two files need.
@@ -63,8 +69,8 @@ to `.ci/`. `make services-down` stops them and drops their data.
   left stays. CI runs mutation testing only on request: the jobs below run
   while the repository variable `MUTATION` is `on`, which it has not been
   since 1.5.0, and the weekly shards can be started by hand
-  ([ADR 0106](docs/adr/0106-mutate-what-a-pull-request-changes.md)'s 2.9
-  amendment). A new module goes in one of the weekly shards in
+  ([ADR 0106](docs/adr/0106-mutate-what-a-pull-request-changes.md)'s
+  amendment of 2026-11-18). A new module goes in one of the weekly shards in
   `.github/workflows/ci.yml` (`test_ci.py` checks it). When it is on, a
   pull request's `mutation (changed)` check runs the mutants of the
   functions it changed and lists those that lived; for a release-size

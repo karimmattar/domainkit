@@ -11,8 +11,8 @@ and a status.
 
 ### Changed
 
-- CI's `coverage` job fails a pull request with a line it adds or changes
-  under `src/` that ran in no job, or left a branch untaken
+- CI's `coverage` job fails a pull request to `stg` with a line it adds or
+  changes under `src/` that ran in no job, or left a branch untaken
   (`.github/scripts/changed_coverage.py`); `make cov` checks the same
   against `origin/stg`. The package stays at 98%, as README.md and the
   Makefile now say, and Python processes the tests start are measured too
@@ -49,7 +49,6 @@ and a status.
   factory before a test's fixtures, as well as before the test's own.
   `docs/testing.md`'s example of a module's rows passed or failed by the
   order of the tests (audit A28-TEST-08).
-
 - The upload and PDF tests no longer time their checks with a stopwatch.
   Each says which limit stopped a check: the clock or a signal, from the
   log; the decoder's or the cross-reference reader's count; or a clock

@@ -252,7 +252,7 @@ suite on every core of the runner (`pytest -n auto`):
 - the PostgreSQL tests on PostgreSQL 16, the oldest supported, and on
   Python 3.15, the newest
 - coverage of both runs combined: 98% of the package, and every line a
-  pull request adds or changes, its branches included
+  pull request to `stg` adds or changes, its branches included
 - the benchmark ladder: Python calls and database round trips per request,
   against budgets (`python -m benchmarks`; docs/performance.md)
 - a wheel build, installed and imported in a clean environment, and its

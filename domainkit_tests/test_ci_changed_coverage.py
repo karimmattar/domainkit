@@ -83,6 +83,60 @@ def test_only_the_lines_a_hunk_adds_count(script: ModuleType) -> None:
     assert script.added_lines(diff) == {"src/pkg/a.py": {3, 11, 12, 13}}
 
 
+def test_a_name_is_read_in_a_files_header_only(script: ModuleType) -> None:
+    """A hunk's line that reads ``+++ b/...`` names nothing; a quoted name is read."""
+    diff = textwrap.dedent(
+        """\
+        diff --git a/src/pkg/a.py b/src/pkg/a.py
+        --- a/src/pkg/a.py
+        +++ b/src/pkg/a.py
+        @@ -1,0 +2,2 @@
+        +x = 1
+        +++ b/src/pkg/elsewhere.py
+        @@ -9,0 +12 @@
+        +y = 2
+        diff --git "a/src/pkg/caf\\303\\251.py" "b/src/pkg/caf\\303\\251.py"
+        --- "a/src/pkg/caf\\303\\251.py"
+        +++ "b/src/pkg/caf\\303\\251.py"
+        @@ -1 +1 @@
+        -z = 0
+        +z = 1
+        diff --git a/src/pkg/old.py b/src/pkg/new.py
+        similarity index 100%
+        rename from src/pkg/old.py
+        rename to src/pkg/new.py
+        """
+    )
+
+    assert script.added_lines(diff) == {
+        "src/pkg/a.py": {2, 3, 12},
+        "src/pkg/caf\u00e9.py": {1},
+    }
+
+
+@pytest.mark.parametrize(
+    "diff",
+    [
+        "diff --git src/a.py src/a.py\n--- src/a.py\n+++ src/a.py\n@@ -1 +1 @@\n+x\n",
+        "diff --git a/src/a.py b/src/a.py\n@@ -1 +1 @@\n+x\n",
+        "\x1b[1mdiff --git a/src/a.py b/src/a.py\x1b[m\n\x1b[36m@@ -1 +1 @@\x1b[m\n",
+    ],
+    ids=["no-prefix", "a-hunk-before-its-name", "colours"],
+)
+def test_a_diff_it_cannot_read_ends_it_unpassed(
+    script: ModuleType, monkeypatch: pytest.MonkeyPatch, diff: str
+) -> None:
+    """Read as nothing, these passed whatever ran: refused, and the script ends 2."""
+    with pytest.raises(script.UnreadDiff):
+        script.added_lines(diff)
+    monkeypatch.setattr(
+        script.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, stdout=diff),
+    )
+    assert script.main(["HEAD^1", "no-report.json"]) == 2
+
+
 def test_a_line_that_never_ran_or_left_a_branch_untaken_is_listed(
     script: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -157,9 +211,30 @@ def measured_run(path: Path, *calls: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_a_change_passes_once_its_lines_and_branches_have_run(tmp_path: Path) -> None:
-    """Members only: the line for others is listed, and the ``if`` it branches from."""
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {},
+        {
+            "diff.noprefix": "true",
+            "diff.mnemonicPrefix": "true",
+            "color.diff": "always",
+            "diff.external": "true",
+        },
+    ],
+    ids=["git-as-it-comes", "git-set-otherwise"],
+)
+def test_a_change_passes_once_its_lines_and_branches_have_run(
+    tmp_path: Path, settings: dict[str, str]
+) -> None:
+    """Members only: the line for others is listed, and the ``if`` it branches from.
+
+    Whatever the repository sets for diffs: without prefixes, in colour, or
+    through another tool, git printed what read as no change, and passed.
+    """
     scratch_repository(tmp_path)
+    for name, value in settings.items():
+        git(tmp_path, "config", name, value)
     (tmp_path / "src" / "prices.py").write_text(AFTER)
 
     half = measured_run(tmp_path, "prices.discounted(100, True)")
@@ -189,7 +264,11 @@ def test_ci_and_make_cov_hold_a_change_to_every_line_it_adds() -> None:
     makefile = (ROOT / "Makefile").read_text()
 
     assert checkout["with"]["fetch-depth"] == 2  # The merge commit and its base.
-    assert gate["if"] == "github.event_name == 'pull_request'"
+    # Pull requests to stg: the release's, from stg to main, holds the
+    # whole release in its diff.
+    assert gate["if"] == (
+        "github.event_name == 'pull_request' && github.base_ref == 'stg'"
+    )
     assert "changed_coverage.py HEAD^1 coverage.json" in gate["run"]
     assert "coverage json -q -o coverage.json --fail-under=0" in gate["run"]
     assert any("--fail-under=98" in each.get("run", "") for each in coverage["steps"])

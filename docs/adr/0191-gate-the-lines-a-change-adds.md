@@ -52,11 +52,14 @@ same way [2].
 
 - The package stays at 98% in every run, and in the runs combined
   (`pyproject.toml`, CI's `coverage` job, `make cov`).
-- On a pull request, the `coverage` job fails when a line the pull request
-  adds or changes under `src/` ran in no job, or a branch from it was
-  never taken: `.github/scripts/changed_coverage.py HEAD^1` on the merge
-  commit, against `coverage json` of every run combined. `make cov` runs
-  the same against `origin/stg` (`BASE=` names another).
+- On a pull request to `stg`, the `coverage` job fails when a line the
+  pull request adds or changes under `src/` ran in no job, or a branch
+  from it was never taken: `.github/scripts/changed_coverage.py HEAD^1`
+  on the merge commit, against `coverage json` of every run combined.
+  Not on the release's pull request from `stg` to `main`: its diff is the
+  whole release, whose lines were held to this as they reached `stg`; a
+  release may run `make cov BASE=origin/main` by hand. `make cov` runs
+  the check against `origin/stg` (`BASE=` names another).
 - A line no CI job can run (another platform; the free-threaded build,
   which gathers no coverage) carries `# pragma: no cover` and the reason,
   for the review to read.
@@ -75,10 +78,16 @@ same way [2].
 - A line that only runs in a process that does not keep the environment
   (an upload check's own process, by design) counts as missed: test it in
   the test's process too, or mark it.
-- Measuring subprocesses costs time. `test_generators.py` and
-  `test_init.py` took 164 s instead of 114 s on a loaded four-core machine
-  with two workers; those files are among the few that start many
-  interpreters, a few percent of a test job.
+- Measuring subprocesses costs time where a test starts interpreters:
+  about two to two and a half times on the end-to-end tests
+  (`test_proof.py` 22.5 s to 55.4 s, `test_init.py` 14.2 s to 26.4 s, in
+  review). Those tests are a minority of the suite, but its longest.
+- The gate can refuse a change for a line that ran in no CI job for a
+  reason other than a missing test: a branch only a timing reaches, an
+  old line partly covered that the change edits (it counts as added), or
+  a line only `test (3.14t)`, `newest` or `oldest` runs, which gather no
+  coverage. Such a line is tested, or carries `# pragma: no cover` and
+  its reason.
 - What would change this: diff-cover in the dev group, which would replace
   the script; `MUTATION` turned on, which would add a second check of the
   changed lines.

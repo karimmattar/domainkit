@@ -414,7 +414,7 @@ jobs:
             softwaremill/elasticmq-native:1.7.1@sha256:e4580ab9ad1bd5cd37b4ba04911bc5ccc8cd2d9ab4de56ece65acee71c24e05c
           for _ in $(seq 1 60); do
             if docker logs kafka 2>&1 | grep -q "Kafka Server started" &&
-              docker logs elasticmq 2>&1 | grep -q "ElasticMQ server"; then
+              docker logs elasticmq 2>&1 | grep -q "started in"; then
               exit 0
             fi
             sleep 1
@@ -558,8 +558,10 @@ jobs:
 
   # Every line must run in some job: a few only run on SQLite, others only
   # against the servers. The combined report is the coverage gate: 98% of
-  # the package, and on a pull request every line it adds or changes under
-  # src/, with each of its branches (ADR 0191).
+  # the package, and on a pull request to stg every line it adds or changes
+  # under src/, with each of its branches (ADR 0191). Not on the release's
+  # pull request from stg to main: its diff is the whole release, whose
+  # lines were each held to this when they reached stg.
   coverage:
     needs: [changes, test, integration]
     if: ${{ !cancelled() && !failure() && github.event_name != 'schedule' && needs.changes.outputs.code != 'false' }}
@@ -583,7 +585,7 @@ jobs:
           merge-multiple: true
       - run: poetry run coverage combine
       - run: poetry run coverage report --fail-under=98
-      - if: github.event_name == 'pull_request'
+      - if: github.event_name == 'pull_request' && github.base_ref == 'stg'
         run: |
           poetry run coverage json -q -o coverage.json --fail-under=0
           poetry run python .github/scripts/changed_coverage.py HEAD^1 coverage.json
