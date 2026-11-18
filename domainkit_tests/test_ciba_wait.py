@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 
 from domainkit import clock
 from domainkit.contrib.ciba import services
+from domainkit_tests.support.waiting import WAIT
 from domainkit_tests.test_auth_cookies import TRUSTED
 from domainkit_tests.test_ciba import PHONE, App, Phone, app, redeem, rows, start_push
 from domainkit_tests.test_ciba_authorizations import (
@@ -138,9 +139,9 @@ def test_a_wait_in_progress_hears_the_approval(app: App, waits: Waits) -> None:
     )
 
     holding.start()
-    assert waits.begun.wait(10)
+    assert waits.begun.wait(WAIT)
     assert phone.approve(waiting["id"]).status_code == 204
-    holding.join(10)
+    holding.join(WAIT)
 
     assert [answer.json() for answer in answers] == [{"status": "approved"}]
 
@@ -240,9 +241,9 @@ def test_an_acts_wait_in_progress_hears_the_phone_confirm(
     )
 
     holding.start()
-    assert waits.begun.wait(10)
+    assert waits.begun.wait(WAIT)
     confirmed = approve(phone, listed, started)
-    holding.join(10)
+    holding.join(WAIT)
 
     assert confirmed.status_code == 204, confirmed.json()
     assert [answer.json() for answer in answers] == [{"status": "approved"}]

@@ -40,8 +40,12 @@ def held(file: IO[bytes]) -> None:
 
 
 def asleep(file: IO[bytes]) -> None:
-    """Sleep a minute, on no CPU: only the clock ends it sooner."""
-    time.sleep(60)
+    """Sleep as many seconds as the file says, on no CPU; then take it.
+
+    Only the clock ends it sooner: a test gives it ten times its limit, so a
+    clock ten times late lets it take the file.
+    """
+    time.sleep(float(file.read()))
 
 
 def hog(file: IO[bytes]) -> None:

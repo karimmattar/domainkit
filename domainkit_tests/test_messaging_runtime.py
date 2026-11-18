@@ -89,6 +89,7 @@ from domainkit.lifecycle import Budget as ShutdownBudget
 from domainkit.lifecycle import close_resources
 from domainkit.management import call_command
 from domainkit_tests import test_messaging as test_messaging_module
+from domainkit_tests.support.waiting import WAIT, within
 from domainkit_tests.test_messaging import (  # noqa: F401 - fixtures.
     ALPHA,
     BROKERED,
@@ -109,15 +110,6 @@ from domainkit_tests.test_messaging import (  # noqa: F401 - fixtures.
 from domainkit_tests.test_messaging_ordering import step
 
 pytestmark = pytest.mark.anyio
-
-WAIT: Final = 30.0
-"""The longest any test waits for something; a regression fails, never hangs."""
-
-
-async def within(awaitable: Any) -> Any:  # noqa: ANN401 - any awaitable.
-    """Await ``awaitable``, failing after ``WAIT`` seconds."""
-    async with asyncio.timeout(WAIT):
-        return await awaitable
 
 
 def postgres() -> bool:

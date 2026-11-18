@@ -36,6 +36,7 @@ from domainkit.db import connections
 from domainkit_tests import test_messaging_ordering as ordering
 from domainkit_tests import test_messaging_runtime as runtime
 from domainkit_tests.fake_amqp import FakeAMQP
+from domainkit_tests.support.waiting import WAIT
 from domainkit_tests.test_db import notes
 from domainkit_tests.test_messaging import (
     ALPHA,
@@ -490,7 +491,7 @@ async def test_work_in_flight_never_exceeds_the_budget(brokered: Server) -> None
         finally:
             gate.open()
             stop.set()
-            async with asyncio.timeout(runtime.WAIT):
+            async with asyncio.timeout(WAIT):
                 await running
             await close_publishers()  # As shutdown drains them: before brokers close.
             await brokers.close_all()
@@ -503,9 +504,9 @@ async def test_work_in_flight_never_exceeds_the_budget(brokered: Server) -> None
 
 
 async def until(check: Callable[[], Awaitable[object]]) -> None:
-    """Return once ``check()`` is true; fail after ``runtime.WAIT`` seconds."""
-    async with asyncio.timeout(runtime.WAIT):
-        for _ in range(int(runtime.WAIT / 0.02)):
+    """Return once ``check()`` is true; fail after ``WAIT`` seconds."""
+    async with asyncio.timeout(WAIT):
+        for _ in range(int(WAIT / 0.02)):
             if await check():
                 return
             await asyncio.sleep(0.02)
@@ -541,7 +542,7 @@ async def test_a_redelivered_message_commits_its_work_once(brokered: Server) -> 
             await until(done)
         finally:
             stop.set()
-            async with asyncio.timeout(runtime.WAIT):
+            async with asyncio.timeout(WAIT):
                 await running
             await close_publishers()  # As shutdown drains them: before brokers close.
             await brokers.close_all()
@@ -583,7 +584,7 @@ async def test_keyed_messages_run_in_order_through_rabbitmq(brokered: Server) ->
             await until(done)
         finally:
             stop.set()
-            async with asyncio.timeout(runtime.WAIT):
+            async with asyncio.timeout(WAIT):
                 await running
             await close_publishers()  # As shutdown drains them: before brokers close.
             await brokers.close_all()

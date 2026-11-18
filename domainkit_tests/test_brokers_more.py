@@ -671,9 +671,23 @@ def sqs(monkeypatch: pytest.MonkeyPatch) -> FakeSqs:
     return fake
 
 
-async def test_sqs_holds_to_the_contract(sqs: FakeSqs) -> None:
-    """Queues made once each; bodies in base64; delete and visibility 0."""
+async def test_sqs_holds_to_the_contract(
+    sqs: FakeSqs, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Queues made once each; bodies in base64; delete and visibility 0.
+
+    Closed, the broker closes its connections to SQS: it left them open,
+    as a real server showed (A28-TEST-03).
+    """
     broker = SqsBroker(config("sqs://AKID:secret@us-east-1", REDELIVER_AFTER=60))
+    closed: list[object] = []
+    close = type(broker.client).aclose
+
+    async def closing(client: Any) -> None:  # noqa: ANN401 - an HttpClient.
+        closed.append(client)
+        await close(client)
+
+    monkeypatch.setattr(type(broker.client), "aclose", closing)
 
     assert await exercise(broker) == EXPECTED
     assert sqs.calls.count("CreateQueue") == 2
@@ -681,6 +695,7 @@ async def test_sqs_holds_to_the_contract(sqs: FakeSqs) -> None:
     assert all(not q for q in sqs.queues.values())
     await broker.check()
     await broker.close()
+    assert closed == [broker.client]
 
 
 async def test_sqs_refusals_and_outages(sqs: FakeSqs) -> None:

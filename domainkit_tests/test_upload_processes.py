@@ -103,6 +103,31 @@ async def refusal(data: bytes, kind: FileType) -> tuple[int, str, str]:
     return error.status_code, error.code, error.detail
 
 
+class Timeouts:
+    """``asyncio`` as ``domainkit.inspection`` sees it, each timeout it sets noted."""
+
+    def __init__(self) -> None:
+        """None set yet."""
+        self.given: list[float | None] = []
+
+    def __getattr__(self, name: str) -> Any:  # noqa: ANN401 - asyncio's names.
+        """``asyncio``'s own."""
+        return getattr(asyncio, name)
+
+    def timeout(self, delay: float | None) -> asyncio.Timeout:
+        """``asyncio.timeout``, its delay noted."""
+        self.given.append(delay)
+        return asyncio.timeout(delay)
+
+
+@pytest.fixture
+def clocks(monkeypatch: pytest.MonkeyPatch) -> list[float | None]:
+    """The clock each check's process is given, in seconds: the limit, not later."""
+    timeouts = Timeouts()
+    monkeypatch.setattr(inspection, "asyncio", timeouts)
+    return timeouts.given
+
+
 def stopped(caplog: pytest.LogCaptureFixture) -> list[str]:
     """What ended each check's process, as logged: ``clock``, or a signal's name.
 
@@ -250,6 +275,7 @@ def unended_strings(headers: int, filler: int) -> bytes:
 )
 async def test_what_pypdf_does_unbounded_is_stopped_by_the_system(
     caplog: pytest.LogCaptureFixture,
+    clocks: list[float | None],
     data: bytes,
     seconds: float,
     expected: tuple[str, str],
@@ -269,21 +295,24 @@ async def test_what_pypdf_does_unbounded_is_stopped_by_the_system(
 
     assert (status, code, said) == (422, *expected)
     assert stopped(caplog) in ends
+    assert clocks == [seconds]
 
 
 @pytest.mark.parametrize(
-    ("check", "seconds", "detail", "ended"),
+    ("check", "seconds", "data", "detail", "ended"),
     [
-        (hooks.asleep, 1.0, TOO_LONG, ["clock"]),
-        (hooks.hog, 30.0, TOO_MUCH, []),
-        (hooks.over_cpu, 30.0, TOO_LONG, ["SIGXCPU"]),
+        (hooks.asleep, 1.0, b"10", TOO_LONG, ["clock"]),
+        (hooks.hog, 30.0, b"anything", TOO_MUCH, []),
+        (hooks.over_cpu, 30.0, b"anything", TOO_LONG, ["SIGXCPU"]),
     ],
     ids=["clock", "memory", "cpu"],
 )
 async def test_a_check_past_its_limits_is_a_refusal(
     caplog: pytest.LogCaptureFixture,
+    clocks: list[float | None],
     check: Any,  # noqa: ANN401 - a check.
     seconds: float,
+    data: bytes,
     detail: str,
     ended: list[str],
 ) -> None:
@@ -291,13 +320,15 @@ async def test_a_check_past_its_limits_is_a_refusal(
 
     Which limit ended it is read from the log, not from a stopwatch
     (A28-TEST-01). The clock's check sleeps, so its CPU limit cannot come
-    first.
+    first, and for ten times the limit: a clock that came later would let
+    it take the file. The clock set is the limit itself.
     """
     with limited(seconds):
-        status, code, said = await refusal(b"anything", typed(check))
+        status, code, said = await refusal(data, typed(check))
 
     assert (status, code, said) == (422, "unreadable_file", detail)
     assert stopped(caplog) == ended
+    assert clocks == [seconds]
 
 
 async def test_a_blank_page_fits_the_least_memory_and_less_is_refused() -> None:

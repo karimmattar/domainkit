@@ -9,7 +9,7 @@ is given (A28-TEST-06).
 import asyncio
 import inspect
 from collections.abc import Awaitable, Callable
-from typing import Final
+from typing import Any, Final
 
 WAIT: Final = 30.0
 """The longest any test waits for something; a regression fails, never hangs."""
@@ -39,7 +39,11 @@ async def until(
         await asyncio.sleep(STEP)
 
 
-async def within[T](awaitable: Awaitable[T]) -> T:
-    """Await ``awaitable``, failing after ``WAIT`` seconds."""
+async def within(awaitable: Awaitable[Any]) -> Any:  # noqa: ANN401 - any awaitable.
+    """Await ``awaitable``, failing after ``WAIT`` seconds.
+
+    Its answer is untyped, as the tests' copies had it: typeshed types some
+    awaitables otherwise than they answer (``asyncio.gather`` a tuple).
+    """
     async with asyncio.timeout(WAIT):
         return await awaitable
