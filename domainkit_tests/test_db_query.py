@@ -58,6 +58,7 @@ from domainkit.ddd.query import (
     Selection,
     Sum,
     Within,
+    position_of,
 )
 from domainkit.ddd.repository import default_ordering
 from domainkit.http.errors import install_exception_handlers
@@ -832,6 +833,46 @@ async def test_explain_gives_the_plan_with_values_bound(tables: None) -> None:
             assert "gadgets" in plan.lower()
             with pytest.raises(ValueError, match="PostgreSQL's"):
                 await uow.gadgets.explain(query, analyze=True)
+
+
+@pytest.mark.parametrize(
+    ("ordering", "start"),
+    [
+        (("name",), ("name>?", "(name)::text >= ")),
+        (("-made_at",), ("made_at<?", "made_at <= ")),
+    ],
+)
+async def test_a_page_after_a_position_reads_an_index_from_there(
+    tables: None, ordering: tuple[str], start: tuple[str, str]
+) -> None:
+    """The keyset criteria bound the first field, so the index starts there.
+
+    Without the bound, SQLite read every row and sorted them, and PostgreSQL
+    read the index from its first row (ADR 0185).
+    """
+    await store(*dataset())
+    async with GadgetsUnitOfWork() as uow:
+        connection = await uow.gadgets.session.connection()
+        await connection.exec_driver_sql(
+            "CREATE INDEX ix_test_keyset ON framework_test_gadgets (name, id)"
+            if ordering == ("name",)
+            else "CREATE INDEX ix_test_keyset ON framework_test_gadgets (made_at)"
+        )
+        if ON_POSTGRES:  # Five rows: the plan a large table gets.
+            await connection.exec_driver_sql("SET LOCAL enable_seqscan = off")
+        (middle,) = await uow.gadgets.filter(
+            Selection(ordering=[*ordering, "id"], offset=2, limit=1)
+        )
+        total = (Ordering.parse(ordering[0]), Ordering("id"))
+        after = position_of(middle, total)
+        plan = await uow.gadgets.explain(
+            Selection(ordering=total, after=after, limit=2)
+        )
+    if ON_POSTGRES:
+        assert f"Index Cond: ({start[1]}" in plan
+    else:
+        assert f"USING INDEX ix_test_keyset ({start[0]})" in plan
+        assert "MULTI-INDEX OR" not in plan
 
 
 async def test_get_or_create_reads_or_stores_one(tables: None) -> None:
