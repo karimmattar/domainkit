@@ -243,8 +243,6 @@ which this list does not repeat.
   to each database there to ask, and waits 2 seconds at most for each to
   answer: a host that never answers adds that to `check`. Run `migrate`,
   or list the id in `SILENCED_CHECKS`.
-
-No migration.
 - **`AUTH.IDENTIFIERS` names fields that the user table has a column
   for.** Startup refuses `groups` and `user_permissions`, which link
   tables keep (`auth.E011`). 2.8 started with them, and failed later, at
