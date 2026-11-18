@@ -9,7 +9,7 @@ back as the cancellation leaves the block, on SQLite and PostgreSQL.
 
 import asyncio
 import gc
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from types import SimpleNamespace
 from typing import Any, Final
 
@@ -29,14 +29,30 @@ from domainkit.db.connections import (
 )
 from domainkit_tests.sample_routes import PaymentsUnitOfWork, payments
 
-pytestmark = pytest.mark.anyio
-
 UNCLOSED_SQLITE: Final = "unclosed database in <sqlite3.Connection"
-"""On SQLite, a cut that lands in aiosqlite's connect of a replacement
-connection leaves aiosqlite to drop the new sqlite3 handle unclosed: its
-own, not a pool connection, and not what these tests are about."""
+"""On SQLite, a cut that lands in aiosqlite's connect, as a transaction
+begins or as the pool replaces a connection, leaves aiosqlite to drop the
+new sqlite3 handle unclosed: its own, not a pool connection, and not what
+these tests are about. The garbage collector may find it in a later case,
+so every case here allows it, and collects at its end (``collected``)."""
+
+pytestmark = [
+    pytest.mark.anyio,
+    pytest.mark.filterwarnings(f"ignore:{UNCLOSED_SQLITE}:ResourceWarning"),
+]
 BOUNDED: Final = pytest.mark.timeout(30, method="signal")
 """Every case is bounded, so one that regresses fails rather than hangs."""
+
+
+@pytest.fixture(autouse=True)
+def collected() -> Iterator[None]:
+    """Collect aiosqlite's dropped handles as each case ends, under its filter.
+
+    Collected later, in a case of another module, the handle would be that
+    case's unraisable warning.
+    """
+    yield
+    gc.collect()
 
 
 @pytest.fixture
@@ -254,7 +270,6 @@ async def close_a_resting_connection() -> None:
 @BOUNDED
 @pytest.mark.usefixtures("paying")
 @pytest.mark.parametrize("repeating", [True, False], ids=["anyio-scope", "asyncio"])
-@pytest.mark.filterwarnings(f"ignore:{UNCLOSED_SQLITE}:ResourceWarning")
 async def test_a_unit_of_work_cut_as_its_connection_is_replaced_gives_it_back(
     repeating: bool,
 ) -> None:
@@ -287,7 +302,6 @@ async def test_a_unit_of_work_cut_as_its_connection_is_replaced_gives_it_back(
         assert checked_out() == 0
     async with asyncio.timeout(2), PaymentsUnitOfWork(readonly=True) as uow:
         assert await uow.session.scalar(text("SELECT 1")) == 1
-    gc.collect()  # aiosqlite's dropped handles end here, under the filter.
 
 
 def test_another_driver_keeps_sqlalchemys_discard() -> None:
