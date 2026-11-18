@@ -266,7 +266,8 @@ ignore_missing_imports = true
 [tool.deptry]
 known_first_party = ["domainkit"]
 # docs/hooks: the site's build, with the docs group, never the package.
-extend_exclude = ["domainkit_tests", "benchmarks", "mutants", "docs"]
+# examples/: projects of their own, each declaring what it needs (ADR 0190).
+extend_exclude = ["domainkit_tests", "benchmarks", "mutants", "docs", "examples"]
 
 # Distributions whose modules have other names, so that deptry needs no
 # installed metadata to match them.
@@ -338,6 +339,7 @@ also_copy = [
     "domainkit_tests/",
     "docs/",
     "benchmarks/",
+    "examples/",
     ".github/",
     "README.md",
     "CHANGELOG.md",
