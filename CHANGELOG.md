@@ -20,6 +20,13 @@ and a status.
   through the outbox, and a receiver that verifies it)
   ([the tutorial](docs/tutorial.md)) (audit A28-DX-07).
 
+### Fixed
+
+- The first examples of approvals, action authorizations, messaging,
+  keys, sign-in approvals, phones, and identity define the names they
+  use, or say where each comes from and link the tutorial part that
+  makes one (audit A28-DX-06).
+
 ## [2.8.0] - 2026-11-18
 
 2.8 answers fourteen of a project's fifteen notes on 2.7 (the last,

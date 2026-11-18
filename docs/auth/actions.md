@@ -25,7 +25,14 @@ On this page you learn how to:
 
 Declare the act: its purpose, the command its service takes, what it is
 on, and what the user is shown. Decorate the service, register the
-action in your domain's `ready()`, and ask for it on the route:
+action in your domain's `ready()`, and ask for it on the route. The act
+is of an organizations domain, as `startdomain` writes one
+([part 1 of the tutorial](../tutorial/1-first-resource.md)):
+`OrganizationsUnitOfWork` is its unit of work on the database, with the
+repositories `memberships` and `organizations`, and `memberships` is the
+`ResourceRouter` of its memberships, in `routes.py`. [Part 7 of the
+tutorial](../tutorial/7-four-eyes.md) authorizes an act in a project, end
+to end: a clerk's approval of a transfer, with a code.
 
 ```python
 from uuid import UUID
