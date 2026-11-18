@@ -282,7 +282,11 @@ parsed. The ACS now takes this record's design:
   the signature (the lead review of the fix). So the response is read
   once more in the thread before signxml runs: an element holds at most
   32 namespaces in scope, each prefix counted once however often it is
-  declared (Okta declares `xs` and `xsi` on each attribute value), and a
-  `SignedInfo` at most 32 elements. Within all the bounds, XML written to
-  cost the most took up to 50 ms and 15 MiB, both readings and signxml's
-  refusal included.
+  declared (Okta declares `xs` and `xsi` on each attribute value), and
+  32 attributes, in the signed part signxml canonicalizes before it
+  compares a digest as in a `SignedInfo`; a `SignedInfo` holds at most
+  32 elements and 16 KiB (the re-check of the fix). Within all the
+  bounds, XML written to cost the most took up to 50 ms and 15 MiB when
+  no one signed it, and up to 175 ms and 35 MiB when the provider signed
+  it and it was then changed, both readings and signxml's refusal
+  included.

@@ -34,8 +34,9 @@ reads it (since 2.9): ``MAX_RESPONSE`` base64 characters, and
 counts a Word document's (each ``<`` twice, each ``=`` once). A DTD or
 an entity is refused before parsing, and it is read as UTF-8 only, so
 the count sees what is parsed. It is then read once for what makes
-canonicalization cost: ``MAX_NAMESPACES`` namespaces in scope on an
-element, and ``MAX_SIGNED_INFO`` elements in a ``SignedInfo``. It is
+canonicalization cost: ``MAX_NAMESPACES`` namespaces in scope and
+``MAX_ATTRIBUTES`` attributes on an element, and ``MAX_SIGNED_INFO``
+elements and ``MAX_SIGNED_INFO_BYTES`` bytes in a ``SignedInfo``. It is
 parsed in a thread of its own, which ends with it and takes with it the
 names lxml keeps for the thread, never on the event loop's; ``PARSES``
 at most at once on a loop, the others waiting ``SLOT_WAIT`` seconds at
@@ -97,10 +98,19 @@ MAX_NAMESPACES: Final = 32
 
 Identity providers write fewer than ten, repeated on many elements
 (``xmlns:xs`` on each attribute value) as they may be."""
+MAX_ATTRIBUTES: Final = 32
+"""The most attributes an element may hold, its namespace declarations aside.
+
+Identity providers write up to some seven (a response's ``ID``,
+``Version``, ``IssueInstant``, ``Destination``, ``InResponseTo``)."""
 MAX_SIGNED_INFO: Final = 32
 """The most elements a ``ds:SignedInfo`` may hold, itself included.
 
 One reference, its transforms, and their methods take some ten."""
+MAX_SIGNED_INFO_BYTES: Final = 16 * 1024
+"""The most bytes a ``ds:SignedInfo`` may take, serialized.
+
+Identity providers write under 2 KiB."""
 PARSES: Final = 4
 """The most responses parsed at once on one event loop."""
 SLOT_WAIT: Final = 5.0
@@ -240,7 +250,8 @@ def verified_claims(
 
     Bounded before it is parsed: ``MAX_RESPONSE`` characters, ``MAX_NODES``
     nodes, no DTD or entity; read as UTF-8. Then bounded before signxml
-    reads it: ``MAX_NAMESPACES`` and ``MAX_SIGNED_INFO`` (``_shaped``).
+    reads it: ``MAX_NAMESPACES``, ``MAX_ATTRIBUTES``, ``MAX_SIGNED_INFO``
+    and ``MAX_SIGNED_INFO_BYTES`` (``_shaped``).
     CPU-bound, and lxml keeps each name it parses for the thread's life:
     the ACS calls it in a thread of its own.
 
@@ -344,12 +355,16 @@ def _shaped(document: bytes) -> None:
 
     Read once, as signxml's parser reads it (UTF-8, no entity): each
     element's namespaces in scope, each prefix once however often it is
-    declared, and each ``SignedInfo``'s elements, which signxml
-    canonicalizes before it checks a signature.
+    declared, and its attributes, which canonicalization sorts, in the
+    signed part signxml canonicalizes before it checks a digest as well as
+    in a ``SignedInfo``; and each ``SignedInfo``'s elements and bytes,
+    which signxml canonicalizes before it checks a signature.
 
     Raises:
         AssertionRefused: An element has more than ``MAX_NAMESPACES`` in
-            scope, or a ``SignedInfo`` more than ``MAX_SIGNED_INFO`` elements.
+            scope or ``MAX_ATTRIBUTES`` attributes, or a ``SignedInfo``
+            more than ``MAX_SIGNED_INFO`` elements or
+            ``MAX_SIGNED_INFO_BYTES`` bytes.
         lxml.etree.XMLSyntaxError: It is not well-formed.
     """
     from lxml import etree
@@ -374,6 +389,10 @@ def _shaped(document: bytes) -> None:
                 raise AssertionRefused(
                     f"an element with more than {MAX_NAMESPACES} namespaces in scope"
                 )
+            if len(item.attrib) > MAX_ATTRIBUTES:
+                raise AssertionRefused(
+                    f"an element with more than {MAX_ATTRIBUTES} attributes"
+                )
             scopes.append(scope)
             if signed or item.tag == SIGNED_INFO:
                 opened = len(scopes) - 1 if not signed else opened
@@ -384,9 +403,15 @@ def _shaped(document: bytes) -> None:
                     )
         else:
             scopes.pop()
-            if len(scopes) == opened:
+            if len(scopes) == opened:  # The SignedInfo ends, read whole.
+                size = len(etree.tostring(item, with_tail=False))
+                if size > MAX_SIGNED_INFO_BYTES:
+                    raise AssertionRefused(
+                        f"a SignedInfo of more than {MAX_SIGNED_INFO_BYTES:,} bytes"
+                    )
                 signed, opened = 0, -1
-            item.clear()
+            if not signed:  # A SignedInfo's elements are kept until it ends.
+                item.clear()
 
 
 _parsing: Final[PerLoop[asyncio.Semaphore]] = PerLoop()

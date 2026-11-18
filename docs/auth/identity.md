@@ -303,8 +303,10 @@ signature is checked (since 2.9):
 - Then it is read once more, for what checking a signature costs: an
   element holds at most 32 namespaces in scope (each prefix counts once,
   however often it is declared: Okta declares `xs` and `xsi` on each
-  attribute value), and a `SignedInfo` at most 32 elements (one
-  reference takes some ten).
+  attribute value) and 32 attributes (namespace declarations aside;
+  identity providers write up to some seven), and a `SignedInfo` at most
+  32 elements and 16 KiB (one reference takes some ten elements, and
+  identity providers write under 2 KiB).
 - Each response is parsed in a thread of its own, which ends with it,
   never on the event loop's. lxml keeps every name a thread parses for
   as long as the thread lives; the names go with the thread. At most 4
@@ -312,9 +314,11 @@ signature is checked (since 2.9):
   within 5 seconds is refused.
 - Within these bounds, the whole check of XML written to cost the most
   (the bytes counted, both readings, and signxml up to its refusal) took
-  up to 50 ms and 15 MiB. The thread is not a daemon: a worker that
-  exits while a response is parsed waits for that long, rather than stop
-  the parse halfway.
+  up to 50 ms and 15 MiB for a response no one signed, and up to 175 ms
+  and 35 MiB for one the provider signed and that was then changed,
+  whose signed part signxml canonicalizes before its digest refuses it.
+  The thread is not a daemon: a worker that exits while a response is
+  parsed waits for that long, rather than stop the parse halfway.
 
 A response past these bounds gets `?error=saml_refused`, as one that
 does not hold, and so does one that lxml or signxml cannot read.
