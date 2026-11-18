@@ -617,7 +617,7 @@ def test_the_driver_forgets_an_unset_name(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_the_driver_types_each_code_of_an_app_once() -> None:
-    """The step's code, then the next step's, after the wait a person would make."""
+    """The step's code, the next step's at once, then a wait for the clock."""
     from domainkit.testing import totp_code
     from domainkit_tests import walkthrough_driver
 
@@ -635,10 +635,13 @@ def test_the_driver_types_each_code_of_an_app_once() -> None:
         )
 
     first, second = code(), code()
+    assert clock == [3010.0]  # The service takes the next step's code now.
+    third = code()
 
     assert first == totp_code(secret, datetime.fromtimestamp(3000, UTC))
     assert second == totp_code(secret, datetime.fromtimestamp(3030, UTC))
-    assert (steps, clock) == ({secret: 101}, [3030.0])
+    assert third == totp_code(secret, datetime.fromtimestamp(3060, UTC))
+    assert (steps, clock) == ({secret: 102}, [3030.0])
     assert walkthrough_driver.typed_value("typed", {}, steps) == "typed"
 
 
@@ -787,6 +790,19 @@ def test_a_new_file_is_written_as_the_block_holds_it(tmp_path: Path) -> None:
     )
     with pytest.raises(walkthrough_edits.Refused, match="exists already"):
         walkthrough_edits.apply_edit(target, "x = 1\n")
+
+
+def test_a_whole_file_replaces_the_text_of_one_that_exists(tmp_path: Path) -> None:
+    """`` (whole file)`` after the name: its text, all of it; never a new file."""
+    module = tmp_path / "model.py"
+    module.write_text(ORIGINAL, encoding="utf-8")
+
+    walkthrough_edits.apply_edit(tmp_path / "model.py (whole file)", "x = 1\n")
+
+    assert module.read_text(encoding="utf-8") == "x = 1\n"
+    with pytest.raises(walkthrough_edits.Refused, match="does not exist"):
+        walkthrough_edits.apply_edit(tmp_path / "new.py (whole file)", "x = 1\n")
+    assert not (tmp_path / "new.py").exists()
 
 
 def test_an_edit_of_a_name_defined_twice_is_refused(tmp_path: Path) -> None:

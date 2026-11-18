@@ -7,8 +7,8 @@ who may do only what they were granted, and a reaction that runs in a
 background worker. The last three add a bank's own controls: money that
 leaves exactly once and within a limit, booked in double-entry books; a
 second person who approves large transfers; and webhooks that tell other
-services. Each part takes about 15 minutes, and each one ends with a
-project that works.
+services. Each of the first six parts takes about 15 minutes, and each
+of the last three about 30. Each part ends with a project that works.
 
 ## What you will build
 

@@ -118,7 +118,7 @@ async with CardsUnitOfWork() as uow:
 ```
 
 ```text
-Cardholder(id=UUID('00000000-0000-4000-8000-00000000000a'), version=1, name='Ann', passport=None, card_number=<encrypted>, api_secret=<encrypted>)
+Cardholder(id=UUID('00000000-0000-4000-8000-00000000000a'), version=1, name='Ann', card_number=<encrypted>, api_secret=<encrypted>)
 1
 None b's3cr3t'
 ```

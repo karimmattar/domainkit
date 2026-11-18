@@ -21,7 +21,7 @@ harness would run differently from a shell:
   ``NAME``, exported to the Python lines that follow, as a shell would;
   ``{"totp": "SECRET"}`` typed is the code the user's authenticator app
   shows for the secret ``$SECRET`` holds, a step's code once, as the
-  service takes it: a step given already waits for the next one;
+  service takes it: after a step given already, the next one's;
 - ``unset NAME``: ``NAME`` forgotten, for the lines that follow.
 
 A trailing ``# 401`` (any three digits) states the status the line expects;
@@ -68,16 +68,19 @@ def typed_value(
     """What the user types: ``typed``, or the code of the app it names.
 
     An app's code is of a step the service has not seen from it (``steps``
-    holds the last one given, by secret): the user waits for the next code
-    when the shown one was used, as the service refuses a step twice.
+    holds the last one given, by secret), as the service refuses a step
+    twice. It takes the step after its own too (``AUTH.MFA.WINDOW``, 1):
+    a second code in one step is the next step's, typed at once, and only
+    a third waits for the clock.
     """
     if isinstance(typed, str):
         return typed
     from domainkit.testing import totp_code
 
     secret = variables[typed["totp"]]
-    while (step := int(now() // STEP)) <= steps.get(secret, -1):
-        sleep(max(0.0, (step + 1) * STEP - now()))
+    step = max(int(now() // STEP), steps.get(secret, -1) + 1)
+    while step > int(now() // STEP) + 1:
+        sleep(max(0.0, (step - 1) * STEP - now()))
     steps[secret] = step
     return totp_code(secret, datetime.fromtimestamp(step * STEP, UTC))
 

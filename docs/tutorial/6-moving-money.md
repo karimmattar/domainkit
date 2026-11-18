@@ -179,10 +179,12 @@ async def transfer_account(
 
 - `get_for_update` locks the account's row until the transaction ends.
   On PostgreSQL, a second transfer waits for the first, then reads the
-  balance the first left. Every account also has a `version`, and a
-  change made from an older version is refused: on SQLite, which runs
-  one write at a time, the second transfer gets `409 concurrent_update`,
-  and its client sends it again.
+  balance the first left, and is refused with `422 insufficient_funds`.
+  Every account also has a `version`, and a change made from an older
+  one is refused: without the lock, that check alone would answer the
+  second transfer `409 concurrent_update`, and its client would send it
+  again. SQLite has no row locks, and runs one write at a time: there,
+  the second transfer gets that `409`.
 - `consume` counts the amount against the account's limits, in the same
   transaction. A transfer refused later rolls its count back with it.
   One past the limit is refused with `422 limit_exceeded`.
@@ -219,14 +221,14 @@ CHART = {
 
 
 @handles(AccountDeposited, durable=True, name="accounts.book_deposit")
-@ordered(lambda event: "accounts.books")
+@ordered(lambda event: f"accounts.books:{event.account_id}")
 async def book_deposit(event: AccountDeposited) -> None:
     """Book a deposit: cash into the vault, owed to the customers."""
     await book(event, debit="1000", credit="2000")
 
 
 @handles(AccountTransferred, durable=True, name="accounts.book_transfer")
-@ordered(lambda event: "accounts.books")
+@ordered(lambda event: f"accounts.books:{event.account_id}")
 async def book_transfer(event: AccountTransferred) -> None:
     """Book a transfer: no longer owed to the customers, paid out of the vault."""
     await book(event, debit="2000", credit="1000")
@@ -272,9 +274,12 @@ async def ledger_account(code: str) -> LedgerAccountId:
   cash, and owes its customers more. A transfer does the opposite.
 - `source` and `reference` name the entry once. The worker may run a
   handler twice, and the second run returns the entry the first posted.
-- `@ordered` gives the two handlers one ordering key, so the worker
-  posts the entries one at a time, in the order the changes committed: a
-  transfer is never booked before the deposit that paid for it.
+- `@ordered` gives the entries of one account an ordering key of their
+  own, so the worker posts them one at a time, in the order the changes
+  committed: a transfer is never booked before the deposits of its
+  account that came before it. Other accounts' entries are posted beside
+  them. One key for the whole bank would make every deposit and transfer
+  wait for the one before it ([ordering keys](../contrib/messaging.md#one-at-a-time-per-key-ordering-keys)).
 - Neither account of the books may go below zero. The books start
   empty: the 125 dollars deposited before this part are not in them,
   and new deposits are.
@@ -356,15 +361,19 @@ Stop the server.
 
 `addcommand` wrote a test of the transfer on an in-memory unit of work.
 The transfer now counts its limit in the database, so test it through
-the API instead. In `tests/domains/accounts/test_transfer_account.py`,
-replace the test with these:
+the API instead: replace the contents of
+`tests/domains/accounts/test_transfer_account.py` with these.
 
-```python title="tests/domains/accounts/test_transfer_account.py"
+```python title="tests/domains/accounts/test_transfer_account.py (whole file)"
+"""Transfers: a retry runs once, two at once never overdraw, a day has a limit."""
+
 import asyncio
 
+import pytest
 from domainkit.contrib.messaging.testing import Outbox
 from domainkit.testing import AsyncTestClient, TestClient
 
+pytestmark = pytest.mark.anyio
 URL = "/api/v1/accounts/accounts"
 PAYEE = "DE89370400440532013000"
 
@@ -374,7 +383,7 @@ def usd(amount: str) -> dict[str, str]:
     return {"amount": amount, "currency": "USD"}
 
 
-def test_transfer_account_publishes_account_transferred(
+def test_a_retried_transfer_moves_the_money_once(
     admin_client: TestClient, outbox: Outbox
 ) -> None:
     """A retry with the same key gets the first answer; the books book it once."""
@@ -430,16 +439,20 @@ def test_an_account_sends_at_most_its_daily_limit(admin_client: TestClient) -> N
     assert admin_client.get(item).json()["balance"] == usd("3000.00")
 ```
 
-The first test keeps the name of the test it replaces: the transfer's
-event books it, once. The second sends two transfers at the same moment,
-through the async client, and checks that only one was made. Run the
-tests:
+The first test also runs the outbox: the transfer's event books it,
+once. The second sends two transfers at the same moment, through the
+async client, and checks that only one was made: `pytestmark` runs the
+file's async tests in an event loop. Run the checks and the tests:
 
 ```bash
+ruff check --fix .
+ruff format .
 pytest
 ```
 
-pytest prints `20 passed`: the 17 tests of part 5, and these 3.
+`ruff --fix` sorts the imports your edits added, and `ruff format` lays
+out the lines they made long. pytest prints `20 passed`: the 17 tests of
+part 5, and these 3.
 
 ## What you learned
 
@@ -453,7 +466,7 @@ pytest prints `20 passed`: the 17 tests of part 5, and these 3.
   transaction, and refuses one past them.
 - The books are double entry: each entry's debits equal its credits, and
   entries never change. Durable handlers post them once each, and an
-  ordering key posts them in commit order.
+  ordering key per account posts each account's in commit order.
 
 Next, [part 7](7-four-eyes.md) makes a large transfer wait for a second
 person.

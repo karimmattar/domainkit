@@ -17,7 +17,8 @@ these:
   added at the end of the file.
 
 A block titled with a file and `` (new file)`` is a file to create, with
-the block's text: it must not exist yet.
+the block's text: it must not exist yet. One titled with a file and
+`` (whole file)`` replaces the text of a file that exists.
 
 What cannot be placed (no such file, a name defined twice, an addition to
 a class the file lacks, a new file that exists) is refused, so a page
@@ -30,6 +31,8 @@ from pathlib import Path
 
 NEW_FILE = " (new file)"
 """How a block's title says the file is the reader's to create."""
+WHOLE_FILE = " (whole file)"
+"""How a block's title says the block replaces the file's whole text."""
 
 
 class Refused(Exception):
@@ -51,6 +54,12 @@ def apply_edit(path: Path, code: str) -> None:
         if path.exists():
             raise Refused(f"{path} exists already: edit it instead")
         path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(code, encoding="utf-8")
+        return
+    if path.name.endswith(WHOLE_FILE):
+        path = path.with_name(path.name.removesuffix(WHOLE_FILE))
+        if not path.is_file():
+            raise Refused(f"{path} does not exist: create it instead")
         path.write_text(code, encoding="utf-8")
         return
     if "*" in path.name:

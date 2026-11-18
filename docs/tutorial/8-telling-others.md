@@ -313,9 +313,11 @@ def test_a_forged_or_repeated_delivery_changes_nothing(
     assert list(receiver.received) == ["msg_1"]
 ```
 
-Run the tests:
+Run the checks and the tests:
 
 ```bash
+ruff check --fix .
+ruff format .
 pytest
 ```
 

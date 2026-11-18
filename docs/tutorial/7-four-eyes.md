@@ -371,13 +371,12 @@ def test_a_large_transfer_waits_for_another_person(
     freeze_time()  # Each code moves the frozen clock to its own 30 seconds.
     item = admin_client.post(URL, json={"name": "Savings"}).headers["location"]
     admin_client.post(f"{item}/deposit", json={"amount": usd("5000.00")})
-    maker = client.run(create_user, "accounts.change_account", password=PASSWORD)
-    checker = client.run(
-        create_user,
-        "accounts.approve_transfer",
-        "approvals.view_approvalrequest",
-        password=PASSWORD,
+    approver = ("accounts.approve_transfer", "approvals.view_approvalrequest")
+    # The maker may approve too, and has an app: only the rule stops them.
+    maker = client.run(
+        create_user, "accounts.change_account", *approver, password=PASSWORD
     )
+    checker = client.run(create_user, *approver, password=PASSWORD)
     as_maker = client.authenticated_as(maker)
     as_checker = client.authenticated_as(checker)
     enrol_totp(as_maker, PASSWORD)
@@ -398,7 +397,10 @@ def test_a_large_transfer_waits_for_another_person(
     outbox.run_queued()
 
     assert (sent.status_code, sent.json()["code"]) == (403, "approval_pending")
-    assert by_the_maker.status_code == 403
+    assert (by_the_maker.status_code, by_the_maker.json()["code"]) == (
+        403,
+        "maker_cannot_decide",
+    )
     assert approved.json()["status"] == "approved"
     assert as_checker.get(request).json()["status"] == "executed"
     assert admin_client.get(item).json()["balance"] == usd("3500.00")
@@ -407,9 +409,13 @@ def test_a_large_transfer_waits_for_another_person(
     assert (given.actor, made.actor) == (str(checker.id), str(maker.id))
 ```
 
-Run the tests:
+The maker holds every permission the checker holds, and an app: the
+`403 maker_cannot_decide` comes from the rule that the maker never
+decides, not from a missing permission. Run the checks and the tests:
 
 ```bash
+ruff check --fix .
+ruff format .
 pytest
 ```
 

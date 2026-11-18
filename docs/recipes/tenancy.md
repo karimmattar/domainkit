@@ -388,8 +388,13 @@ Keep these rules in mind:
 
 Caches, rate limits, logs, and background tasks follow the tenant too,
 as do a database or a schema per tenant ([tenancy](../tenancy.md)).
-Approvals, live events, limits, and the books are made tenant-aware in
-2.9; their pages say how, and this recipe will link them.
+Approval requests and live events are their tenant's own: another
+tenant's are not found, and not heard. Limits and the books are rows
+that every tenant shares (`check` lists them as `tenancy.I001`): their
+routes count only the permissions a user holds everywhere, never a
+role's, so a member's role that names `limits.change_limit` changes no
+limit. The [tenancy](../tenancy.md) page says how, under "Live events
+and approvals" and "Rows of no tenant".
 
 ## See also
 
