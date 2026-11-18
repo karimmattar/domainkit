@@ -168,8 +168,9 @@ def client_group(host: str) -> str:
     network has ``RATE_LIMIT_IPV6_PREFIX`` bits (a /64), which only IPv6
     hosts read: one customer usually holds a whole network. What counts a
     caller's use by its address counts this, so it is one caller to each:
-    the outgoing guard's lookups (``domainkit.outbound.guard``), and a
-    project's own throttles (*new in 2.9*).
+    the rate limit, auth's throttles, the outgoing guard's lookups
+    (``domainkit.outbound.guard``), and a project's own throttles. Public
+    since 2.9; it was the rate limit's, which imports it from here.
 
     Groups are remembered for the latest ``ADDRESS_CACHE`` hosts, so a
     client seen again is not parsed again (an IPv6 network takes about

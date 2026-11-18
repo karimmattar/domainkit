@@ -45,7 +45,7 @@ from starlette.requests import HTTPConnection, Request
 from starlette.types import Message, Receive, Scope, Send
 
 from domainkit import clock as clock_module
-from domainkit import setup, tasks
+from domainkit import context, setup, tasks
 from domainkit.apps import registry
 from domainkit.apps.hooks import Hook, HookPoint
 from domainkit.broker import Broker, BrokerHandler, MemoryBroker
@@ -1418,8 +1418,8 @@ def test_importing_domainkit_keeps_the_gil_off_where_it_is_off() -> None:
 
 def test_client_groups_are_remembered_alike_from_every_thread() -> None:
     """Threads filling one memory of groups at once each get the parsed group."""
-    ratelimit._cached_address_group.cache_clear()
-    ratelimit._cached_network.cache_clear()
+    context._cached_address_group.cache_clear()
+    context._cached_network.cache_clear()
     networks = {
         f"2001:db8:{n:x}::1": str(ipaddress.IPv6Network(f"2001:db8:{n:x}::/64"))
         for n in range(100)
@@ -1432,8 +1432,8 @@ def test_client_groups_are_remembered_alike_from_every_thread() -> None:
         return all(client_group(host) == groups[host] for host in order)
 
     assert all(on_threads(group_all))
-    assert ratelimit._cached_address_group.cache_info().currsize == len(groups)
-    assert ratelimit._cached_network.cache_info().currsize == len(networks)
+    assert context._cached_address_group.cache_info().currsize == len(groups)
+    assert context._cached_network.cache_info().currsize == len(networks)
 
 
 def test_a_proxys_remembered_addresses_hold_from_every_thread() -> None:

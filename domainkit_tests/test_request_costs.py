@@ -17,7 +17,7 @@ from typing import Any
 import pytest
 from fastapi import FastAPI, Response
 from fastapi.testclient import TestClient
-from hypothesis import example, given
+from hypothesis import given
 from hypothesis import strategies as st
 from prometheus_client import REGISTRY
 from prometheus_client.metrics import MetricWrapperBase
@@ -95,8 +95,8 @@ type Work = tuple[object, ...]
 
 def forget() -> None:
     """Remember no client group."""
-    ratelimit._cached_address_group.cache_clear()
-    ratelimit._cached_network.cache_clear()
+    context._cached_address_group.cache_clear()
+    context._cached_network.cache_clear()
 
 
 @pytest.fixture(autouse=True)
@@ -111,7 +111,7 @@ def forget_groups() -> Iterator[None]:
 def parses(monkeypatch: pytest.MonkeyPatch) -> list[Work]:
     """What ``client_group`` worked out, in order: a host, or an IPv6 network."""
     parsed: list[Work] = []
-    address_group, network = ratelimit._address_group, ratelimit._network
+    address_group, network = context._address_group, context._network
 
     def host(text: str) -> str | None:
         parsed.append(("host", text))
@@ -121,8 +121,8 @@ def parses(monkeypatch: pytest.MonkeyPatch) -> list[Work]:
         parsed.append(("network", text, prefix))
         return network(text, prefix)
 
-    monkeypatch.setattr(ratelimit, "_address_group", host)
-    monkeypatch.setattr(ratelimit, "_network", within)
+    monkeypatch.setattr(context, "_address_group", host)
+    monkeypatch.setattr(context, "_network", within)
     return parsed
 
 
@@ -143,8 +143,8 @@ def test_client_groups_are_remembered_as_parsed(
         if host in IPV6:
             expected["network", host, prefix] += times
     assert Counter(parses) == expected
-    assert ratelimit._cached_address_group.cache_info().currsize == len(HOSTS) - 1
-    assert ratelimit._cached_network.cache_info().currsize == len(IPV6) - 1
+    assert context._cached_address_group.cache_info().currsize == len(HOSTS) - 1
+    assert context._cached_network.cache_info().currsize == len(IPV6) - 1
 
 
 def test_ipv4_clients_read_no_settings(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -154,7 +154,7 @@ def test_ipv4_clients_read_no_settings(monkeypatch: pytest.MonkeyPatch) -> None:
         def __getattr__(self, name: str) -> object:
             raise AssertionError(f"settings.{name} was read")
 
-    monkeypatch.setattr(ratelimit, "settings", Unread())
+    monkeypatch.setattr(context, "settings", Unread())
 
     for host in ("203.0.113.7", "::ffff:203.0.113.7", "testclient", ZONE[:-1] + "%"):
         assert client_group(host) == host.removeprefix("::ffff:")
@@ -168,25 +168,14 @@ def test_any_host_gets_the_parsed_group(host: str) -> None:
     assert client_group(host) == client_group(host) == parsed_group(host)
 
 
-@pytest.mark.parametrize("prefix", [64, 56, 128, 1])
-def test_the_request_context_groups_a_client_as_the_rate_limit_does(
-    prefix: int,
-) -> None:
-    """``domainkit.context.client_group``, public since 2.9, is the same rule.
+def test_the_rate_limit_groups_clients_with_the_request_context_s_rule() -> None:
+    """One rule, defined once: ``domainkit.context.client_group``, public since 2.9.
 
-    The outgoing guard's lookups and auth's throttles count callers by it.
-    The rate limit keeps its own copy until its module imports this one,
-    so the two give one group for every host (audit A28-ARCH-04).
+    The rate limit, auth's throttles, and the outgoing guard's lookups count
+    callers by it; ``domainkit.http.ratelimit`` still imports it, the same
+    function, as do its two cache constants (audit A28-ARCH-04).
     """
-
-    @given(st.ip_addresses().map(str) | st.text(max_size=MAX_CACHED_ADDRESS + 8))
-    @example(ZONE + "z")  # An IPv6 address too long to keep.
-    @example("testclient")
-    def same(host: str) -> None:
-        assert context.client_group(host) == client_group(host)
-
-    with override_settings(RATE_LIMIT_IPV6_PREFIX=prefix):
-        same()
+    assert ratelimit.client_group is client_group is context.client_group
     assert (context.ADDRESS_CACHE, context.MAX_CACHED_ADDRESS) == (
         ADDRESS_CACHE,
         MAX_CACHED_ADDRESS,
@@ -208,7 +197,7 @@ def test_a_new_prefix_is_never_answered_from_memory(parses: list[Work]) -> None:
 
 def test_memory_of_hosts_is_bounded() -> None:
     """At most ``ADDRESS_CACHE`` hosts each, the latest used; none longer than 64."""
-    caches = (ratelimit._cached_address_group, ratelimit._cached_network)
+    caches = (context._cached_address_group, context._cached_network)
 
     assert (ADDRESS_CACHE, MAX_CACHED_ADDRESS) == (4096, 64)
     assert [cache.cache_info().maxsize for cache in caches] == [ADDRESS_CACHE] * 2
