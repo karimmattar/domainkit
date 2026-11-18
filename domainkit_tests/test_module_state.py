@@ -94,6 +94,12 @@ RESETS: Final = {
 }
 """Each piece of state, and the public name that resets or restores it."""
 
+# Loaded as the tests are collected, before a pytester run takes its snapshot
+# of the loaded modules: one it drops would define its tables again when
+# imported a second time (see test_testing.py).
+for _path in sorted(set(RESETS.values())):
+    import_module(_path.rpartition(".")[0])
+
 UNRESET: Final = frozenset(
     {
         # Kept for a live object and gone with it: a transaction, a session,
