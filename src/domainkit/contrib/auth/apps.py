@@ -38,7 +38,7 @@ from domainkit.http.access import (
     served_routes,
 )
 from domainkit.http.live import streams
-from domainkit.http.ratelimit import MemoryBackend
+from domainkit.http.ratelimit import MemoryBackend, rate_limit_backend
 from domainkit.utils.module_loading import import_string
 from domainkit.utils.rates import PERIODS, parse_rate
 
@@ -1011,10 +1011,10 @@ def _counted_per_process(config: AuthSettings) -> bool:
     if all(rate is None for rate in rates):
         return False
     try:
-        backend = import_string(settings.RATE_LIMIT_BACKEND)
-    except ImportError:
-        return False  # Not a class: loading it fails loudly where it is used.
-    return isinstance(backend, type) and issubclass(backend, MemoryBackend)
+        backend = rate_limit_backend.backend_class()
+    except ImproperlyConfigured:
+        return False  # Not a backend: backends.E001 says so, and loading fails.
+    return issubclass(backend, MemoryBackend)
 
 
 def _user_model(path: str) -> type[AbstractBaseUser]:

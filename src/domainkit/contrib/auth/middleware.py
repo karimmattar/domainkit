@@ -74,9 +74,14 @@ from domainkit.exceptions import DomainkitError
 from domainkit.http.errors import error_response
 from domainkit.http.live import REAUTHENTICATE
 from domainkit.http.middleware import request_path
-from domainkit.http.ratelimit import Backend, Decision, address_key, refuse
+from domainkit.http.ratelimit import (
+    Backend,
+    Decision,
+    address_key,
+    rate_limit_backend,
+    refuse,
+)
 from domainkit.log import SECURITY_LOGGER, ThrottledLog
-from domainkit.utils.module_loading import import_string
 from domainkit.utils.rates import parse_rate
 
 from .access import PROOF
@@ -121,7 +126,7 @@ class AuthenticationMiddleware:
         )
         self.rate = parse_rate(settings.RATE_LIMIT) if settings.RATE_LIMIT else None
         self.limiter: Backend | None = (
-            import_string(settings.RATE_LIMIT_BACKEND)() if self.rate else None
+            rate_limit_backend.create() if self.rate else None
         )
         self.log = ThrottledLog(security_logger)
         """Refused credentials, at most a line per address a while."""

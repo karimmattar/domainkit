@@ -132,6 +132,12 @@ Django-style settings access.
 - `settings`: Typed, lazily loaded settings for the selected module.
 - `use_settings`: Temporarily load another settings module, then restore the current one.
 
+## `domainkit.conf.backends`
+
+The backend classes a setting names, loaded one way (ADR 0196, new in 2.9).
+
+- `BackendHandler`: The classes one setting names, imported, checked, and made once per settings.
+
 ## `domainkit.context`
 
 Per-request context shared by logging and error responses.
@@ -487,6 +493,7 @@ Event loops for the framework's own entry points: uvloop when it is there.
 
 Import objects by dotted path (`django.utils.module_loading`).
 
+- `backend_class`: The class `path` names, by dotted path or by name, checked to be a `base` (New in 2.9).
 - `import_string`: Return the attribute named by `package.module.attr` or `package.module:attr`.
 - `lazy_names`: A module `__getattr__` that imports `names` on first use: name to module.
 

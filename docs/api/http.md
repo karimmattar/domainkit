@@ -204,6 +204,7 @@ Request rate limiting (`RATE_LIMIT = "300/minute"`).
 - `RedisBackend`: GCRA in Redis or Valkey, shared by every replica (`RATE_LIMIT_CACHE`).
 - `RefundingBackend`: A backend that can give a counted request back.
 - `Throttle`: A FastAPI dependency: at most `rate` requests per caller to a route.
+- `rate_limit_backend`: The class `RATE_LIMIT_BACKEND` names, by dotted path or by name (New in 2.9).
 
 ## `domainkit.http.responses`
 

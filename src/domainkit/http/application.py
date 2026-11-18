@@ -27,6 +27,7 @@ from domainkit.http.openapi import (
     install_openapi,
     operation_id,
 )
+from domainkit.http.ratelimit import rate_limit_backend
 from domainkit.http.routing import (
     flatten_routes,
     index_routes,
@@ -249,7 +250,8 @@ def application_problems(app: FastAPI) -> list[str]:
     whatever authenticates requests; a route that takes its tenant from
     its path must name a parameter it has, before its rules
     (``tenancy.E001``, ``tenancy.E002``); an optional app's middleware
-    needs the app (``apps.E003``). Domains report through
+    needs the app (``apps.E003``), and ``RATE_LIMIT_BACKEND`` a class with
+    ``hit`` (``backends.E001``). Domains report through
     ``domainkit.apps.hooks.on_check_application``.
     """
     problems: list[str] = [
@@ -257,6 +259,7 @@ def application_problems(app: FastAPI) -> list[str]:
         for problem in duplicate_operation_ids(app)
     ]
     problems.extend(middleware_without_its_app())
+    problems.extend(backend_problems())
     if settings.REQUIRE_ROUTE_RULES:
         problems.extend(
             CheckMessage("security.E101", problem)
@@ -290,6 +293,29 @@ def middleware_without_its_app() -> list[str]:
                 )
             )
     return problems
+
+
+def backend_problems() -> list[str]:
+    """``backends.E001``: ``RATE_LIMIT_BACKEND`` names no rate-limit backend.
+
+    The global limit, each ``Throttle``, auth's counts of attempts, and the
+    worker's task rates make one where they first count, and would fail
+    there: a path that does not import, or a class without ``hit``, is
+    refused before then (since 2.9, ADR 0196).
+    """
+    try:
+        rate_limit_backend.backend_class()
+    except ImproperlyConfigured as exc:
+        return [
+            CheckMessage(
+                "backends.E001",
+                str(exc),
+                "Name a class with hit(key, limit, period), such as "
+                "domainkit.http.ratelimit.RedisBackend, or a name an installed "
+                "package offers in its domainkit.backends entry points.",
+            )
+        ]
+    return []
 
 
 def check_started(app: FastAPI) -> None:

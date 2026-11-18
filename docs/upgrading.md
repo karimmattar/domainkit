@@ -375,6 +375,30 @@ No migration.
   `default_credentials` calls `environment_credentials` from
   `domainkit.cloud.aws`, so patch it there
   (`monkeypatch.setattr("domainkit.cloud.aws.environment_credentials", ...)`).
+- **`RATE_LIMIT_BACKEND` is checked before it counts.** A value that is
+  neither a dotted path (`module.Class`, `module:Class`) nor a name a
+  package offers is refused with the settings. One that does not import,
+  or names a class without `hit(key, limit, period)`, is refused by
+  `check` and as the application starts (`backends.E001`): staging and
+  production do not start, and elsewhere the first request that counts
+  is refused, with the reason. 2.8 refused these only where a request was
+  counted, with an error of the call. A project with such a value, and no
+  `RATE_LIMIT` or throttle that counts with it, removes the setting or
+  names a backend.
+- **A password rule needs `validate` and `help_text`.** A
+  `PASSWORD_VALIDATORS` class without both is refused at startup
+  (`ImproperlyConfigured`), where 2.8 failed when the rules were listed.
+- **Auth's classes are made once per settings object.** The backends,
+  hashers, authentication classes, and password rules of `AUTH` are made
+  again when `override_settings` (or the `settings` fixture) changes any
+  setting, and kept while the settings stay the same, where 2.8 kept one
+  set per value for the process. A test that emptied the loaders' caches
+  (`load_authenticators.cache_clear()`) no longer needs to: the loaders
+  `load_backends`, `load_hashers`, `load_authenticators`, and
+  `load_validators`, which were not public, are gone; use
+  `get_backends()` and the other getters. A class among them that cannot
+  be made with its options raises `ImproperlyConfigured` naming its
+  setting, as 2.8 did for password rules only.
 
 ### `migrate` makes the user lookups' indexes, on PostgreSQL
 

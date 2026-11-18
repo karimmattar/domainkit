@@ -38,7 +38,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Final, Literal, Protocol
+from typing import Final, Literal, Protocol, runtime_checkable
 
 from fastapi import status
 from starlette.exceptions import WebSocketException
@@ -48,6 +48,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from domainkit.cache import CacheError, CacheUnavailable, caches
 from domainkit.clock import monotonic
 from domainkit.conf import settings
+from domainkit.conf.backends import BackendHandler
 from domainkit.conf.global_settings import REDIS_SCHEMES
 from domainkit.context import current_request
 from domainkit.ddd.tenancy import scoped_key, shared_keys
@@ -59,7 +60,6 @@ from domainkit.http.middleware import (
     request_path,
     set_headers,
 )
-from domainkit.utils.module_loading import import_string
 from domainkit.utils.rates import parse_rate
 
 try:
@@ -80,6 +80,7 @@ __all__ = [
     "RedisBackend",
     "RefundingBackend",
     "Throttle",
+    "rate_limit_backend",
 ]
 
 logger = logging.getLogger(__name__)
@@ -100,13 +101,15 @@ class Decision:
     let it through; ``AUTH.THROTTLE_FAIL_CLOSED`` refuses such attempts."""
 
 
+@runtime_checkable
 class Backend(Protocol):
     """Where rate-limit state lives.
 
     A backend may also give a counted request back, with ``refund(key,
     limit, period)`` (``RefundingBackend``): the attempt throttles of
     ``domainkit.contrib.auth`` then count only the attempts that fail.
-    Without it, they count every attempt.
+    Without it, they count every attempt. ``RATE_LIMIT_BACKEND`` must name
+    a class with ``hit`` (since 2.9).
     """
 
     async def hit(self, key: str, limit: int, period: float) -> Decision:
@@ -427,14 +430,18 @@ class RedisBackend:
             )
 
 
-def load_backend() -> Backend:
-    """A new instance of the ``RATE_LIMIT_BACKEND`` class."""
-    try:
-        backend = import_string(settings.RATE_LIMIT_BACKEND)
-    except ImportError as exc:
-        raise ImproperlyConfigured(f"RATE_LIMIT_BACKEND: {exc}") from exc
-    instance: Backend = backend()
-    return instance
+rate_limit_backend: Final[BackendHandler[Backend]] = BackendHandler(
+    "RATE_LIMIT_BACKEND", Backend
+)
+"""The class ``RATE_LIMIT_BACKEND`` names, by dotted path or by name (ADR 0196).
+
+Each counter makes its own with ``create()``, once: the global limit (one
+per application), the throttles of an application, auth's counts of
+refused credentials and of attempts, and the worker's task rates. Its
+counts stay its own, so a flood of one kind never pushes another's out of
+a ``MemoryBackend``. ``check`` and the application's start refuse a path
+that names no ``Backend`` (``backends.E001``).
+"""
 
 
 TRY_AGAIN_LATER: Final = 1013
@@ -464,7 +471,7 @@ class RateLimitMiddleware:
         self.exempt = frozenset(
             (*settings.PROBE_PATHS, *settings.RATE_LIMIT_EXEMPT_PATHS)
         )
-        self.backend = load_backend()
+        self.backend = rate_limit_backend.create()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Count the request; answer 429 or add the quota headers."""
@@ -739,7 +746,7 @@ def _app_backend(connection: HTTPConnection) -> Backend:
         with _app_backend_lock:
             backend = getattr(state, "throttle_backend", None)
             if backend is None:
-                backend = state.throttle_backend = load_backend()
+                backend = state.throttle_backend = rate_limit_backend.create()
     return backend
 
 

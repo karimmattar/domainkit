@@ -25,7 +25,6 @@ import json
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from functools import cache
 from typing import Any, ClassVar, Final, cast
 from uuid import UUID, uuid4
 
@@ -33,10 +32,10 @@ from fastapi import status
 from starlette.requests import HTTPConnection
 
 from domainkit.checks import CheckFailed, CheckMessage
+from domainkit.conf.backends import BackendHandler
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.errors import APIError
 from domainkit.log import SECURITY_LOGGER
-from domainkit.utils.module_loading import import_string
 
 from .events import RefreshTokenReused
 from .models import AbstractBaseUser, UserId
@@ -55,7 +54,6 @@ from .principals import (
 from .settings import (
     HMAC_ALGORITHMS,
     MAX_RETIREMENT_AHEAD,
-    AuthSettings,
     JWTSettings,
     PrincipalCacheSettings,
     auth_settings,
@@ -574,26 +572,17 @@ class JWTAuthentication(BaseAuthentication):
             ) from None
 
 
-@cache
-def load_authenticators(config: AuthSettings) -> tuple[BaseAuthentication, ...]:
-    """Instantiate ``config.AUTHENTICATION_CLASSES`` (once per settings)."""
-    authenticators = []
-    for path in config.AUTHENTICATION_CLASSES:
-        try:
-            cls = import_string(path)
-        except ImportError as exc:
-            raise ImproperlyConfigured(f"AUTH.AUTHENTICATION_CLASSES: {exc}") from exc
-        if not (isinstance(cls, type) and issubclass(cls, BaseAuthentication)):
-            raise ImproperlyConfigured(
-                f"AUTH.AUTHENTICATION_CLASSES: {path!r} is not a BaseAuthentication."
-            )
-        authenticators.append(cls())
-    return tuple(authenticators)
+_authenticators: Final[BackendHandler[BaseAuthentication]] = BackendHandler(
+    "AUTH.AUTHENTICATION_CLASSES",
+    BaseAuthentication,
+    lambda: auth_settings().AUTHENTICATION_CLASSES,
+)
+"""``AUTH.AUTHENTICATION_CLASSES``, by path or by name, made once per settings."""
 
 
 def get_authenticators() -> tuple[BaseAuthentication, ...]:
-    """The configured authentication classes, in order."""
-    return load_authenticators(auth_settings())
+    """The configured authentication classes, in order (ADR 0196)."""
+    return _authenticators.instances()
 
 
 def rechecking(connection: HTTPConnection) -> bool:

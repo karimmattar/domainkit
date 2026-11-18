@@ -14,7 +14,7 @@ from collections.abc import Sequence
 from typing import ClassVar
 
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.utils.module_loading import import_backend
+from domainkit.utils.module_loading import backend_class
 
 RULE = "-" * 79
 """What the console backends write after each message."""
@@ -74,12 +74,7 @@ def load_backend(setting: str, path: str, base: type) -> object:
         ImproperlyConfigured: ``path`` cannot be imported, names no
             subclass of ``base``, or the class refuses its options.
     """
-    try:
-        backend = import_backend(path)
-    except ImportError as exc:
-        raise ImproperlyConfigured(f"{setting}: {exc}") from exc
-    if not (isinstance(backend, type) and issubclass(backend, base)):
-        raise ImproperlyConfigured(f"{setting}: {path!r} is not a {base.__name__}.")
+    backend = backend_class(setting, path, base)
     try:
         instance: object = backend()
     except ValueError as exc:  # A provider's options, refused (pydantic's).

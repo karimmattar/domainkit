@@ -1033,7 +1033,11 @@ msgstr "رقم الهوية الوطنية"
 `PASSWORD_VALIDATORS = []` checks nothing (but `BREACHED_PASSWORDS`,
 when it is on). A validator of your own is a class with
 `validate(password, user)`, which raises `PasswordValidationError` (from
-`domainkit.contrib.auth`), and `help_text()`. The validators collect
+`domainkit.contrib.auth`), and `help_text()`. Since 2.9 a class without
+both is refused at startup. Its `NAME` is a dotted path, or the name an
+installed package offers it by
+([Backends from an installed package](../reference/extension-points.md#backends-from-an-installed-package)).
+The validators collect
 only that error; any other exception goes up to the caller. Each message
 is translated as it is collected, by its exact text; a rule whose text
 holds a value translates it itself, then fills the value in, as

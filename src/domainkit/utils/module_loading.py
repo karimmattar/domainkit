@@ -5,7 +5,10 @@ from collections.abc import Callable, Mapping
 from importlib import import_module
 from typing import Any
 
+from domainkit.exceptions import ImproperlyConfigured
+
 __all__ = [
+    "backend_class",
     "import_string",
     "lazy_names",
 ]
@@ -71,6 +74,27 @@ def import_backend(path: str) -> Any:  # noqa: ANN401 - returns whatever the pat
             + "; name the one you mean by its dotted path."
         )
     return found[0].load()
+
+
+def backend_class(setting: str, path: str, base: type) -> type:
+    """The class ``path`` names, by dotted path or by name, checked to be a ``base``.
+
+    ``import_backend`` imports it. ``base`` is a class, or a protocol marked
+    ``runtime_checkable`` whose members are methods: the class must then
+    define each of them. ``setting`` is how errors name where ``path``
+    comes from (``RATE_LIMIT_BACKEND``).
+
+    Raises:
+        ImproperlyConfigured: ``path`` cannot be imported, or names no
+            class of the kind.
+    """
+    try:
+        found = import_backend(path)
+    except ImportError as exc:
+        raise ImproperlyConfigured(f"{setting}: {exc}") from exc
+    if not (isinstance(found, type) and issubclass(found, base)):
+        raise ImproperlyConfigured(f"{setting}: {path!r} is not a {base.__name__}.")
+    return found
 
 
 def lazy_names(module: str, names: Mapping[str, str]) -> Callable[[str], object]:

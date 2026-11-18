@@ -71,7 +71,6 @@ from domainkit import clock, deadlines
 from domainkit.apps import registry
 from domainkit.broker import Broker, BrokerError
 from domainkit.broker.base import publish_with_priority
-from domainkit.conf import settings
 from domainkit.context import SYSTEM_ACTOR, RequestContext, bind_request
 from domainkit.db import connections, dbclock
 from domainkit.db.routing import router
@@ -81,7 +80,6 @@ from domainkit.exceptions import DomainkitError, ImproperlyConfigured
 from domainkit.reporting import report_error
 from domainkit.tasks import spawn
 from domainkit.tracing import remote_parent, span, trace_headers
-from domainkit.utils.module_loading import import_string
 
 from . import ordering
 from .budget import Budget
@@ -1109,7 +1107,9 @@ class Worker:
         comes due at the rate instead of all at once.
         """
         if self._limiter is None:
-            self._limiter = import_string(settings.RATE_LIMIT_BACKEND)()
+            from domainkit.http.ratelimit import rate_limit_backend
+
+            self._limiter = rate_limit_backend.create()
         limit, period = rate
         decision = await self._limiter.hit(f"task:{spec.key}", limit, period)
         if decision.allowed:

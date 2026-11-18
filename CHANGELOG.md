@@ -231,6 +231,19 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   ([What each test starts from](docs/testing.md#what-each-test-starts-from),
   ADR 0113) (audit A28-ARCH-14).
 
+- `domainkit.conf.backends.BackendHandler`: the classes one setting
+  names, imported by dotted path or by the name an installed package
+  offers them by, checked to be of the setting's kind, and made once per
+  settings object, which `override_settings` replaces.
+  `domainkit.utils.module_loading.backend_class` is its import and check,
+  which `utils.delivery.load_backend` uses too, and
+  `domainkit.http.ratelimit.rate_limit_backend` is `RATE_LIMIT_BACKEND`'s.
+  `RATE_LIMIT_BACKEND` and `AUTH`'s `BACKENDS`, `PASSWORD_HASHERS`,
+  `AUTHENTICATION_CLASSES`, and `PASSWORD_VALIDATORS` take the names
+  packages offer
+  ([Backends from an installed package](docs/reference/extension-points.md#backends-from-an-installed-package),
+  ADR 0196) (audit A28-ARCH-09).
+
 ### Changed
 
 - In development and tests, each problem the application finds at its
@@ -432,6 +445,20 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   shrink. CI's lint gates a function's complexity (ruff C901, over 15),
   arguments (PLR0913, over 10), and statements (PLR0915, over 50) (audit
   A28-ARCH-04, A28-ARCH-05, A28-ARCH-06, A28-ARCH-E1, A28-ARCH-E3).
+
+- `RATE_LIMIT_BACKEND` is checked before it counts: a value that is
+  neither a dotted path nor a name is refused with the settings, and one
+  that does not import, or names a class without `hit`, is refused by
+  `check` and as the application starts (`backends.E001`), even where
+  nothing counts with it; 2.8 failed on the first request that counted.
+  Each counter still makes its own backend: the global limit, an
+  application's throttles, auth's counts, and the worker's task rates.
+  A `PASSWORD_VALIDATORS` class without `validate` and `help_text` is
+  refused at startup. Auth's backends, hashers, authentication classes,
+  and validators are made once per settings object, and a class of them
+  that refuses to be made is an `ImproperlyConfigured` naming its setting
+  ([upgrading.md](docs/upgrading.md#28-to-29), ADR 0196) (audit
+  A28-ARCH-09).
 
 ### Deprecated
 
