@@ -65,6 +65,7 @@ from .exceptions import (
     FingerprintMismatch,
     InvalidArguments,
     MakerNotAllowed,
+    RequestNotFound,
     RequestNotPending,
     RequestTampered,
 )
@@ -79,7 +80,7 @@ from .models import (
 )
 from .rules import rule_instance
 from .settings import ApprovalsSettings
-from .uow import ApprovalsUnitOfWork, RequestRepository, approvals_alias
+from .uow import ApprovalsUnitOfWork, RequestRepository, approvals_alias, servable
 
 logger = logging.getLogger(__name__)
 AUTH: Final = "domainkit.contrib.auth"
@@ -783,19 +784,30 @@ async def expire_requests() -> int:
 
     Every tenant's, each read, expired and committed as its tenant alone,
     so what its expiry publishes, and the handlers that hear it, are that
-    tenant's. One whose seal does not hold is left as it is, and logged:
-    expiring it would seal what someone changed around the application.
+    tenant's. One whose seal does not hold, or whose stored tenant is not
+    a tenant id, is left as it is, and logged: expiring it would seal what
+    someone changed around the application. One gone meanwhile is passed
+    over.
     """
     expired = 0
-    tampered: set[RequestId] = set()
+    left: set[RequestId] = set()
     while True:
         async with ApprovalsUnitOfWork() as uow:
             due = await uow.requests.due(clock.now(), EXPIRE_BATCH)
             tenants = await uow.requests.tenants_of(due)
         for request_id in due:
-            with tenant_alone(tenants.get(request_id)):
+            tenant_id = tenants.get(request_id)
+            if not servable(tenant_id):
+                logger.warning("Approval request %s is tampered with", request_id)
+                left.add(request_id)
+                continue
+            with tenant_alone(tenant_id):
                 async with ApprovalsUnitOfWork() as uow:
-                    request = await uow.locked(request_id)
+                    try:
+                        request = await uow.locked(request_id)
+                    except RequestNotFound:  # Gone since it was found due.
+                        left.add(request_id)
+                        continue
                     if request.status is not RequestStatus.PENDING:
                         continue
                     try:
@@ -804,11 +816,11 @@ async def expire_requests() -> int:
                         logger.warning(
                             "Approval request %s is tampered with", request_id
                         )
-                        tampered.add(request_id)
+                        left.add(request_id)
                         continue
                     await uow.commit()
                     expired += 1
-        if len(due) < EXPIRE_BATCH or set(due) <= tampered:
+        if len(due) < EXPIRE_BATCH or set(due) <= left:
             return expired
 
 

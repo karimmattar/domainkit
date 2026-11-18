@@ -58,7 +58,8 @@ and a status.
   tenant is served alone, by the routes and from code, and the approved
   command runs in that tenant, whichever tenant the message that runs it
   names. Expiry, erasure, and decisions made inside `all_tenants()`
-  commit each request as its tenant alone, and a run checks the seal
+  commit each request as its tenant alone, a maker's call spends a
+  request of the tenant it is served as, and a run checks the seal
   before it serves the request's tenant. The requests table gains a
   nullable `tenant_id`, which the seal covers where it is set: run
   `makemigrations` and `migrate` before the new code serves. A request

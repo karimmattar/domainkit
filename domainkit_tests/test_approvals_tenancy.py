@@ -21,6 +21,7 @@ from sqlalchemy import select, update
 
 from domainkit.contrib.accounting import AccountingUnitOfWork
 from domainkit.contrib.approvals import (
+    ApprovalPending,
     ApprovalRequest,
     ApprovalsUnitOfWork,
     ApproveRequest,
@@ -32,6 +33,7 @@ from domainkit.contrib.approvals import (
     RequestExpired,
     RequestId,
     RequestNotFound,
+    RequestRejected,
     RequestStatus,
     RequestTampered,
     approve_request,
@@ -67,6 +69,7 @@ from domainkit.http.access import BasePermission, Principal
 from domainkit.management.base import run_async
 from domainkit.tenancy import tenant
 from domainkit_tests.conftest import Migrated, Shape
+from domainkit_tests.test_approvals import acting
 from domainkit_tests.test_approvals_api import APPROVALS_API, PROOF
 from domainkit_tests.test_approvals_viewers import person, submitted
 from domainkit_tests.test_auth_admin import token_for
@@ -454,6 +457,157 @@ def test_code_that_reads_every_tenant_says_so(client: TestClient) -> None:
     run_async(drain())
     assert RAN == [("back office", "a")]
     assert stored(made_in_b.id).status is RequestStatus.PENDING
+
+
+def test_code_that_rejects_or_cancels_across_tenants_commits_as_the_tenant(
+    client: TestClient,
+) -> None:
+    """Inside ``all_tenants()``, a rejection and a withdrawal commit as a alone."""
+    rejected, cancelled = made_in("a", "mia", "no"), made_in("a", "mia", "gone")
+    anna, mia = str(user_id("anna")), str(user_id("mia"))
+    heard: list[tuple[str, tuple[str | None, str | None]]] = []
+
+    async def note_rejected(event: RequestRejected) -> None:
+        heard.append(("rejected", where()))
+
+    async def note_cancelled(event: RequestCancelled) -> None:
+        heard.append(("cancelled", where()))
+
+    event_bus.subscribe(RequestRejected, note_rejected)
+    event_bus.subscribe(RequestCancelled, note_cancelled)
+
+    async def decide() -> None:
+        with all_tenants():
+            await reject_request(
+                RejectRequest(request_id=rejected.id, approver=anna, reason="no"),
+                ApprovalsUnitOfWork(),
+            )
+            await cancel_request(
+                CancelRequest(request_id=cancelled.id, maker=mia),
+                ApprovalsUnitOfWork(),
+            )
+
+    run_async(decide())
+
+    assert heard == [("rejected", ("a", "a")), ("cancelled", ("a", "a"))]
+
+
+async def note_by_maker(command: Noted, uow: AccountingUnitOfWork) -> None:
+    """Note the command, and the tenant it runs in: its maker runs it."""
+    RAN.append((command.note, current_tenant()))
+
+
+noted_by_maker = requires_approval("tests.noted_by_maker")(note_by_maker)
+
+
+def test_a_makers_call_across_tenants_spends_its_own_tenants_request(
+    client: TestClient,
+) -> None:
+    """Inside ``all_tenants()``, served as b, Mia's call does not spend a's approval.
+
+    It finds the requests of the tenant it is served as alone: a's
+    approved request stays approved, and the call submits one in b.
+    """
+    guard(
+        "tests.noted_by_maker",
+        noted_by_maker,
+        unit_of_work=AccountingUnitOfWork,
+        policies=[Policy("tests.by_maker", permission=APPROVER)],
+        by_maker=True,
+        domain="alpha",
+    )
+    mia = user_id("mia")
+    with tenant("a"):
+        of_a = submitted("tests.noted_by_maker", Noted(note="once"), mia)
+    assert approve(client, of_a, as_member("anna", "a")).status_code == 200
+
+    async def call() -> UUID:
+        with (
+            acting(str(mia)),
+            all_tenants(),
+            tenant("b"),
+            pytest.raises(ApprovalPending) as waiting,
+        ):
+            await noted_by_maker(Noted(note="once"), AccountingUnitOfWork())
+        return UUID(str(waiting.value.request_id))
+
+    submitted_in_b = run_async(call())
+
+    assert submitted_in_b != of_a.id
+    assert stored(of_a.id).status is RequestStatus.APPROVED
+    assert stored(submitted_in_b).tenant_id == "b"
+    assert RAN == []
+
+
+def test_expiry_passes_over_a_tenant_that_is_not_one(
+    client: TestClient,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stored tenant that is not a tenant id is held as tampered; the rest expire.
+
+    A request found due, then gone from where its tenant is served, is
+    passed over too: the round goes on.
+    """
+    import logging
+
+    from domainkit.clock import freeze_time
+    from domainkit.contrib.approvals.uow import RequestRepository
+
+    caplog.set_level(logging.WARNING, logger="domainkit.contrib.approvals.services")
+    bad, gone, good = made_in("a"), made_in("a"), made_in("b")
+    garble(bad.id, "not a tenant!")
+    found = RequestRepository.tenants_of
+
+    async def raced(
+        self: RequestRepository,
+        ids: Any,  # noqa: ANN401 - ids.
+    ) -> dict[Any, str | None]:
+        tenants = await found(self, ids)
+        return {**tenants, gone.id: "b"}  # Not where it is: not found there.
+
+    monkeypatch.setattr(RequestRepository, "tenants_of", raced)
+    with freeze_time(max(each.expires_at for each in (bad, gone, good))):
+        assert run_async(expire_requests()) == 1
+
+    assert stored(good.id).status is RequestStatus.EXPIRED
+    assert {stored(each.id).status for each in (bad, gone)} == {RequestStatus.PENDING}
+    assert f"Approval request {bad.id} is tampered with" in caplog.messages
+
+
+def test_erasure_reaches_a_request_whose_tenant_is_not_one(client: TestClient) -> None:
+    """A request changed around the application still names the person: erased too.
+
+    It is read among every tenant's and committed as no tenant; its seal,
+    which no longer held, is not made again, so it is not cancelled.
+    """
+    bad, good = made_in("a"), made_in("b")
+    garble(bad.id, "")
+
+    counts = run_async(erase_subject(str(user_id("maker"))))
+
+    assert counts == {"requests": 2, "cancelled": 1}
+    assert {stored(each.id).maker.startswith("erased:") for each in (bad, good)} == {
+        True
+    }
+    assert (stored(bad.id).status, stored(good.id).status) == (
+        RequestStatus.PENDING,
+        RequestStatus.CANCELLED,
+    )
+
+
+def garble(request_id: UUID, value: str) -> None:
+    """Set the request's stored tenant to ``value``, around the application."""
+
+    async def work() -> None:
+        async with connections.engine().begin() as connection:
+            await connection.execute(
+                update(requests)
+                .where(requests.c.id == request_id)
+                .values(tenant_id=value)
+            )
+
+    run_async(work())
 
 
 def test_a_tenant_changed_around_the_application_is_never_served(

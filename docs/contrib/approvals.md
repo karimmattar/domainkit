@@ -398,7 +398,9 @@ is served alone:
   request is read ([Outside a request](../tenancy.md#outside-a-request)).
   Approving, rejecting, and cancelling commit as the request's tenant
   alone, even there: what the commit publishes, the handlers it runs,
-  and the run it queues are that tenant's.
+  and the run it queues are that tenant's. A maker's call made again
+  ([Run by its maker](#run-by-its-maker)) spends a request of the tenant
+  it is served as only.
 - The approved command runs in the request's tenant alone, whichever
   tenant the message that runs it names: the maker's check, the
   command, and the request's end are that tenant's. Expiry reaches every
@@ -406,7 +408,8 @@ is served alone:
   request's tenant alone. `approvers_of` asks as the request's tenant.
 - The seal covers the tenant, where the request has one: a request moved
   to another tenant in the database is neither decided nor run
-  (`request_tampered`). Do not set `tenant_id` on a stored request by
+  (`request_tampered`), and expiry leaves one whose stored tenant is not
+  a tenant id as it is, logged. Do not set `tenant_id` on a stored request by
   hand: its seal no longer holds. Decide or cancel it where no tenant is
   served, or let it expire.
 
