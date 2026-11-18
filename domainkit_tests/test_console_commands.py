@@ -6,8 +6,10 @@ import io
 import json
 import pkgutil
 import shutil
+import timeit
 import traceback
 from collections.abc import Iterator
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, get_args
@@ -355,6 +357,24 @@ PROBES = {
     "key_as_user": f"https://{PASSWORD}@o1.ingest.example.com/1",
     "user_with_slash": f"redis://us/er:{PASSWORD}@cache",
     "token_in_query": f"https://api.example.com/v1?access_token={PASSWORD}&x=1",
+    "libpq_spaced": f"host = db user = app password = {PASSWORD} dbname = shop",
+    "json_key": json.dumps({"type": "service_account", "private_key": PASSWORD}),
+    "header": f"Authorization: Bearer {PASSWORD}",
+    "header_basic": f"Proxy-Authorization: Basic {PASSWORD}==",
+    "quoted_key": f"{{'client_secret': '{PASSWORD} x'}}",
+    "quoted_first": f'password="a"{PASSWORD}',
+    "quoted_empty": f'password=""{PASSWORD}',
+    "single_quoted_empty": f"password=''{PASSWORD}",
+    "empty_yaml_value": f"password:\ntoken: {PASSWORD}",
+    "next_line_indented": f"password:\n  {PASSWORD}\nregion: eu",
+    "odbc": f"DRIVER={{ODBC Driver 18}};SERVER=db;UID=app;PWD={PASSWORD};",
+    "after_at": f"x@password={PASSWORD}",
+    "after_slashes": f"//token={PASSWORD}",
+    "after_at_colon": f"a@api_key: {PASSWORD}",
+    "quoted_then_dot": f"password='x {PASSWORD}'.",
+    "quoted_then_comma": f'password="a",{PASSWORD}',
+    "no_break_space": f"token=\xa0{PASSWORD}",
+    "no_break_space_colon": f"password:\xa0{PASSWORD}",
 }
 """Secrets in text, which the patterns find even in a field typed ``str``."""
 UNTYPED = {
@@ -404,6 +424,172 @@ def test_diffsettings_hides_passwords_in_typed_text(
 
     assert PASSWORD not in output
     assert "**********" in output
+
+
+def test_diffsettings_hides_the_value_of_a_secret_pair_and_keeps_the_rest(
+    make_package: MakePackage,
+) -> None:
+    """``password = x``, ``"private_key": "x"``, ``Authorization: Bearer x``.
+
+    A name and its value, with ``=`` or ``:`` between, spaced or not, the
+    name quoted or not; a header's scheme is hidden with its token. A value
+    is on the name's line, or the next one indented; a quoted one is read on
+    after ``=``, and after ``:`` ends where a delimiter follows the quote.
+    What follows the value stays, and a URL's host and port are no pair,
+    whatever the host's words (audit A28-DX-10).
+    """
+    make_package("typed_probe", TYPED)
+    urls = [
+        f"host = db password = {PASSWORD} dbname = shop port = 5432",
+        json.dumps({"type": "service_account", "private_key": PASSWORD}),
+        f"Authorization: Bearer {PASSWORD}",
+        f"X-Request-Id: 7 Proxy-Authorization: Basic {PASSWORD}== X-Other: 1",
+        f"password: {PASSWORD} next: 1",
+        "token: Bearer, region: eu",  # A scheme with no token: the scheme hides.
+        f"password:\ntoken: {PASSWORD}\nregion: eu",
+        f'password="a"{PASSWORD} next=1',
+        "https://auth.example.com:8443/realms/x",  # A host is no name.
+        f"https://app:{PASSWORD}@keycloak.example.com:8443/ redis://cache-key:6379/0",
+        f"/password={PASSWORD} ODBC: UID=app;PWD={PASSWORD};",
+        "cwd=/srv pwdless=1",
+        f"x@password={PASSWORD} postgresql://app:{PASSWORD}@pgbouncer-auth:6432/db",
+        f'password="a",{PASSWORD} next=1',
+        f'{{"private_key": "{PASSWORD}", "url": "https://auth.example.com:8443"}}',
+    ]
+    with override_settings(
+        INSTALLED_DOMAINS=["typed_probe"], ALPHA=UNSET, TYPED_PROBE={"URLS": urls}
+    ):
+        lines = run("diffsettings").splitlines()
+
+    shown = [
+        "host = db password = ********** dbname = shop port = 5432",
+        '{"type": "service_account", "private_key": **********}',
+        "Authorization: **********",
+        "X-Request-Id: 7 Proxy-Authorization: ********** X-Other: 1",
+        "password: ********** next: 1",
+        "token: ********** region: eu",
+        "password:**********\ntoken: **********\nregion: eu",
+        "password=********** next=1",
+        "https://auth.example.com:8443/realms/x",
+        "https://app:**********@keycloak.example.com:8443/ redis://cache-key:6379/0",
+        "/password=********** ODBC: UID=app;PWD=**********;",
+        "cwd=/srv pwdless=1",
+        "x@password=********** postgresql://app:**********@pgbouncer-auth:6432/db",
+        "password=********** next=1",
+        '{"private_key": **********, "url": "https://auth.example.com:8443"}',
+    ]
+    (line,) = [line for line in lines if line.startswith("TYPED_PROBE")]
+    assert line.startswith(f"TYPED_PROBE = {{'URLS': {shown!r}, 'MODE': ")
+
+
+LONG_TEXTS = ["key.", "a.", "pin-", ".token", "key: a ", "a://", "Bearer key: "]
+"""Texts that made the patterns read each name or address again from within."""
+
+
+@pytest.mark.parametrize("unit", LONG_TEXTS)
+def test_diffsettings_reads_a_long_text_in_a_time_its_length_bounds(unit: str) -> None:
+    """100 KB of text is scrubbed well under a second, 2 KB in 50 ms.
+
+    Each name and each address is read from its start once: the pattern
+    that read a name again from each position within it took about a
+    second for 2 KB of ``key.``, and over 100 s for 10 KB; the one for a
+    URL's password read the rest of a word again at each ``a://``. A text
+    read again and again fails at 2 KB already, at once. The best of three
+    runs counts, so a machine busy for a moment does not; each takes a few
+    percent of its bound at most (audit A28-DX-10).
+    """
+    for size, bound in ((2_000, 0.05), (100_000, 1.0)):
+        scrub = partial(diffsettings._scrub, unit * (size // len(unit)))
+        assert min(timeit.repeat(scrub, number=1, repeat=3)) < bound, size
+
+
+def test_diffsettings_prints_a_sets_items_in_one_order() -> None:
+    """A set's items are sorted, typed or not, so two runs print one line.
+
+    A set of text is ordered by the hash seed, which each process draws
+    (``AUDIT.REQUIRE``); ``{8, 1}`` is out of order in every process (audit
+    A28-DX-10).
+    """
+    assert list({8, 1}) == [8, 1]  # The order the set itself gives.
+
+    assert diffsettings._typed(frozenset({8, 1}), free_form=False) == [1, 8]
+    assert diffsettings._opaque({8, 1, "x"}) == ["**********", 1, 8]
+    assert diffsettings._typed((8, 1), free_form=False) == [8, 1]  # A tuple's own.
+
+
+PLAIN = {
+    "apps.py": """
+        from collections import deque
+        from dataclasses import dataclass, field
+        from typing import Any, NamedTuple
+
+        from pydantic import BaseModel
+
+        from domainkit.apps import DomainConfig
+
+
+        @dataclass
+        class Provider:
+            NAME: str
+            OPTIONS: dict[str, Any] = field(default_factory=dict)
+            EXTRA: Any = None
+
+
+        class Pair(NamedTuple):
+            NAME: str
+            OPTIONS: dict[str, Any]
+
+
+        class PlainSettings(BaseModel):
+            PROVIDER: Provider | None = None
+            PAIR: Pair | None = None
+            PROVIDERS: list[Provider] = []
+            WAITING: deque[Provider] = deque()
+
+
+        class PlainConfig(DomainConfig):
+            settings_class = PlainSettings
+    """
+}
+
+
+def test_diffsettings_hides_the_text_of_values_that_are_not_models(
+    make_package: MakePackage,
+) -> None:
+    """A dataclass, and a mapping in a ``NamedTuple``, fail closed as mappings do.
+
+    No model's types say what their fields hold: their keys, numbers and
+    booleans show, their text is hidden, as in a field typed ``Any``. So
+    for a container the walk does not know, a ``deque`` (audit A28-DX-10).
+    """
+    make_package("plain_probe", PLAIN)
+    provider = {
+        "NAME": "sms",
+        "OPTIONS": {"client": PASSWORD, "pool": 4, "on": True},
+        "EXTRA": [PASSWORD, 2],
+    }
+    settings = {
+        "PROVIDER": provider,
+        "PAIR": ["second", {"client": PASSWORD, "pool": 5}],
+        "PROVIDERS": [provider],
+        "WAITING": [provider],
+    }
+    with override_settings(
+        INSTALLED_DOMAINS=["plain_probe"], ALPHA=UNSET, PLAIN_PROBE=settings
+    ):
+        output = run("diffsettings") + run("diffsettings", "--all")
+
+    assert PASSWORD not in output
+    hidden = (
+        "{'NAME': '**********', 'OPTIONS': {'client': '**********', 'pool': 4, "
+        "'on': True}, 'EXTRA': ['**********', 2]}"
+    )
+    (line,) = {line for line in output.splitlines() if line.startswith("PLAIN")}
+    assert line == (
+        f"PLAIN_PROBE = {{'PROVIDER': {hidden}, 'PAIR': ['second', "
+        f"{{'client': '**********', 'pool': 5}}], 'PROVIDERS': [{hidden}], "
+        f"'WAITING': [{hidden}]}}"
+    )
 
 
 def test_diffsettings_shows_typed_values_and_keeps_a_urls_user(

@@ -47,12 +47,21 @@ project that relied on 2.8's behaviour changes, and what to run.
   `'**********'`. A script that reads the command's output sees these
   lines, and `--all` lists a domain's setting left at its defaults with
   `###`. What stays hidden: values typed `SecretStr` or bytes, names that
-  suggest a secret, URL passwords and `password=` pairs, and all text in
-  a mapping or a value typed `Any`. A project whose own domains declare
-  settings types each secret among them as `SecretStr`, as the
-  framework's schemas do: a secret in a field typed `str`, under a name
-  such as `ENDPOINT`, would print
+  suggest a secret, URL passwords, the values of `password=` and
+  `password:` pairs, and all text in a mapping, a value typed `Any`, or a
+  value that is not a model, such as a dataclass. A project whose own
+  domains declare settings types each secret among them as `SecretStr`,
+  as the framework's schemas do: a secret in a field typed `str`, under a
+  name such as `ENDPOINT`, would print
   ([diffsettings](reference/commands.md#diffsettings-show-the-settings)).
+- **`diffsettings` hides more of the text it prints**, in every setting,
+  the project's own too: the value after a name like a secret's and `:`
+  or `=`, spaced or not, the name quoted or not. `password = ...` in a
+  libpq connection string, `"private_key": "..."` in JSON, and
+  `Authorization: Bearer ...` print with `**********` for their values,
+  where 2.8 printed them: it hid only `password=...`. A script that reads
+  such a value from the command's output reads it from the settings
+  instead.
 - **The application's problems are logged one to a record.** In
   development and tests, each problem found as the application is built
   or starts (`security.E101`, a route without an access rule, say) is a
@@ -327,6 +336,11 @@ project that relied on 2.8's behaviour changes, and what to run.
   or list the id in `SILENCED_CHECKS`.
 
 No migration.
+- **`AUTH.IDENTIFIERS` names fields that the user table has a column
+  for.** Startup refuses `groups` and `user_permissions`, which link
+  tables keep (`auth.E011`). 2.8 started with them, and failed later, at
+  a login, a search, or a list of users that read the field: name the
+  fields the table stores instead.
 - **`check` warns of web names a gateway takes through an allowed
   module** (`architecture.W001`). The infrastructure layer may import
   `domainkit.http.client` and `domainkit.http.uploads`, but from 2.9
@@ -361,7 +375,8 @@ No migration.
 Logins by address, signups, the checks for a taken address or username,
 and the admin API's list of users read the whole users table in 2.8. On
 PostgreSQL, `migrate` now makes, on the user table, a project's own too
-(`AUTH.USER_TABLE`), those of these indexes that are missing:
+(`AUTH.USER_TABLE`), in the table's schema where it names one, those of
+these indexes that are missing:
 
 - `ix_<table>_<EMAIL_FIELD>_lower`, on `lower()` of the `EMAIL_FIELD`
   (`ix_domainkit_users_email_lower` on the default table);

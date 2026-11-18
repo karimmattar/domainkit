@@ -114,8 +114,9 @@ Choose the line that matches your goal.
 
 ### Learn domainkit
 
-- [Getting started](tutorial.md): six short parts, from `pip install` to
-  a tested service with rules, permissions, and a worker.
+- [Getting started](tutorial.md): nine short parts, from `pip install` to
+  a tested service with rules, permissions, and a worker, then a bank's
+  controls: transfers, approvals, and webhooks.
 - [Learning domainkit](learning.md): the order in which to read the
   guides, [the glossary](learning.md#words), and the daily commands.
 - [Coming from Django](from-django.md) and

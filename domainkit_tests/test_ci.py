@@ -1103,9 +1103,10 @@ def test_the_docs_site_is_published_from_release_tags_only() -> None:
 
     Whatever tag started the run, it publishes the newest final release, so
     a run dropped while it waited leaves nothing out. Its tag job makes
-    release.yml's checks of that tag, judged as when it was pushed; the
-    site is built as CI's docs-site job builds it; the deploy job deploys
-    that artifact and nothing else, and no job reads a secret (ADR 0189).
+    release.yml's checks of that tag, every tag of a newer version left
+    out; the site is built as CI's docs-site job builds it; the deploy job
+    deploys that artifact and nothing else, and no job reads a secret (ADR
+    0189).
     """
     text = (WORKFLOWS / "docs.yml").read_text()
     docs: dict[object, Any] = yaml.safe_load(text)
@@ -1137,7 +1138,7 @@ def test_the_docs_site_is_published_from_release_tags_only() -> None:
     assert len(released) == 3
     release_check = 'python3 .github/scripts/release_check.py "$TAG"'
     [last] = [name for name, run in released.items() if run == release_check]
-    # The same checks; this run's own release_check.py, as when it was pushed.
+    # The same checks; this run's own release_check.py, without newer tags.
     assert checks(judged) == released | {
         last: 'python3 "$RUNNER_TEMP/scripts/release_check.py" "$TAG" --as-pushed'
     }
@@ -1204,7 +1205,7 @@ def test_the_newest_release_is_read_from_the_tags(tmp_path: Path) -> None:
     assert printed() == "v1.1.0\n"
 
 
-def test_a_release_is_judged_again_as_when_it_was_pushed(tmp_path: Path) -> None:
+def test_a_release_is_judged_again_without_the_newer_tags(tmp_path: Path) -> None:
     """A later line's pre-release refuses the release, unless ``--as-pushed``."""
     (tmp_path / "pyproject.toml").write_text('[project]\nversion = "1.0.0"\n')
     (tmp_path / "CHANGELOG.md").write_text(
@@ -1233,6 +1234,103 @@ def test_a_release_is_judged_again_as_when_it_was_pushed(tmp_path: Path) -> None
     assert release("v1.0.0", "--as-pushed").returncode == 0
     mismatched = release("v1.0.1", "--as-pushed")
     assert mismatched.stdout.startswith("v1.0.1 does not match version 1.0.0")
+
+
+def released(tmp_path: Path, version: str) -> None:
+    """Commit the release of ``version``, as docs/versioning.md makes one."""
+    (tmp_path / "pyproject.toml").write_text(f'[project]\nversion = "{version}"\n')
+    (tmp_path / "CHANGELOG.md").write_text(
+        f"## [Unreleased]\n\n## [{version}] - 2026-11-02\n"
+    )
+    git(tmp_path, "add", ".")
+    git(tmp_path, "commit", "-q", "-m", f"Release {version}")
+
+
+def scripted(tmp_path: Path, script: str, *args: str) -> tuple[int, str]:
+    """Run ``.github/scripts/<script>`` in ``tmp_path``: its exit code and output."""
+    done = subprocess.run(  # noqa: S603 - the test interpreter and the script.
+        [sys.executable, str(ROOT / ".github" / "scripts" / script), *args],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return done.returncode, done.stdout
+
+
+def flat(path: Path) -> str:
+    """The text of ``path``, its words joined by one space, without ``#``."""
+    return " ".join(path.read_text(encoding="utf-8").replace("#", " ").split())
+
+
+ADR_0189 = next((ROOT / "docs" / "adr").glob("0189-*.md"))
+
+
+def test_as_pushed_leaves_out_a_newer_tag_pushed_before_the_release(
+    tmp_path: Path,
+) -> None:
+    """Every tag of a newer version is left out, whenever it was pushed.
+
+    ``--as-pushed`` reads versions, not when a tag was pushed: a later
+    line's pre-release tagged before the release refused it in release.yml,
+    and passes it here. The workflow, ADR 0189, versioning.md, and the
+    changelog say so, where they said "as when its tag was pushed" (audit
+    A28-DX-02).
+    """
+    git(tmp_path, "init", "-q", "-b", "main")
+    released(tmp_path, "1.0.0")
+    for name in ("v2.0.0rc1", "v1.0.0"):  # The pre-release first.
+        git(tmp_path, "tag", name)
+
+    assert scripted(tmp_path, "release_check.py", "v1.0.0") == (
+        1,
+        "v2.0.0rc1 exists, and 1.0.0 is not newer\n",
+    )
+    assert scripted(tmp_path, "release_check.py", "v1.0.0", "--as-pushed") == (0, "")
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    unreleased = changelog.split("\n## [Unreleased]\n", 1)[1].split("\n## [", 1)[0]
+    told = {
+        "docs.yml": flat(WORKFLOWS / "docs.yml"),
+        "ADR 0189": flat(ADR_0189),
+        "versioning.md": flat(ROOT / "docs" / "versioning.md"),
+        "CHANGELOG.md": " ".join(unreleased.split()),
+        "release_check.py": flat(RELEASE_CHECK),
+    }
+    assert [name for name, text in told.items() if "when it was pushed" in text] == []
+    assert [name for name, text in told.items() if "when its tag was" in text] == []
+    said = "every tag of a newer version"
+    assert [name for name, text in told.items() if said not in text] == []
+
+
+def test_a_stray_final_tag_freezes_the_site_as_it_blocks_releases(
+    tmp_path: Path,
+) -> None:
+    """The site's release is the newest final tag, a release or not.
+
+    A stray ``v9.0.0`` is taken for the newest release by every run of
+    docs.yml, and its checks refuse it, so nothing is published until it is
+    deleted; release.yml refuses each new minor release while it is there.
+    ADR 0189 says so (audit A28-DX-02).
+    """
+    git(tmp_path, "init", "-q", "-b", "main")
+    released(tmp_path, "1.0.0")
+    for name in ("v1.0.0", "v9.0.0"):  # The second, by mistake.
+        git(tmp_path, "tag", name)
+    assert scripted(tmp_path, "newest_release.py") == (0, "v9.0.0\n")
+    stray = scripted(tmp_path, "release_check.py", "v9.0.0", "--as-pushed")
+    assert stray[0] == 1
+    assert stray[1].startswith("v9.0.0 does not match version 1.0.0")
+
+    released(tmp_path, "1.1.0")
+    git(tmp_path, "tag", "v1.1.0")
+    assert scripted(tmp_path, "newest_release.py") == (0, "v9.0.0\n")
+    assert scripted(tmp_path, "release_check.py", "v1.1.0") == (
+        1,
+        "v9.0.0 exists, and 1.1.0 is not newer\n",
+    )
+    assert "A stray final `v*` tag, newer than every release, freezes the site" in (
+        flat(ADR_0189)
+    )
 
 
 def test_the_workflows_are_audited_and_scanned() -> None:

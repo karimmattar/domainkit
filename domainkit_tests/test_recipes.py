@@ -26,6 +26,8 @@ PASSED = {
     "sms-backend.md": 5,
     "cache-store.md": 4,
     "broker.md": 4,
+    "tenancy.md": 7,
+    "uploads.md": 6,
 }
 """Each recipe's project's tests, the page's own included, after its last step."""
 CHECKED = {

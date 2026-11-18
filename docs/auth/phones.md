@@ -34,6 +34,10 @@ NOTIFICATIONS = {
 PHONES = {"CODE_TTL": timedelta(minutes=10)}  # every key is optional
 ```
 
+Mount its routes in `src/config/urls.py`, on the project's `router`, as
+[part 0 of the tutorial](../tutorial/0-first-route.md#step-3-add-a-first-route)
+mounts its first route:
+
 ```python
 from domainkit.contrib.phones.api import router as phones_router
 
