@@ -9,6 +9,76 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `PROBE_PATHS` (`/health`, `/ready`, `/metrics`) names the probes and the
+  metrics scrape once. The rate limit, the concurrency cap, the access
+  log's quiet paths, authentication, and `TenantMiddleware` each exempt
+  them, and their own lists add paths of the project's
+  ([HTTP settings](docs/reference/http.md#probe-paths), ADR 0186) (audit
+  A28-ARCH-01).
+- `domainkit.deadlines.after_commit()` runs what follows a commit free of
+  the task's deadlines, and `timeout(seconds, until_commit=True)` makes a
+  deadline a commit lifts for good, as `DeadlineMiddleware` does for each
+  request ([Keeping to the deadline](docs/runtime.md#keeping-to-the-deadline))
+  (audit A28-REL-01).
+- `HandlerCancelled`, reported for in-process handlers that a cancellation
+  of their work cut off, or kept from running (audit A28-REL-01).
+- `UnitOfWork.in_doubt` counts commits that failed without the database's
+  refusal, so they may have been applied: a lost connection, a timeout,
+  or a cut as it committed (audit A28-REL-04).
+- `apps.E003`: `check` refuses an optional app's middleware in
+  `MIDDLEWARE` without the app in `INSTALLED_DOMAINS`, and names the app;
+  staging and production refuse to start with it (audit A28-DX-04).
+- `migrations.W001`: outside staging and production, `check` warns of each
+  database that lacks revisions of its target, and `runserver` says so
+  before it serves ([Deployment checks](docs/reference/checks.md#warnings))
+  (audit A28-DX-08).
+
+### Changed
+
+- `RATE_LIMIT_EXEMPT_PATHS`, `CONCURRENCY_EXEMPT_PATHS`,
+  `ACCESS_LOG_QUIET_PATHS`, and `AUTH.AUTHENTICATION_EXEMPT_PATHS` default
+  to `()`, and add to `PROBE_PATHS`: they exempt what they did by default,
+  and a list a project set keeps working. Successful scrapes of `/metrics`
+  are logged at DEBUG, as the probes are (audit A28-ARCH-01).
+- `runserver` and `serve` run uvicorn with `lifespan="on"`: a lifespan
+  that raises stops the server, which exits 3, where uvicorn logged it at
+  INFO as unsupported and served every request a 500. Under Granian with
+  `SERVE["EXIT_ON_FAILED_START"]`, such a lifespan is a failed start
+  (audit A28-DX-04).
+
+### Fixed
+
+- A request that commits a unit of work is answered as committed: the
+  commit lifts its deadline, and its in-process handlers all run, each
+  within its own timeout. The deadline cut them off and answered
+  `503 deadline_exceeded` with `Retry-After: 1` for a change that was
+  made, and skipped the handlers after the slow one with nothing logged.
+  A worker's task no longer counts its handlers against its timeout, so
+  slow handlers do not fail a task that committed, and run it again
+  ([The request flow](docs/request-flow.md#8-commit), ADR 0186) (audit
+  A28-REL-01).
+- A database that cannot be reached, or cannot serve now (class `08`,
+  `57P01` to `57P03`, `53300`, or a connection refused as the pool opens
+  it), answers `503 database_unavailable` with `Retry-After: 5`, and is
+  logged once per reason every 10 seconds, not reported as a bug. It
+  answered `500 internal_error`, with a traceback and an error report per
+  request ([Runbook](docs/runbook.md#the-database-is-unavailable)) (audit
+  A28-REL-03).
+- `upload_route` keeps a file whose request failed as it committed, when
+  the commit may have been applied, and logs its name and storage. It
+  deleted it, though the committed row named it (audit A28-REL-04).
+- A stored upload that cannot be deleted is logged with its name and its
+  storage (audit A28-REL-07).
+- With `TENANCY` and `TenantMiddleware`, `/ready` and `/metrics` are
+  served without a tenant; they answered `400 tenant_not_named`, so no
+  replica became ready and the scrape went dark (audit A28-ARCH-01).
+- An optional app's settings asked for without the app say which package
+  to install: `No installed domain declares IdempotencySettings: install
+  'domainkit.contrib.idempotency' in INSTALLED_DOMAINS.` (audit
+  A28-DX-04).
+
 ## [2.8.0] - 2026-11-18
 
 2.8 answers fourteen of a project's fifteen notes on 2.7 (the last,

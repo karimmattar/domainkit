@@ -36,6 +36,59 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.8 to 2.9
+
+2.9 answers the audit of 2.8. Each item of this list says what a project
+that relied on 2.8's behaviour changes, and what to run.
+
+- **A request that committed is answered as committed**
+  ([ADR 0186](adr/0186-answer-a-commit-as-committed-a-lost-database-as-unavailable-start-loudly-and-name-the-probes-once.md)).
+  Once a unit of work commits, the request's deadline is lifted: its
+  in-process handlers all run, and it answers what it committed, past
+  `REQUEST_TIMEOUT` if they are slow. It no longer answers
+  `503 deadline_exceeded` for a change that was made. A request that
+  commits, then calls out or commits again, is no longer cut off either:
+  bound such calls by their own timeouts. A worker's task keeps the time
+  it had when it committed. Nothing to change; a handler that must not
+  hold the answer belongs in the outbox (`durable=True`).
+- **`HandlerCancelled` in the error reports.** It names in-process
+  handlers that a cancellation of their work (a shutdown, a cancelled
+  task) cut off or kept from running. 2.8 lost them without a word.
+- **A database out of reach answers `503 database_unavailable`**, with
+  `Retry-After: 5`, where 2.8 answered `500 internal_error`. It is logged
+  once per reason every 10 seconds, as a warning, and not sent to
+  `ERROR_REPORTERS`. Move alerts on 500s or on error reports for a
+  database outage to `/ready` and to this code
+  ([Runbook](runbook.md#the-database-is-unavailable)).
+- **A failed upload whose commit is in doubt keeps its file.** The
+  warning `Kept the upload <name> on the <storage> storage` names it:
+  delete it by hand if no row names it.
+- **The probes are named once, in `PROBE_PATHS`.** `RATE_LIMIT_EXEMPT_PATHS`,
+  `CONCURRENCY_EXEMPT_PATHS`, `ACCESS_LOG_QUIET_PATHS`, and
+  `AUTH.AUTHENTICATION_EXEMPT_PATHS` default to `()`, and add to it. A list
+  you set keeps working, and the probes are added to it.
+  - With `TENANCY`, `/ready` and `/metrics` need no tenant any more: a
+    `TENANCY.EXEMPT_PATHS` that lists them for that can drop them.
+  - Successful scrapes of `/metrics` are logged at DEBUG.
+  - Code that reads one of the four lists gets `()` by default: read
+    `PROBE_PATHS` too.
+  - Probes mounted elsewhere: set `PROBE_PATHS` to their paths. A probe
+    you want counted, authenticated, or given a tenant: leave it out of
+    `PROBE_PATHS`.
+- **A lifespan that raises stops the server.** `runserver` and `serve`
+  run uvicorn with `lifespan="on"`, and `serve` exits 3. Under 2.8,
+  uvicorn logged the error at INFO and served every request a 500. If a
+  release no longer starts, fix the error it prints.
+- **`check` refuses an optional app's middleware without the app**
+  (`apps.E003`), and staging and production refuse to start with one.
+  Install the app, or remove the middleware.
+- **`check` and `runserver` say which migrations a database lacks**
+  (`migrations.W001`), outside staging and production. `check` connects
+  to each database there to ask. Run `migrate`, or list the id in
+  `SILENCED_CHECKS`.
+
+No migration.
+
 ## 2.7 to 2.8
 
 2.8 follows up 2.7. Each item of this list says what a project that
