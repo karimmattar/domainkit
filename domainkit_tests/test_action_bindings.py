@@ -17,7 +17,7 @@ import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, cast
 from uuid import UUID, uuid4
 
 import pytest
@@ -676,7 +676,8 @@ def test_a_subject_is_a_type_and_an_id(subject: object) -> None:
     action = Action(
         "notes.publish",
         command=Note,
-        subject=lambda command: subject,
+        # A project's function may answer anything; its type says str.
+        subject=lambda command: cast("str", subject),
         show=lambda command: Shown("Publish a note"),
     )
 
