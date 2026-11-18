@@ -27,6 +27,11 @@ says so with it.
 
 A guard ``by_maker`` queues nothing: its maker's own call runs the
 approved command (``run_by_maker``), spending the request first.
+
+A request belongs to the tenant it was submitted in. The services find
+the requests of the tenant being served alone (the repository's), and
+the approved command runs in the request's own tenant, whichever tenant
+the message that runs it names (ADR 0183).
 """
 
 import functools
@@ -49,6 +54,7 @@ from domainkit.apps import registry
 from domainkit.context import RequestContext, bind_request, current_request
 from domainkit.db import SqlAlchemyUnitOfWork
 from domainkit.ddd import Command, ConcurrentUpdate, Criteria, DomainError, F, Selection
+from domainkit.ddd.tenancy import all_tenants, current_tenant, tenant_alone
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.money import MoneyError
 
@@ -59,6 +65,7 @@ from .exceptions import (
     FingerprintMismatch,
     InvalidArguments,
     MakerNotAllowed,
+    RequestNotFound,
     RequestNotPending,
     RequestTampered,
 )
@@ -73,7 +80,7 @@ from .models import (
 )
 from .rules import rule_instance
 from .settings import ApprovalsSettings
-from .uow import ApprovalsUnitOfWork, RequestRepository, approvals_alias
+from .uow import ApprovalsUnitOfWork, RequestRepository, approvals_alias, servable
 
 logger = logging.getLogger(__name__)
 AUTH: Final = "domainkit.contrib.auth"
@@ -169,6 +176,8 @@ async def _submit(
 ) -> ApprovalRequest:
     """Store ``command`` as a request of ``maker``'s under the policy that applies.
 
+    The request is of the tenant being served, or of none.
+
     Raises:
         ApprovalNotNeeded: As for ``_prepared``.
         InvalidArguments: As for ``_prepared``.
@@ -191,6 +200,7 @@ async def _submit(
         permission=policy.permission,
         group=policy.group,
         expires_at=clock.now() + (policy.expires_after or settings.EXPIRES_AFTER),
+        tenant_id=current_tenant(),
     )
     async with uow:
         await uow.requests.add(request)
@@ -539,8 +549,10 @@ async def record_approval(
     says, refusing all it refuses: the maker, a party to the command, a
     second decision, another fingerprint, a request no longer pending, or
     changed in the database. The approval that completes the request
-    queues its command. Call it from code the project trusts, never from a
-    route a user reaches. It trusts its caller for who acts: the approver
+    queues its command. It commits as the request's tenant alone, inside
+    ``all_tenants()`` too, so what the commit publishes and queues is that
+    tenant's. Call it from code the project trusts, never from a route a
+    user reaches. It trusts its caller for who acts: the approver
     is not asked to be one the policy names, nor to pass the approve rule,
     which the route asks. Code that names a person it did not authenticate
     checks them first (``approvers_of``).
@@ -565,7 +577,8 @@ async def record_approval(
             policy_of(request)[0].by_maker
         ):
             uow.defer(execute_request, request_id=request.id, token=request.run_token)
-        await uow.commit()
+        with tenant_alone(request.tenant_id):  # Code across tenants included.
+            await uow.commit()
     return request
 
 
@@ -665,7 +678,8 @@ async def record_rejection(
         request = await uow.locked(command.request_id)
         request.check_sealed()
         request.reject(approver, reason, await _parties(request))
-        await uow.commit()
+        with tenant_alone(request.tenant_id):
+            await uow.commit()
     return request
 
 
@@ -719,7 +733,8 @@ async def record_cancellation(
     async with uow:
         request = await uow.locked(command.request_id)
         request.cancel(command.maker, reason)
-        await uow.commit()
+        with tenant_alone(request.tenant_id):
+            await uow.commit()
     return request
 
 
@@ -767,28 +782,45 @@ async def check_cancellation(command: CancelRequest) -> ApprovalRequest:
 async def expire_requests() -> int:
     """Expire the pending requests whose time is up; how many there were.
 
-    One whose seal does not hold is left as it is, and logged: expiring it
-    would seal what someone changed around the application.
+    Every tenant's, each read, expired and committed as its tenant alone,
+    so what its expiry publishes, and the handlers that hear it, are that
+    tenant's. One whose seal does not hold, or whose stored tenant is not
+    a tenant id, is left as it is, and logged: expiring it would seal what
+    someone changed around the application. One gone meanwhile is passed
+    over.
     """
     expired = 0
-    tampered: set[RequestId] = set()
+    left: set[RequestId] = set()
     while True:
         async with ApprovalsUnitOfWork() as uow:
             due = await uow.requests.due(clock.now(), EXPIRE_BATCH)
+            tenants = await uow.requests.tenants_of(due)
         for request_id in due:
-            async with ApprovalsUnitOfWork() as uow:
-                request = await uow.locked(request_id)
-                if request.status is not RequestStatus.PENDING:
-                    continue
-                try:
-                    request.expire()
-                except RequestTampered:
-                    logger.warning("Approval request %s is tampered with", request_id)
-                    tampered.add(request_id)
-                    continue
-                await uow.commit()
-                expired += 1
-        if len(due) < EXPIRE_BATCH or set(due) <= tampered:
+            tenant_id = tenants.get(request_id)
+            if not servable(tenant_id):
+                logger.warning("Approval request %s is tampered with", request_id)
+                left.add(request_id)
+                continue
+            with tenant_alone(tenant_id):
+                async with ApprovalsUnitOfWork() as uow:
+                    try:
+                        request = await uow.locked(request_id)
+                    except RequestNotFound:  # Gone since it was found due.
+                        left.add(request_id)
+                        continue
+                    if request.status is not RequestStatus.PENDING:
+                        continue
+                    try:
+                        request.expire()
+                    except RequestTampered:
+                        logger.warning(
+                            "Approval request %s is tampered with", request_id
+                        )
+                        left.add(request_id)
+                        continue
+                    await uow.commit()
+                    expired += 1
+        if len(due) < EXPIRE_BATCH or set(due) <= left:
             return expired
 
 
@@ -828,10 +860,12 @@ async def _check_maker(guard: Guard, maker: str) -> None:
     must still be an active user, holding the guard's maker permission if
     it names one and passing its ``maker_rule`` if it has one (SEC-16b-7):
     a clerk dismissed, a customer frozen, or staff demoted after
-    submitting runs nothing. The rule sees the user on a connection of
-    no credentials (``_RUN``): a rule about the submitting request itself
-    (its scopes, a step-up) was checked when the request was submitted,
-    and one that needs such credentials refuses here. A maker that names
+    submitting runs nothing. It is asked in the request's tenant, where
+    the run is (a guard ``everywhere``: as where no tenant is served).
+    The rule sees the user on a connection of no credentials (``_RUN``):
+    a rule about the submitting request itself (its scopes, a step-up)
+    was checked when the request was submitted, and one that needs such
+    credentials refuses here. A maker that names
     no user (a principal of the project's own) is left to the project.
 
     Raises:
@@ -848,11 +882,12 @@ async def _check_maker(guard: Guard, maker: str) -> None:
 
     user = await get_user(user_id)
     rule = rule_instance(guard.maker_rule)
-    if (
-        user is None
-        or (guard.permission is not None and not await has_perm(user, guard.permission))
-        or (rule is not None and not await rule.has_permission(_RUN, user))
-    ):
+    with guard.checking():  # A guard of rows of no tenant: no role counts.
+        allowed = user is not None and (
+            (guard.permission is None or await has_perm(user, guard.permission))
+            and (rule is None or await rule.has_permission(_RUN, user))
+        )
+    if not allowed:
         raise MakerNotAllowed("Whoever submitted this command may no longer make it.")
 
 
@@ -866,7 +901,8 @@ async def approvers_of(request: ApprovalRequest) -> list[Any]:
     user alone, on a connection without credentials (``_RUN``). Never its
     maker, a party to its command, or someone who decided it already. A
     permission only a backend of the project's grants is not looked for:
-    such holders are not found (user report P3).
+    such holders are not found (user report P3). They are asked as the
+    request's tenant, where it is decided (ADR 0183).
 
     Raises:
         ImproperlyConfigured: ``domainkit.contrib.auth`` is not installed.
@@ -874,9 +910,19 @@ async def approvers_of(request: ApprovalRequest) -> list[Any]:
     """
     if not registry.is_installed(AUTH):
         raise ImproperlyConfigured(f"approvers_of needs {AUTH}: install it.")
+    with tenant_alone(request.tenant_id):  # Who may decide it, where it is.
+        return await _approvers(request)
+
+
+async def _approvers(request: ApprovalRequest) -> list[Any]:
+    """``approvers_of``'s work, as the request's tenant.
+
+    Raises:
+        PolicyRemoved: The request's guard or policy no longer exists.
+    """
     from domainkit.contrib.auth import AuthUnitOfWork, get_user_model, has_perm
 
-    _, policy = policy_of(request)
+    guard, policy = policy_of(request)
     left_out = {request.maker, *await _parties(request)}
     left_out |= {each.approver for each in request.decisions}
     if request.permission is not None:
@@ -898,17 +944,18 @@ async def approvers_of(request: ApprovalRequest) -> list[Any]:
         )
     rule = rule_instance(policy.approver_rule)
     approvers = []
-    for user in users:
-        if str(user.id) in left_out:
-            continue
-        if request.permission is not None:
-            if not await has_perm(user, request.permission):
+    with guard.checking():
+        for user in users:
+            if str(user.id) in left_out:
                 continue
-        elif request.group is None and (
-            rule is None or not await rule.has_permission(_RUN, user)
-        ):
-            continue
-        approvers.append(user)
+            if request.permission is not None:
+                if not await has_perm(user, request.permission):
+                    continue
+            elif request.group is None and (
+                rule is None or not await rule.has_permission(_RUN, user)
+            ):
+                continue
+            approvers.append(user)
     return approvers
 
 
@@ -931,13 +978,19 @@ async def _finish(request_id: UUID, token: str, error: str | None = None) -> Non
 
 
 async def _fail_tampered(request_id: UUID) -> None:
-    """Fail an approved request whose seal does not hold: it never runs."""
-    async with ApprovalsUnitOfWork() as uow:
-        request = await uow.locked(request_id)
-        if request.status is RequestStatus.APPROVED and not request.sealed():
-            logger.warning("Approval request %s is tampered with", request_id)
-            request.failed(RequestTampered.code)
-            await uow.commit()
+    """Fail an approved request whose seal does not hold: it never runs.
+
+    Its tenant is not to be trusted either: the failure is committed as no
+    tenant.
+    """
+    with all_tenants():
+        async with ApprovalsUnitOfWork() as uow:
+            request = await uow.locked(request_id)
+            if request.status is RequestStatus.APPROVED and not request.sealed():
+                logger.warning("Approval request %s is tampered with", request_id)
+                request.failed(RequestTampered.code)
+                with tenant_alone(None):
+                    await uow.commit()
 
 
 @contextmanager
@@ -1024,15 +1077,29 @@ async def execute_request(request_id: UUID, token: str | None = None) -> None:
     refusal of the use case's (a ``DomainError`` other than
     ``ConcurrentUpdate``), with the refusal's code. Anything else is
     raised, for the worker to retry.
-    """
-    from domainkit.contrib.messaging import AlreadyHandled
 
-    request = await _read(request_id)
+    It runs in the request's own tenant alone (none for a request of
+    none), whichever tenant the message names: the command, the maker's
+    check, and the request's end are that tenant's. The seal is checked
+    first, so a tenant changed around the application is never served
+    (ADR 0183).
+    """
+    with all_tenants():  # Only to learn its tenant: nothing runs in here.
+        request = await _read(request_id)
     if request.status is not RequestStatus.APPROVED:
         return
     if not request.sealed():
         await _fail_tampered(request_id)
         return
+    with tenant_alone(request.tenant_id):
+        await _execute(request, token)
+
+
+async def _execute(request: ApprovalRequest, token: str | None) -> None:
+    """``execute_request``'s work, in the request's tenant: approved and sealed."""
+    from domainkit.contrib.messaging import AlreadyHandled
+
+    request_id = request.id
     if token is None or not request.runs(token):
         logger.warning(
             "A message to run approval request %s holds no run token of it", request_id

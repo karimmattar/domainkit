@@ -27,6 +27,12 @@ An action of the domain's own whose key names no model's permission (an
 invitation posted to a company) is named whole by ``keys`` (ADR 0177)::
 
     MemberActions(Company, keys={"invite": "organizations.add_membership"})
+
+A resource over rows that belong to no tenant counts only the keys held
+everywhere, so a member's role in the tenant served reaches none of them
+(ADR 0183)::
+
+    ResourceRouter("/limits", ..., rule=ModelActions(Limit, everywhere=True))
 """
 
 import re
@@ -84,11 +90,21 @@ class HasModelPermission(BasePermission):
     bounds_scopes: ClassVar[bool] = True
     key: str | None = None
     """The key asked whole, instead of the model's (``keys`` of ``ModelActions``)."""
+    everywhere: bool = False
+    """Whether only the key held where no tenant is served counts."""
 
     def __init__(
-        self, action: str, model: ModelLike, *, key: str | None = None
+        self,
+        action: str,
+        model: ModelLike,
+        *,
+        key: str | None = None,
+        everywhere: bool = False,
     ) -> None:
         """Check ``action`` on ``model``, or ``key`` (New in 2.7).
+
+        ``everywhere``: only as the user holds it where no tenant is served,
+        never through a member's role (ADR 0183).
 
         Raises:
             ValueError: ``key`` is not a permission's key.
@@ -96,6 +112,7 @@ class HasModelPermission(BasePermission):
         self.action = action
         self.model = model
         self.key = None if key is None else _checked_key(key)
+        self.everywhere = everywhere
 
     def permission(self) -> str:
         """The permission's key: ``billing.change_invoice``, or ``key``."""
@@ -105,8 +122,10 @@ class HasModelPermission(BasePermission):
         return f"{domain}.{self.action}_{name}"
 
     async def has_permission(self, request: HTTPConnection, user: Principal) -> bool:
-        """The user holds the permission."""
-        return await HasPermissions(self.permission()).has_permission(request, user)
+        """The user holds the permission (everywhere, with ``everywhere``)."""
+        return await HasPermissions(
+            self.permission(), everywhere=self.everywhere
+        ).has_permission(request, user)
 
 
 class ModelActions:
@@ -121,13 +140,21 @@ class ModelActions:
     Once ``keys`` is given, a route of an action other than ``view``,
     ``add``, ``change`` or ``delete`` that it does not name is refused
     when declared, so a misspelt action never asks a key no one holds.
+    ``everywhere=True`` counts only the keys a user holds where no tenant
+    is served: a member's role does not, for rows of no tenant (ADR 0183).
     """
 
     keys: Mapping[str, str] = MappingProxyType({})
     """The key of each action named whole, by action."""
+    everywhere: bool = False
+    """Whether only the keys held where no tenant is served count."""
 
     def __init__(
-        self, model: ModelLike, *rules: Rule, keys: Mapping[str, str] | None = None
+        self,
+        model: ModelLike,
+        *rules: Rule,
+        keys: Mapping[str, str] | None = None,
+        everywhere: bool = False,
     ) -> None:
         """Ask for ``model``'s permissions, after ``rules``; ``keys`` by action.
 
@@ -137,6 +164,7 @@ class ModelActions:
         self.model = model
         self.rules = rules
         self.keys = _checked_keys(keys)
+        self.everywhere = everywhere
 
     def rules_for(self, action: str) -> Sequence[Rule]:
         """``rules``, then the model permission of ``action``, or its key.
@@ -146,7 +174,10 @@ class ModelActions:
                 ``action`` nor is it one every model has.
         """
         key = _key_of(self, action)
-        return (*self.rules, HasModelPermission(action, self.model, key=key))
+        return (
+            *self.rules,
+            HasModelPermission(action, self.model, key=key, everywhere=self.everywhere),
+        )
 
 
 class HasMemberModelPermission(HasModelPermission):

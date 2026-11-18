@@ -11,7 +11,9 @@ Who may do what:
 - Reading and listing need ``approvals.view_approvalrequest``, and show
   the requests the caller made and those whose policy names them among
   its approvers; ``approvals.view_every_approvalrequest`` shows every
-  request (user report P3). Another request is ``404``.
+  request (user report P3), but those of a guard ``everywhere`` to a
+  member who holds it only through a role (ADR 0183). Another request is
+  ``404``.
 - Submitting needs ``approvals.add_approvalrequest``, and the permission
   the guard names for its makers (``accounting.add_entry`` for postings).
 - Approving and rejecting need to be one of the approvers the request's
@@ -201,19 +203,32 @@ async def visible(connection: HTTPConnection) -> Criteria | None:
     """What a caller reads of the requests: theirs, and those they may decide.
 
     The requests they made, and those of a policy that names them among its
-    approvers (by its permission, its group, or its approver rule); every
-    request with ``approvals.view_every_approvalrequest``. Only reads are
-    narrowed: approving, rejecting, and cancelling ask their own rules.
+    approvers (by its permission, its group, or its approver rule; as where
+    no tenant is served for a guard ``everywhere``); every request with
+    ``approvals.view_every_approvalrequest``. That key held only through a
+    member's role shows every request of a guard that is not ``everywhere``
+    alone: a guard of rows of no tenant shows its requests to those who
+    hold the key everywhere. Only reads are narrowed: approving, rejecting,
+    and cancelling ask their own rules. Each is of the tenant being served:
+    the repository reads no other's (ADR 0183).
     """
     if connection.scope.get("method") not in READS:
         return None
     user = current_user(connection)
-    if await HasPermissions(VIEW_EVERY).has_permission(connection, user):
+    if await HasPermissions(VIEW_EVERY, everywhere=True).has_permission(
+        connection, user
+    ):
         return None
+    every = await HasPermissions(VIEW_EVERY).has_permission(connection, user)
     shown: Criteria = F("maker") == str(user.id)
     for action, registered in guards().items():
+        if every and not registered.everywhere:
+            shown |= F("action") == action
+            continue
         for policy in registered.policies:
-            if await names_approver(connection, user, policy):
+            with registered.checking():
+                named = await names_approver(connection, user, policy)
+            if named:
                 shown |= (F("action") == action) & (F("policy") == policy.name)
     return shown
 
@@ -339,9 +354,10 @@ async def _submission(
         HasPermissions(guard.permission) if guard.permission else None,
         rule_instance(guard.maker_rule),
     ]
-    for rule in rules:
-        if rule is not None and not await rule.has_permission(request, user):
-            raise PermissionDenied("You may not submit this command.")
+    with guard.checking():  # A guard of rows of no tenant: no role counts.
+        for rule in rules:
+            if rule is not None and not await rule.has_permission(request, user):
+                raise PermissionDenied("You may not submit this command.")
     return SubmitRequest(
         action=body.action, arguments=body.arguments, maker=str(user.id)
     )

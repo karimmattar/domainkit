@@ -1,10 +1,20 @@
-"""Name conversions for error codes and generated code, and suggestions."""
+"""Names for error codes and generated code, suggestions, and what shows nothing."""
 
 import re
 from collections.abc import Iterable
 from typing import Final
 
 _WORD_BOUNDARY: Final = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+IGNORABLE: Final = (
+    "\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f"
+    "\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufff8"
+    "\U0001bca0-\U0001bca3\U0001d173-\U0001d17a\U000e0000-\U000e0fff"
+)
+"""Unicode's default ignorable code points, as a character class: what is never
+shown (a zero-width space or joiner, a soft hyphen, a byte order mark, a
+directional mark or override, a variation selector). Every format character
+(Unicode's Cf) that shows nothing is one. Screens, Office documents' checks,
+and CSV cells read text past them, as one definition."""
 
 
 def snake_case(name: str) -> str:

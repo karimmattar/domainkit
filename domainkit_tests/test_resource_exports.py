@@ -3,6 +3,8 @@
 import csv
 import io
 import json
+import re
+import unicodedata
 from uuid import UUID
 
 import pytest
@@ -320,6 +322,59 @@ def test_cells_are_safe_from_formulas() -> None:
 def test_formulas_behind_spaces_or_in_other_widths_are_guarded(text: str) -> None:
     """Spreadsheets skip leading spaces, and read wide and small signs as signs."""
     assert guarded(text) == f"'{text}"
+
+
+@pytest.mark.parametrize(
+    "hidden",
+    [
+        "\u200e",  # A left-to-right mark.
+        "\u200f",  # A right-to-left mark.
+        "\u061c",  # The Arabic letter mark.
+        "\u202e",  # A right-to-left override.
+        "\u2066",  # A left-to-right isolate.
+        "\u00ad",  # A soft hyphen.
+        "\u2061",  # The function application.
+        "\u034f",  # The combining grapheme joiner.
+        "\ufe0f",  # A variation selector.
+        "\u3164",  # The Hangul filler.
+        "\U000e0041",  # A tag.
+        "\u0600",  # The Arabic number sign: a format character that shows a mark.
+        "\ufff9",  # An interlinear annotation anchor.
+        "\x01",
+        " \u200e\u00ad",
+    ],
+)
+def test_formulas_behind_what_shows_nothing_are_guarded(hidden: str) -> None:
+    """Format characters, other default ignorables, and controls (audit A28-ARCH-13).
+
+    2.8 read past five of them alone. Whether a spreadsheet skips each one
+    is not known, nor which spreadsheet opens the file: a formula behind
+    one is guarded all the same, and a number stays a number.
+    """
+    assert guarded(f"{hidden}=1+1") == f"'{hidden}=1+1"
+    assert guarded(f"{hidden}@SUM(1)") == f"'{hidden}@SUM(1)"
+    assert guarded(f"{hidden}-1") == f"{hidden}-1"
+    assert guarded(hidden) == hidden
+
+
+def test_every_character_that_shows_nothing_is_read_past() -> None:
+    """Each control, format character, and default ignorable this Python knows.
+
+    One definition of what shows nothing serves screens, Office documents'
+    checks, and CSV cells.
+    """
+    from domainkit.utils.text import IGNORABLE
+
+    ignored = re.compile(f"[{IGNORABLE}]")
+    hidden = [
+        character
+        for character in map(chr, [*range(0x20000), *range(0xE0000, 0xE1000)])
+        if unicodedata.category(character) in {"Cc", "Cf"} or ignored.match(character)
+    ]
+
+    assert len(hidden) > 4_000
+    assert [each for each in hidden if guarded(f"{each}=1") != f"'{each}=1"] == []
+    assert guarded("x=1") == "x=1"
 
 
 def test_numbers_behind_spaces_stay_numbers() -> None:
