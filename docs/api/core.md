@@ -465,7 +465,7 @@ Event loops for the framework's own entry points: uvloop when it is there.
 
 ## `domainkit.cloud.aws`
 
-Calls to AWS's APIs, signed with SigV4 (`domainkit.keys.aws`).
+Calls to AWS's APIs: Signature Version 4, and the credential chain.
 
 - `credential_source`: The key pair given, or the environment's credentials.
 - `signed_request`: Send `body` to `url`, signed for `service` in `region`.
