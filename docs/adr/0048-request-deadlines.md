@@ -1,6 +1,6 @@
 # 0048. Give every request a deadline, answer 503 when it passes, and pass it on
 
-- Status: Accepted; amended 2026-10-25, 2026-10-26 and 2026-10-28 (at the end)
+- Status: Accepted; amended 2026-10-25, 2026-10-26 and 2026-10-28 (at the end); amended by [0186](0186-answer-a-commit-as-committed-a-lost-database-as-unavailable-start-loudly-and-name-the-probes-once.md)
 - Date: 2026-10-20
 
 ## Context

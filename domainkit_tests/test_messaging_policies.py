@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import math
 import re
 import uuid
@@ -28,6 +29,7 @@ from domainkit.contrib.messaging import (
     task,
 )
 from domainkit.contrib.messaging import admin as outbox_admin
+from domainkit.contrib.messaging import outbox as messaging_outbox
 from domainkit.contrib.messaging import registry as tasks
 from domainkit.contrib.messaging import retry as retry_module
 from domainkit.contrib.messaging import worker as worker_module
@@ -45,10 +47,13 @@ from domainkit.contrib.messaging.tables import (
     messages,
 )
 from domainkit.db import connections
+from domainkit.db.hooks import on_transaction_committed
+from domainkit.ddd import EventBus, HandlerTimedOut
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.ratelimit import Decision
 from domainkit.management import CommandError
-from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork
+from domainkit_tests.deadline_routes import past
+from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork, NoteWritten
 from domainkit_tests.test_messaging import (  # noqa: F401 - fixtures.
     FAST,
     NO_GRACE,
@@ -417,6 +422,109 @@ async def test_a_task_runs_under_its_own_timeout() -> None:
     statuses = {row["target"]: row["status"] for row in await rows()}
     assert statuses == {"tests.shorter": DEAD, "tests.longer": DONE}
     assert ran == ["longer"]
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_task_that_committed_is_not_failed_by_its_slow_handlers() -> None:
+    """What follows a task's commit does not count against its timeout.
+
+    The task commits a note whose event's first in-process handler runs
+    until past the task's timeout. It and the next handler run, free of
+    the deadline, and the message is done, run once: not failed, so not
+    run and committed again.
+    """
+    bus = EventBus()
+    given: list[deadlines.Deadline] = []
+
+    async def slow(event: NoteWritten) -> None:
+        await asyncio.sleep(past(given[0]))
+        ran.append(("slow", deadlines.remaining()))
+
+    async def after(event: NoteWritten) -> None:
+        ran.append(("after", deadlines.remaining()))
+
+    bus.subscribe(NoteWritten, slow)
+    bus.subscribe(NoteWritten, after)
+
+    @task(name="tests.commits", timeout=0.5, max_attempts=2)
+    async def commits() -> None:
+        deadline = deadlines.current_deadline()
+        assert deadline is not None
+        given.append(deadline)
+        note = Note(id=NoteId(uuid.uuid4()), text="once")
+        note.record(NoteWritten(note_id=note.id))
+        async with NotesUnitOfWork(events=bus) as uow:
+            await uow.notes.add(note)
+            await uow.commit()
+        ran.append("committed")
+
+    await enqueue(commits)
+    await Worker(MessagingSettings(**{**FAST, "VISIBILITY_TIMEOUT": 60})).run_once()
+
+    assert [row["status"] for row in await rows()] == [DONE]
+    assert ran == [("slow", None), ("after", None), "committed"]
+
+
+@pytest.mark.usefixtures("tables")
+async def test_what_follows_enqueue_runs_free_of_the_deadline() -> None:
+    """``enqueue`` commits on its own; its after-commit hooks are not cut off.
+
+    A hook runs until past the deadline, which the commit lifts: it runs
+    to the end, sees no deadline, and the block ends without raising.
+    """
+    seen: list[float | None] = []
+    bound = deadlines.timeout(0.5, until_commit=True)
+
+    async def slow(database: str) -> None:
+        assert bound.deadline is not None
+        await asyncio.sleep(past(bound.deadline))
+        seen.append(deadlines.remaining())
+
+    on_transaction_committed(slow, domain="messaging")
+    async with bound:
+        await enqueue(low, label="queued")
+        left = deadlines.remaining()
+
+    assert (seen, left, bound.expired()) == ([None], None, False)
+    assert [row["target"] for row in await rows()] == ["tests.low"]
+
+
+@pytest.mark.usefixtures("tables")
+async def test_an_after_commit_hook_of_enqueue_that_hangs_is_cut_off(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``on_transaction_committed`` gets ``EVENT_HANDLER_TIMEOUT``, then is cut off.
+
+    The task is queued; the hook that hangs is logged and reported as
+    ``HandlerTimedOut``.
+    """
+    reports: list[tuple[BaseException, dict[str, object]]] = []
+    monkeypatch.setattr(
+        messaging_outbox,
+        "report_error",
+        lambda exc, **context: reports.append((exc, context)),
+    )
+
+    async def hangs(database: str) -> None:
+        await asyncio.Event().wait()
+
+    on_transaction_committed(hangs, domain="messaging")
+    with (
+        override_settings(EVENT_HANDLER_TIMEOUT=0.1),
+        caplog.at_level(logging.ERROR, "domainkit.contrib.messaging"),
+    ):
+        async with asyncio.timeout(5):
+            await enqueue(low, label="queued")
+
+    cut = "After-commit work of 'messaging' took more than 0.1s"
+    assert caplog.messages == [f"{cut}; cut off"]
+    [(exc, context)] = reports
+    assert (type(exc), str(exc), context) == (
+        HandlerTimedOut,
+        cut,
+        {"domain": "messaging"},
+    )
+    assert [row["target"] for row in await rows()] == ["tests.low"]
 
 
 @pytest.mark.usefixtures("tables")

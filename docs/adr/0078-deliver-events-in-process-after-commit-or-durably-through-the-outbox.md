@@ -1,6 +1,6 @@
 # 0078. Deliver events in process after commit, or durably through the outbox
 
-- Status: Accepted; amended 2026-10-26 (at the end)
+- Status: Accepted; amended 2026-10-26 (at the end); amended by [0186](0186-answer-a-commit-as-committed-a-lost-database-as-unavailable-start-loudly-and-name-the-probes-once.md)
 - Date: 2026-10-25; amended 2026-10-26 (the inbox)
 
 This records a decision taken in 0.1.0 and kept since, which no record

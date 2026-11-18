@@ -117,3 +117,4 @@ def test_runserver_hands_uvicorn_the_loop(
         call_command("runserver", "8001", reload=False)
 
     assert options[0]["loop"] == kind
+    assert options[0]["lifespan"] == "on"  # A lifespan that raises stops it.
