@@ -241,12 +241,10 @@ seconds), then gets `503 database_busy`.
 - [performance.md](performance.md) gives what a request costs, and how
   many cores a load needs.
 
-Each process opens up to `POOL_SIZE` + `MAX_OVERFLOW` connections to each
-network database (5 + 10 by default), and admits up to
-`MAX_CONCURRENT_REQUESTS` requests at once (1,000). Past about four
-requests per connection, requests wait for a connection where the
-shedding queue does not see them, up to `POOL_TIMEOUT`, then fail with
-503. `check` warns about both in staging and production:
+By default a pool holds 5 + 10 connections to each network database.
+Past about four requests per connection, requests wait for a connection
+where the shedding queue does not see them. `check` warns about both in
+staging and production:
 
 - `deploy.W004`: a network database without `POOL_SIZE`;
 - `deploy.W006`: a pool that holds fewer than a quarter of

@@ -5,11 +5,56 @@ All notable changes to domainkit. The format follows
 [Semantic Versioning](https://semver.org/); see `docs/versioning.md`.
 Entries end with the ids of the review findings they answer, such as
 `(FIN-77)`: [docs/audit/0.9.0.md](docs/audit/0.9.0.md) gives each a title
-and a status.
+and a status. Ids that start with `A28-` name the 2.8 audit's findings,
+listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 
 ## [Unreleased]
 
 ### Added
+
+- `--version` prints domainkit's version (`python manage.py --version`,
+  `domainkit --version`), and `help <command>` prints the command's
+  options, as `<command> --help` does
+  ([Running a command](docs/reference/commands.md#running-a-command),
+  [upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-12).
+
+- `.github/workflows/docs.yml` publishes the documentation site to GitHub
+  Pages when a release tag is pushed: whatever tag starts it, the site
+  of the newest final release, once `release.yml`'s tag checks pass that
+  release, so a tag that those checks refuse publishes nothing.
+  `release_check.py --as-pushed` judges a tag as when it was pushed. The
+  workflow's one job that writes may write to Pages alone, and it reads
+  no secret. The repository's owner turns Pages on once
+  ([One-time setup](docs/versioning.md#one-time-setup), ADR 0189)
+  (audit A28-DX-02).
+
+- [Choosing a feature](docs/choosing.md): which tool a need takes where
+  two look alike (idempotency keys or the inbox, money limits or rate
+  limits, a step-up, an authorization, or approvals, a balance field or
+  the ledger, rows, databases, or schemas per tenant), and which to
+  leave alone. Sixteen feature pages open with "When to use it, and when
+  not to", and link the tool to use instead (audit A28-DX-05).
+
+- Runbook entries for a write that ran past its deadline, a retry that
+  finds the request ran (`409 idempotency_response_unavailable`), webhook
+  deliveries that fail, codes and mail that do not arrive, and requests
+  that fail during a rollout; the request flow, request deadlines, and
+  the rollout checklist say what a deadline answer tells about a commit,
+  and how a stopping process keeps serving
+  ([Runbook](docs/runbook.md#find-the-entry)) (audit A28-REL-06).
+
+- `examples/`: three runnable projects, each made by `domainkit init`,
+  with a walkthrough that opens with the problem it solves, and tests.
+  `payments-ledger` keeps wallets in double-entry books: payments under
+  an `Idempotency-Key`, holds captured or released, refunds as
+  reversals, and the trial balance. `maker-checker` holds large payouts
+  for approval, the maker and the approver each confirming the act.
+  `outbox-webhooks` sends transfers through a durable handler, with
+  retries and dead letters, and signed webhooks to a receiver that
+  verifies them. domainkit's tests play each one's CI workflow, on
+  SQLite and on PostgreSQL, so a change that breaks one fails CI; the
+  wheel and the sdist leave them out (ADR 0190). README.md and
+  `docs/learning.md` link them (audit A28-DX-06).
 
 - `PROBE_PATHS` (`/health`, `/ready`, `/metrics`) names the probes and the
   metrics scrape once. The rate limit, the concurrency cap, the access
@@ -17,34 +62,68 @@ and a status.
   them, and their own lists add paths of the project's
   ([HTTP settings](docs/reference/http.md#probe-paths), ADR 0186) (audit
   A28-ARCH-01).
+
 - `domainkit.deadlines.after_commit()` runs what follows a commit free of
   the deadlines, and `timeout(seconds, until_commit=True)` makes a
   deadline that a commit lifts for good, with every block it bounds, from
   whichever task commits, as `DeadlineMiddleware` does for each request
   ([Keeping to the deadline](docs/runtime.md#keeping-to-the-deadline))
   (audit A28-REL-01).
+
 - `HandlerCancelled`, reported for in-process handlers that a cancellation
   of their work cut off, or kept from running (audit A28-REL-01).
+
 - `UnitOfWork.in_doubt` counts commits that failed without the database's
   refusal, so they may have been applied: a lost connection, a timeout,
   or a cut as it committed. SQLAlchemy's own errors that come before a
   `COMMIT` is sent are refusals; its others, which a session's
   `after_commit` listener can raise once the `COMMIT` landed, are in
   doubt (audit A28-REL-04).
+
 - `apps.E003`: `check` refuses an optional app's middleware in
   `MIDDLEWARE` without the app in `INSTALLED_DOMAINS`, and names the app;
   staging and production refuse to start with it (audit A28-DX-04).
+
 - `migrations.W001`: outside staging and production, `check` warns of each
   database that lacks revisions of its target, or whose revisions cannot
   be read, and `runserver` says so before it serves. Each database gets 2
   seconds at most to answer
   ([Deployment checks](docs/reference/checks.md#warnings)) (audit
   A28-DX-08).
+
 - `probes.W001`: `check` warns of a list of exempt paths that names some of
   `PROBE_PATHS`, not all: the probes it leaves out are exempt from it
   since 2.9 (audit A28-ARCH-01).
 
 ### Changed
+
+- `diffsettings` shows each installed domain's settings (`AUTH`,
+  `APPROVALS`, `LIMITS`, ...) as its schema validated them, defaults
+  filled in, and marks those left at their defaults under `--all`; 2.8
+  hid a domain's settings whole. It fails closed: values typed as
+  secrets, names that suggest one (`sid` and `pin` now among them), URL
+  passwords and `password=` pairs, and all text in a mapping or a value
+  typed `Any` (a provider's options) stay hidden
+  ([diffsettings](docs/reference/commands.md#diffsettings-show-the-settings),
+  [upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-10).
+
+- In development and tests, each problem the application finds at its
+  build or start (a route without an access rule, say) is logged as a
+  warning of its own, on one line; 2.8 logged them in one record, which
+  the log escaped onto one line with `\n` between them
+  ([upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-12).
+
+- `createsuperuser`'s note on a superuser that no code can reach says
+  "no verification code can be sent to the superuser ... until its email
+  address is verified" (audit A28-DX-12).
+
+- PyPI's "Documentation" link opens the first page, `docs/index.md`, not
+  `docs/reference.md` (audit A28-DX-02).
+
+- The site's navigation keeps the pages for those who make domainkit
+  (decisions, the style guide, the roadmap, the audits) under "Project",
+  apart from the reference; their addresses do not change. The feature
+  inventory says that it records the review of 1.5 (audit A28-DX-13).
 
 - `RATE_LIMIT_EXEMPT_PATHS`, `CONCURRENCY_EXEMPT_PATHS`,
   `ACCESS_LOG_QUIET_PATHS`, and `AUTH.AUTHENTICATION_EXEMPT_PATHS` default
@@ -55,11 +134,13 @@ and a status.
   and add it to each list that should still exempt it. Successful scrapes
   of `/metrics` are logged at DEBUG, as the probes are (audit
   A28-ARCH-01).
+
 - The domains' after-commit hooks (`on_committed`,
   `on_transaction_committed`) run within `EVENT_HANDLER_TIMEOUT` each, now
   that the request's deadline does not bound them: one still running then
   is cut off, logged, and reported as `HandlerTimedOut` (audit
   A28-REL-01).
+
 - `runserver` and `serve` run uvicorn with `lifespan="on"`: a lifespan
   that raises stops the server, which exits 3, where uvicorn logged it at
   INFO as unsupported and served every request a 500. Under Granian with
@@ -67,6 +148,38 @@ and a status.
   (audit A28-DX-04).
 
 ### Fixed
+
+- The tutorial and the recipes name the file each block makes or
+  changes in the text above it, which GitHub shows; a block's title, the
+  only place that named it, is shown by the site alone. `test_docs.py`
+  fails on a titled block whose file the text does not name (audit
+  A28-DX-01).
+
+- The README's quick start makes the four-file domain that `startdomain`
+  makes by default, and that the tutorial starts from, and describes
+  `--layered` and `--minimal` as they are. It counts the tutorial's six
+  parts, and says when a route answers 401, 403, or 404. The recipes
+  that make a layered domain say why (audit A28-DX-03).
+
+- The first example of [Authenticating requests](docs/auth/authentication.md#a-first-example)
+  runs in a project made by `init`: it logs in by email address, and
+  sends a host the local settings accept. `test_walkthroughs.py` runs it
+  (audit A28-DX-09).
+
+- The tutorial says that its commands need a POSIX shell, and to use WSL
+  or Git Bash on Windows
+  ([Before you start](docs/tutorial.md#before-you-start)) (audit
+  A28-DX-11).
+
+- [Free-threaded Python](docs/runtime.md#free-threaded-python) names
+  the `documents` (`fill_docx`, `placeholders`) and `saml` extras, whose
+  lxml turns the GIL back on for the rest of the process, beside
+  `immudb` (audit A28-PERF-06).
+
+- [What a request costs](docs/performance.md#what-a-request-costs) shows
+  each rung's calls, round trips, and modules as `benchmarks/budgets.toml`
+  holds them, and `test_docs.py` fails when the two differ (audit
+  A28-PERF-09).
 
 - A request that commits a unit of work is answered as committed: the
   commit lifts its deadline, from whichever of the request's tasks
@@ -79,10 +192,12 @@ and a status.
   task that committed, and run it again; `TASK_TIMEOUT` then no longer
   bounds a run's whole time ([The request flow](docs/request-flow.md#8-commit),
   ADR 0186) (audit A28-REL-01).
+
 - A request whose commit is in doubt (the deadline passed, or the
   connection was lost, as its `COMMIT` was sent) answers 503 without
   `Retry-After`, with a detail that says the change may have been made
   (audit A28-REL-01, A28-REL-03).
+
 - A database that cannot be reached, or cannot serve now (class `08`,
   `57P01` to `57P03`, `53300`, or a connection refused as the pool opens
   it), answers `503 database_unavailable` with `Retry-After: 5`, and is
@@ -92,14 +207,18 @@ and a status.
   psycopg, a connection that cannot be opened may still answer 500
   ([Runbook](docs/runbook.md#the-database-is-unavailable)) (audit
   A28-REL-03).
+
 - `upload_route` keeps a file whose request failed as it committed, when
   the commit may have been applied, and logs its name and storage. It
   deleted it, though the committed row named it (audit A28-REL-04).
+
 - A stored upload that cannot be deleted is logged with its name and its
   storage (audit A28-REL-07).
+
 - With `TENANCY` and `TenantMiddleware`, `/ready` and `/metrics` are
   served without a tenant; they answered `400 tenant_not_named`, so no
   replica became ready and the scrape went dark (audit A28-ARCH-01).
+
 - An optional app's settings asked for without the app say which package
   to install: `No installed domain declares IdempotencySettings: install
   'domainkit.contrib.idempotency' in INSTALLED_DOMAINS.` (audit

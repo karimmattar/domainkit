@@ -72,8 +72,8 @@ own order: the database and the first user come in
 
 A route is a function that answers requests to one URL. FastAPI, which
 domainkit is built on, calls it a path operation. Flask and Django call
-it a view. Your first route answers the bank's interest rates. Make this
-new file:
+it a view. Your first route answers the bank's interest rates. Make a
+new file, `src/config/rates.py`:
 
 ```python title="src/config/rates.py (new file)"
 """The bank's interest rates: a first route."""
@@ -133,7 +133,7 @@ port instead, here and in the next parts.
 
 The `client` fixture comes with domainkit's pytest plugin. It calls the
 application inside the test's own process, so no server needs to run.
-Make this new file:
+Make a new file, `tests/test_rates.py`:
 
 ```python title="tests/test_rates.py (new file)"
 """Anyone may read the rates."""

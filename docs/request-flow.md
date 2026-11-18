@@ -233,7 +233,9 @@ counts such a commit in `uow.in_doubt`, and the request answers 503
 (`deadline_exceeded` or `database_unavailable`) without `Retry-After`,
 with a detail that says to check before sending it again. A client
 retries a write safely only with an
-[`Idempotency-Key`](contrib/idempotency.md).
+[`Idempotency-Key`](contrib/idempotency.md): the retry gets the first
+answer, or `409 idempotency_response_unavailable` once the first
+committed.
 
 ## 9. The answer
 
