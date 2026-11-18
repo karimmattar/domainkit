@@ -227,10 +227,18 @@ async def shown_of(guard: Guard, command: object) -> Iterable[tuple[str, object]
 
 
 def _readable(value: object, dumped: object) -> object:
-    """``dumped``, the JSON of ``value``, with each ``Money`` of it kept as itself."""
+    """``dumped``, the JSON of ``value``, with each ``Money`` of it kept as itself.
+
+    A list whose JSON holds other items than it (a serializer that drops
+    some) is shown as its JSON.
+    """
     if isinstance(value, Money):
         return value
-    if isinstance(value, list | tuple) and isinstance(dumped, list):
+    if (
+        isinstance(value, list | tuple)
+        and isinstance(dumped, list)
+        and len(value) == len(dumped)
+    ):
         return [
             each if isinstance(each, Money) else item
             for each, item in zip(value, dumped, strict=True)

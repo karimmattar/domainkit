@@ -169,8 +169,22 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 - Tests cover two refusals that none reached: an act's authorization
   spent a second time in code off auth's database, refused and told to
   the trail as `used`, and a relay's probe that finds the broker away,
-  which opens the breaker again before any row is leased. Found in
-  review.
+  which opens the breaker again before any row is leased (audit
+  A28-TEST-02).
+
+- The routes of the ledger, approvals, limits, the webhooks admin and
+  owner's API, the flags admin, the auth admin, and the audit trail's
+  history are renamed: each new name is the 2.8 name with its app's
+  prefix, `accounting_`, `approvals_`, `limits_`, `webhooks_`, `flags_`,
+  `auth_admin_`, or `audit_` (`list_accounts` is
+  `accounting_list_accounts`), and so is each operation id. Code that
+  calls `url_path_for` with a 2.8 name, and a client generated from the
+  OpenAPI document, use the new names. A project's resource named
+  `accounts` beside the ledger failed `check` (`openapi.E001`), and its
+  `Location` and links could name the ledger's routes; a resource named
+  as a contrib app's now clashes with none of them
+  ([upgrading.md](docs/upgrading.md#28-to-29), ADR 0192) (audit
+  A28-DX-06).
 
 ### Fixed
 
@@ -205,17 +219,6 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   each rung's calls, round trips, and modules as `benchmarks/budgets.toml`
   holds them, and `test_docs.py` fails when the two differ (audit
   A28-PERF-09).
-
-- A project's resource named as a contrib app's no longer clashes with
-  it: the routes of the ledger, approvals, limits, the webhooks admin and
-  owner's API, the flags admin, and the auth admin are named after their
-  app (`accounting_list_accounts`, `auth_admin_list_users`), and so are
-  their operation ids. A resource named `accounts` beside the ledger
-  failed `check` (`openapi.E001`), and its `Location` and links could
-  name the ledger's routes. A client generated from the OpenAPI document
-  calls them by the new names once generated again
-  ([upgrading.md](docs/upgrading.md#28-to-29), ADR 0192) (audit
-  A28-DX-06).
 
 - A memory ledger (`memory://`) keeps what it holds when the ledgers
   close. `outbox.run_queued()` in a sync test, a command, and an

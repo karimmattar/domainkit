@@ -192,6 +192,7 @@ CONTRIB_ROUTERS: Final = {
     "domainkit.contrib.webhooks.owned": "webhooks_",
     "domainkit.contrib.flags.admin": "flags_",
     "domainkit.contrib.auth.admin": "auth_admin_",
+    "domainkit.contrib.audit.api": "audit_",
 }
 """The routers of contrib apps that serve a project's records, and their names'
 start (ADR 0192)."""

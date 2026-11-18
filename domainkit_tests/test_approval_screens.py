@@ -16,6 +16,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import field_serializer
 
 from domainkit.clock import FrozenClock
 from domainkit.conf import override_settings
@@ -368,6 +369,26 @@ def test_an_amount_shows_as_people_read_it() -> None:
         ("fees", "2.00 USD"),
         ("refs", "inv-7"),
     ]
+
+
+class Tags(Command):
+    """Tags, of which the JSON leaves the empty ones out."""
+
+    tags: list[str]
+
+    @field_serializer("tags")
+    def _filled(self, value: list[str]) -> list[str]:
+        return [each for each in value if each]
+
+
+def test_a_list_whose_json_holds_fewer_items_shows_its_json() -> None:
+    """A serializer that drops items: the arguments show as their JSON says."""
+    policy = Policy("tests.screens", approvals=1, permission="tests.approve")
+    guard = Guard("tests.screens", Tags, act, ApprovalsUnitOfWork, (policy,))
+
+    shown = run_async(shown_of(guard, Tags(tags=["a", "", "b"])))
+
+    assert list(shown) == [("tags", ["a", "b"])]
 
 
 class Note(Command):

@@ -17,8 +17,9 @@ named `accounts` failed `check` on `list_accounts` and `read_account`.
 It was found writing the tutorial's accounts (A28-DX-06). The same held
 for approvals' requests (`approve_request`), limits (`list_limits`), the
 webhooks admin's subscriptions (`list_subscriptions`), the flags admin's
-settings (`list_settings`), and the auth admin's users and groups
-(`list_users`, `read_user`, `create_user`).
+settings (`list_settings`), the auth admin's users and groups
+(`list_users`, `read_user`, `create_user`), and the audit trail's
+history (`read_history`).
 
 A name is also what `url_path_for` finds, and a resource builds its
 `Location` and its links with it. Two routes of one name resolve to the
@@ -48,6 +49,16 @@ The options weighed:
   follow `OPENAPI_OPERATION_IDS`.
 - **An `operation_id=` on each route.** It ignores the setting too, and
   every new route must remember it.
+- **Behind a setting, or with a deprecation.** A route's name is fixed
+  when its module is imported, by its decorator or its resource, before
+  the settings may be loaded, so a setting cannot choose it. A Starlette
+  route has one name: keeping the 2.8 name as an alias means a second
+  route of that name, which brings the clash back, for `check` and for
+  `url_path_for` alike, and a deprecation needs the old name to keep
+  resolving. A mode that renamed the ids alone would keep the clash in
+  `url_path_for`, and so the wrong `Location` and links. 2.1 renamed the
+  identity providers' `start_login` to `start_provider_login` the same
+  way, with no setting.
 - **Each route's name starts with its app** (chosen): `name_prefix=` on
   a contrib `ResourceRouter`, `name=` on a plain route. The ids follow
   the setting in both of its values, and `url_path_for` finds each
@@ -59,7 +70,9 @@ The options weighed:
   name that starts with its app's label: `accounting_`, `approvals_`,
   `limits_`, `webhooks_` (the admin's and the owner's), `flags_`. The
   auth admin's routes start with `auth_admin_`: auth serves several
-  routers, and these act on other users.
+  routers, and these act on other users. The audit trail's history, a
+  staff route over a project's records as the other staff routers are,
+  starts with `audit_`.
 - The routes already named so keep their names.
 - A test lists these routers and fails on a route whose name does not
   start with its app's, so a new route is named as its neighbours.
@@ -73,12 +86,17 @@ The options weighed:
   names once generated again, and code that calls `url_path_for` with
   an old name names the new one. The paths, the methods, and the
   answers are unchanged, and `openapi --diff` reports nothing, as ADR
-  0031 says of ids. [upgrading.md](../upgrading.md#28-to-29) lists the
-  new names.
-- The routers a user reaches their own account through (auth's `login`
-  and `me`; devices, phones, identity, and ciba) keep their names. A
-  project's route named as one of them, `list_devices` say, still
-  clashes, and `check` says so.
+  0031 says of ids. Each new name is the 2.8 name with its app's prefix,
+  as [upgrading.md](../upgrading.md#28-to-29) says. FastAPI writes an
+  operation's summary, and the title of a response schema declared
+  inline, from the name, so those change with it.
+- The routers a user reaches their own account through keep their
+  names, and are left for a later release: auth's (`login`, `me`),
+  devices', phones', ciba's, and identity's, whose names are as generic
+  as `callback`, `redeem`, `remove`, `linked`, and `providers`. Renaming
+  them renames the sign-in methods of every client, which this finding
+  did not need. A project's route named as one of them still clashes,
+  and `check` says so.
 
 ## References
 

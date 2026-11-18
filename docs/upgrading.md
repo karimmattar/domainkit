@@ -118,6 +118,31 @@ project that relied on 2.8's behaviour changes, and what to run.
 - **`check` names the apps whose rows every tenant shares**
   (`tenancy.I001`). It is an info: nothing to change, and
   `check --deploy` never refuses it.
+- **Contrib routes are renamed, and so are their operation ids.** Each
+  new name is the 2.8 name with its app's prefix, for every route
+  renamed: `accounting_` on the ledger's, `approvals_` on approvals',
+  `limits_` on limits', `webhooks_` on the webhooks admin's and owner's,
+  `flags_` on the flags admin's, `auth_admin_` on the auth admin's, and
+  `audit_` on the audit trail's history (`list_accounts` is
+  `accounting_list_accounts`, `read_history` is `audit_read_history`).
+  The routes named so already keep their names: `accounting_trial_balance`,
+  `accounting_general_ledger`, `accounting_import_statement`,
+  `accounting_reconcile`, `accounting_breaks`, `approvals_submit`,
+  `approvals_submit_authorization`, and `limits_usage`. The paths, the
+  methods, and the answers are unchanged, so a client that calls the
+  URLs changes nothing, and `openapi --diff` reports nothing. Code that
+  builds a URL with `url_path_for` and a 2.8 name uses the new name, and
+  a client generated from the OpenAPI document calls each method by its
+  new name once you generate it again. With `OPENAPI_OPERATION_IDS =
+  "fastapi"`, FastAPI's ids start with the new name too. FastAPI writes
+  an operation's summary, and the title of a response schema declared
+  inline, from the name: 50 summaries ("Delete User" is "Auth Admin
+  Delete User") and 7 titles ("Response List Flags" is "Response Flags
+  List Flags") change with them. A project's resource named `accounts`,
+  `users`, or `subscriptions` failed `check` beside the ledger, the auth
+  admin, or the webhooks admin (`openapi.E001`), and its `Location` and
+  links could name the contrib route; it clashes with none now
+  ([Operation ids](reference/responses.md#operation-ids), ADR 0192).
 - **A memory ledger keeps what it holds when the ledgers close.** In
   tests, evidence recorded before `outbox.run_queued()`, a command, or a
   client's shutdown is still there after it. A test that relied on the
@@ -223,30 +248,6 @@ runs answer `500`. Requests stored before have no tenant.
 The same table gains an index, `ix_domainkit_approval_requests_scope`, of
 `(tenant_id, action, policy, submitted_at)`, which an approver's list
 reads through. The same `makemigrations` makes it.
-
-### A client generated from the OpenAPI document calls contrib routes by new names
-
-The routes of these contrib routers are named after their app, and so
-are their operation ids ([Operation ids](reference/responses.md#operation-ids),
-ADR 0192). A project's resource named `accounts`, `users`, or
-`subscriptions` failed `check` beside the ledger, the auth admin, or the
-webhooks admin (`openapi.E001`), and its `Location` and links could name
-the contrib route. The paths, the methods, and the answers are
-unchanged, so a client that calls the URLs changes nothing, and
-`openapi --diff` reports nothing. A client generated from the document
-calls each method by its new name once you generate it again, and code
-that builds a URL with `url_path_for` names the new name. With
-`OPENAPI_OPERATION_IDS = "fastapi"`, FastAPI's ids start with the new
-name too.
-
-| Router | Each route's name now starts with | Names kept |
-| --- | --- | --- |
-| `domainkit.contrib.accounting.api` | `accounting_`: `accounting_list_accounts`, `accounting_post_entry` | `accounting_trial_balance`, `accounting_general_ledger`, `accounting_import_statement`, `accounting_reconcile`, `accounting_breaks` |
-| `domainkit.contrib.approvals.api` | `approvals_`: `approvals_list_approval_requests`, `approvals_approve_request`, `approvals_approve_request_authorization` | `approvals_submit`, `approvals_submit_authorization` |
-| `domainkit.contrib.limits.api` | `limits_`: `limits_list_limits`, `limits_set_limit` | `limits_usage` |
-| `domainkit.contrib.webhooks.admin` and `.owned` | `webhooks_`: `webhooks_list_subscriptions`, `webhooks_list_own_subscriptions` | none |
-| `domainkit.contrib.flags.admin` | `flags_`: `flags_list_flags`, `flags_change_setting` | none |
-| `domainkit.contrib.auth.admin` | `auth_admin_`: `auth_admin_list_users`, `auth_admin_create_user`, `auth_admin_ask_to_create_user` | none |
 
 ## 2.7 to 2.8
 
