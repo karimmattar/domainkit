@@ -61,6 +61,12 @@ By the end, your project has:
 You need Python 3.13 or 3.14, and `curl`. You do not need a database
 server: the tutorial keeps its data in a SQLite file.
 
+The commands are written for a POSIX shell, such as bash or zsh on Linux
+and macOS. They use `. .venv/bin/activate`, `export`, `read -rsp`,
+`$(...)`, and lines continued with `\`, which PowerShell and `cmd.exe` do
+not understand. On Windows, run the tutorial in
+[WSL](https://learn.microsoft.com/windows/wsl/install) or Git Bash.
+
 Work through the parts in order, in one directory. Each part starts
 where the one before ended. You need two shells: one runs the server,
 and the other sends requests to it.

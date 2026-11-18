@@ -29,6 +29,19 @@ On this page you learn how to:
 | Logs | Every record names the tenant (`tenant`). |
 | Background tasks | A task runs as the tenant whose request queued it. |
 
+## When to use it, and when not to
+
+- **Use it when** one deployment serves many customers, and each sees
+  only its own data.
+- **Choose where rows live by what it costs.** Rows (`TenantOwned`) cost
+  the least: one database, one pool, one migration. A database per tenant
+  gives a large tenant room, and a pool and migrations of its own. A
+  schema per tenant (PostgreSQL) needs `migrate --tenant` for each, and
+  has no `all_tenants()`. [Choosing a feature](choosing.md#keeping-tenants-apart)
+  compares them.
+- **Do not use it** for a customer with a deployment of its own: it has
+  no other tenant to keep out.
+
 ## A first example
 
 An invoice belongs to one tenant. The repository sets the tenant on a new

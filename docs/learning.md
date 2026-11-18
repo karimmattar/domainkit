@@ -49,7 +49,9 @@ If you know Django or FastAPI, [coming from Django](from-django.md) and
 [coming from FastAPI](from-fastapi.md) map each of their names to
 domainkit's. If you have one task to do, the
 [how-to recipes](recipes.md) each solve one, and the tests run them as
-written.
+written. If two features seem to do the same thing, such as idempotency
+keys and the inbox, [choosing a feature](choosing.md) says which one a
+need takes.
 
 ## Words
 

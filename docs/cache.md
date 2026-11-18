@@ -711,7 +711,10 @@ shutdown call.
 ## Rate limits for every request
 
 `RATE_LIMIT` limits the requests of each caller to the whole service. A
-caller is the authenticated actor, or else the client address:
+caller is the authenticated actor, or else the client address. Rate
+limits count requests; to bound how much money moves, per payment or per
+day, use [limits](contrib/limits.md), which count movements in the use
+case's transaction:
 
 ```python
 RATE_LIMIT = "300/minute"

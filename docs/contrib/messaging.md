@@ -19,6 +19,20 @@ On this page you learn how to:
 - run workers, on the outbox alone or with a broker such as RabbitMQ;
 - inspect, retry, and cancel messages, and test code that queues them.
 
+## When to use it, and when not to
+
+- **Use it when** work must happen after a commit and must not be lost:
+  a mail, a call to another service, a reaction that may be slow or
+  fail.
+- **Do not use it** for work you can lose on a restart, such as warming
+  a cache: [`spawn` and `supervise`](../runtime.md#background-tasks-spawn-and-supervise)
+  need no table and no worker. A handler without `durable=True` runs in
+  the request's process after the commit, and is lost if the process
+  stops first ([tutorial part 4](../tutorial/4-events.md)).
+- **Delivery is at least once.** For a message that runs twice, use
+  [the inbox](#once-in-the-database-the-inbox). For an HTTP request that
+  a client sends twice, use [idempotency keys](idempotency.md).
+
 ## Install
 
 ```python

@@ -24,6 +24,22 @@ The decisions are in
 [ADR 0120](../adr/0120-seal-encrypted-fields-in-the-orm-bound-to-their-row-and-shred-a-person-by-destroying-their-key.md)
 (fields, blind indexes, crypto-shredding).
 
+## When to use it, and when not to
+
+- **Use it when** a field must not be read from the database, a replica,
+  a backup, or a dump: a card number, a national id, a secret. Or when
+  erasing a person must reach the backups: seal their fields under their
+  own key.
+- **Do not use it** for a field you search by text, range, or order:
+  only equality works, through a blind index
+  ([querying encrypted fields](#querying-encrypted-fields)). A password
+  is hashed, never encrypted ([passwords](../auth/users.md#passwords)).
+- **It needs a key service** in production, one of the
+  [providers](#providers): AWS KMS, Vault, Google Cloud KMS, Azure Key
+  Vault, Huawei Cloud KMS, an HSM over PKCS #11, or one of your own. It
+  also needs a plan for backups
+  ([what a backup holds](#what-the-database-a-dump-and-a-backup-hold)).
+
 ## Install
 
 Install the extra, which brings `cryptography` for AES-GCM and the HTTP

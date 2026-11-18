@@ -19,6 +19,17 @@ On this page you learn how to:
 - set, and later rotate, the subject key that deployments need;
 - list and verify records from the command line.
 
+## When to use it, and when not to
+
+- **Use it when** you may have to prove a fact later, exactly as it was:
+  a verification result, a signed consent, a report sent to a regulator.
+- **Do not use it** for every change: the [audit trail](audit.md) records
+  who did what, in your own database, sealed and anchored on a ledger.
+  Evidence needs an immudb server to run, back up, and watch, and writes
+  to it once per fact.
+- **Keep personal data out of it**: a record names its subject by an
+  internal id ([the subject](#the-subject-an-internal-id)).
+
 ## Install
 
 Add the app to `INSTALLED_DOMAINS`, and add a ledger under the alias

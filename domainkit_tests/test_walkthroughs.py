@@ -316,7 +316,7 @@ def test_the_quick_start_works_as_written(quick_start: QuickStart) -> None:
     assert '`{"items":[],"next_cursor":null}`' in readme
     # startdomain prints the same four lines, for the user it cannot know.
     started = shell.printed[
-        "python manage.py startdomain invoices --aggregate Invoice --minimal"
+        "python manage.py startdomain invoices --aggregate Invoice"
         "   # installs and mounts it"
     ]
     printed = [line.strip() for line in started.splitlines()[-4:]]
@@ -568,6 +568,57 @@ def test_part_8_sends_each_transfer_as_a_signed_webhook(tutorial: Tutorial) -> N
     assert re.findall(r"(\d+) passed", printed["pytest"])[6] == "23"
     # Kept for the server the reader starts, never handed to a process.
     assert "BANK_API_RECEIVER_SECRET" not in tutorial.shell.env
+
+
+AUTHENTICATION = ROOT / "docs" / "auth" / "authentication.md"
+_LOGGED = re.compile(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d+ [A-Z]+ \[[^\n]*\n?")
+"""A log record the project's development settings print beside the output.
+
+The request is served in another thread, so its access log can land in the
+middle of a line the example prints: the record is taken out wherever it
+starts, with its own line end.
+"""
+
+
+@WALKED
+def test_the_first_authentication_example_runs_in_a_new_project(
+    tmp_path: Path,
+) -> None:
+    """In a project ``init`` made, with the user it names, it prints what it says."""
+    first = section(AUTHENTICATION.read_text(encoding="utf-8"), "A first example")
+    [code] = re.findall(r"^```python\n(.*?)^```$", first, re.DOTALL | re.MULTILINE)
+    [printed] = re.findall(r"^```text\n(.*?)^```$", first, re.DOTALL | re.MULTILINE)
+    login = re.search(
+        r'"identifier": "(?P<email>[^"]+)", "password": "(?P<pw>[^"]+)"', code
+    )
+    assert login, "the example logs in with an identifier"
+    shell = Walk(tmp_path)
+    shell.variables["PASSWORD"] = login["pw"]
+    for line in (
+        "domainkit init exampleAPI example",
+        "cd example",
+        'python manage.py makemigrations -m "create users"',
+        "python manage.py migrate",
+        (
+            "EXAMPLE_API_SUPERUSER_PASSWORD=$PASSWORD python manage.py createsuperuser"
+            f" --noinput --username alice --email {login['email']}"
+        ),
+    ):
+        shell.run(line)
+
+    done = subprocess.run(  # noqa: S603 - this interpreter, the page's code.
+        [sys.executable, "manage.py", "shell", "-c", code],
+        cwd=shell.cwd,
+        env=shell.env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=STEP_TIMEOUT,
+    )
+
+    assert done.returncode == 0, done.stdout + done.stderr
+    output = _LOGGED.sub("", done.stdout).splitlines()
+    assert output == printed.splitlines()
 
 
 @pytest.mark.parametrize(

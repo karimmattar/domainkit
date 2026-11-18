@@ -27,6 +27,19 @@ On this page you learn how to:
 - request, confirm, and spend an authorization for one transaction;
 - build a domain of your own on auth's step-ups and re-authentication.
 
+## When to use it, and when not to
+
+- **Use a step-up when** a user must prove again, for a while, that it is
+  them, before acts whose arguments do not matter: adding a payee,
+  changing the address mail goes to.
+- **Use a transaction authorization when** the user confirms one
+  payment, of one amount to one payee, once.
+- **Do not use either** when other arguments of the act matter: an
+  [action authorization](actions.md) binds any act. When other people
+  must agree, use [approvals](../contrib/approvals.md). When the user
+  confirms from a bound phone, see [sign-in approvals](ciba.md).
+  [Choosing a feature](../choosing.md#confirming-an-act) compares them.
+
 ## A first example
 
 Mount the step-up router next to the one that logs in, and guard what

@@ -118,8 +118,8 @@ checks it. It does these steps, in order:
 6. It checks the application: every route must name its access rule
    (`security.E101`), and operation ids must not clash (`openapi.E001`).
    Installed domains add their own checks. In staging and production, a
-   problem stops the process with `CheckFailed`. Elsewhere, it is logged
-   as a warning.
+   problem stops the process with `CheckFailed`. Elsewhere, each problem
+   is logged as a warning of its own, on one line.
 7. In staging and production, it logs a warning for server options that
    read larger WebSocket messages than `MAX_REQUEST_BODY_SIZE`, and for a
    unix socket that `TRUSTED_PROXIES` does not trust.
@@ -128,8 +128,7 @@ A route without a rule shows what step 6 does. In development, the
 application starts and logs:
 
 ```text
-The application has problems:
-  security.E101: GET /reports declares no access rule: add Depends(Require(...)), or dependencies=[Public] if anyone may call it.
+The application has problems: security.E101: GET /reports declares no access rule: add Depends(Require(...)), or dependencies=[Public] if anyone may call it.
 ```
 
 With `ENVIRONMENT = "production"`, the same problem stops the import:
@@ -828,8 +827,27 @@ certificate files.
 
 domainkit runs on free-threaded CPython 3.14 (`python3.14t`, without the
 GIL). Importing domainkit and its runtime dependencies keeps the GIL off.
-The `immudb` extra is the exception, because grpcio publishes no
-free-threaded build yet.
+An extension module that does not declare that it runs without the GIL
+turns it back on when it is first imported, for the rest of the process,
+and Python prints a `RuntimeWarning` that names it. Three extras bring
+such a module:
+
+- `documents`: `fill_docx` and `placeholders` import lxml (6.1) on their
+  first call. Its other helpers, pypdf and nh3 (`clean_html`), keep the
+  GIL off.
+- `saml`: the SAML routes import signxml and lxml when the first SAML
+  response comes.
+- `immudb`: grpcio publishes no free-threaded build yet.
+
+So a free-threaded process that fills a document or takes a SAML login
+runs with the GIL from then on, and its threads no longer run Python in
+parallel. Fill documents in a worker that serves only their queue
+([queues](contrib/messaging.md#queues)), so the server keeps the GIL
+off. A service that takes SAML logins gains nothing from a free-threaded
+build until lxml supports one. The checks of uploaded PDF and Office
+documents run in processes of their own
+([checking documents](uploads.md#checking-documents)), so they leave the
+server's GIL off.
 
 CI runs these tests on 3.14t with the GIL off throughout: the tests of the
 shared state below, and of the framework's own threads. It also runs the
@@ -1215,6 +1233,14 @@ cancellation unwinds the request as any other error does. An open unit
 of work rolls back and gives its connection back. An `Idempotency-Key`
 that committed nothing is released, so the client can try again with
 the same key.
+
+A unit of work rolls back only what has not committed. When the deadline
+comes while the `COMMIT` is on its way, the database may have applied
+it, and the client still gets the 503. So the answer to a write does not
+tell the client whether it happened: `Retry-After` is safe on a write
+only with an `Idempotency-Key`, whose retry gets the stored answer or
+`409 idempotency_response_unavailable`
+([A write ran past its deadline](runbook.md#a-write-ran-past-its-deadline)).
 
 A route that needs more time, or less, says so with `RequestTimeout`.
 The time counts from when the request arrived, and `None` removes the
