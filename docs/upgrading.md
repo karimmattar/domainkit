@@ -56,6 +56,12 @@ project that relied on 2.8's behaviour notices, and what to change.
   where 2.8 parsed it. A response of a thousand group values makes some
   7,000 nodes, and identity providers write UTF-8. Responses are parsed
   in a thread of their own, at most 4 at once on an event loop.
+- **With `TYPED_LINKS = "refused"`, more typed text is refused.** A name
+  spaced out (`example . com`, `example .com`), or spelled with `dot` or
+  a full stop and a space before `com`, `net` or `org` (`example dot
+  com`, `example. com`), answers `422 link_not_shown`, and so do `the
+  .NET team` and `the dot com era`. Under `"shown"`, the default, nothing
+  changes.
 
 ## 2.7 to 2.8
 

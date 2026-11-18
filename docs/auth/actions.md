@@ -271,7 +271,13 @@ AUTH = {"ADMIN_ACTION": True, "AUTHORIZATIONS": {"TYPED_LINKS": "refused"}}
 - **`holds_link(text)`** reads text as a person reads it: full-width forms
   as their letters, characters drawn as nothing (zero-width spaces)
   dropped, the dots that look like one (`。`, `．`, a middle dot, a bullet)
-  as a dot, `example[.]com` and `ann[at]example` as what they spell. It
+  as a dot, `example[.]com` and `ann[at]example` as what they spell, and
+  since 2.9 a name spaced out: `example . com`, `example .com`,
+  `https : //`, and before `com`, `net` or `org`, `example dot com` and
+  `example. com` (in lower or upper case: `Paid. Net 30` ends a
+  sentence). Before another top-level domain, a full stop and a space, or
+  `dot`, are read as words: many top-level domains are words too
+  (`Done. Info sent`, `a dot in the name`). It
   finds a scheme (`https://`, `tel:`, `mailto:`), an at sign before a
   letter or a digit, an IP address, a name ending in a top-level domain
   IANA lists or one kept for special use (`evil.example`, also with
@@ -294,8 +300,18 @@ AUTH = {"ADMIN_ACTION": True, "AUTHORIZATIONS": {"TYPED_LINKS": "refused"}}
   `01310-100`), seven digits or more alone or beside a currency
   (`build 1234567`, `EUR 1250000`), digits in threes by dots or spaces
   with no cents (`1.234.567`, `612 345 678`: numbers to call in Spain), a
-  code with a run of seven digits (`JIRA-1234567`), and an amount in a
-  text that asks for a call.
+  code with a run of seven digits (`JIRA-1234567`), an amount in a
+  text that asks for a call, a word after a space and a dot (`the .NET
+  team`, `a .zip file`), and `com`, `net` or `org` after `dot` or a full
+  stop (`the dot com era`, `Paid. net of fees`).
+- **What it does not read** (it is a heuristic, not a parser): a name
+  split by spaces alone (`evil com`), a full stop and a space or `dot`
+  before another top-level domain (`evil dot io`) or a capital
+  (`evil. Com`), a number in hexadecimal (`0xC0A80101`, which a browser
+  takes as an address, but which error codes are written as), an IPv6
+  address, and digits written as words. Where typed text must never
+  carry a hint of a place to go, check it in `on_typed_text` your own
+  way, or do not show it.
 - **`on_typed_text`** runs a project's own check on each typed text, as
   typed, whatever the setting: raise to refuse the act. One text may be
   checked more than once (at a twin's two screens, then at the act), so a

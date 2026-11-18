@@ -24,6 +24,13 @@ and a status.
   never on the event loop's thread, and at most 4 at once on a loop. The
   names lxml keeps for a thread go with it, and the loop serves other
   requests meanwhile (audit A28-PERF-03).
+- `holds_link` reads a name spaced out as the link it spells, so
+  `TYPED_LINKS = "refused"` refuses it: `example . com`,
+  `example .com`, `https : //`, `example<dot>com`, and, before `com`,
+  `net` or `org`, `example. com` and `example dot com`. Prose whose next
+  word is another top-level domain (`Done. Info sent`, `a dot in the
+  name`) holds none. The docs list what it still does not read
+  (audit A28-SEC-05).
 
 ## [2.8.0] - 2026-11-18
 

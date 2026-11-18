@@ -106,14 +106,41 @@ DOTS: Final = str.maketrans(
 the dots UTS #39 says look like one, and the middle dots, a bullet among them."""
 ZERO_DOT: Final = re.compile("(?<=[^\\W\\d_])[\u0660\u06f0](?=[^\\W\\d_])")
 """An Arabic-Indic zero, which looks like a dot, between two letters."""
+SPELLED: Final = ("com", "net", "org")
+"""The top-level domains a spelled-out name is read with: words follow a full
+stop, or ``dot``, and many are top-level domains too (``Done. Info sent``,
+``a dot in the name``)."""
+_SPELLED: Final = "|".join(SPELLED)
+SPACED: Final = (
+    (re.compile(r"(?<=\w)[ \t]{1,3}\.[ \t]{0,3}(?=\w)"), "."),
+    (
+        re.compile(
+            rf"(?<=\w)\.[ \t]{{1,3}}(?=(?:{_SPELLED}|{_SPELLED.upper()})(?![^\W\d_]))"
+        ),
+        ".",
+    ),
+    (
+        re.compile(
+            rf"(?<=\w)[ \t]{{1,3}}dot[ \t]{{1,3}}(?=(?:{_SPELLED})(?![^\W\d_]))",
+            re.IGNORECASE,
+        ),
+        ".",
+    ),
+)
+"""A name spaced out so that it is not a link and still reads as one (since
+2.9): ``evil . com`` and ``evil .com``; before a ``SPELLED`` domain,
+``evil dot com``, and ``evil. com`` in lower or upper case (``Paid. Net 30``
+ends a sentence)."""
 DEFANGED: Final = (
-    (re.compile(r" {0,3}[\[{] {0,3}(?:\.|dot) {0,3}[\]}] {0,3}"), "."),
+    (re.compile(r" {0,3}[\[{<] {0,3}(?:\.|dot) {0,3}[\]}>] {0,3}"), "."),
     (re.compile(r"(?<=\w)\((?:\.|dot)\)(?=\w)"), "."),
-    (re.compile(r" {0,3}[\[{] {0,3}at {0,3}[\]}] {0,3}|(?<=\w)\(at\)(?=\w)"), "@"),
+    (re.compile(r" {0,3}[\[{<] {0,3}at {0,3}[\]}>] {0,3}|(?<=\w)\(at\)(?=\w)"), "@"),
     (re.compile(r"[\[({] {0,3}: {0,3}[\])}]"), ":"),
+    (re.compile(r" {0,3}: {0,3}/ {0,3}/"), "://"),
 )
 """A name written so that it is not a link and still reads as one, and what
-each part stands for: ``example[.]com``, ``ann[at]example.com``, ``hxxp[:]//``."""
+each part stands for: ``example[.]com``, ``ann[at]example.com``, ``hxxp[:]//``;
+since 2.9, ``example<dot>com`` and ``https : //``."""
 SCHEME: Final = re.compile(
     r"(?<![\w+.\-])[^\W\d_][\w+.\-]*://"
     r"|(?<![^\W_])(?:tel|sms|callto):\s*\+?\(?\d"
@@ -246,8 +273,10 @@ def holds_link(text: str) -> bool:
     characters a screen draws as nothing (zero-width spaces), with the
     dots that look like one (UTS #46's label separators, ideographic and
     full-width; a one dot leader; a middle dot) and names written not to
-    be links (``example[.]com``, ``ann[at]example.com``) read as the link
-    they spell. It holds one where it holds a scheme (``https://``,
+    be links (``example[.]com``, ``ann[at]example.com``) or spaced out
+    (``example . com``, ``example .com``, ``https : //``, and before
+    ``com``, ``net`` or ``org``, ``example. com`` and ``example dot com``;
+    since 2.9) read as the link they spell. It holds one where it holds a scheme (``https://``,
     ``tel:``, ``mailto:``), an at sign before a letter or a digit, four
     numbers joined by dots, a name ending in a top-level domain IANA
     lists (``evil.example.com``, ``www.anything``, the same with Cyrillic
@@ -258,9 +287,19 @@ def holds_link(text: str) -> bool:
     when unsure, it holds one, and never an amount or a code with a plus
     sign, a bracket, or beside a word that asks for a call. ``v1.2``,
     ``Q3 report``, and ``readers`` hold none.
+
+    It is a heuristic, and a reader still takes for a link some text it
+    reads as none: a name split by spaces alone (``evil com``), ``dot`` or
+    a full stop and a space before another top-level domain (``evil dot
+    io``) or a capital (``evil. Com``), a number in hexadecimal
+    (``0xC0A80101``, written as error codes are), an IPv6 address, or
+    digits written as words.
     """
     seen = _as_read(text)
-    plain = seen.casefold()
+    plain = seen
+    for pattern, meant in SPACED:
+        plain = pattern.sub(meant, plain)
+    plain = plain.casefold()
     for pattern, meant in DEFANGED:
         plain = pattern.sub(meant, plain)
     return bool(

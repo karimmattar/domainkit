@@ -278,6 +278,22 @@ LINKS: Final = (
     "evil\u2060.com",
     "evil\u00ad.com",
     "evil\ufeff.com",
+    "Call support, then open secure-login . com",
+    "verify at secure-login .com",
+    "verify at secure-login. com",
+    "secure-login dot com",
+    "write to help at secure-login dot com",
+    "evil DOT Com",
+    "evil. COM",
+    "evil . org/login",
+    "visit evil . co . uk",
+    "evil\u3000.com",
+    "evil\u00a0.\u00a0com",
+    "203 . 0 . 113 . 7",
+    "https : //evil",
+    "hxxps[:] //evil",
+    "evil<dot>com",
+    "ann <at> example",
 )
 """Links, as written and as written to pass for something else."""
 NUMBERS: Final = (
@@ -376,8 +392,22 @@ PLAIN: Final = (
     "Z\u00fcrich team",
     "\u0644\u0627 \u064a\u0648\u062c\u062f",
     "\u0661\u0660\u0660 \u062c\u0646\u064a\u0647",
+    "Approved. It is fine",
+    "Checked. Me too",
+    "Done. Info sent to the team",
+    "ok. go ahead",
+    "Paid. Net 30 terms",
+    "Customer's email is missing a dot in the domain",
+    "the dot next to the name",
+    "on the dot at nine",
+    "Mr. Smith",
+    "No. 5 in the queue",
+    "wait . what",
+    "Ticket 42 . Closed",
+    "time: 10:30 // see notes",
 )
-"""Reasons and names that hold no link: versions, codes, dates, amounts, files."""
+"""Reasons and names that hold no link: versions, codes, dates, amounts, files,
+and sentences whose next word is a top-level domain (``Done. Info sent``)."""
 READ_AS_LINKS: Final = (
     "notes.md",
     "Q3.report",
@@ -393,10 +423,15 @@ READ_AS_LINKS: Final = (
     "JIRA-1234567",
     "user_1234567",
     "Amount 1.250.000,00; I will call you",
+    "the .NET team",
+    "the dot com era",
+    "Paid. net of fees",
 )
 """Text that holds no link, read as one: a top-level domain after a dot, seven
 digits or more apart by spaces, dots or hyphens, or not grouped, an amount or a
-code beside a word that asks for a call (ADR 0180's false positives)."""
+code beside a word that asks for a call (ADR 0180's false positives); a word
+after a space and a dot, and ``com``, ``net`` or ``org`` in lower case after
+``dot`` or a full stop (since 2.9)."""
 
 
 @pytest.mark.parametrize("text", LINKS + NUMBERS)
@@ -444,6 +479,25 @@ def test_typed_text_with_a_link_is_refused_as_the_setting_says(
         check_typed("x.com")
     assert LinkNotShown().code == "link_not_shown"
     assert status_code_for(LinkNotShown()) == 422
+
+
+def test_a_name_spelled_out_is_refused_where_typed(use_auth: UseAuth) -> None:
+    """Spaced out, or ``dot`` for its dot, it reaches no screen (audit A28-SEC-05)."""
+    use_auth(AUTHORIZATIONS={"TYPED_LINKS": "refused"})
+    spelled = (
+        "Call support, then open secure-login . com",
+        "verify at secure-login .com",
+        "verify at secure-login. com",
+        "secure-login dot com",
+        "write to help at secure-login dot com",
+    )
+
+    for text in spelled:
+        with pytest.raises(LinkNotShown):
+            check_typed(text)
+        with pytest.raises(LinkNotShown):
+            laid_out({"Reason": Typed(text)})
+    check_typed("Approved. It is fine; info sent to the team")
 
 
 def test_a_project_checks_what_was_typed_its_own_way(use_auth: UseAuth) -> None:
