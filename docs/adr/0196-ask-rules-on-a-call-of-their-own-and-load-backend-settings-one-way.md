@@ -114,12 +114,21 @@ How others do it:
     `approvers_of` raises it: a rule that could not answer has not
     refused, and an approved command is not lost to a blip.
     `domainkit.http.errors.transient` says which: `OSError` (timeouts and
-    lost connections among them), `ServiceBusy`, `UpstreamError` (an
-    outgoing call that failed, a host's circuit open among them), and what
+    lost connections among them), `ServiceBusy`, an `UpstreamError` that
+    may not happen again, and what
     `database_refusal` already answers with 503 (a pool out of
     connections, a statement cancelled or lost to another transaction, a
     server out of reach or a connection SQLAlchemy invalidated). It reuses
-    that classification rather than keeping a second list.
+    that classification rather than keeping a second list. An
+    `UpstreamError` is transient when it comes from a timeout, a failed
+    connection, a 5xx answer, or a host's open circuit (`CircuitOpen`,
+    `CallTimeout`). It is not where trying again cannot change it:
+    `ResponseTooLarge` (the answer stays as long) and `WriteOnceIgnored`
+    (the store ignores `If-None-Match`), by their pinned codes, so the
+    serving layer imports no HTTP client for them; one that is, or comes
+    from, a `DomainError` (the guard's `UnsafeURL`: a private address) or
+    `ImproperlyConfigured` (`RendererNotConfigured`); and one that comes
+    from a 4xx answer other than 408 and 429, read on the error's chain.
   - A maker rule's `DomainError` fails the request with its own code, as in
     2.8: it is the rule's answer, not a mistake.
   - Any other error is a mistake in the rule, and refuses: the maker may
@@ -185,10 +194,13 @@ How others do it:
   offline as on a route. One that needs a request (a header, a step-up)
   refuses there, as the docs said; one with a mistake refuses and is
   logged, and no longer dead-letters the run or breaks `approvers_of`.
-  One that meets a timeout, a failed outgoing call, or a database out of
-  reach is tried again, as before, and one that refuses with a
-  `DomainError` names its code, as before. A mistake that raises an `OSError` (a file not found) is taken
-  for a transient error and tried again until it is dead-lettered.
+  One that meets a timeout, an outgoing call that may succeed later, or
+  a database out of reach is tried again, as before, and one that refuses
+  with a `DomainError` names its code, as before. A mistake that raises
+  an `OSError` (a file not found) is taken for a transient error and
+  tried again until it is dead-lettered. So is an `UpstreamError` that
+  names its 4xx answer only in its message, as an identity provider's
+  refusal of a code does (`ProviderError`): nothing on it says which.
 - A rule meant for both places can say so by annotating `RuleContext`.
   The built-in rules keep their annotations, so a project's subclass of
   one passes its type check as before.

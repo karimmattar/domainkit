@@ -14,6 +14,7 @@ import logging
 from typing import Any, ClassVar, Final
 from uuid import uuid4
 
+import httpx2
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import DBAPIError, OperationalError
@@ -31,6 +32,7 @@ from domainkit.contrib.approvals.guards import Guard
 from domainkit.contrib.approvals.services import _check_maker
 from domainkit.contrib.messaging.testing import drain
 from domainkit.ddd import Command, DomainError
+from domainkit.documents.base import RendererNotConfigured
 from domainkit.exceptions import ServiceBusy, UpstreamError
 from domainkit.http.access import (
     AnonymousPrincipal,
@@ -43,9 +45,11 @@ from domainkit.http.access import (
     RuleContext,
     scopes_of,
 )
-from domainkit.http.client import CircuitOpen
+from domainkit.http.client import CallTimeout, CircuitOpen, ResponseTooLarge
 from domainkit.http.errors import transient
+from domainkit.http.guard import UnsafeURL
 from domainkit.management.base import run_async
+from domainkit.storage.s3 import WriteOnceIgnored
 from domainkit_tests.test_approvals_api import decide
 from domainkit_tests.test_approvals_tenancy import stored
 from domainkit_tests.test_approvals_viewers import (  # noqa: F401 - the fixture.
@@ -373,6 +377,51 @@ def test_transient_errors_are_told_apart_from_a_rules_own() -> None:
     assert not transient(OperationalError("SELECT 1", {}, Exception("syntax")))
     assert not transient(LookupError("a mistake"))
     assert not transient(Suspended("No."))
+
+
+def raised_from(error: Exception, cause: BaseException) -> Exception:
+    """``error``, as if raised from ``cause``."""
+    error.__cause__ = cause
+    return error
+
+
+def answered(status_code: int) -> httpx2.HTTPStatusError:
+    """What ``raise_for_status`` raises for an answer of ``status_code``."""
+    request = httpx2.Request("GET", "https://service.example/v1")
+    return httpx2.HTTPStatusError(
+        "refused",
+        request=request,
+        response=httpx2.Response(status_code, request=request),
+    )
+
+
+def test_an_outgoing_call_is_tried_again_only_where_it_may_succeed() -> None:
+    """A timeout, a 5xx, an open circuit: yes. A size, a 4xx, a refusal: no."""
+    deep: BaseException = answered(403)
+    for _ in range(20):  # Read 16 deep at most: a 4xx past that is not seen.
+        deep = raised_from(ConnectionResetError(), deep)
+
+    assert transient(CallTimeout("slow"))
+    assert transient(raised_from(UpstreamError(), answered(503)))
+    assert transient(raised_from(UpstreamError(), answered(429)))
+    assert transient(raised_from(UpstreamError(), answered(408)))
+    assert transient(raised_from(UpstreamError(), deep))
+    assert not transient(ResponseTooLarge("Too long."))
+    assert not transient(WriteOnceIgnored("The store ignores If-None-Match."))
+    assert not transient(RendererNotConfigured("No renderer."))
+    assert not transient(raised_from(UpstreamError(), answered(403)))
+    assert not transient(raised_from(UpstreamError(), UnsafeURL("Private.")))
+
+
+def test_a_maker_rule_whose_answer_is_too_large_refuses(
+    client: TestClient,  # noqa: F811 - the fixture.
+) -> None:
+    """Trying again cannot change an answer's size: the maker is refused."""
+    maker = str(person("maker"))
+    LosesItsConnectionOnce.failures[:] = [ResponseTooLarge("Too long.")]
+
+    with pytest.raises(MakerNotAllowed):
+        run_async(_check_maker(made_by(LosesItsConnectionOnce()), maker))
 
 
 class Stated(Exception):

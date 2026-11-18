@@ -219,9 +219,8 @@ as a user, on a call of its own with no credentials (an `OfflineContext`,
 So a rule about the submitting request's own scopes or step-up passes at
 submission only, and refuses at the run. A rule that raises a
 `DomainError` fails the request with its code; a transient error (a
-timeout, a connection lost, an outgoing call that failed, a database busy
-or out of reach) has the run
-tried again. Since 2.9, a rule that raises any other error refuses, and
+timeout, a connection lost, an outgoing call that may succeed later, a
+database busy or out of reach) has the run tried again. Since 2.9, a rule that raises any other error refuses, and
 is logged by its class and its error's: the request fails
 (`maker_not_allowed`), and the run is not tried again
 ([Rules asked outside a request](../auth/routes.md#rules-asked-outside-a-request)).
@@ -1370,7 +1369,8 @@ users who may decide it now:
   asked about the user alone, on a call of its own without credentials
   (`OfflineContext`); a rule that raises leaves the user out, and is
   logged, but a transient error (a timeout, a connection lost, an outgoing
-  call that failed, a database busy or out of reach) is raised;
+  call that may succeed later, a database busy or out of reach) is
+  raised;
 - never its maker, a party to its command, or someone who decided it
   already.
 

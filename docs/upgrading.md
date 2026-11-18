@@ -383,9 +383,8 @@ No migration.
   `request.state` is that call's alone. A rule that kept a value in
   `request.state` for later calls no longer finds it there. A rule that
   raises an error of its own, neither a `DomainError` nor a transient one
-  (a timeout, a connection lost, an outgoing call that failed, a database
-  busy or out of reach), refuses,
-  and is logged as a warning by its class and its error's: the request
+  (a timeout, a connection lost, an outgoing call that may succeed later,
+  a database busy or out of reach), refuses, and is logged as a warning by its class and its error's: the request
   fails with `maker_not_allowed` at once, where 2.8 ran it again until it
   was dead-lettered, and `approvers_of` leaves that rule's users out,
   where 2.8 raised

@@ -71,7 +71,7 @@ from domainkit.ddd.exceptions import (
 from domainkit.ddd.uow import failed_in_doubt
 from domainkit.deadlines import DeadlineExceeded
 from domainkit.exceptions import DomainkitError as DomainkitError
-from domainkit.exceptions import ServiceBusy, UpstreamError
+from domainkit.exceptions import ImproperlyConfigured, ServiceBusy, UpstreamError
 from domainkit.http.problems import APIError as APIError
 from domainkit.http.problems import FieldError as FieldError
 from domainkit.http.responses import BuiltJSONResponse, JSONResponse
@@ -112,6 +112,17 @@ DATABASE_UNAVAILABLE: Final = "database_unavailable"
 UNAVAILABLE_RETRY_AFTER: Final = "5"
 """Seconds a client should wait while the database cannot be reached: longer
 than ``database_busy``'s, as a restart or a failover takes seconds."""
+SETTLED_UPSTREAM: Final = frozenset(
+    {
+        "upstream_response_too_large",  # ResponseTooLarge: the answer stays as long.
+        "direct_upload_unavailable",  # WriteOnceIgnored: the store ignores a header.
+    }
+)
+"""Codes of ``UpstreamError`` that trying again cannot change (``transient``)."""
+RETRIED_STATUSES: Final = frozenset({408, 429})
+"""The 4xx answers worth trying again after: a timeout, too many requests."""
+_CAUSES: Final = 16
+"""Errors ``transient`` reads down an upstream error's chain at most."""
 _POOL: Final = "sqlalchemy.pool.base"
 """The module of the pool's ``__connect``, which opens each connection."""
 _EVENTS: Final = "sqlalchemy.event"
@@ -475,20 +486,53 @@ def transient(exc: BaseException) -> bool:
     """Whether ``exc`` says that what the work needs cannot serve now: try later.
 
     A timeout or another error of the operating system (a connection
-    refused or lost), ``ServiceBusy``, an ``UpstreamError`` (an outgoing
-    call that failed, a host's circuit open among them), or a database
-    that is busy or out of reach: what ``database_refusal`` answers with
-    503, a connection SQLAlchemy found invalidated among them. Work that
-    ran into one is tried again; any other error is the work's own (since
-    2.9, ADR 0196).
+    refused or lost), ``ServiceBusy``, an outgoing call that failed for now
+    (``_upstream_transient``), or a database that is busy or out of reach:
+    what ``database_refusal`` answers with 503, a connection SQLAlchemy
+    found invalidated among them. Work that ran into one is tried again;
+    any other error is the work's own (since 2.9, ADR 0196).
     """
-    if isinstance(exc, OSError | ServiceBusy | UpstreamError):  # A timeout too.
+    if isinstance(exc, UpstreamError):
+        return _upstream_transient(exc)
+    if isinstance(exc, OSError | ServiceBusy):  # TimeoutError is an OSError.
         return True
     refusal = database_refusal(exc)
     return (
         refusal is not None
         and refusal.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
     )
+
+
+def _upstream_transient(exc: UpstreamError) -> bool:
+    """Whether an outgoing call's failure may not happen again: a timeout, a 5xx.
+
+    Not when trying again cannot change it: an answer too large to read
+    or a store that ignores ``If-None-Match`` (``SETTLED_UPSTREAM``); an
+    error that is, or comes from, a refusal (a ``DomainError``, such as
+    the guard's ``UnsafeURL``) or the settings (``ImproperlyConfigured``,
+    a renderer not configured); or one that comes from a 4xx answer but
+    408 and 429. A connection that failed, a timeout, a 5xx answer, and a
+    host's circuit open (``CircuitOpen``) are tried again.
+    """
+    if exc.code in SETTLED_UPSTREAM:
+        return False
+    seen: BaseException | None = exc
+    for _ in range(_CAUSES):
+        if seen is None:
+            break
+        if isinstance(seen, DomainError | ImproperlyConfigured):
+            return False
+        answered = getattr(getattr(seen, "response", None), "status_code", None)
+        if (
+            isinstance(answered, int)
+            and status.HTTP_400_BAD_REQUEST
+            <= answered
+            < status.HTTP_500_INTERNAL_SERVER_ERROR
+            and answered not in RETRIED_STATUSES
+        ):
+            return False
+        seen = seen.__cause__ or seen.__context__
+    return True
 
 
 def unreachable(exc: BaseException) -> bool:
