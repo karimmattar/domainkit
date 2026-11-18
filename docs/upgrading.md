@@ -77,6 +77,11 @@ project that relied on 2.8's behaviour changes, and what to run.
   can be sent to the superuser (to reset its password or enroll a phone)
   until its email address is verified: run ...". A script that matched
   2.8's wording matches this one instead.
+- **`AUTH.IDENTIFIERS` names fields that the user table has a column
+  for.** Startup refuses `groups` and `user_permissions`, which link
+  tables keep (`auth.E011`). 2.8 started with them, and failed later, at
+  a login, a search, or a list of users that read the field: name the
+  fields the table stores instead.
 2.9 answers the audit of 2.8. Each part below says what a project that
 relied on 2.8's behaviour changes, and what to run.
 
@@ -119,11 +124,6 @@ CREATE INDEX CONCURRENTLY ix_domainkit_users_email_id ON domainkit_users (email,
 
 A concurrent build that fails leaves an invalid index of that name, which
 `migrate` takes as made: drop it, and build it again.
-
-`AUTH.IDENTIFIERS` must name fields that the user table has a column for:
-startup refuses `groups` and `user_permissions`, which link tables keep
-(`auth.E011`). 2.8 started with them, and failed later, at a login, a
-search, or a list of users that read the field.
 
 ### A repository that overrides `count` counts every match in an export
 
