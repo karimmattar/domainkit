@@ -85,7 +85,7 @@ to `.ci/`. `make services-down` stops them and drops their data.
   or setting is named on its page of `docs/reference/` (`docs/reference.md`
   lists them). The pages describe the release they ship with, as of its
   tag: what a 1.x minor adds says *New in 1.x* where it is described, and a
-  fix to the pages of a released version goes to `main` and its next patch
+  fix to the pages of a released version goes to `stg` and its next patch
   release. Pages link to each other by relative paths; the README links to
   the files of `main` by absolute URLs, which CI's `build` points at the
   release's tag before it builds, so the PyPI page opens that release's
@@ -111,5 +111,9 @@ to `.ci/`. `make services-down` stops them and drops their data.
   never rewritten: add a dated "Amendment" section and update its status.
 - **Commits.** Small and logical, each with a subject in the imperative
   ("Add ...", "Refuse ...") and a body that says why.
-- **Pull requests.** The template asks what changed, why, and how it was
-  tested. Every check must pass; `main` takes squash merges only.
+- **Pull requests.** Branch from `stg` and open the pull request against
+  `stg`: it gathers the changes of the next release. `main` holds what was
+  last released, and changes only by a pull request from `stg` when a
+  release is made ([Making a release](docs/versioning.md#making-a-release)).
+  The template asks what changed, why, and how it was tested. Every check
+  must pass; `stg` and `main` take squash merges only.
