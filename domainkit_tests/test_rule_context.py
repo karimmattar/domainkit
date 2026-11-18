@@ -11,12 +11,14 @@ a transient error is still raised for the run to be tried again (ADR
 0196).
 """
 
+import asyncio
 import logging
 import socket
 import ssl
 from typing import Any, ClassVar, Final
 from uuid import uuid4
 
+import asyncpg  # type: ignore[import-untyped]
 import httpx2
 import pytest
 from fastapi.testclient import TestClient
@@ -676,3 +678,124 @@ def test_whom_to_tell_is_not_guessed_while_a_rule_cannot_answer(
         assert [user.username for user in run_async(approvers_of(made))] == ["staffer"]
     else:
         assert run_async(approvers_of(made)) == []
+
+
+def unwrapped(error: Exception, *, star: bool) -> Exception:
+    """``error``, raised as rules unwrap a task group's: its context, the group."""
+    try:
+        if star:
+            try:
+                raise ExceptionGroup("lookups", [error])
+            except* type(error) as group:
+                raise group.exceptions[0]  # noqa: B904 - as a rule writes it.
+        try:
+            raise ExceptionGroup("lookups", [error])
+        except ExceptionGroup as group:
+            raise group.exceptions[0]  # noqa: B904 - as a rule writes it.
+    except Exception as exc:  # noqa: BLE001 - the error raised, to read.
+        return exc
+    raise AssertionError  # pragma: no cover - the block above always raises.
+
+
+@pytest.mark.parametrize("star", [False, True])
+def test_an_error_unwrapped_from_its_group_is_read_once(star: bool) -> None:
+    """Its context holds it again: it is read once, and decides by itself."""
+    assert not transient(unwrapped(KeyError("desk"), star=star))
+    assert transient(unwrapped(ConnectionResetError("reset"), star=star))
+
+
+def test_transient_reads_so_many_errors_in_all() -> None:
+    """A group of very many is read up to a bound: past it, nothing settles."""
+    many = ExceptionGroup("many", [*(KeyError(n) for n in range(70)), TimeoutError()])
+
+    assert not transient(many)
+    assert transient(ExceptionGroup("few", [KeyError(1), TimeoutError()]))
+
+
+def test_a_5xx_answer_and_a_drivers_own_timeout_are_transient() -> None:
+    """Raised as they are, not wrapped by the client or SQLAlchemy."""
+    assert transient(answered(503))
+    assert transient(answered(500))
+    assert not transient(answered(404))
+    assert transient(asyncpg.exceptions.QueryCanceledError("statement timeout"))
+    assert transient(asyncpg.exceptions.ConnectionDoesNotExistError("closed"))
+    assert transient(asyncpg.exceptions.CannotConnectNowError("starting up"))
+    assert not transient(asyncpg.exceptions.UniqueViolationError("taken"))
+
+
+class UnwrapsItsLookups(BasePermission):
+    """Asks a lookup in a task group; a mistake in it is unwrapped and raised."""
+
+    async def has_permission(self, request: HTTPConnection, user: Any) -> bool:  # noqa: ANN401 - a user.
+        """Raise the lookup's own ``KeyError``, unwrapped from its group."""
+
+        async def lookup() -> bool:
+            raise KeyError("desk")  # The rule's own mistake.
+
+        try:
+            async with asyncio.TaskGroup() as group:
+                group.create_task(lookup())
+        except* KeyError as found:
+            raise found.exceptions[0]  # noqa: B904 - as a rule writes it.
+        return True  # pragma: no cover - the lookup always raises.
+
+
+def test_a_rule_that_unwraps_its_groups_mistake_refuses_once(
+    client: TestClient,  # noqa: F811 - the fixture.
+) -> None:
+    """The run fails ``maker_not_allowed``; ``approvers_of`` leaves the user out."""
+    guard(
+        "tests.ruled_by_a_broken_rule",
+        broken,
+        unit_of_work=object,
+        policies=[Policy("tests.ruled_by_a_broken_rule", permission=HOLDS)],
+        maker_rule=UnwrapsItsLookups(),
+        domain="alpha",
+    )
+    guard(
+        "tests.ruled",
+        ruled,
+        unit_of_work=object,
+        policies=[Policy("tests.by_rule", approver_rule=UnwrapsItsLookups())],
+        domain="alpha",
+    )
+    maker = person("maker")
+    person("holder", HOLDS)
+    person("staffer", is_staff=True)
+    made = submitted("tests.ruled_by_a_broken_rule", Ruled(note="x"), maker)
+    shown = {"id": str(made.id), "fingerprint": made.fingerprint}
+    assert decide(client, shown, token_for("holder")).json()["status"] == "approved"
+
+    drained = run_async(drain())
+
+    done = stored(made.id)
+    assert drained.failures == []
+    assert (done.status, done.reason) == (RequestStatus.FAILED, "maker_not_allowed")
+    ruled_request = submitted("tests.ruled", Ruled(note="y"), maker)
+    assert run_async(approvers_of(ruled_request)) == []
+
+
+def test_a_rules_mistake_is_reported_once_a_call_of_approvers_of(
+    client: TestClient,  # noqa: F811 - the fixture.
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Not once a user: twelve staff and three calls make three reports."""
+    reported: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        services, "report_error", lambda exc, **context: reported.append(context)
+    )
+    guard(
+        "tests.ruled_by_a_broken_rule",
+        broken,
+        unit_of_work=object,
+        policies=[Policy("tests.by_a_broken_rule", approver_rule=Raises())],
+        domain="alpha",
+    )
+    for number in range(12):
+        person(f"staff{number}", is_staff=True)
+    made = submitted("tests.ruled_by_a_broken_rule", Ruled(note="x"), person("maker"))
+
+    for _ in range(3):
+        assert run_async(approvers_of(made)) == []
+
+    assert reported == [{"rule": "Raises"}] * 3

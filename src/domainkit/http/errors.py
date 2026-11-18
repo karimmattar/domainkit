@@ -117,6 +117,8 @@ RETRIED_STATUSES: Final = frozenset({408, 429})
 """The 4xx answers worth trying again after: a timeout, too many requests."""
 _CAUSES: Final = 16
 """Errors ``transient`` reads down an error's chain at most."""
+_READ: Final = 64
+"""Errors ``transient`` reads at most in all, the groups' included."""
 _POOL: Final = "sqlalchemy.pool.base"
 """The module of the pool's ``__connect``, which opens each connection."""
 _EVENTS: Final = "sqlalchemy.event"
@@ -494,15 +496,24 @@ def transient(exc: BaseException) -> bool:
       whose ``retryable`` is False: an answer too large to read), a 4xx
       answer but 408 and 429, or another answer of the database.
 
-    An ``UpstreamError`` that none of these settles, a 5xx answer or a
-    host's circuit open, is transient; any other error is the work's own.
-    An exception group is transient if an error it holds is (since 2.9,
-    ADR 0196).
+    An ``UpstreamError`` that none of these settles, or a host's circuit
+    open, is transient, and so is a 5xx answer; any other error is the
+    work's own. An exception group is transient if an error it holds is.
+    No error is read twice, though a group may hold the error raised from
+    it, and ``_READ`` errors at most are read in all (since 2.9, ADR 0196).
     """
+    return _transient(exc, set())
+
+
+def _transient(exc: BaseException, read: set[int]) -> bool:
+    """``transient``, past the errors ``read`` holds the ids of already."""
     found_upstream = False
     for seen in _chain(exc):
+        if id(seen) in read or len(read) >= _READ:
+            break
+        read.add(id(seen))
         if isinstance(seen, BaseExceptionGroup):
-            return any(transient(each) for each in seen.exceptions)
+            return any(_transient(each, read) for each in seen.exceptions)
         decided = _settles(seen)
         if decided is not None:
             return decided
@@ -528,6 +539,13 @@ def _settles(exc: BaseException) -> bool | None:
         < status.HTTP_500_INTERNAL_SERVER_ERROR
     ):
         return answered in RETRIED_STATUSES
+    if isinstance(answered, int) and answered >= status.HTTP_500_INTERNAL_SERVER_ERROR:
+        return True
+    state = getattr(exc, "sqlstate", None)
+    if isinstance(state, str) and not isinstance(exc, DBAPIError):  # A driver's own.
+        return state in BUSY_STATES | UNAVAILABLE_STATES or state.startswith(
+            CONNECTION_EXCEPTION
+        )
     if isinstance(
         exc,
         ConnectionError

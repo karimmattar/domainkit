@@ -190,11 +190,12 @@ When such a rule raises, approvals tells three kinds of error apart:
   connection that failed (`ConnectionError`), a timeout, a host name that
   did not resolve, `ServiceBusy`, a cache, ledger, or broker out of reach
   (`CacheUnavailable`, `LedgerUnavailable`, `BrokerUnavailable`), an
-  outgoing call that may succeed later (an `UpstreamError` of a 5xx
-  answer, or a host's circuit open; not an answer too large to read, a
-  4xx answer but 408 and 429, or a refusal of the guard), or a database
-  that is busy or out of reach. An error raised from one of these (its
-  cause) counts as one, and so does an exception group that holds one.
+  outgoing call that may succeed later (a 5xx answer, or a host's
+  circuit open; not an answer too large to read, a 4xx answer but 408
+  and 429, or a refusal of the guard), or a database that is busy or out
+  of reach, by SQLAlchemy's error or its driver's. An error raised from
+  one of these (its cause) counts as one, and so does an exception group
+  that holds one; an error unwrapped from a group is read once.
   Another `OSError`, such as a file not found, does not. It goes up, and
   the run is tried again, as any run that meets one is; `approvers_of`
   raises it.
@@ -202,9 +203,9 @@ When such a rule raises, approvals tells three kinds of error apart:
   error's own code, as in 2.8. An approver rule's leaves the user out.
 - Any other error, a mistake in the rule. It refuses, is logged as a
   warning by the rule's class and the error's, never the error's text,
-  and is reported to the error reporters (`domainkit.reporting`):
-  the request fails with `maker_not_allowed`, once, and `approvers_of`
-  leaves the user out.
+  and is reported to the error reporters (`domainkit.reporting`), once
+  per run and once per call of `approvers_of`: the request fails with
+  `maker_not_allowed`, once, and `approvers_of` leaves the user out.
 
 Code of your own that asks a rule outside a request makes one context
 per call:

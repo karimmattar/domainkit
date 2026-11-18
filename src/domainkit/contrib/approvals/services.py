@@ -902,6 +902,7 @@ async def _allows(
     user: Any,  # noqa: ANN401 - a user.
     *,
     raised: tuple[type[Exception], ...] = (),
+    reported: set[str] | None = None,
 ) -> bool:
     """Whether ``rule`` allows ``user`` on a call of their own, outside any request.
 
@@ -911,8 +912,9 @@ async def _allows(
     up, for the caller to try again or to answer. A rule that raises any
     other refuses: it is logged by its class and the error's, never the
     error's text, and reported (``report_error``), as a run that failed
-    was in 2.8, so the mistake still reaches whoever watches the errors. A
-    run it would fail is not tried again for it, nor is a list of
+    was in 2.8, so the mistake still reaches whoever watches the errors:
+    once per rule, where ``reported`` (a call's rules reported already) is
+    given. A run it would fail is not tried again for it, nor is a list of
     approvers lost.
     """
     try:
@@ -930,7 +932,10 @@ async def _allows(
             name,
             type(exc).__name__,
         )
-        report_error(exc, rule=name)
+        if reported is None or name not in reported:
+            report_error(exc, rule=name)
+        if reported is not None:
+            reported.add(name)
         return False
 
 
@@ -989,6 +994,7 @@ async def _approvers(request: ApprovalRequest) -> list[Any]:
         )
     rule = rule_instance(policy.approver_rule)
     approvers = []
+    reported: set[str] = set()  # A rule's mistake is reported once a call.
     with guard.checking():
         for user in users:
             if str(user.id) in left_out:
@@ -997,7 +1003,7 @@ async def _approvers(request: ApprovalRequest) -> list[Any]:
                 if not await has_perm(user, request.permission):
                     continue
             elif request.group is None and (
-                rule is None or not await _allows(rule, user)
+                rule is None or not await _allows(rule, user, reported=reported)
             ):
                 continue
             approvers.append(user)

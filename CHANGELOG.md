@@ -241,11 +241,12 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   `domainkit.http.errors.transient(exc)` says whether an error is one
   worth trying again after, read on the error and on what it was raised
   from: a connection that failed, a timeout, a host name that did not
-  resolve, `ServiceBusy`, a cache, ledger, or broker out of reach, an
-  `UpstreamError` that may succeed later (not one whose `retryable` is
-  False, as an answer too large to read, nor one from a 4xx answer but 408
-  and 429, or from a refusal), or a database busy or out of reach. An
-  exception group is transient if an error it holds is.
+  resolve, `ServiceBusy`, a cache, ledger, or broker out of reach, a 5xx
+  answer, an `UpstreamError` that may succeed later (not one whose
+  `retryable` is False, as an answer too large to read, nor one from a
+  4xx answer but 408 and 429, or from a refusal), or a database busy or
+  out of reach, a driver's own error of one included. An exception group
+  is transient if an error it holds is; no error is read twice.
   `UpstreamError.retryable` says whether trying again may help
   ([Rules asked outside a request](docs/auth/routes.md#rules-asked-outside-a-request),
   ADR 0196) (audit A28-ARCH-08).
@@ -794,8 +795,9 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   [upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-10).
 
 - Approvals asks each maker and approver rule on a request context of
-  its own when an approved command runs, so nothing a rule keeps on it
-  reaches another call (audit A28-SEC-07).
+  its own when an approved command runs and when its approvers are
+  found, so nothing a rule keeps on it reaches another call (audit
+  A28-SEC-07).
 
 ## [2.8.0] - 2026-11-18
 

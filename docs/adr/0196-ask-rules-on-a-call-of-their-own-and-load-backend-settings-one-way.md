@@ -12,9 +12,9 @@ depended on a concrete thing where an interface would do.
   `BasePermission.has_permission(request: HTTPConnection, user)` is asked
   on a route, and also where no request exists. Approvals asks a guard's
   `maker_rule` when an approved command runs in the worker, and a
-  policy's `approver_rule` in `approvers_of`. It asked them on one
-  connection the whole process shared, `_RUN`, whose scope held no
-  `query_string`, no `app`, and no `user`. A rule written for routes, which
+  policy's `approver_rule` in `approvers_of`. It asked them on a
+  connection, `_RUN`, whose scope held no `query_string`, no `app`, and
+  no `user`. A rule written for routes, which
   reads `request.query_params`, `request.app`, or `request.user`, raised
   there instead of answering. The run sat in a `try` that caught only
   `DomainError`, so the worker tried it again until it dead-lettered it,
@@ -54,9 +54,9 @@ How others do it:
 
 ### Options weighed for the rules
 
-1. **Only fill the shared connection's scope.** It ends the errors of
-   `query_string` and `app`, not the shared state, and a project still
-   cannot tell what a rule sees offline.
+1. **Only fill `_RUN`'s scope.** It ends the errors of `query_string`
+   and `app`, but each rule would still not be asked on a context of its
+   own, and a project still cannot tell what a rule sees offline.
 2. **`BasePermission`'s hooks take a protocol in place of
    `HTTPConnection`.** A project's rule that annotates `request:
    HTTPConnection` would then take a narrower argument than the method it
@@ -128,11 +128,16 @@ How others do it:
     `UpstreamError` whose `retryable` is False (`ResponseTooLarge`: the
     answer stays as long; `WriteOnceIgnored`: the store ignores
     `If-None-Match`), a 4xx answer other than 408 and 429, and another
-    answer of the database. An `UpstreamError` nothing settles (a 5xx
-    answer, `CircuitOpen`, `CallTimeout`) is transient. An exception group
-    is transient if an error it holds is. Other `OSError`s
-    (`FileNotFoundError`, `PermissionError`, a certificate refused) are
-    not: retrying cannot mend them.
+    answer of the database. A 5xx answer is transient, raised as it is or
+    held by an `UpstreamError`, and so is an `UpstreamError` nothing
+    settles (`CircuitOpen`, `CallTimeout`), and a database driver's own
+    error of a busy or unreachable server (asyncpg's
+    `QueryCanceledError`, by its SQLSTATE). An exception group is
+    transient if an error it holds is. No error is read twice, since an
+    error unwrapped from a group has that group as its context, and 64
+    errors are read at most in all, so the reading always ends. Other
+    `OSError`s (`FileNotFoundError`, `PermissionError`, a certificate
+    refused) are not transient: retrying cannot mend them.
   - A maker rule's `DomainError` fails the request with its own code, as in
     2.8: it is the rule's answer, not a mistake. An approver rule's leaves
     the user out.
@@ -142,7 +147,9 @@ How others do it:
     rule's class and the error's, never the error's text, a line per rule
     a while (`ThrottledLog`), and reported to the error reporters
     (`report_error`), as 2.8 reported the run that failed, so the mistake
-    reaches whoever watches the errors.
+    reaches whoever watches the errors: once per run, and once per rule
+    per call of `approvers_of`, not once per user, so a broken rule never
+    fills the reporters' queue.
 - `UpstreamError.retryable` (a class attribute, True by default) says
   whether trying again may succeed, so a subclass says which side it is
   on itself, rather than a list of codes in the serving layer.
