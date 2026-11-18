@@ -1,5 +1,7 @@
 site_name: domainkit
 site_description: Django's conventions for domain-driven FastAPI services.
+# Published from the newest release's tag (.github/workflows/docs.yml).
+site_url: https://karimmattar.github.io/domainkit/
 repo_url: https://github.com/karimmattar/domainkit
 edit_uri: edit/main/docs/
 strict: true

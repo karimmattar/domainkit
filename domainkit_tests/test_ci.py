@@ -641,9 +641,7 @@ def test_the_rulesets_hold_without_an_everyday_bypass() -> None:
     assert [rule["type"] for rule in creation["rules"]] == ["creation"]
 
 
-@pytest.mark.parametrize(
-    "name", ["ci.yml", "release.yml", "codeql.yml", "scorecard.yml"]
-)
+@pytest.mark.parametrize("name", sorted(path.name for path in WORKFLOWS.glob("*.yml")))
 def test_actions_are_pinned_to_commits_and_tokens_only_read(name: str) -> None:
     """Every action by a full commit SHA; write access only where it is used."""
     assert workflow(name)["permissions"] == {"contents": "read"}
@@ -673,6 +671,8 @@ def test_actions_are_pinned_to_commits_and_tokens_only_read(name: str) -> None:
         }
     if name == "codeql.yml":
         assert granted == {"analyze": {"contents": "read", "security-events": "write"}}
+    if name == "docs.yml":
+        assert granted == {"deploy": {"pages": "write", "id-token": "write"}}
     if name == "scorecard.yml":
         assert granted == {
             "analysis": {
@@ -1093,6 +1093,97 @@ def test_the_docs_site_builds_strictly_beside_the_tests() -> None:
     assert site["strict"] is True
     assert site["hooks"] == ["docs/hooks/site.py"]
     assert set(site["validation"].values()) == {"warn"}  # Failures, under --strict.
+
+
+PAGES_URL = "https://karimmattar.github.io/domainkit/"
+
+
+def test_the_docs_site_is_published_from_release_tags_only() -> None:
+    """A tag the release accepts, the newest, builds the site; only Pages is written.
+
+    The tag job makes release.yml's checks of the tag; the site is built as
+    CI's docs-site job builds it; the deploy job deploys that artifact and
+    nothing else, and no job reads a secret (ADR 0189).
+    """
+    text = (WORKFLOWS / "docs.yml").read_text()
+    docs: dict[object, Any] = yaml.safe_load(text)
+    assert docs[True] == {"push": {"tags": ["v*"]}}  # YAML 1.1 reads "on" as True.
+    assert docs["concurrency"] == {"group": "pages", "cancel-in-progress": False}
+    assert "secrets." not in text
+    found = docs["jobs"]
+    assert list(found) == ["tag", "site", "deploy"]
+
+    def checks(job: dict[str, Any]) -> dict[str, str]:
+        return {
+            step["name"]: step["run"]
+            for step in job["steps"]
+            if step.get("name", "").startswith("Check that the ")
+        }
+
+    released = jobs("release.yml")["tag"]
+    assert checks(found["tag"]) == checks(released)
+    assert len(checks(released)) == 3
+    assert found["tag"]["outputs"] == {"publish": "${{ steps.newest.outputs.publish }}"}
+    [newest] = [
+        step["run"] for step in found["tag"]["steps"] if "newest" in step.get("id", "")
+    ]
+    assert 'python3 .github/scripts/newest_release.py "$TAG"' in newest
+
+    site = found["site"]
+    assert (site["needs"], site["if"]) == ("tag", "needs.tag.outputs.publish == 'true'")
+    built = [step["run"] for step in site["steps"] if "run" in step]
+    reviewed = [step["run"] for step in jobs()["docs-site"]["steps"] if "run" in step]
+    assert built == reviewed  # The docs group alone, and --strict.
+    [upload] = [
+        step for step in site["steps"] if "upload-pages" in step.get("uses", "")
+    ]
+    assert upload["with"] == {"path": "site/"}
+
+    deploy = found["deploy"]
+    assert deploy["needs"] == "site"
+    assert deploy["environment"]["name"] == "github-pages"
+    assert [step["uses"].split("@")[0] for step in deploy["steps"]] == [
+        "actions/deploy-pages"
+    ]
+    site_config = yaml.safe_load((ROOT / "mkdocs.yml").read_text())
+    assert site_config["site_url"] == PAGES_URL
+
+
+def test_the_site_shows_the_newest_final_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pre-release, or a patch of an older line, leaves the site as it is."""
+    script = load_script("newest_release", monkeypatch)
+    tags = ["v2.8.0", "v2.8.1", "v2.9.0rc1", "notes", "v2.9"]
+    assert script.newest("v2.8.2", tags) is True  # 2.9 has no final yet.
+    assert script.newest("v2.9.0", tags) is True  # Newer than its own rc.
+    assert script.newest("v2.9.0", [*tags, "v2.9.0"]) is True  # Itself.
+    assert script.newest("v2.9.0rc2", tags) is False  # A pre-release.
+    assert script.newest("v2.8.2", [*tags, "v2.9.0"]) is False  # An older line.
+    assert script.newest("v2.8.0", tags) is False  # v2.8.1 is newer.
+    assert script.newest("v2.9", tags) is False  # Not a release version.
+
+
+def test_the_newest_release_is_read_from_the_tags(tmp_path: Path) -> None:
+    """The script prints its verdict for the repository's own ``v*`` tags."""
+    git(tmp_path, "init", "-q")
+    git(tmp_path, "commit", "-q", "--allow-empty", "-m", "first")
+    for tag in ("v1.0.0", "v1.1.0"):
+        git(tmp_path, "tag", tag)
+    script = ROOT / ".github" / "scripts" / "newest_release.py"
+
+    def verdict(tag: str) -> str:
+        done = subprocess.run(  # noqa: S603 - the test interpreter and the script.
+            [sys.executable, str(script), tag],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return done.stdout
+
+    assert verdict("v1.1.0") == "true\n"
+    assert verdict("v1.0.1") == "false\n"
 
 
 def test_the_workflows_are_audited_and_scanned() -> None:
@@ -1918,7 +2009,7 @@ def test_the_published_links_name_the_release_tag(tmp_path: Path) -> None:
     assert "/blob/main/" not in readme
     assert readme.count(f"{REPOSITORY_URL}blob/v1.2.3/docs/") >= 20
     urls = tomllib.loads((tmp_path / "pyproject.toml").read_text())["project"]["urls"]
-    assert urls["Documentation"] == f"{REPOSITORY_URL}blob/v1.2.3/docs/reference.md"
+    assert urls["Documentation"] == f"{REPOSITORY_URL}blob/v1.2.3/docs/index.md"
     assert urls["Changelog"] == f"{REPOSITORY_URL}blob/v1.2.3/CHANGELOG.md"
     assert urls["Homepage"] == REPOSITORY_URL.rstrip("/")
 

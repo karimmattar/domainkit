@@ -347,6 +347,14 @@ the changelog if it changes what is refused.
    tag by hand (Releases, Draft a new release), with the changelog's
    section for the version as its notes; the workflow makes none.
 
+   The same tag runs `.github/workflows/docs.yml`, which publishes the
+   documentation site to GitHub Pages
+   ([ADR 0189](adr/0189-publish-the-documentation-site-from-the-newest-releases-tag.md)).
+   It makes the same three checks of the tag, and publishes only the
+   newest final release: a pre-release, or a patch of an older line,
+   leaves the site as it is (`.github/scripts/newest_release.py`). The
+   site is built as CI's `docs-site` job builds it.
+
    CI keeps a run's `dist` and `sbom` for 90 days. To release an older
    commit, run its CI run again first (`gh run rerun <id>`). Each tag
    gets a release run of its own, never cancelled: push one tag per
@@ -424,6 +432,13 @@ Before the first release:
   bot proposes changes.
 - Turn on private vulnerability reporting, which `SECURITY.md` asks
   reporters to use.
+- Turn on GitHub Pages with GitHub Actions as its source (Settings,
+  Pages, Build and deployment, Source). Pages makes the `github-pages`
+  environment, which deploys from the default branch only: add a rule
+  for the tags `v*` to it (Settings, Environments, `github-pages`,
+  Deployment branches and tags). Until both are done, the deploy job of
+  `docs.yml` fails on each tag, and nothing else does. The site is then
+  at `https://karimmattar.github.io/domainkit/`.
 
 ## See also
 

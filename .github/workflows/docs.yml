@@ -1,0 +1,116 @@
+# The documentation site (mkdocs.yml), published to GitHub Pages from a
+# release tag (ADR 0189). CI's docs-site job builds the same site on every
+# change, for review; this workflow publishes it only for a release:
+#
+# - the tag passes the checks release.yml's tag job makes (the version, a
+#   commit of main, the release commit), so a tag the release refuses
+#   publishes nothing;
+# - the tag is the newest final release (.github/scripts/newest_release.py):
+#   a pre-release, or a patch of an older line, leaves the site showing the
+#   newest release.
+#
+# The site is built with --strict from the docs group alone, and handed to
+# Pages as an artifact. Only the deploy job may write, to Pages, with the
+# OIDC token deploy-pages asks for; nothing here reads a secret.
+# One-time setup, by the repository's owner, is in docs/versioning.md:
+# Pages' source set to GitHub Actions, and tags v* allowed to deploy to the
+# github-pages environment.
+name: Docs
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+# One deployment at a time, never cancelled half way: the tags of one
+# release land together, and each runs to its verdict.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  POETRY_VERSION: "2.4.3"
+
+jobs:
+  tag:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      publish: ${{ steps.newest.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - run: pipx install "poetry==${POETRY_VERSION}"
+      - name: Check that the tag matches the version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(poetry version --short)"
+          if [ "$TAG" != "v$version" ]; then
+            echo "Tag $TAG does not match version $version in pyproject.toml" >&2
+            exit 1
+          fi
+      - name: Check that the tagged commit is on main
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "Tag $TAG is not on a commit of main" >&2
+            exit 1
+          fi
+      - name: Check that the tagged commit is the release of that version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: python3 .github/scripts/release_check.py "$TAG"
+      - name: Check whether the tag is the newest release
+        id: newest
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          publish="$(python3 .github/scripts/newest_release.py "$TAG")"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          if [ "$publish" != "true" ]; then
+            echo "$TAG is not the newest release: the site stays as it is." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  site:
+    needs: tag
+    if: needs.tag.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - run: pipx install "poetry==${POETRY_VERSION}"
+      - run: poetry sync --only docs --no-root
+      - run: poetry run mkdocs build --strict --site-dir site
+        env:
+          NO_MKDOCS_2_WARNING: "1"
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site/
+
+  deploy:
+    needs: site
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      pages: write # Deploys the artifact.
+      id-token: write # Proves to Pages that this workflow made it.
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
