@@ -21,6 +21,7 @@ from domainkit.db import squashing
 from domainkit.db.orm import NAMING_CONVENTION
 from domainkit.db.squashing import SquashRefused, squash
 from domainkit.management import CommandError, call_command
+from domainkit.management.base import run_async
 
 
 def run(*args: str, **options: Any) -> str:  # noqa: ANN401 - command options.
@@ -207,6 +208,65 @@ def test_modes_are_exclusive(project: Path) -> None:
     """--plan, --sql, and --fake are one at a time."""
     with pytest.raises(SystemExit):
         run("migrate", "--plan", "--fake")
+
+
+# Tenants' schemas -----------------------------------------------------------------
+
+
+def tables_in(url: str, schema: str) -> list[str]:
+    """The tables of ``schema`` in the database at ``url``, by name."""
+
+    async def read() -> list[str]:
+        engine = create_async_engine(url)
+        try:
+            async with engine.connect() as connection:
+                found = await connection.execute(
+                    text(
+                        "SELECT table_name FROM information_schema.tables "
+                        "WHERE table_schema = :schema ORDER BY table_name"
+                    ),
+                    {"schema": schema},
+                )
+                return list(found.scalars())
+        finally:
+            await engine.dispose()
+
+    return run_async(read())
+
+
+def test_a_tenants_schema_is_downgraded_alone(project: Path, database_url: str) -> None:
+    """``--downgrade --tenant`` moves that tenant's schema, and no other's.
+
+    Destructive: it drops the tenant's tables (A28-TEST-02).
+    """
+    if not database_url.startswith("postgresql"):
+        pytest.skip(
+            "schemas per tenant need PostgreSQL: set DOMAINKIT_TEST_POSTGRES_URL"
+        )
+    with override_settings(TENANCY={"SCHEMA_DATABASES": ["default"]}):
+        run("makemigrations", "-m", "shelves")
+        run("migrate", "--tenant", "acme")
+        run("migrate", "--tenant", "beta")
+        both = tables_in(database_url, "tenant_acme")
+
+        downgraded = run("migrate", "base", "--downgrade", "--tenant", "acme")
+
+    assert "framework_test_shelves" in both
+    assert downgraded == "Tenant 'acme' on 'default' is at base.\n"
+    assert "framework_test_shelves" not in tables_in(database_url, "tenant_acme")
+    assert tables_in(database_url, "tenant_beta") == both
+
+
+def test_a_tenants_database_out_of_reach_is_named(project: Path) -> None:
+    """One line, naming the database, for upgrades and downgrades (A28-TEST-02)."""
+    run("makemigrations", "-m", "shelves")
+    away = {"default": {"URL": "postgresql+asyncpg://domainkit@127.0.0.1:9/away"}}
+    with override_settings(DATABASES=away, TENANCY={"SCHEMA_DATABASES": ["default"]}):
+        for downgrade in ((), ("base", "--downgrade")):
+            with pytest.raises(
+                CommandError, match=r"^Database 'default' .+Is the server running"
+            ):
+                run("migrate", *downgrade, "--tenant", "acme")
 
 
 # squashmigrations -----------------------------------------------------------------

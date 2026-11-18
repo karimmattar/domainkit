@@ -239,6 +239,50 @@ def test_factories_number_from_zero_in_every_test(
     run_plugin(pytester).assert_outcomes(passed=2)
 
 
+def test_a_wider_fixture_numbers_from_zero_too(
+    pytester: pytest.Pytester, prefix: str
+) -> None:
+    """A module's fixture, made after another test ran, starts at 0 too.
+
+    The numbers go back to 0 before any fixture of the test is made, and
+    again before the test's own. The second reset alone, an autouse fixture
+    of the test's scope, came after the module's fixture, which saw what the
+    test before had left (A28-TEST-08).
+    """
+    pytester.makepyfile(
+        test_wider="""
+        from dataclasses import dataclass
+
+        import pytest
+
+        from domainkit.testing import Factory, Sequence
+
+        @dataclass
+        class Thing:
+            name: str
+
+        class ThingFactory(Factory[Thing]):
+            class Meta:
+                model = Thing
+
+            name = Sequence(lambda n: f"thing-{n}")
+
+        def test_first_makes_three():
+            assert len(ThingFactory.build_batch(3)) == 3
+
+        @pytest.fixture(scope="module")
+        def made():
+            return [thing.name for thing in ThingFactory.build_batch(2)]
+
+        def test_the_modules_fixture_starts_at_zero(made):
+            assert made == ["thing-0", "thing-1"]
+            assert ThingFactory.build().name == "thing-0"  # The test's own.
+        """
+    )
+
+    run_plugin(pytester).assert_outcomes(passed=2)
+
+
 def test_reports_and_logs_are_written_after_every_test(
     pytester: pytest.Pytester, prefix: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:

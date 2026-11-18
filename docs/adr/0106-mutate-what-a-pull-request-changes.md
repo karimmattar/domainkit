@@ -1,6 +1,6 @@
 # 0106. Mutate what a pull request changes, before it merges
 
-- Status: Accepted; amended 2026-10-29 and 2026-11-01 (at the end)
+- Status: Accepted; amended 2026-10-29, 2026-11-01 and 2026-11-18 (at the end); amended by [0191](0191-gate-the-lines-a-change-adds.md)
 - Date: 2026-10-28
 
 ## Context
@@ -263,3 +263,22 @@ a function that stays now count as changing it (a `+N,0` hunk names line
 What would change this: mutation jobs with a PostgreSQL service for the
 modules that reach a database, a recorded baseline of survivors per shard
 that a growth fails, and a run of the weekly matrix on the 1.0 candidate.
+
+
+## Amendment (2026-11-18, the 2.8 audit): mutation testing runs on request
+
+Since 1.5.0 (commit `30bf623`), `mutation (changed)` and its shards run on
+a pull request, and the weekly shards on their schedule, only while the
+repository variable `MUTATION` is `on`; the shards still run by hand
+(`workflow_dispatch`). It has stayed off, so the pull requests of 1.6 to
+2.8 ran no mutants, though this record and `CONTRIBUTING.md` said each one
+did (TEST-04). The jobs stay as they are, off unless asked for: coverage
+gates every change, and [0191](0191-gate-the-lines-a-change-adds.md) holds
+each line a change adds to 100%. Contributors run `make mutants` for the
+functions they change, as `CONTRIBUTING.md` asks.
+
+`unmutated-functions.txt`, which `changed_mutants.py` writes for the job
+summary, was committed in 1.5.0 by mistake. Nothing reads that copy: the
+job reads the file the script writes in the same step, and the script's
+test writes its own under a temporary directory. It is removed, and git
+ignores the files the mutation jobs write.

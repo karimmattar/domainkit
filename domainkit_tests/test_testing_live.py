@@ -59,11 +59,11 @@ def test_browsers_and_other_processes_reach_the_test_databases(
         from domainkit.management.base import run_async
         from domainkit.testing import token_for
 
-        PORTS = []
+        SERVERS = []
 
         def test_another_process(live_server):
             assert live_server.url.startswith("http://127.0.0.1:")
-            PORTS.append(live_server.port)
+            SERVERS.append(live_server)
             ann = run_async(create_user(username="ann"))
             token = run_async(token_for(ann))
             code = (
@@ -80,15 +80,17 @@ def test_browsers_and_other_processes_reach_the_test_databases(
             assert seen.stdout.split() == ["200", "ann"]
 
         def test_its_own_server(live_server):
-            PORTS.append(live_server.port)
-            assert PORTS[0] != PORTS[1]
-            assert httpx2.get(live_server.url + "/private").status_code == 401
-            try:
-                httpx2.get(f"http://127.0.0.1:{{PORTS[0]}}/private")
-            except httpx2.ConnectError:
-                pass
-            else:
-                raise AssertionError("the first test's server still answers")
+            SERVERS.append(live_server)
+            first, second = SERVERS
+            assert first is not second
+            assert httpx2.get(second.url + "/private").status_code == 401
+            if first.port != second.port:  # The system may hand a freed port out again.
+                try:
+                    httpx2.get(first.url + "/private")
+                except httpx2.ConnectError:
+                    pass
+                else:
+                    raise AssertionError("the first test's server still answers")
         """
     )
 

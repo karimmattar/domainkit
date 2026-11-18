@@ -18,7 +18,6 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   ([Running a command](docs/reference/commands.md#running-a-command),
   [upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-12).
 
-
 - [Choosing a feature](docs/choosing.md): which tool a need takes where
   two look alike (idempotency keys or the inbox, money limits or rate
   limits, a step-up, an authorization, or approvals, a balance field or
@@ -63,7 +62,6 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   its query. It is asked only of a class that defines both methods, or
   neither, so a backend that overrides `object_grants` alone keeps every
   grant it adds (ADR 0185) (audit A28-PERF-05).
-
 
 - `per_tenant=False` on `live_events.stream`, `forward`, and
   `subscribe`: a route that serves every tenant on purpose, such as a
@@ -189,7 +187,6 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   review).
 
 ### Changed
-
 
 - In development and tests, each problem the application finds at its
   build or start (a route without an access rule, say) is logged as a
@@ -329,6 +326,40 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   of users that read it ([upgrading.md](docs/upgrading.md#28-to-29))
   (found in review).
 
+- CI's `coverage` job fails a pull request to `stg` with a line it adds or
+  changes under `src/` that ran in no job, or left a branch untaken
+  (`.github/scripts/changed_coverage.py`); `make cov` checks the same
+  against `origin/stg`. The package stays at 98%, as README.md and the
+  Makefile now say, and Python processes the tests start are measured too
+  (`patch = ["subprocess"]`); ADR 0191 records the gates (audit
+  A28-TEST-05).
+
+- ADR 0106, CONTRIBUTING.md, README.md and `docs/versioning.md` say that
+  mutation testing runs on request: `mutation (changed)` and the weekly
+  shards run while the repository variable `MUTATION` is `on`, which it
+  has not been since 1.5.0. `unmutated-functions.txt`, a CI output
+  committed by mistake, is removed, and git ignores what the mutation
+  jobs write (audit A28-TEST-04).
+
+- CI's integration job runs Kafka 4.4 and ElasticMQ 1.7, an SQS server,
+  and the Kafka and SQS brokers' contract and redelivery run against them
+  (`DOMAINKIT_TEST_KAFKA_URL`, `DOMAINKIT_TEST_SQS_URL`); `compose.yaml`
+  and `make integration` start and name them too. The fakes stay for the
+  failures (audit A28-TEST-03).
+
+- CI's test and integration runs list their 30 slowest tests
+  (`--durations=30`) (audit A28-TEST-07).
+
+- The `postgresql (16)` job runs on Python 3.15, while `integration` runs
+  on 3.13: each end of the Python range meets PostgreSQL (audit
+  A28-TEST-11).
+
+- CONTRIBUTING.md says where a new test goes: in its module's file, or
+  `test_<module>_<topic>.py`, naming the finding it answers in its
+  docstring rather than in the file's name. The key ring's and the
+  storages' fixtures, copied between test files, live once in
+  `domainkit_tests/support/` (audit A28-TEST-12).
+
 ### Fixed
 
 - The tutorial and the recipes name the file each block makes or
@@ -462,6 +493,48 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   position within it, and that of a URL's password read the rest of a
   word again at each `://`: 10 KB of dotted names took over 100 s; 100 KB
   of any text now takes milliseconds (audit A28-DX-10).
+
+- `SqsBroker.close()` closes its connections to SQS, which it left open
+  (audit A28-TEST-03).
+
+- The test plugin numbers a module-scoped or session-scoped fixture's
+  factory objects from 0, whichever test runs first: it resets every
+  factory before a test's fixtures, as well as before the test's own.
+  `docs/testing.md`'s example of a module's rows passed or failed by the
+  order of the tests (audit A28-TEST-08).
+
+- The upload and PDF tests no longer time their checks with a stopwatch.
+  Each says which limit stopped a check: the clock or a signal, from the
+  log; the decoder's or the cross-reference reader's count; or a clock
+  that moves a fixed step each time it is read. A slow runner failed
+  them, and a limit firing in another's place passed them (audit
+  A28-TEST-01).
+
+- Refusals and destructive paths that no test ran have tests: an
+  impersonation ends when its staff member loses the staff flag, or its
+  user is gone; an approved command that names someone other than its
+  maker fails as it is run; an act asked under a JSON Web Token is bound
+  to that login; a malformed act subject is refused; a tenant's schema
+  is downgraded alone, and a tenant database out of reach is named; a
+  failed claim gives the messaging worker's slots back (audit
+  A28-TEST-02).
+
+- Tests that waited a fixed time, or raced a short timeout, wait for what
+  they test. The waits of a sign-in or an act on the phone are approved
+  once they wait, and only hearing of the approval ends them in time; the
+  worker's due task, a sub-second drain, and a connection that does not
+  settle are checked by what happened. Tests that wait for something
+  share one bound of 30 seconds (`domainkit_tests/support/waiting.py`)
+  (audit A28-TEST-06).
+
+- The Redis and NATS servers the broker tests start are each the test's
+  own: NATS picks its port and writes it to a file, and a Redis that fails
+  to start, or a port another Redis answers on, is tried again on another
+  port (audit A28-TEST-09).
+
+- A docs test wrote its probe page into the repository's `docs/`, which
+  other tests read at the same time; it writes it under a temporary
+  directory of its own (audit A28-TEST-10).
 
 ### Security
 

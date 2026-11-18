@@ -325,15 +325,18 @@ def pytest_runtest_protocol(item: pytest.Item) -> Generator[None, object, object
     """Reset module state around each test; allow a marked test the databases.
 
     Before the test, the throttled logs and the principal cache forget what
-    they hold. Once the domains are loaded (``registry.ready``), the
-    subscriptions, hooks, tasks, and refreshers the test adds are dropped
-    after it; the test that loads them keeps what their ``ready()`` registered.
-    Currencies a test registers before then are dropped after it too.
+    they hold, and every factory numbers from 0 again: before any of the
+    test's fixtures, a module's too. Once the domains are loaded
+    (``registry.ready``), the subscriptions, hooks, tasks, and refreshers the
+    test adds are dropped after it; the test that loads them keeps what their
+    ``ready()`` registered. Currencies a test registers before then are
+    dropped after it too.
     A test marked ``allow_database`` reaches the databases from its first
     fixture to its last teardown, as 0.12 let it; they are not put back
     first. A hook, not autouse fixtures: each of those costs every test.
     """
     reset_throttled()
+    _reset_sequences()
     for module, name in RESETS:
         if (loaded := sys.modules.get(module)) is not None:
             target: Any = loaded
@@ -411,7 +414,16 @@ def empty_outboxes() -> None:
 
 @pytest.fixture(autouse=True)
 def fresh_sequences() -> None:
-    """Number every factory's objects from 0 again, whatever ran before."""
+    """Number every factory's objects from 0 again, whatever ran before.
+
+    After the fixtures of wider scopes, so a test's own objects start at 0;
+    ``pytest_runtest_protocol`` did so before them too, so theirs do.
+    """
+    _reset_sequences()
+
+
+def _reset_sequences() -> None:
+    """Number every factory's objects from 0 again."""
     factories = Factory.__subclasses__()
     while factories:
         factory = factories.pop()

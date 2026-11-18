@@ -118,7 +118,7 @@ statuses, and the amendments they name.
 | [0102](0102-hold-if-match-on-the-unit-of-work-that-changes-the-aggregate.md) | Hold `If-Match` on the unit of work that changes the aggregate | Accepted; amended 2026-10-28 and 2026-10-29 (at the end) |
 | [0104](0104-import-what-a-process-uses-on-first-use-and-gate-its-modules.md) | Import what a process uses on first use, and gate the modules each rung loads | Accepted |
 | [0105](0105-fingerprint-keyed-bodies-as-they-arrive-and-spool-them-past-a-threshold.md) | Fingerprint keyed bodies as they arrive, and spool them past a threshold | Accepted; amended 2026-10-28 (at the end) |
-| [0106](0106-mutate-what-a-pull-request-changes.md) | Mutate what a pull request changes, before it merges | Accepted; amended 2026-10-29 and 2026-11-01 (at the end) |
+| [0106](0106-mutate-what-a-pull-request-changes.md) | Mutate what a pull request changes, before it merges | Accepted; amended 2026-10-29, 2026-11-01 and 2026-11-18 (at the end); amended by [0191](0191-gate-the-lines-a-change-adds.md) |
 | [0107](0107-make-test-users-through-the-domain-and-sign-in-through-a-protocol.md) | Make test users through the domain, and sign in as them through a protocol | Accepted |
 | [0108](0108-keep-the-full-domain-as-the-default-and-give-new-projects-an-image-and-ci.md) | Keep the full domain as `startdomain`'s default; give new projects an image and CI | Accepted; amended 2026-10-28 (at the end) |
 | [0111](0111-refuse-a-removed-hook-method-until-1-0-wherever-the-domain-defines-it.md) | Refuse a removed hook method until 1.0, wherever the domain defines it | Accepted; amended 2026-11-01 (at the end) by [0125](0125-freeze-the-public-api-for-1-0-renaming-what-was-never-published.md) |
@@ -199,6 +199,7 @@ statuses, and the amendments they name.
 | [0187](0187-keep-the-workers-heartbeat-to-its-liveness-fail-deliveries-whose-task-ended-and-share-provider-clients.md) | Keep the worker's heartbeat to its liveness, fail deliveries whose task ended, and share provider clients | Accepted |
 | [0189](0189-publish-the-documentation-site-from-the-newest-releases-tag.md) | Publish the documentation site from the newest release's tag | Accepted |
 | [0190](0190-keep-runnable-examples-as-projects-that-domainkits-tests-run.md) | Keep runnable examples as projects that domainkit's tests run | Accepted |
+| [0191](0191-gate-the-lines-a-change-adds.md) | Gate the lines a change adds | Accepted |
 | [0192](0192-start-a-contrib-routers-route-names-with-its-app.md) | Start a contrib router's route names with its app | Accepted |
 
 ### Decisions still without a record

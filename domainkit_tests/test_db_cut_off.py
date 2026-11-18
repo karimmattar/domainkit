@@ -438,16 +438,16 @@ async def test_a_connection_that_does_not_settle_in_time_is_discarded(
 
     The cut-off work ends within that bound, the connection is discarded
     then (the pool hands it to no one), and the next caller gets a new one
-    that works.
+    that works. The discard says it was not waited on: waited on, the
+    connection would have settled and been kept. No stopwatch, which a
+    slow runner fails (A28-TEST-06).
     """
     monkeypatch.setattr(connections_module, "SETTLE_TIMEOUT", 0.3)
     delay = {"s": 0.0}
     async with through_proxy(database, delay):
         with PoolEvents() as events:
             delay["s"] = 3.0
-            started = asyncio.get_running_loop().time()
             await cut_off(0.2, store("cut"))
-            assert asyncio.get_running_loop().time() - started < 2.5
             assert events.counts == (0, 1)
             delay["s"] = 0.0
             await store("kept")

@@ -11,7 +11,6 @@ import sys
 import uuid
 from collections.abc import (
     AsyncIterator,
-    Callable,
     Iterable,
     Iterator,
     Mapping,
@@ -100,6 +99,7 @@ from domainkit.management import CommandError, call_command
 from domainkit.reporting import flush_reports
 from domainkit_tests.sample_domains.alpha.events import GreetingSent
 from domainkit_tests.sample_routes import DriverError
+from domainkit_tests.support.waiting import until
 from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork, NoteWritten, notes
 
 pytestmark = pytest.mark.anyio
@@ -2549,15 +2549,6 @@ def test_runworker_on_a_broker(brokered: None, monkeypatch: pytest.MonkeyPatch) 
     assert claimed == [frozenset({"emails"}), None]
     with pytest.raises(CommandError, match="Queue names have 1 to 64"):
         run("runworker", "--queue", "bad queue")
-
-
-async def until(condition: Callable[[], bool]) -> None:
-    """Wait up to five seconds for ``condition`` to hold."""
-    for _ in range(500):
-        if condition():
-            return
-        await asyncio.sleep(0.01)
-    raise AssertionError("Timed out waiting")
 
 
 class Flaky:

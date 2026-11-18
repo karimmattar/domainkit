@@ -794,7 +794,12 @@ async def test_create_in_memory() -> None:
   sub-factory; fields that the factory does not declare pass through.
 - Each object takes its factory's next number, from 0, which all its
   `Sequence` fields share. The plugin resets every factory before each
-  test.
+  test's fixtures, and again before the test's own, so a module-scoped
+  fixture's objects start at 0 too (since 2.9; before, they started where
+  the test before had stopped). So the numbers restart at 0 in each test:
+  a test that saves rows beside those a module-scoped fixture saved
+  collides on a unique `Sequence` field, unless it passes that field or
+  starts the factory further on (`ProductFactory.reset_sequence(100)`).
 - Plain defaults are copied for each object, so a list default is never
   shared.
 
