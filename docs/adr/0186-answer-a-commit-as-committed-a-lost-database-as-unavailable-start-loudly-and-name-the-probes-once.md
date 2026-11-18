@@ -66,8 +66,9 @@ The release is a minor one: nothing a project relies on may break.
     route in). The request committed either way.
   - A block bounded by such a deadline is lifted with it. With a timer of
     its own (in a task that shares the deadline without enforcing it) or
-    without, it inherits `until_commit`, and the deadline keeps it, so a
-    commit in one task lifts the bound of a sibling's outgoing call too.
+    without, it inherits `until_commit`, and the deadline keeps it while
+    it is open, so a commit in one task lifts the bound of a sibling's
+    outgoing call too.
   - The other deadlines the committing task enforces, a worker task's
     `TASK_TIMEOUT` among them, are put back when the block ends, later
     by the time it took: what follows a commit does not count against
@@ -165,11 +166,15 @@ Options weighed:
   database's refusal: a cancellation, a timeout, a lost connection
   (`connection_invalidated`, SQLSTATE class `08`), any error but a
   domain's refusal or one the server answered with. `_refused(exc)` says
-  which; the SQL unit of work adds SQLAlchemy's own errors that are no
-  driver's (`StaleDataError`, a `StatementError` for a value it could not
-  bind, `InvalidRequestError`, `FlushError`, its pool's timeout), raised
-  before a `COMMIT` could be answered, and every `DBAPIError` with the
-  server's answer.
+  which; the SQL unit of work adds SQLAlchemy's own errors that come
+  before a `COMMIT` is sent, listed one by one (`REFUSED_BEFORE_COMMIT`:
+  `StaleDataError`, `FlushError`, `PendingRollbackError`,
+  `ResourceClosedError`, its pool's timeout, `DisconnectionError`), a
+  `StatementError` that is no driver's (a value it could not bind), and
+  every `DBAPIError` with the server's answer outside class `08`. Its
+  other errors (`InvalidRequestError`, `MissingGreenlet`) stay in doubt:
+  a session's `after_commit` listener of a project's can raise them once
+  the `COMMIT` landed.
 - `upload_route` keeps the file when the commit is in doubt, and warns:
   `Kept the upload <name> on the <storage> storage: its request failed
   as it committed, and the commit may have kept it`. It deletes it, as
@@ -284,9 +289,9 @@ Options weighed:
   `()` by default, and `PROBE_PATHS` beside them. Successful scrapes of
   `/metrics` are logged at DEBUG.
 - Each commit pays for `after_commit()`, and each hook for its timeout:
-  a few calls and a timer moved, within the benchmarks' budgets. Each
-  block bounded by a request's deadline is kept on it until the request
-  ends.
+  a few calls and a timer moved; the commit rungs' budgets were raised
+  to it. A request's deadline keeps the blocks it bounds while they are
+  open, each leaving as it ends.
 
 ## References
 

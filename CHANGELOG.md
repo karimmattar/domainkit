@@ -27,8 +27,10 @@ and a status.
   of their work cut off, or kept from running (audit A28-REL-01).
 - `UnitOfWork.in_doubt` counts commits that failed without the database's
   refusal, so they may have been applied: a lost connection, a timeout,
-  or a cut as it committed. SQLAlchemy's own errors, raised before a
-  `COMMIT` could be answered, are refusals (audit A28-REL-04).
+  or a cut as it committed. SQLAlchemy's own errors that come before a
+  `COMMIT` is sent are refusals; its others, which a session's
+  `after_commit` listener can raise once the `COMMIT` landed, are in
+  doubt (audit A28-REL-04).
 - `apps.E003`: `check` refuses an optional app's middleware in
   `MIDDLEWARE` without the app in `INSTALLED_DOMAINS`, and names the app;
   staging and production refuse to start with it (audit A28-DX-04).
