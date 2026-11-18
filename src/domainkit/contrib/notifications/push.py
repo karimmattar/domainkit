@@ -323,16 +323,21 @@ def _items(value: object) -> list[Any]:
 
 
 def _google_account(credentials_file: str | None) -> TokenSource:
-    """The account of ``credentials_file`` (or the metadata server), kept."""
-    if credentials_file not in _google_accounts:
+    """The account of ``credentials_file`` (or the metadata server), kept.
+
+    The one it keeps is the one it returns, read once: a ``reset_tokens``
+    meanwhile, from another task or thread, cannot leave it nothing to read.
+    """
+    account: TokenSource | None = _google_accounts.get(credentials_file)
+    if account is None:
         from domainkit.cloud.google import MetadataAccount, ServiceAccount
 
-        _google_accounts[credentials_file] = (
+        made = (
             MetadataAccount()
             if credentials_file is None
             else ServiceAccount.from_file(credentials_file)
         )
-    account: TokenSource = _google_accounts[credentials_file]
+        account = _google_accounts.setdefault(credentials_file, made)
     return account
 
 
