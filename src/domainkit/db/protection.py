@@ -58,13 +58,13 @@ TRUNCATE_TRIGGER: Final = 2 | 32
 MAX_TABLE_NAME: Final = 63 - len("_append_only_truncate")
 """The longest table name whose triggers' names PostgreSQL keeps whole (63 bytes)."""
 _TABLE_NAME: Final = re.compile(r"[a-z_][a-z0-9_]*")
+"""What PostgreSQL keeps as written when it is not quoted, so every name
+made from it (the function, the triggers) is the same quoted or not."""
 _RESERVED: Final = RESERVED_WORDS | frozenset(
     {"collation", "concurrently", "lateral", "system_user", "tablesample"}
 )
 """PostgreSQL 16's reserved words (``pg_get_keywords()``, categories ``R`` and
 ``T``): SQLAlchemy's, and the five it lacks. None can name a table unquoted."""
-"""What PostgreSQL keeps as written when it is not quoted, so every name
-made from it (the function, the triggers) is the same quoted or not."""
 FIRING: Final = frozenset({"O", "A"})
 """``tgenabled`` of a trigger that fires for the application's sessions.
 

@@ -632,7 +632,7 @@ def mark_in_doubt(exc: BaseException) -> None:
     """Mark ``exc`` as the error of a commit that may have been applied.
 
     ``failed_in_doubt`` then says so of it, and of the errors raised from
-    it. The work's deadlines note it too (``deadlines.commit_in_doubt``),
+    it. The work's deadlines note it too (``Deadline.in_doubt``),
     for the task that answers the request when another one committed (a
     ``BaseHTTPMiddleware``'s, a task group's). ``UnitOfWork.commit`` marks
     the errors it counts in ``in_doubt``; a commit made outside a unit of
