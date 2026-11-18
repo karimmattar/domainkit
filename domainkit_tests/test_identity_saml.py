@@ -561,6 +561,101 @@ def test_canonicalization_is_bounded_before_signxml_runs(
     assert parsed == [base64.b64decode(each) for each in passed]
 
 
+def ascending(count: int) -> str:
+    """``count`` attributes, their names in ascending order."""
+    return " ".join(f'a{index:06d}=""' for index in range(count))
+
+
+def transformed(inner: str) -> str:
+    """A ``signature()`` whose reference's one transform holds ``inner``."""
+    enveloped = "http://www.w3.org/2000/09/xmldsig#enveloped-signature"
+    return signature().replace(
+        "<ds:DigestMethod",
+        f'<ds:Transforms><ds:Transform Algorithm="{enveloped}">{inner}'
+        "</ds:Transform></ds:Transforms><ds:DigestMethod",
+    )
+
+
+def test_attributes_and_a_signed_infos_bytes_are_bounded_before_signxml_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Attributes on any element, and a SignedInfo's bytes (lead review).
+
+    Canonicalization sorts each element's attributes, in a ``SignedInfo``
+    and in the signed part alike; a ``SignedInfo`` past 16 KiB is refused
+    whatever it holds. 32 attributes pass, in any order.
+    """
+    config = SamlSettings(**OKTA)
+    now = datetime.now(UTC)
+    parsed: list[bytes] = []
+
+    def verify(self: XMLVerifier, data: bytes, **_: Any) -> Any:  # noqa: ANN401
+        parsed.append(data)
+        raise etree.XMLSyntaxError("stop here", 1, 1, 1)
+
+    monkeypatch.setattr(XMLVerifier, "verify", verify)
+    foreign = '<x:a xmlns:x="urn:x" {}/>'
+    refused = [
+        ("more than 32 attributes", transformed(foreign.format(ascending(33)))),
+        ("more than 32 attributes", transformed(foreign.format(ascending(24_000)))),
+        ("more than 32 attributes", f"<e {ascending(33)}/>"),
+        (
+            "more than 16,384 bytes",
+            transformed(f'<x:a xmlns:x="urn:x">{"A" * 16_384}</x:a>'),
+        ),
+    ]
+    for reason, inside in refused:
+        with pytest.raises(saml.AssertionRefused, match=reason):
+            saml.verified_claims(config, declaring(0, inside=inside), "_x", now)
+    passed = [
+        declaring(0, inside=transformed(foreign.format(ascending(32)))),
+        declaring(0, inside=f"<e {ascending(32)}/>{signature()}"),
+        declaring(0, inside=transformed(f'<x:a xmlns:x="urn:x">{"A" * 15_000}</x:a>')),
+    ]
+    for encoded in passed:
+        with pytest.raises(saml.AssertionRefused, match="no valid signature"):
+            saml.verified_claims(config, encoded, "_x", now)
+
+    assert parsed == [base64.b64decode(each) for each in passed]
+
+
+def test_a_signed_response_whose_signed_part_holds_too_many_attributes_is_refused(
+    app: App,
+) -> None:
+    """Its SignedInfo holds; signxml would canonicalize the signed part next.
+
+    Attributes added to a signed element after signing are refused before
+    signxml reads the response; 32 reach it, and the digest refuses them.
+    The SignedInfo identity providers write takes under 2 KiB.
+    """
+    client = app(SAML={"okta": OKTA}, SIGNUP=True, FRONTEND_URL=FRONTEND)
+    config = SamlSettings(**OKTA)
+    now = datetime.now(UTC)
+    signed = base64.b64decode(response("_x"))
+    (signed_info,) = etree.fromstring(signed).iter(f"{{{DS}}}SignedInfo")
+
+    def added(count: int) -> str:
+        altered = signed.replace(
+            b"<samlp:Status>", f"<samlp:Status {ascending(count)}>".encode(), 1
+        )
+        return base64.b64encode(altered).decode()
+
+    request_id, relay = start(client)
+    logged_in = acs(client, response(request_id), relay)
+    _, relay = start(client)
+    sent = acs(client, added(24_000), relay)
+
+    assert len(etree.tostring(signed_info)) < 2048
+    assert "ticket" in logged_in
+    assert sent == {"error": "saml_refused"}
+    with pytest.raises(saml.AssertionRefused, match="more than 32 attributes"):
+        saml.verified_claims(config, added(33), "_x", now)
+    with pytest.raises(
+        saml.AssertionRefused, match=r"no valid signature \(InvalidDigest"
+    ):
+        saml.verified_claims(config, added(32), "_x", now)
+
+
 def test_an_okta_response_that_declares_namespaces_again_logs_in(app: App) -> None:
     """``xs`` and ``xsi`` on each of 500 group values: 1,000 declared, 2 in scope."""
     client = app(SAML={"okta": OKTA}, SIGNUP=True, FRONTEND_URL=FRONTEND)
