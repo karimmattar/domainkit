@@ -15,6 +15,7 @@ from typing import Any, Final, Literal
 from sqlalchemy import (
     ColumnElement,
     DateTime,
+    Select,
     and_,
     case,
     delete,
@@ -42,6 +43,7 @@ __all__ = [
     "queue_lag",
     "release_stalled",
     "retry_dead",
+    "unfinished_arguments",
 ]
 
 type State = Literal["pending", "held", "locked", "dead"]
@@ -102,6 +104,21 @@ def running(now: dbclock.Moment) -> ColumnElement[bool]:
 def waiting(now: dbclock.Moment) -> ColumnElement[bool]:
     """Pending messages no worker is running (published ones included)."""
     return and_(messages.c.status == PENDING, not_(running(now)))
+
+
+def unfinished_arguments(target: str, argument: str) -> Select[tuple[str]]:
+    """A query of ``argument`` in each unfinished message of ``target`` (New in 2.9).
+
+    Unfinished: pending (running and published included) or held; not
+    done, dead, cancelled, or deleted. Each value is text, as the outbox
+    keeps it (a UUID with dashes), in the column ``argument``. A statement
+    on another table of the outbox's database tells by it whether a task
+    still waits to run for one of its rows.
+    """
+    value = messages.c.payload[argument].as_string()
+    return select(value.label("argument")).where(
+        messages.c.target == target, messages.c.status.in_((PENDING, HELD))
+    )
 
 
 async def queue_counts(

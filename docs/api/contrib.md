@@ -530,6 +530,7 @@ Operator queries: queue depth, lag, listings, retries, cancelling, dropping.
 - `queue_lag`: Seconds the oldest due message of each queue has waited to start.
 - `release_stalled`: Make the next message of each stalled ordering key pending; how many.
 - `retry_dead`: Return dead messages (one, or all) to the queue with fresh attempts.
+- `unfinished_arguments`: A query of `argument` in each unfinished message of `target` (New in 2.9).
 
 ## `domainkit.contrib.messaging.heartbeat`
 

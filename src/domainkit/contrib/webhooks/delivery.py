@@ -6,7 +6,11 @@ worker then writes one delivery per subscription that wants the event, and
 one ``deliver`` task each, in a single transaction. Each attempt signs the
 body anew and is logged (status code, latency, error). A failed attempt is
 retried with the task's backoff, up to ``WEBHOOKS.MAX_ATTEMPTS``; then the
-delivery is marked failed, and ``webhooks replay`` can send it again.
+delivery is marked failed, and ``webhooks replay`` can send it again. A
+delivery whose task ends without an outcome (its worker killed, its last
+attempt out of time, or the outcome not written) is marked failed too:
+by its last attempt if the database lets it, else by the hourly purge
+(``fail_abandoned``).
 
 Each attempt decrypts the secrets it signs with, and stores again those a
 key in ``SECRET_KEY_FALLBACKS`` encrypted, under ``SECRET_KEY``. A secret
@@ -42,7 +46,10 @@ from sqlalchemy import (
     ColumnElement,
     Executable,
     Row,
+    Text,
+    cast,
     delete,
+    func,
     insert,
     or_,
     select,
@@ -62,6 +69,7 @@ from domainkit.contrib.messaging.outbox import (
     write,
 )
 from domainkit.contrib.messaging.registry import dump_event, spec_for
+from domainkit.contrib.messaging.admin import unfinished_arguments
 from domainkit.contrib.messaging.settings import MessagingSettings
 from domainkit.db import connections
 from domainkit.db.query import contains_text
@@ -113,6 +121,10 @@ KEY_LOST: Final = (
     "No key decrypts the subscription's secret: SECRET_KEY changed without the "
     "old key in SECRET_KEY_FALLBACKS. Put it back, or rotate the secret, then "
     "replay. Nothing was sent."
+)
+ABANDONED: Final = (
+    "The last attempt ended without an outcome: its worker stopped, it ran out "
+    "of time, or its outcome could not be written. Replay it to send it again."
 )
 
 type Payload = Callable[[Any], Mapping[str, Any]]
@@ -349,9 +361,37 @@ async def _committed(alias: str, messages: Sequence[dict[str, Any]]) -> None:
 async def deliver(delivery_id: uuid.UUID) -> None:
     """Make one attempt at a delivery (the task behind every delivery).
 
+    A last attempt that raises marks the delivery failed before its task
+    dies, if the database lets it; else ``fail_abandoned`` does.
+
     Raises:
         DeliveryFailed: the attempt failed and attempts are left.
     """
+    try:
+        await _attempt(delivery_id)
+    except Exception:
+        attempt = current_attempt()
+        if attempt is None or attempt.last:
+            await _abandon(delivery_id)
+        raise
+
+
+async def _abandon(delivery_id: uuid.UUID) -> None:
+    """Mark a pending delivery failed after its last attempt raised; never raise."""
+    try:
+        engine = connections.engine(webhooks_alias())
+        await _finish(engine, delivery_id, FAILED, ABANDONED)
+    except Exception:  # The hourly purge marks it.
+        logger.warning(
+            "Could not mark webhook delivery %s failed after its last attempt "
+            "raised; the hourly purge will",
+            delivery_id,
+            exc_info=True,
+        )
+
+
+async def _attempt(delivery_id: uuid.UUID) -> None:
+    """Make one attempt at a delivery (``deliver``)."""
     config = registry.settings(WebhooksSettings)
     engine = connections.engine(webhooks_alias())
     async with engine.connect() as connection:
@@ -485,12 +525,16 @@ async def _record(
     outcome: client.Outcome,
     status: str,
 ) -> int:
-    """Log the attempt and update its delivery; return the attempt's number."""
+    """Log the attempt and update its delivery; return the attempt's number.
+
+    A delivery another run finished meanwhile (a duplicate run, at least
+    once) keeps its outcome: the attempt is counted and logged only.
+    """
     async with engine.begin() as connection:
         number = (
             await connection.execute(
                 update(deliveries)
-                .where(deliveries.c.id == delivery_id)
+                .where(deliveries.c.id == delivery_id, deliveries.c.status == PENDING)
                 .values(
                     attempts=deliveries.c.attempts + 1,
                     status=status,
@@ -501,7 +545,16 @@ async def _record(
                 )
                 .returning(deliveries.c.attempts)
             )
-        ).scalar_one()
+        ).scalar_one_or_none()
+        if number is None:  # Finished by another run.
+            number = (
+                await connection.execute(
+                    update(deliveries)
+                    .where(deliveries.c.id == delivery_id)
+                    .values(attempts=deliveries.c.attempts + 1)
+                    .returning(deliveries.c.attempts)
+                )
+            ).scalar_one()
         await connection.execute(
             insert(attempts).values(
                 id=uuid.uuid4(),
@@ -699,16 +752,53 @@ async def _old(connection: AsyncConnection, cutoff: datetime) -> list[uuid.UUID]
     return list((await connection.execute(statement)).scalars())
 
 
+async def fail_abandoned() -> int:
+    """Mark failed the pending deliveries that no task will try again; how many.
+
+    A delivery and its task are written in one transaction, and so are a
+    replay and its task: a pending delivery has a task waiting to run.
+    One without (its task dead, cancelled, or dropped) ended without an
+    outcome: its worker was killed, its last attempt ran out of time, or
+    the outcome could not be written.
+    """
+    tasks = unfinished_arguments(DELIVER, "delivery_id").subquery()
+    waiting = (
+        select(tasks.c.argument)
+        .where(
+            # Text with dashes in a task's arguments; 32 hex digits on SQLite.
+            func.replace(tasks.c.argument, "-", "")
+            == func.replace(cast(deliveries.c.id, Text), "-", "")
+        )
+        .correlate(deliveries)
+    )
+    async with connections.engine(webhooks_alias()).begin() as connection:
+        failed = await connection.execute(
+            update(deliveries)
+            .where(deliveries.c.status == PENDING, ~waiting.exists())
+            .values(status=FAILED, last_error=ABANDONED, finished_at=_now())
+        )
+    return int(failed.rowcount)
+
+
 async def purge_deliveries() -> None:
-    """Delete finished deliveries older than ``RETENTION_SECONDS`` (hourly)."""
+    """Fail abandoned deliveries; delete those finished ``RETENTION_SECONDS`` ago.
+
+    Hourly.
+    """
     config = registry.settings(WebhooksSettings)
+    if abandoned := await fail_abandoned():
+        logger.warning(
+            "Marked %d webhook delivery(ies) failed: their task ended without an "
+            "outcome. Replay them with webhooks replay --failed",
+            abandoned,
+        )
     await purge(timedelta(seconds=config.RETENTION_SECONDS))
 
 
 def register(config: WebhooksSettings) -> None:
     """Register ``deliver`` with the queue, attempts, and backoff of ``config``.
 
-    And the hourly purge of old deliveries.
+    And the hourly purge of old deliveries, which fails abandoned ones first.
     """
     periodic(timedelta(hours=1), name=PURGE)(purge_deliveries)
     task(

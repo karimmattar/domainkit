@@ -34,6 +34,7 @@ from domainkit.contrib.messaging.tables import (
     CANCELLED,
     DEAD,
     DONE,
+    HELD,
     PENDING,
     messages,
 )
@@ -196,6 +197,27 @@ async def test_dead_letters_are_the_newest_dead_messages(outbox: None) -> None:
     listed = await outbox_admin.dead_letters(CONFIG, 2, "archive")
 
     assert [each.target for each in listed] == ["newest", "new"]
+
+
+async def test_unfinished_arguments_are_those_of_messages_still_to_run(
+    outbox: None,
+) -> None:
+    """Pending (running too) and held messages of the target; not finished ones."""
+    await store(
+        row("t", payload={"item": "waiting"}),
+        row("t", payload={"item": "running"}, started_at=NOW, locked_until=NOW),
+        row("t", payload={"item": "held"}, status=HELD),
+        row("t", payload={"item": "dead"}, status=DEAD, finished_at=NOW),
+        row("t", payload={}, status=DONE, finished_at=NOW),
+        row("t", payload={}, status=CANCELLED, finished_at=NOW),
+        row("other", payload={"item": "another task's"}),
+    )
+    statement = outbox_admin.unfinished_arguments("t", "item")
+
+    async with connections.engine().connect() as connection:
+        found = set((await connection.execute(statement)).scalars())
+
+    assert found == {"waiting", "running", "held"}
 
 
 async def test_listings_keep_to_the_queue_named(outbox: None) -> None:
