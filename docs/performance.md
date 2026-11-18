@@ -173,7 +173,7 @@ rewrites the rung's row here too.
   hooks run on every request (ADR 0065). domainkit turns its telemetry
   off, and its own rungs gained far more than that.
 - **A posting is the most expensive request**: 14 statements in one
-  transaction, and about four times a plain write's calls (8,049; 11,973
+  transaction, and about four times a plain write's calls (7,976; 11,973
   before 1.6 made the statements it runs on every posting once). The
   ledger locks its accounts and moves their balances (8 statements).
   `contrib.limits` takes its shared lock of the ledger's kinds as the

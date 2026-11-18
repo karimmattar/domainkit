@@ -160,8 +160,9 @@ def test_the_command_line_prints_its_version_and_a_commands_help(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """``--version`` prints domainkit's; ``help <command>`` its options."""
-    execute_from_command_line(["manage.py", "--version"])
-    assert capsys.readouterr().out == f"{domainkit.__version__}\n"
+    for argv in (["manage.py", "--version"], ["manage.py", "help", "--version"]):
+        execute_from_command_line(argv)
+        assert capsys.readouterr().out == f"{domainkit.__version__}\n"
 
     with pytest.raises(SystemExit) as exit_info:
         execute_from_command_line(["manage.py", "help", "greet"])
@@ -175,10 +176,14 @@ def test_the_command_line_prints_its_version_and_a_commands_help(
     assert exit_info.value.code == 1
     assert "Error: Unknown command 'nope'" in capsys.readouterr().err
 
-    execute_from_command_line(["manage.py", "help"])
-    assert "Run 'manage.py help <command>' for a command's options" in (
-        capsys.readouterr().out
-    )
+    for argv in (["manage.py", "help"], ["manage.py", "help", "--all"]):
+        execute_from_command_line(argv)  # Options of help's own are left aside.
+        assert "Run 'manage.py help <command>' for a command's options" in (
+            capsys.readouterr().out
+        )
+    with pytest.raises(SystemExit):
+        execute_from_command_line(["manage.py", "help", "-v", "greet"])
+    assert capsys.readouterr().out.startswith("usage: manage.py greet ")
 
 
 def test_base_command_contract() -> None:

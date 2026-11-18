@@ -116,14 +116,20 @@ with an `Idempotency-Key`, and a client that reports it as an error.
 
 **Check** what the first request with that key did: the audit trail's
 rows of its request id, or the resource. The 409 means that the first
-request committed, and that its response is not kept: it failed or died
-after the commit, its response was too large to keep, or the key's TTL
-has passed ([what a retry gets](contrib/idempotency.md#what-a-retry-gets)).
+request committed, or may have, and that its response is not kept
+([what a retry gets](contrib/idempotency.md#what-a-retry-gets)):
+
+- it committed, then failed or died, or answered more than
+  `MAX_RESPONSE_BYTES`;
+- its commit on another database raised, its reply lost, refused, or
+  cancelled while it ran, so it may have committed;
+- it committed, and the key's TTL has passed.
 
 **Do** nothing on the service: the 409 keeps the write from running
 twice. Tell the client to look the result up instead of retrying, and
-give it a resource where it can. A client that sends a new request for
-the same intent sends it with a new key.
+give it a resource where it can. Only when the lookup shows that the
+first request did not do what was meant does the client send it again,
+with a new key.
 
 ## The outbox backs up
 

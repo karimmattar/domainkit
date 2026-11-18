@@ -40,9 +40,12 @@ with its actor. The decisions are in
   at once. Do not use it alone against many small commands under a
   threshold: add [limits](limits.md) per window
   ([what maker-checker does not stop](#what-maker-checker-does-not-stop)).
-- **An approved command runs later**, in the worker. The maker's call
-  gets the request, not the command's result
-  ([what a direct call does](#what-a-direct-call-does)).
+- **An approved command runs later.** The maker's call gets the
+  request, not the command's result
+  ([what a direct call does](#what-a-direct-call-does)). By default the
+  worker runs it; with `by_maker=True`, the maker's same call, made
+  again once the request is approved, runs it and gets its result
+  ([run by its maker](#run-by-its-maker)).
 
 ## Install
 

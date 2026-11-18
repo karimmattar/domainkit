@@ -34,8 +34,11 @@ The decisions are in
   only equality works, through a blind index
   ([querying encrypted fields](#querying-encrypted-fields)). A password
   is hashed, never encrypted ([passwords](../auth/users.md#passwords)).
-- **It needs a key service** in production, AWS KMS or Vault, and a plan
-  for backups ([what a backup holds](#what-the-database-a-dump-and-a-backup-hold)).
+- **It needs a key service** in production, one of the
+  [providers](#providers): AWS KMS, Vault, Google Cloud KMS, Azure Key
+  Vault, Huawei Cloud KMS, an HSM over PKCS #11, or one of your own. It
+  also needs a plan for backups
+  ([what a backup holds](#what-the-database-a-dump-and-a-backup-hold)).
 
 ## Install
 

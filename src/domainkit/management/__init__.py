@@ -105,11 +105,12 @@ def execute_from_command_line(argv: Sequence[str] | None = None) -> None:
     """Dispatch ``argv`` (default ``sys.argv``) to a command and exit on errors."""
     argv = list(sys.argv if argv is None else argv)
     prog = Path(argv[0]).name
-    if argv[1:] == ["--version"]:
+    if argv[1:] in (["--version"], ["help", "--version"]):
         sys.stdout.write(f"{domainkit.__version__}\n")
         return
-    if argv[1:2] == ["help"] and len(argv) > 2:  # help <command>, as in Django.
-        argv = [argv[0], argv[2], "--help"]
+    if argv[1:2] == ["help"]:  # help <command>, as in Django; options aside.
+        named = [word for word in argv[2:] if not word.startswith("-")]
+        argv = [argv[0], named[0], "--help"] if named else argv[:2]
     name = argv[1] if len(argv) > 1 else "help"
     if name in {"help", "--help", "-h"}:
         sys.stdout.write(_usage(prog))
