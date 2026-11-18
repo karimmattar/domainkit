@@ -74,6 +74,7 @@ from sqlalchemy.sql import Executable
 from sqlalchemy.sql.ddl import ExecutableDDLElement
 from sqlalchemy.sql.dml import UpdateBase
 from sqlalchemy.util import await_only
+from sqlalchemy.util.concurrency import in_greenlet
 
 from domainkit import deadlines, tasks
 from domainkit.conf import DEFAULT_DB_ALIAS, DatabaseConfig, settings
@@ -209,6 +210,9 @@ take to settle (``_settle``), the cut-off work waiting, before it is closed
 instead: as long as SQLAlchemy gives such a connection to close gracefully."""
 _SETTLE_TASK: Final = "domainkit.db.settle"
 """The name of the task that settles a cut-off connection (``tasks.spawn``)."""
+_DISCARD_TASK: Final = "domainkit.db.discard"
+"""The name of the task that closes a discarded asyncpg connection
+(``_terminate_asyncpg``)."""
 _PROVEN: Final = {"asyncpg": ((0, 32), (0, 33)), "sqlalchemy": ((2, 1), (2, 2))}
 """The releases ``_settle`` was proven on: from the first major and minor
 release to the first past them. It reads and clears transaction state that
@@ -348,6 +352,7 @@ def create_engine(config: DatabaseConfig) -> AsyncEngine:
         _listen(engine.sync_engine, "savepoint", _begin_before_savepoint)
         _listen(engine.sync_engine, "connect", _enforce_foreign_keys)
         _listen(engine.sync_engine.pool, "reset", _end_transaction_left_open)
+    _discard_at_once(engine.sync_engine)
     if direct:
         engine.sync_engine.dialect.do_ping = _ping  # type: ignore[method-assign]
         _keep_settled(engine.sync_engine)
@@ -394,6 +399,7 @@ def create_read_engine(config: DatabaseConfig) -> AsyncEngine:
     _listen(sync.pool, "checkout", _take_open)
     _listen(sync.pool, "reset", _reset_session)
     _keep_settled(sync)
+    _discard_at_once(sync)
     return _hiding_details(engine, config)
 
 
@@ -829,10 +835,13 @@ def _keep_cut_off(context: ExceptionContext) -> None:
     the cut-off work does not reach, while that work waits. Settled, the
     connection is kept, and its transaction, rolled back already, refuses
     further statements until it is rolled back, as when the connection was
-    closed (``PendingRollbackError``). If it does not settle, or the wait
-    is cancelled again (an anyio cancel scope cancels every wait until it
-    exits), it is closed, as before. The cancellation goes on either way:
-    SQLAlchemy raises it once this returns.
+    closed (``PendingRollbackError``). If it does not settle, it is closed.
+    If the wait is cancelled again (an anyio cancel scope cancels every
+    wait until it exits), the settling is called off and SQLAlchemy
+    discards the connection, whose close (``_terminate_asyncpg``) still
+    sends the cancel request: the server stops the statement, and the
+    transaction's locks go with the connection. The cancellation goes on
+    either way: SQLAlchemy raises it once this returns.
     """
     connection = context.connection
     if (
@@ -849,8 +858,8 @@ def _keep_cut_off(context: ExceptionContext) -> None:
     )
     try:
         await_only(asyncio.wait([settling]))
-    except asyncio.CancelledError:  # Again: it cannot wait, so it is closed.
-        driver.terminate()
+    except asyncio.CancelledError:  # Again: it cannot wait, so it is discarded.
+        settling.cancel()
         return
     if settling.cancelled() or not settling.result():
         return
@@ -957,6 +966,63 @@ def _end_transaction_left_open(
         return
     if dbapi_connection.driver_connection.in_transaction:
         dbapi_connection.rollback()
+
+
+def _discard_at_once(engine: Engine) -> None:
+    """Make ``engine`` discard a connection without awaiting it, on its driver.
+
+    SQLAlchemy discards a connection (a statement cut off, a failed reset,
+    one found closed as it leaves the pool) by terminating it, which for
+    asyncpg and aiosqlite first awaits a graceful close. A cancellation
+    that comes again at every wait (an anyio cancel scope) cuts that wait
+    off in turn, before the pool has the connection back. A discard that
+    awaits nothing always ends, and the pool has the connection's slot
+    back at once. Other drivers keep SQLAlchemy's way.
+    """
+    terminate = _TERMINATE_AT_ONCE.get(engine.dialect.driver)
+    if terminate is not None:
+        engine.dialect.do_terminate = terminate  # type: ignore[method-assign, assignment]
+
+
+def _terminate_asyncpg(dbapi_connection: Any) -> None:  # noqa: ANN401 - SQLAlchemy's adapter.
+    """Close a discarded asyncpg connection gracefully, without the discard waiting.
+
+    The graceful close (``_close_asyncpg``) runs in an owned task of its
+    own, which no cancellation of the discarding work reaches: asyncpg
+    first ends what a cut statement left (the cancel request it sends, so
+    the server stops the statement), then says ``Terminate``. Outside a
+    greenlet, where SQLAlchemy discards a connection the garbage collector
+    found, its socket is closed at once, as SQLAlchemy does there.
+    """
+    driver = dbapi_connection.driver_connection
+    if in_greenlet():
+        tasks.spawn(_close_asyncpg(driver), name=_DISCARD_TASK, log_errors=False)
+    else:
+        driver.terminate()
+
+
+async def _close_asyncpg(driver: Any) -> None:  # noqa: ANN401 - asyncpg's.
+    """Close ``driver`` gracefully within ``SETTLE_TIMEOUT``; else at once."""
+    try:
+        async with asyncio.timeout(SETTLE_TIMEOUT):
+            await driver.close()
+    except Exception:  # noqa: BLE001, S110 - closed at once below.
+        pass
+    finally:
+        if not driver.is_closed():
+            driver.terminate()
+
+
+def _stop_aiosqlite(dbapi_connection: Any) -> None:  # noqa: ANN401 - SQLAlchemy's adapter.
+    """Stop an aiosqlite connection's thread: its transaction ends with it."""
+    dbapi_connection.driver_connection.stop()
+
+
+_TERMINATE_AT_ONCE: Final[dict[str, Callable[[Any], None]]] = {
+    "asyncpg": _terminate_asyncpg,
+    "aiosqlite": _stop_aiosqlite,
+}
+"""How ``_discard_at_once`` terminates a connection of each driver it knows."""
 
 
 def _begin_before_savepoint(connection: Connection, name: str) -> None:

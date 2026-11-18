@@ -1245,6 +1245,25 @@ of work rolls back and gives its connection back. An `Idempotency-Key`
 that committed nothing is released, so the client can try again with
 the same key.
 
+The unit of work gives its connection back however the cancellation
+comes: once, as the deadline cancels, or again at every wait, as an
+anyio cancel scope does (the task group a `BaseHTTPMiddleware` serves
+the route in, or one the route opens), and whether it reaches the work
+or its close. A close that is cut off discards its connection at once,
+and the pool opens another in its place. Work already being cancelled
+closes its session in a task of its own, and waits for it at most 2
+seconds: a close a driver does not answer by then discards its
+connection too. With asyncpg and aiosqlite, the pool has the slot of a
+connection it discards (a cut-off statement's, one whose reset failed,
+one found closed as it leaves the pool) back at once, without waiting
+for it to close: aiosqlite's thread is stopped, and an asyncpg
+connection closes in a task of its own, within 2 seconds. That close
+first cancels a statement cut off on the connection, so the server stops
+it and its transaction's locks are freed, under an anyio cancel scope
+too. So with those drivers the close of a cut-off unit of work gives
+its connection back within 2 seconds (since 2.8.2). With psycopg, a
+discard waits for the connection to close, as SQLAlchemy does.
+
 A unit of work rolls back only what has not committed. When the deadline
 comes while the `COMMIT` is on its way, the database may have applied
 it, and the client still gets the 503. So the answer to a write does not

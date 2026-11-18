@@ -800,6 +800,18 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   ([diffsettings](docs/reference/commands.md#diffsettings-show-the-settings),
   [upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-10).
 
+- A unit of work cut off by a cancellation gives its database connection
+  back to the pool as it closes, within `SETTLE_TIMEOUT` (2 seconds),
+  with asyncpg and aiosqlite, however it was cancelled: once, by a
+  deadline, or at every wait, by an anyio cancel scope, during its work
+  or its close; with asyncpg, the statement it cut is cancelled on the
+  server. A connection the pool discards on those drivers gives
+  its slot back at once; an asyncpg one closes in a task of its own,
+  within the same 2 seconds
+  ([Request deadlines](docs/runtime.md#request-deadlines),
+  [upgrading.md](docs/upgrading.md#28-to-29), ADR 0048) (audit
+  A28-SEC-06).
+
 ## [2.8.0] - 2026-11-18
 
 2.8 answers fourteen of a project's fifteen notes on 2.7 (the last,

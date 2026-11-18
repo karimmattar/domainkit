@@ -226,8 +226,10 @@ it committed, however late. Before 2.9, the deadline could cut the
 handlers off and answer `503 deadline_exceeded` with `Retry-After: 1`
 for a change that was made.
 
-A deadline that passes before the `COMMIT` rolls the work back. One that
-passes during it, or a connection lost before its answer came, leaves
+A deadline that passes before the `COMMIT` rolls the work back, and the
+connection goes back to the pool, whatever cancels the work
+([Request deadlines](runtime.md#request-deadlines)). One that passes
+during it, or a connection lost before its answer came, leaves
 the outcome unknown: the change may have been made. The unit of work
 counts such a commit in `uow.in_doubt`, and the request answers 503
 (`deadline_exceeded` or `database_unavailable`) without `Retry-After`,
