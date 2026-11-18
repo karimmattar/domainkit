@@ -1111,11 +1111,12 @@ def unnamed_files(text: str) -> list[str]:
 
     GitHub shows a block's language, not its title, so the prose since the
     heading above the block names the file too, in a code span. A ``*`` in
-    a title, a migration's revision, stands for any part of a file name.
+    a title, a migration's revision, stands for any part of a file name;
+    " (new file)" and " (whole file)" after it are not part of the name.
     """
     unnamed = []
     for found in _TITLED.finditer(text):
-        path = found["path"].removesuffix(" (new file)")
+        path = re.sub(r" \((?:new|whole) file\)$", "", found["path"])
         prose = _SECTION_START.split(_FENCE.sub("", text[: found.start()]))[-1]
         name = re.escape(path).replace(r"\*", r"[^`/]+")
         if not any(
@@ -1145,7 +1146,9 @@ def test_a_file_named_only_in_its_title_is_found() -> None:
         "Edit `migrations/0002_<id>_x.py`:\n\n"
         '```python title="migrations/0002_*_x.py"\nx = 1\n```\n\n'
         "Edit `a.py` again:\n\n"
-        '```python title="c/a.py"\nx = 1\n```\n'
+        '```python title="c/a.py"\nx = 1\n```\n\n'
+        "Replace `d.py`:\n\n"
+        '```python title="d.py (whole file)"\nx = 1\n```\n'
     )
 
     assert unnamed_files(page) == ["b.py", "c/a.py"]

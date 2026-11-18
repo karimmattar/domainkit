@@ -103,11 +103,24 @@ api_secret        = dk1:k.dev:e4USRz46AAu8rz8dfl5bPK6BisO_uzPv6NewWt0b2Q93HA
 ```
 
 `dk1:s.<id>` names a subject's key; `dk1:k.dev` names the data key
-`dev`. Find the holder by the card number, then erase the holder's key:
+`dev`. Store Ann's card, find her by the card number, then erase her
+key. `CardsUnitOfWork` is the domain's unit of work on the database,
+with a `cardholders` repository, as `startdomain` writes one
+([part 1 of the tutorial](../tutorial/1-first-resource.md)):
 
 ```python
+from uuid import UUID
+
 from domainkit.contrib.keys import shred_subject
 from domainkit.ddd import F
+
+ann = UUID("00000000-0000-4000-8000-00000000000a")
+async with CardsUnitOfWork() as uow:
+    holder = Cardholder(
+        id=ann, name="Ann", card_number="4111111111111111", api_secret=b"s3cr3t"
+    )
+    await uow.cardholders.add(holder)
+    await uow.commit()
 
 async with CardsUnitOfWork() as uow:
     found = await uow.cardholders.filter(F("card_number") == "4111111111111111")
@@ -121,7 +134,7 @@ async with CardsUnitOfWork() as uow:
 ```
 
 ```text
-Cardholder(id=UUID('00000000-0000-4000-8000-00000000000a'), version=1, name='Ann', passport=None, card_number=<encrypted>, api_secret=<encrypted>)
+Cardholder(id=UUID('00000000-0000-4000-8000-00000000000a'), version=1, name='Ann', card_number=<encrypted>, api_secret=<encrypted>)
 1
 None b's3cr3t'
 ```

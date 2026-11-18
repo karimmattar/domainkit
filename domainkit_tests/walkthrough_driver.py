@@ -19,6 +19,9 @@ harness would run differently from a shell:
   output piped to the next, the last one's (stripped) kept as ``$NAME``;
 - ``read -rsp "Prompt: " NAME && export NAME``: what the user typed for
   ``NAME``, exported to the Python lines that follow, as a shell would;
+  ``{"totp": "SECRET"}`` typed is the code the user's authenticator app
+  shows for the secret ``$SECRET`` holds, a step's code once, as the
+  service takes it: after a step given already, the next one's;
 - ``unset NAME``: ``NAME`` forgotten, for the lines that follow.
 
 A trailing ``# 401`` (any three digits) states the status the line expects;
@@ -31,6 +34,9 @@ import re
 import shlex
 import subprocess
 import sys
+import time
+from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -43,8 +49,40 @@ _UNSET = re.compile(r"unset (?P<name>[A-Z_]+)")
 _EXPECTED = re.compile(r"\s+#\s*(?P<status>\d{3})(?:\s.*)?$")
 
 
+STEP = 30
+"""Seconds an authenticator app shows each code (RFC 6238's default)."""
+
+
 class Refused(Exception):
     """A line the harness does not understand."""
+
+
+def typed_value(
+    typed: str | Mapping[str, str],
+    variables: dict[str, str],
+    steps: dict[str, int],
+    *,
+    now: Callable[[], float] = time.time,
+    sleep: Callable[[float], None] = time.sleep,
+) -> str:
+    """What the user types: ``typed``, or the code of the app it names.
+
+    An app's code is of a step the service has not seen from it (``steps``
+    holds the last one given, by secret), as the service refuses a step
+    twice. It takes the step after its own too (``AUTH.MFA.WINDOW``, 1):
+    a second code in one step is the next step's, typed at once, and only
+    a third waits for the clock.
+    """
+    if isinstance(typed, str):
+        return typed
+    from domainkit.testing import totp_code
+
+    secret = variables[typed["totp"]]
+    step = max(int(now() // STEP), steps.get(secret, -1) + 1)
+    while step > int(now() // STEP) + 1:
+        sleep(max(0.0, (step - 1) * STEP - now()))
+    steps[secret] = step
+    return totp_code(secret, datetime.fromtimestamp(step * STEP, UTC))
 
 
 def expected_status(line: str) -> tuple[str, int | None]:
@@ -139,21 +177,24 @@ def run_line(
     client: Any,  # noqa: ANN401 - TestClient.
     line: str,
     variables: dict[str, str],
-    typed: dict[str, str] | None = None,
+    typed: Mapping[str, str | Mapping[str, str]] | None = None,
     exported: set[str] | None = None,
+    steps: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """Run one line; keep what it assigns; return its status and output.
 
     ``exported`` gains the names a ``read`` exports and loses those
-    ``unset`` forgets.
+    ``unset`` forgets; ``steps`` the steps of the codes an app gave.
     """
     exported = set() if exported is None else exported
+    steps = {} if steps is None else steps
     command, expected = expected_status(line)
     if prompt := _READ.fullmatch(command.strip()):
         name = prompt["name"]
         if typed is None or name not in typed:
             raise Refused(f"nothing was typed for ${name}: {line}")
-        variables[name] = os.environ[name] = typed[name]
+        value = typed_value(typed[name], variables, steps)
+        variables[name] = os.environ[name] = value
         exported.add(name)
         return {"line": line, "status": None, "expected": None, "output": ""}
     if forgotten := _UNSET.fullmatch(command.strip()):
@@ -186,14 +227,15 @@ def main() -> None:
     given = json.loads(sys.stdin.read())
     variables: dict[str, str] = given["variables"]
     exported = set(given["exported"])
+    steps: dict[str, int] = given["steps"]
     with (
         TestClient(application, base_url=SERVER) as client,
         Path(sys.argv[1]).open("w", encoding="utf-8") as results,
     ):
         for line in given["lines"]:
-            result = run_line(client, line, variables, given["typed"], exported)
+            result = run_line(client, line, variables, given["typed"], exported, steps)
             results.write(json.dumps(result) + "\n")
-        state = {"variables": variables, "exported": sorted(exported)}
+        state = {"variables": variables, "exported": sorted(exported), "steps": steps}
         results.write(json.dumps(state) + "\n")
 
 

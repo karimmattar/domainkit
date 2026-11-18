@@ -22,6 +22,12 @@ to understand a whole part of domainkit.
 - [Reading from a replica](recipes/read-replica.md): you get a resource
   whose reads go to a read replica, while its writes still go to the
   main database.
+- [Organizations in the path](recipes/tenancy.md): you get routes at
+  `/orgs/{org_id}/...` that serve each organization its own rows, answer
+  strangers `404`, and give members their role's permissions there only.
+- [An upload with checks](recipes/uploads.md): you get a route that keeps
+  a PDF or a picture of 2 MB at most, typed by its content, stored under
+  a name of its own, and refused when the PDF runs a script.
 
 ## Security and access
 
