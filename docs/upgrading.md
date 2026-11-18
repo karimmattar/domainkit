@@ -36,6 +36,30 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.8.1 to 2.8.2
+
+2.8.2 is a security release, with no migration and no setting: raise the
+version in the project's `pyproject.toml`, install, and deploy. Each item
+says what a project may notice.
+
+- **A unit of work cut off by a cancellation gives its connection back**
+  as it closes, with asyncpg and aiosqlite. A close that is itself cut
+  off discards its connection, and the pool opens another in its place
+  ([Request deadlines](runtime.md#request-deadlines)).
+- **A discarded PostgreSQL connection closes in the background.** With
+  asyncpg, a connection the pool discards, such as one cut off under an
+  anyio cancel scope, gives its pool slot back at once and closes in a
+  task of its own within 2 seconds, while the pool may open another. For
+  that time the server can hold more connections than the pool: a pool
+  sized to `max_connections` exactly needs room for them. The close
+  cancels a statement cut off on the connection, so the server logs
+  `canceling statement due to user request` for it, as for a statement
+  a deadline cuts.
+- **A maker or approver rule starts afresh on each call.** When an
+  approved command runs, a maker rule or approver rule no longer sees
+  what it kept on the request (`request.state`) in an earlier call, and
+  `request.app.state` is an empty `State` of its own.
+
 ## 2.8.0 to 2.8.1
 
 2.8.1 is a security release. Each item of this list says what a
