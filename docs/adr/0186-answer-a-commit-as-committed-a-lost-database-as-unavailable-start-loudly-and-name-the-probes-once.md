@@ -53,29 +53,56 @@ The release is a minor one: nothing a project relies on may break.
 ### What follows a commit is free of the deadline
 
 - `domainkit.deadlines.after_commit()` is a `with` block for what follows
-  a commit. Each deadline the running task enforces is lifted for the
-  block, so nothing it runs is cut off, and it sees no deadline.
+  a commit. The work's deadlines are lifted for the block, so nothing it
+  runs is cut off, and it sees no deadline.
   - A deadline made `until_commit` (`deadlines.timeout(seconds,
-    until_commit=True)`, `Deadline.until_commit`) stays lifted, and so do
-    the blocks it bounds. `DeadlineMiddleware` makes each request's so:
-    once a request commits, it is answered as committed, never 503, as
-    when its response starts.
-  - The others, a worker task's `TASK_TIMEOUT` among them, are put back
-    when the block ends, later by the time it took: what follows a commit
-    does not count against the work's time.
-  - A deadline that another task enforces, or that the task only shares,
-    is left alone.
+    until_commit=True)`, `Deadline.until_commit`) stays lifted, and so
+    does every block it bounds, in any task. `DeadlineMiddleware` makes
+    each request's so: once a request commits, it is answered as
+    committed, never 503, as when its response starts. It is lifted from
+    whichever task commits: the request's own, or one that only shares
+    its deadline (`asyncio.gather`, `create_task`, a task group, or the
+    task a `BaseHTTPMiddleware` after `DeadlineMiddleware` serves the
+    route in). The request committed either way.
+  - A block bounded by such a deadline is lifted with it. With a timer of
+    its own (in a task that shares the deadline without enforcing it) or
+    without, it inherits `until_commit`, and the deadline keeps it, so a
+    commit in one task lifts the bound of a sibling's outgoing call too.
+  - The other deadlines the committing task enforces, a worker task's
+    `TASK_TIMEOUT` among them, are put back when the block ends, later
+    by the time it took: what follows a commit does not count against
+    the work's time.
+  - Any other deadline, one that another task enforces and no commit
+    ends, is left alone.
 - `UnitOfWork.commit` runs its `_committed()` hooks and its events'
   in-process handlers in it, right after `_commit()` returns, before any
   `await`: no timer can fire between. Each handler keeps its own
   `EVENT_HANDLER_TIMEOUT`. `enqueue`, which commits outside a unit of
   work, runs its `on_transaction_committed` hooks the same way.
+- The domains' after-commit hooks (`on_committed`,
+  `on_transaction_committed`) were bounded by the request's deadline,
+  which the commit now lifts: each runs within `EVENT_HANDLER_TIMEOUT`,
+  as a handler does, and one still running then is cut off, logged, and
+  reported as `HandlerTimedOut`. A setting of their own was not added:
+  they are follow-ups of the commit, as handlers are, and a hook that
+  needs longer belongs in the outbox.
+- A commit that fails in doubt marks its error (`failed_in_doubt`, which
+  follows the errors raised from it). `DeadlineMiddleware` answers a
+  request cut off as it committed `503 deadline_exceeded` without
+  `Retry-After`, and with a detail that says the change may have been
+  made; so does `database_refusal` for a connection lost then
+  (`database_unavailable`). The code stays the same, so clients that
+  read it keep working, and nothing invites a retry of a write that may
+  have landed. Rejected: a code of its own, which every client would
+  have to learn for a rare case.
 - When the work itself is cancelled (a shutdown, a task cancelled by its
   owner), `EventBus.publish` logs the handler cut off and those after it,
   and `publish_all` those of the events it did not reach, at `ERROR`, and
   reports each event's as `HandlerCancelled`. The cancellation goes on.
 - The worker's code is unchanged: the unit of work's commit holds its
-  timeout.
+  timeout. `TASK_TIMEOUT` then no longer bounds a run's whole time: what
+  follows each commit, up to `EVENT_HANDLER_TIMEOUT` per handler and
+  hook, adds to it, and `VISIBILITY_TIMEOUT` must stay above it too.
 
 Options weighed:
 
@@ -115,7 +142,13 @@ Options weighed:
   not `database_busy`'s 1: a restart or a failover takes seconds, and a
   retry every second from every client adds to it [5]. A login refused (a
   wrong password, a database that does not exist) stays a 500, reported:
-  it is a mistake in the settings.
+  it is a mistake in the settings. The connect path is asyncpg's: an
+  `OSError` raised under the pool's `__connect`, by the driver or the
+  engine's creator, and not by a listener (a project's pool `connect` or
+  `checkout` listener that fails with a `PermissionError` of its own
+  stays a reported 500). psycopg's connection failures carry no SQLSTATE
+  and are no disconnect to SQLAlchemy at connect, so they may stay 500;
+  it is not installed here to prove more.
 - `RequestContextMiddleware` writes one warning per reason every 10
   seconds (`ThrottledLog`), with a count, and reports none.
 - Rejected: replacing asyncpg's `OSError` at connect with a SQLAlchemy
@@ -123,7 +156,8 @@ Options weighed:
   connection stops the listeners after it, such as a project's that adds
   a cloud provider's token to each connection, and the framework itself
   catches `OSError` around connections in places. Reading the
-  traceback's frames for `sqlalchemy.pool` is done on the error path only.
+  traceback's frames for the pool's `__connect` is done on the error path
+  only.
 
 ### A commit in doubt keeps its upload
 
@@ -131,8 +165,11 @@ Options weighed:
   database's refusal: a cancellation, a timeout, a lost connection
   (`connection_invalidated`, SQLSTATE class `08`), any error but a
   domain's refusal or one the server answered with. `_refused(exc)` says
-  which; the SQL unit of work adds `StaleDataError`, and every
-  `DBAPIError` with the server's answer.
+  which; the SQL unit of work adds SQLAlchemy's own errors that are no
+  driver's (`StaleDataError`, a `StatementError` for a value it could not
+  bind, `InvalidRequestError`, `FlushError`, its pool's timeout), raised
+  before a `COMMIT` could be answered, and every `DBAPIError` with the
+  server's answer.
 - `upload_route` keeps the file when the commit is in doubt, and warns:
   `Kept the upload <name> on the <storage> storage: its request failed
   as it committed, and the commit may have kept it`. It deletes it, as
@@ -169,8 +206,13 @@ Options weighed:
   as Django's `runserver` says "You have N unapplied migration(s)" [7].
   A database that cannot be reached, one in memory, and databases the
   test plugin refuses say nothing; a SQLite file not made yet lacks all,
-  and asking does not make it. Not where deployed: a rollout migrates in
-  a job of its own, after `check --deploy` has passed.
+  and asking does not make it. One whose revisions cannot be read (a file
+  that is no database, a revision the project does not have) is said to
+  be so, never a traceback. Each database gets `CHECK_CONNECT_TIMEOUT`
+  (2 seconds) at most, under its `CONNECT_TIMEOUT`, so a host that never
+  answers does not hold `check` for 10 seconds per alias; Alembic's INFO
+  lines stay out of the output. Not where deployed: a rollout migrates
+  in a job of its own, after `check --deploy` has passed.
 - The `IdempotencyMiddleware` still reads its settings before it looks
   at the scope's type, as the audit proposed changing: with the lifespan
   on, that is what stops the server at once.
@@ -184,10 +226,14 @@ Options weighed:
   paths), and `TENANCY.EXEMPT_PATHS` (prefixes, still `("/health",)`).
   The four exact lists default to `()`: what they exempt by default is
   the same, and `/metrics` is logged quietly too.
-- A list a project set keeps working, and the probes are added to it. A
-  project that moves its probes changes one setting; one that wants a
-  probe counted, authenticated, or given a tenant sets `PROBE_PATHS`
-  without it.
+- The paths a list a project set names stay exempt, and the probes are
+  added to it. A list that left a probe out on purpose (a
+  `RATE_LIMIT_EXEMPT_PATHS` without `/metrics`, to count the scrape) no
+  longer does: that probe is exempt from it too. To keep it out, the
+  project takes it out of `PROBE_PATHS`, and adds it to each list that
+  should still exempt it. `probes.W001` warns of a list that names some
+  probes of `PROBE_PATHS`, not all, in every environment. A project that
+  moves its probes changes one setting.
 - Options weighed: only changing `TENANCY.EXEMPT_PATHS`'s default, the
   audit's short-term fix, leaves the project that followed the tenancy
   page's example (`["/health", "/orgs/"]`) refused, and five lists to
@@ -213,7 +259,11 @@ Options weighed:
   the real one, stored: an `Idempotency-Key` committed with the change
   cannot be taken over by a retry once its lease runs out.
 - A worker's task keeps its `TASK_TIMEOUT` for what it does itself; slow
-  handlers after its commit no longer fail it.
+  handlers after its commit no longer fail it, and add to its run: a
+  `VISIBILITY_TIMEOUT` close to `TASK_TIMEOUT` may let another worker
+  claim a run still in its handlers.
+- A domain's after-commit hook that took longer than
+  `EVENT_HANDLER_TIMEOUT` under a long `REQUEST_TIMEOUT` is now cut off.
 - `HandlerCancelled` reports appear where cancellations cut handlers
   off, at shutdown above all: the reactions they stand for were lost
   before too, silently.
@@ -228,13 +278,15 @@ Options weighed:
   contrib middleware without its app, and staging and production refuse
   to start with one.
 - `check` connects to each database outside staging and production. A
-  database out of reach costs it up to `CONNECT_TIMEOUT`.
+  database out of reach costs it up to 2 seconds.
 - Readers of `RATE_LIMIT_EXEMPT_PATHS`, `CONCURRENCY_EXEMPT_PATHS`,
   `ACCESS_LOG_QUIET_PATHS`, or `AUTH.AUTHENTICATION_EXEMPT_PATHS` get
   `()` by default, and `PROBE_PATHS` beside them. Successful scrapes of
   `/metrics` are logged at DEBUG.
-- Each commit pays for `after_commit()`: two calls and a timer moved,
-  within the benchmarks' budgets.
+- Each commit pays for `after_commit()`, and each hook for its timeout:
+  a few calls and a timer moved, within the benchmarks' budgets. Each
+  block bounded by a request's deadline is kept on it until the request
+  ends.
 
 ## References
 

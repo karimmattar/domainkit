@@ -43,14 +43,32 @@ that relied on 2.8's behaviour changes, and what to run.
 
 - **A request that committed is answered as committed**
   ([ADR 0186](adr/0186-answer-a-commit-as-committed-a-lost-database-as-unavailable-start-loudly-and-name-the-probes-once.md)).
-  Once a unit of work commits, the request's deadline is lifted: its
-  in-process handlers all run, and it answers what it committed, past
-  `REQUEST_TIMEOUT` if they are slow. It no longer answers
-  `503 deadline_exceeded` for a change that was made. A request that
-  commits, then calls out or commits again, is no longer cut off either:
-  bound such calls by their own timeouts. A worker's task keeps the time
-  it had when it committed. Nothing to change; a handler that must not
-  hold the answer belongs in the outbox (`durable=True`).
+  Once a unit of work commits, in the request's task or in one it
+  started, the request's deadline is lifted: its in-process handlers all
+  run, and it answers what it committed, past `REQUEST_TIMEOUT` if they
+  are slow. It no longer answers `503 deadline_exceeded` for a change
+  that was made. A request that commits, then calls out or commits again,
+  is no longer cut off either: bound such calls by their own timeouts.
+  Nothing to change; a handler that must not hold the answer belongs in
+  the outbox (`durable=True`).
+- **After-commit hooks get `EVENT_HANDLER_TIMEOUT` each.** A domain's
+  `on_committed` or `on_transaction_committed` hook was bounded by the
+  request's deadline, which the commit now lifts. One still running after
+  `EVENT_HANDLER_TIMEOUT` (10 seconds unless set) is cut off, logged, and
+  reported as `HandlerTimedOut`. A hook that needs longer belongs in the
+  outbox.
+- **A worker's task keeps the time it had when it committed**, and what
+  follows each commit (handlers and hooks, up to `EVENT_HANDLER_TIMEOUT`
+  each) adds to its run: `TASK_TIMEOUT` no longer bounds a run's whole
+  time. A commit renews the claim; keep `VISIBILITY_TIMEOUT` above
+  `TASK_TIMEOUT`, and above what follows a commit, or another worker may
+  claim a run still in its handlers and run it again.
+- **A 503 for a commit in doubt has no `Retry-After`.** When the deadline
+  passes, or the connection is lost, as a request's `COMMIT` is sent, the
+  change may have been made: the request answers `503 deadline_exceeded`
+  or `503 database_unavailable` without `Retry-After`, with a detail that
+  says to check before sending it again. A client that retries every 503
+  should look the change up first, or send an `Idempotency-Key`.
 - **`HandlerCancelled` in the error reports.** It names in-process
   handlers that a cancellation of their work (a shutdown, a cancelled
   task) cut off or kept from running. 2.8 lost them without a word.
@@ -59,14 +77,32 @@ that relied on 2.8's behaviour changes, and what to run.
   once per reason every 10 seconds, as a warning, and not sent to
   `ERROR_REPORTERS`. Move alerts on 500s or on error reports for a
   database outage to `/ready` and to this code
-  ([Runbook](runbook.md#the-database-is-unavailable)).
+  ([Runbook](runbook.md#the-database-is-unavailable)). It is told from
+  asyncpg's errors and SQLAlchemy's: through psycopg, a connection that
+  cannot be opened may still answer 500.
 - **A failed upload whose commit is in doubt keeps its file.** The
   warning `Kept the upload <name> on the <storage> storage` names it:
   delete it by hand if no row names it.
 - **The probes are named once, in `PROBE_PATHS`.** `RATE_LIMIT_EXEMPT_PATHS`,
   `CONCURRENCY_EXEMPT_PATHS`, `ACCESS_LOG_QUIET_PATHS`, and
-  `AUTH.AUTHENTICATION_EXEMPT_PATHS` default to `()`, and add to it. A list
-  you set keeps working, and the probes are added to it.
+  `AUTH.AUTHENTICATION_EXEMPT_PATHS` default to `()`, and add to it. The
+  paths a list you set names stay exempt, and every probe is added to it.
+  - **A list that left a probe out on purpose no longer does.** With
+    `RATE_LIMIT_EXEMPT_PATHS = ("/health", "/ready")`, 2.8 counted
+    `/metrics`; 2.9 does not. To keep the old behaviour, take the probe
+    out of `PROBE_PATHS`, and add it to each list that should still
+    exempt it:
+
+    ```python
+    PROBE_PATHS = ("/health", "/ready")  # /metrics is counted again.
+    CONCURRENCY_EXEMPT_PATHS = ("/metrics",)
+    ACCESS_LOG_QUIET_PATHS = ("/metrics",)
+    AUTH = {..., "AUTHENTICATION_EXEMPT_PATHS": ["/metrics"]}  # Its token.
+    ```
+
+    `check` warns of such a list (`probes.W001`); with 2.8's default of
+    `ACCESS_LOG_QUIET_PATHS` set by hand, it says `/metrics` is now
+    logged at DEBUG.
   - With `TENANCY`, `/ready` and `/metrics` need no tenant any more: a
     `TENANCY.EXEMPT_PATHS` that lists them for that can drop them.
   - Successful scrapes of `/metrics` are logged at DEBUG.
@@ -84,8 +120,9 @@ that relied on 2.8's behaviour changes, and what to run.
   Install the app, or remove the middleware.
 - **`check` and `runserver` say which migrations a database lacks**
   (`migrations.W001`), outside staging and production. `check` connects
-  to each database there to ask. Run `migrate`, or list the id in
-  `SILENCED_CHECKS`.
+  to each database there to ask, and waits 2 seconds at most for each to
+  answer: a host that never answers adds that to `check`. Run `migrate`,
+  or list the id in `SILENCED_CHECKS`.
 
 No migration.
 

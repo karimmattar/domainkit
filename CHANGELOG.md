@@ -18,30 +18,46 @@ and a status.
   ([HTTP settings](docs/reference/http.md#probe-paths), ADR 0186) (audit
   A28-ARCH-01).
 - `domainkit.deadlines.after_commit()` runs what follows a commit free of
-  the task's deadlines, and `timeout(seconds, until_commit=True)` makes a
-  deadline a commit lifts for good, as `DeadlineMiddleware` does for each
-  request ([Keeping to the deadline](docs/runtime.md#keeping-to-the-deadline))
+  the deadlines, and `timeout(seconds, until_commit=True)` makes a
+  deadline that a commit lifts for good, with every block it bounds, from
+  whichever task commits, as `DeadlineMiddleware` does for each request
+  ([Keeping to the deadline](docs/runtime.md#keeping-to-the-deadline))
   (audit A28-REL-01).
 - `HandlerCancelled`, reported for in-process handlers that a cancellation
   of their work cut off, or kept from running (audit A28-REL-01).
 - `UnitOfWork.in_doubt` counts commits that failed without the database's
   refusal, so they may have been applied: a lost connection, a timeout,
-  or a cut as it committed (audit A28-REL-04).
+  or a cut as it committed. SQLAlchemy's own errors, raised before a
+  `COMMIT` could be answered, are refusals (audit A28-REL-04).
 - `apps.E003`: `check` refuses an optional app's middleware in
   `MIDDLEWARE` without the app in `INSTALLED_DOMAINS`, and names the app;
   staging and production refuse to start with it (audit A28-DX-04).
 - `migrations.W001`: outside staging and production, `check` warns of each
-  database that lacks revisions of its target, and `runserver` says so
-  before it serves ([Deployment checks](docs/reference/checks.md#warnings))
-  (audit A28-DX-08).
+  database that lacks revisions of its target, or whose revisions cannot
+  be read, and `runserver` says so before it serves. Each database gets 2
+  seconds at most to answer
+  ([Deployment checks](docs/reference/checks.md#warnings)) (audit
+  A28-DX-08).
+- `probes.W001`: `check` warns of a list of exempt paths that names some of
+  `PROBE_PATHS`, not all: the probes it leaves out are exempt from it
+  since 2.9 (audit A28-ARCH-01).
 
 ### Changed
 
 - `RATE_LIMIT_EXEMPT_PATHS`, `CONCURRENCY_EXEMPT_PATHS`,
   `ACCESS_LOG_QUIET_PATHS`, and `AUTH.AUTHENTICATION_EXEMPT_PATHS` default
   to `()`, and add to `PROBE_PATHS`: they exempt what they did by default,
-  and a list a project set keeps working. Successful scrapes of `/metrics`
-  are logged at DEBUG, as the probes are (audit A28-ARCH-01).
+  and the paths a project listed stay exempt. A list that left a probe out
+  no longer does: that probe is exempt from it too (a `/metrics` counted
+  by the rate limit, say). To keep it out, take it out of `PROBE_PATHS`,
+  and add it to each list that should still exempt it. Successful scrapes
+  of `/metrics` are logged at DEBUG, as the probes are (audit
+  A28-ARCH-01).
+- The domains' after-commit hooks (`on_committed`,
+  `on_transaction_committed`) run within `EVENT_HANDLER_TIMEOUT` each, now
+  that the request's deadline does not bound them: one still running then
+  is cut off, logged, and reported as `HandlerTimedOut` (audit
+  A28-REL-01).
 - `runserver` and `serve` run uvicorn with `lifespan="on"`: a lifespan
   that raises stops the server, which exits 3, where uvicorn logged it at
   INFO as unsupported and served every request a 500. Under Granian with
@@ -51,20 +67,28 @@ and a status.
 ### Fixed
 
 - A request that commits a unit of work is answered as committed: the
-  commit lifts its deadline, and its in-process handlers all run, each
-  within its own timeout. The deadline cut them off and answered
-  `503 deadline_exceeded` with `Retry-After: 1` for a change that was
-  made, and skipped the handlers after the slow one with nothing logged.
-  A worker's task no longer counts its handlers against its timeout, so
-  slow handlers do not fail a task that committed, and run it again
-  ([The request flow](docs/request-flow.md#8-commit), ADR 0186) (audit
-  A28-REL-01).
+  commit lifts its deadline, from whichever of the request's tasks
+  commits (`asyncio.gather`, a task group, a `BaseHTTPMiddleware`), and
+  its in-process handlers all run, each within its own timeout. The
+  deadline cut them off and answered `503 deadline_exceeded` with
+  `Retry-After: 1` for a change that was made, and skipped the handlers
+  after the slow one with nothing logged. A worker's task no longer
+  counts its handlers against its timeout, so slow handlers do not fail a
+  task that committed, and run it again; `TASK_TIMEOUT` then no longer
+  bounds a run's whole time ([The request flow](docs/request-flow.md#8-commit),
+  ADR 0186) (audit A28-REL-01).
+- A request whose commit is in doubt (the deadline passed, or the
+  connection was lost, as its `COMMIT` was sent) answers 503 without
+  `Retry-After`, with a detail that says the change may have been made
+  (audit A28-REL-01, A28-REL-03).
 - A database that cannot be reached, or cannot serve now (class `08`,
   `57P01` to `57P03`, `53300`, or a connection refused as the pool opens
   it), answers `503 database_unavailable` with `Retry-After: 5`, and is
   logged once per reason every 10 seconds, not reported as a bug. It
   answered `500 internal_error`, with a traceback and an error report per
-  request ([Runbook](docs/runbook.md#the-database-is-unavailable)) (audit
+  request. It is told from asyncpg's errors and SQLAlchemy's: through
+  psycopg, a connection that cannot be opened may still answer 500
+  ([Runbook](docs/runbook.md#the-database-is-unavailable)) (audit
   A28-REL-03).
 - `upload_route` keeps a file whose request failed as it committed, when
   the commit may have been applied, and logs its name and storage. It
