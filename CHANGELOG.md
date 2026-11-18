@@ -5,7 +5,8 @@ All notable changes to domainkit. The format follows
 [Semantic Versioning](https://semver.org/); see `docs/versioning.md`.
 Entries end with the ids of the review findings they answer, such as
 `(FIN-77)`: [docs/audit/0.9.0.md](docs/audit/0.9.0.md) gives each a title
-and a status.
+and a status. Ids that start with `A28-` name the 2.8 audit's findings,
+listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 
 ## [Unreleased]
 
