@@ -534,7 +534,9 @@ def test_canonicalization_is_bounded_before_signxml_runs(
     Counted before signxml reads the response, within ``MAX_NODES`` (lead
     review): a prefix declared again on the path counts again, so 32
     declarations pass, flat, nested, or declaring the same prefixes again;
-    64 levels pass; a ``SignedInfo`` of 32 elements does.
+    an element 32 levels deep passes, the signature's ``DigestMethod`` there
+    (27 levels, then the signature's 5), and one 33 deep does not; a
+    ``SignedInfo`` of 32 elements does.
     """
     config = SamlSettings(**OKTA)
     now = datetime.now(UTC)
@@ -551,7 +553,7 @@ def test_canonicalization_is_bounded_before_signxml_runs(
         (over, declaring(12_000, inside=signature(40))),
         (over, declaring(40, nested=10, inside=signature())),
         (over, declaring(290, nested=10, inside=signature(), again=True)),
-        ("deeper than 64 levels", declaring(0, nested=60, inside=signature())),
+        ("deeper than 32 levels", declaring(0, nested=28, inside=signature())),
         ("more than 32 elements", declaring(0, inside=signature(10))),
     ]
     for reason, encoded in refused:
@@ -562,7 +564,7 @@ def test_canonicalization_is_bounded_before_signxml_runs(
         declaring(30, nested=10, inside=signature()),
         declaring(30, nested=10, inside=signature(), again=True),
         declaring(0, inside=signature(9)),
-        declaring(0, nested=59, inside=signature()),
+        declaring(0, nested=27, inside=signature()),
     ]
     for encoded in passed:
         with pytest.raises(saml.AssertionRefused, match="no valid signature"):
@@ -714,6 +716,55 @@ def test_namespaces_declared_again_deep_are_refused_signed_or_not(
 
     assert sent == {"error": "saml_refused"}
     assert parsed == []
+
+
+def uri(length: int) -> str:
+    """A namespace URI of ``length`` characters."""
+    return "urn:" + "u" * (length - 4)
+
+
+def test_a_namespace_uri_past_128_characters_is_refused_before_signxml_runs(
+    app: App, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exclusive canonicalization writes a declaration again on each element using it.
+
+    A URI of 128 characters reaches signxml, one of 129 does not, declared
+    on a response no one signed, or in the signed part of one the provider
+    signed and that was then changed: refused before signxml reads it, and
+    through the ACS (lead review).
+    """
+    client = app(SAML={"okta": OKTA}, SIGNUP=True, FRONTEND_URL=FRONTEND)
+    config = SamlSettings(**OKTA)
+    now = datetime.now(UTC)
+    signed = base64.b64decode(response("_x"))
+
+    def changed(length: int) -> bytes:
+        used = f'<w xmlns:c="{uri(length)}">{"<c:e/>" * 4_000}</w>'
+        return signed.replace(b"<samlp:Status>", f"<samlp:Status>{used}".encode())
+
+    def unsigned(length: int) -> bytes:
+        root = f'<samlp:Response xmlns:samlp="{saml.PROTOCOL}">'
+        used = f'<w xmlns:c="{uri(length)}"><c:e/></w>'
+        return f"{root}{used}{signature()}</samlp:Response>".encode()
+
+    _, relay = start(client)
+    sent = acs(client, base64.b64encode(changed(129)).decode(), relay)
+    parsed: list[bytes] = []
+
+    def verify(self: XMLVerifier, data: bytes, **_: Any) -> Any:  # noqa: ANN401
+        parsed.append(data)
+        raise etree.XMLSyntaxError("stop here", 1, 1, 1)
+
+    monkeypatch.setattr(XMLVerifier, "verify", verify)
+    for xml in (changed(129), unsigned(129)):
+        with pytest.raises(saml.AssertionRefused, match="more than 128 characters"):
+            saml.verified_claims(config, base64.b64encode(xml).decode(), "_x", now)
+    for xml in (changed(128), unsigned(128)):
+        with pytest.raises(saml.AssertionRefused, match="no valid signature"):
+            saml.verified_claims(config, base64.b64encode(xml).decode(), "_x", now)
+
+    assert sent == {"error": "saml_refused"}
+    assert parsed == [changed(128), unsigned(128)]
 
 
 def test_an_okta_response_that_declares_namespaces_again_logs_in(app: App) -> None:

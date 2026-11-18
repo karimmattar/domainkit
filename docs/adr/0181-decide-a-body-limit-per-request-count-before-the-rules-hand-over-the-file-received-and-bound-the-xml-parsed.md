@@ -281,13 +281,17 @@ parsed. The ACS now takes this record's design:
 - Counting nodes does not bound all of signxml's work before it checks
   the signature (the lead review of the fix). So the response is read
   once more in the thread before signxml runs: an element sits at most
-  64 levels deep, with at most 32 namespace declarations on its path
+  32 levels deep, with at most 32 namespace declarations on its path
   from the root, a prefix declared again counted again (Okta declares
   `xs` and `xsi` again on sibling values, so each path holds them once),
-  and at most 32 attributes, in the signed part signxml canonicalizes
-  before it compares a digest as in a `SignedInfo`; a `SignedInfo` holds
-  at most 32 elements and 16 KiB (the re-checks of the fix). Within all
-  the bounds, XML written to cost the most took up to 50 ms and 15 MiB
-  when no one signed it, and up to 200 ms and 36 MiB when the provider
-  signed it and it was then changed, with inclusive or exclusive
-  canonicalization, both readings and signxml's refusal included.
+  each of a URI of 128 characters at most, which exclusive
+  canonicalization writes again on each element that uses it, and at
+  most 32 attributes, in the signed part signxml canonicalizes before it
+  compares a digest as in a `SignedInfo`; a `SignedInfo` holds at most
+  32 elements and 16 KiB (the re-checks of the fix). Within all the
+  bounds, XML written to cost the most took up to 50 ms and 15 MiB when
+  no one signed it. When the provider signed it and it was then
+  changed, the costliest shapes took up to 275 ms, most of their runs
+  150 to 230 ms, and up to 46 MiB over what the process held before,
+  with inclusive or exclusive canonicalization, both readings and
+  signxml's refusal included (measured at a load average near 8).
