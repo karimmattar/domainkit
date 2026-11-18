@@ -74,7 +74,7 @@ and the language from `LANGUAGE_CODE`. `server-timing` is the
 | `MAX_CONCURRENT_REQUESTS` | `1000` | HTTP requests each event loop works on at once (`ConcurrencyLimitMiddleware`), at most 100,000. A request that waits for its body is not counted meanwhile. `None`: no cap ([runtime.md](../runtime.md#load-shedding)). |
 | `MAX_QUEUED_REQUESTS` | `100` | Requests past the cap that may wait for a slot (at most 100,000). The next ones are answered 503 `overloaded` at once. |
 | `REQUEST_QUEUE_TIMEOUT` | `1.0` | Seconds (at most 60) a request past the cap waits for a slot, before it is answered 503 `overloaded`. |
-| `CONCURRENCY_EXEMPT_PATHS` | `/health`, `/ready`, `/metrics` | Exact paths never counted against the cap, so probes and scrapes are never refused. They are compared without the root path the application is mounted at (`--root-path`). |
+| `CONCURRENCY_EXEMPT_PATHS` | `()` | Exact paths never counted against the cap, besides `PROBE_PATHS`. They are compared without the root path the application is mounted at (`--root-path`). Until 2.9 its default named the probes. |
 | `GUARD_LOOKUP_THREADS` | `16` | Threads (1 to 256) that look host names up for guarded calls and webhooks, in each process. One owner (a request's user or address, or a webhook delivery's subscription) may hold a quarter of them, so hosts that one owner chose and that never answer leave the rest to others ([runtime.md](../runtime.md#outgoing-http-calls)). |
 | `HTTP_CLIENT` | see [Outgoing HTTP calls](#outgoing-http-calls) | The defaults of outgoing calls through `domainkit.http.client`. |
 
@@ -84,6 +84,12 @@ and the language from `LANGUAGE_CODE`. `server-timing` is the
 | --- | --- | --- |
 | `GZIP_MINIMUM_SIZE` | `500` | Bytes (0 or more) a response needs before `GZipMiddleware` compresses it. |
 | `GZIP_LEVEL` | `6` | `GZipMiddleware`'s compression level, from 1 (fastest) to 9 (smallest). |
+
+### Probe paths
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `PROBE_PATHS` | `/health`, `/ready`, `/metrics` | Exact paths of the probes and the metrics scrape, compared without the root path (`--root-path`). They are never counted against the rate limit or the concurrency cap, are served without reading credentials (`AuthenticationMiddleware`) or naming a tenant (`TenantMiddleware`), and are logged at DEBUG when they succeed. Set it where you mount `domainkit.http.health` and `domainkit.http.metrics` elsewhere. `RATE_LIMIT_EXEMPT_PATHS`, `CONCURRENCY_EXEMPT_PATHS`, `ACCESS_LOG_QUIET_PATHS`, `AUTH.AUTHENTICATION_EXEMPT_PATHS`, and `TENANCY.EXEMPT_PATHS` add paths of your own to it. `()` exempts no probe. *New in 2.9* ([ADR 0186](../adr/0186-answer-a-commit-as-committed-a-lost-database-as-unavailable-start-loudly-and-name-the-probes-once.md)) |
 
 ### Readiness
 
@@ -101,7 +107,7 @@ fails ([operations.md](../operations.md)).
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `ACCESS_LOG_QUIET_PATHS` | `/health`, `/ready` | Successful requests to these paths are logged at DEBUG. They are compared without the root path (`--root-path`). |
+| `ACCESS_LOG_QUIET_PATHS` | `()` | Successful requests to these paths, and to `PROBE_PATHS`, are logged at DEBUG. They are compared without the root path (`--root-path`). Until 2.9 its default named `/health` and `/ready`, so each scrape of `/metrics` was logged at INFO. |
 | `ACCESS_LOG_SAMPLE_RATE` | `1.0` | The share of access lines written, from 0 to 1: `0.1` writes about one request in ten, each drawn on its own. These are always written: responses from 400 up (client errors, refusals, and server errors), requests without a response, and requests that take `ACCESS_LOG_SLOW_DURATION` or longer. So only successes and redirects are sampled. `domainkit.security` and the audit trail are never sampled ([runtime.md](../runtime.md#sampling-the-access-log)). |
 | `ACCESS_LOG_SLOW_DURATION` | `1.0` | Seconds (at most 3600). A request this slow or slower has its access line written, whatever `ACCESS_LOG_SAMPLE_RATE` says. |
 | `ACCESS_LOG_PATH` | `"template"` | The path that access lines, the request middleware's error lines, error reports, and the request context show: the matched route's template (`/accounts/{account_id}`), or `unmatched`. `"raw"` shows the path as sent, ids and tokens included ([runtime.md](../runtime.md#paths-in-logs)). |
@@ -124,7 +130,7 @@ setup.
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `RATE_LIMIT` | `None` | Requests per caller, such as `"300/minute"` (`second`, `minute`, `hour`, `day`). `None` turns it off. |
-| `RATE_LIMIT_EXEMPT_PATHS` | `/health`, `/ready`, `/metrics` | Exact paths never counted, compared without the root path (`--root-path`). |
+| `RATE_LIMIT_EXEMPT_PATHS` | `()` | Exact paths never counted, besides `PROBE_PATHS`, compared without the root path (`--root-path`). Until 2.9 its default named the probes. |
 | `RATE_LIMIT_BACKEND` | `domainkit.http.ratelimit.MemoryBackend` | Where counts live. The default counts per process, and keeps the 100,000 callers seen most recently; one seen longer ago starts again from zero. Behind several replicas, use `domainkit.http.ratelimit.RedisBackend`: one count per caller in Redis, on the server's clock. If Redis fails, or refuses the count (out of memory, a read-only replica after a failover), requests are let through, and Redis is skipped for the cache's `FAILURE_COOLDOWN`. Password and code checks are refused meanwhile instead, in staging and production (`AUTH.THROTTLE_FAIL_CLOSED`), which also refuse to start with attempts counted in each process (`auth.E105`) ([auth.md](../auth/logging-in.md#logging-in-and-out)). |
 | `RATE_LIMIT_CACHE` | `"default"` | The Redis cache that `RedisBackend` counts in. Keys are `<KEY_PREFIX>:ratelimit:<caller>`. |
 | `RATE_LIMIT_FALLBACK_REPLICAS` | `None` | 1 to 1024. While Redis is down, `RedisBackend` counts each caller in its own process, at `RATE_LIMIT` divided by this many replicas (at most `FALLBACK_KEYS`, 10,000, callers; a caller who still owes requests is never forgotten, and while all of them do, new callers are refused). `None` lets requests through, as before. |

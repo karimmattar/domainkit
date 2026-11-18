@@ -22,6 +22,13 @@ with no time left raises ``DeadlineExceeded`` at once, without running.
 A deadline governs the work inside its block: tasks that outlive the
 block are not bound by it.
 
+A deadline cuts off work that has not committed. What follows a commit
+runs in ``after_commit()``, where no deadline cuts it off. A deadline
+made ``until_commit`` (an HTTP request's), and every block it bounds, in
+any task, is lifted there for good, so the request is answered as
+committed, whichever of its tasks committed. The other deadlines the
+task enforces are put back after it, later by the time it took.
+
 Outside a request there is no deadline until a block sets one with
 ``timeout``: a worker bounds a task the same way. Transactions on
 PostgreSQL lower ``statement_timeout`` to the time remaining, and
@@ -43,9 +50,11 @@ from domainkit import clock
 from domainkit.exceptions import DomainkitError
 
 __all__ = [
+    "AfterCommit",
     "Deadline",
     "DeadlineExceeded",
     "Timeout",
+    "after_commit",
     "current_deadline",
     "enforced",
     "remaining",
@@ -79,9 +88,17 @@ class Deadline:
         """The seconds the work was given, from when it started; kept when
         cleared, so logs can say what the work had."""
         self.at = None if seconds is None else self.started + seconds
+        self.until_commit = False
+        """Whether a commit in the work lifts it for good (``after_commit``):
+        an HTTP request's, whose answer must say what was committed."""
         self._timer: asyncio.Timeout | None = None
         self._task: asyncio.Task[Any] | None = None
         self._outer: Deadline | None = None
+        self._parent: Deadline | None = None
+        """The deadline of the work this block was entered in, if any."""
+        self._bounded: list[Deadline] | None = None
+        """Open blocks bounded by this deadline, in any task, that a commit
+        lifts with it (``until_commit``); each leaves it as it ends."""
 
     def remaining(self) -> float | None:
         """Seconds left, never below 0; None without a deadline."""
@@ -119,6 +136,23 @@ class Deadline:
         if self._timer is not None:
             return self._task is asyncio.current_task()
         return self._outer is not None and self._outer._enforced()
+
+    def _ends_at_commit(self) -> bool:
+        """Whether a commit lifts it for good: it, or the deadline enforcing it."""
+        if self.until_commit:
+            return True
+        return (
+            self._timer is None
+            and self._outer is not None
+            and self._outer._ends_at_commit()
+        )
+
+    def _lift(self) -> None:
+        """Lift it for good, and the blocks it bounds, wherever they run."""
+        self.clear()
+        for bounded in self._bounded or ():
+            if bounded.at is not None:
+                bounded._lift()
 
     def _enforce(
         self, timer: asyncio.Timeout | None, outer: "Deadline | None" = None
@@ -190,19 +224,25 @@ def enforced() -> bool:
 class Timeout:
     """A block bounded by its seconds and the deadline (see ``timeout``)."""
 
-    def __init__(self, seconds: float | None) -> None:
+    def __init__(self, seconds: float | None, *, until_commit: bool = False) -> None:
         """Bound the block by ``seconds`` too, unless None.
+
+        With ``until_commit``, a commit in the block lifts its deadline for
+        good (``Deadline.until_commit``).
 
         Raises:
             ValueError: ``seconds`` is not a finite number.
         """
         _check(seconds)
         self.seconds = seconds
+        self.until_commit = until_commit
         self.deadline: Deadline | None = None
         """The block's deadline, once entered."""
         self._by_deadline = False
         self._timer: asyncio.Timeout | None = None
         self._token: Token[Deadline | None] | None = None
+        self._bounding: list[Deadline] | None = None
+        """The list of open blocks this block's deadline is on (``_bounded``)."""
 
     def expired(self) -> bool:
         """Whether this block's own timer ran out (and cancelled the block)."""
@@ -225,12 +265,23 @@ class Timeout:
         if limit is not None and limit <= 0:
             raise _expired(self._by_deadline)
         self.deadline = Deadline(limit)
+        self.deadline.until_commit = self.until_commit
+        self.deadline._parent = outer
         if self._by_deadline and outer is not None and outer._enforced():
             self.deadline._enforce(None, outer)
         elif limit is not None:
             self._timer = asyncio.timeout(limit)
             await self._timer.__aenter__()
             self.deadline._enforce(self._timer)
+        if self._by_deadline and outer is not None and outer._ends_at_commit():
+            # Bounded by a deadline a commit lifts: lifted with it, whichever
+            # task commits, with a timer of its own (in a task that only
+            # shares the deadline) or without, while the block is open.
+            self.deadline.until_commit = True
+            if outer._bounded is None:
+                outer._bounded = []
+            outer._bounded.append(self.deadline)
+            self._bounding = outer._bounded
         self._token = _current.set(self.deadline)
         return self
 
@@ -249,6 +300,9 @@ class Timeout:
         if self.deadline is None or self._token is None:
             return  # Never entered.
         _current.reset(self._token)
+        if self._bounding is not None:
+            self._bounding.remove(self.deadline)  # It keeps open blocks only.
+            self._bounding = None
         self.deadline._enforce(None)
         self.deadline.clear()  # Tasks that outlive the block are not bound.
         if self._timer is None:
@@ -261,7 +315,7 @@ class Timeout:
             raise
 
 
-def timeout(seconds: float | None = None) -> Timeout:
+def timeout(seconds: float | None = None, *, until_commit: bool = False) -> Timeout:
     """Bound an ``async with`` block by ``seconds`` and by the deadline.
 
     The block gets the smaller of the two, as its deadline too: the code
@@ -274,9 +328,75 @@ def timeout(seconds: float | None = None) -> Timeout:
     ``DeadlineExceeded`` (or, for ``seconds`` of 0 or less, ``TimeoutError``)
     is raised there, and the block does not run. ``seconds`` that are not a
     finite number (NaN, infinity) are refused with ``ValueError``: None is
-    how a block says it has no bound of its own.
+    how a block says it has no bound of its own. With ``until_commit``, a
+    commit in the block lifts its deadline for good (``after_commit``),
+    as ``DeadlineMiddleware`` asks for each HTTP request.
     """
-    return Timeout(seconds)
+    return Timeout(seconds, until_commit=until_commit)
+
+
+class AfterCommit:
+    """What follows a commit, free of the task's deadlines (see ``after_commit``)."""
+
+    __slots__ = ("_held", "_started")
+
+    def __init__(self) -> None:
+        """Nothing held until the block is entered."""
+        self._held: list[tuple[Deadline, float]] = []
+        self._started = 0.0
+
+    def __enter__(self) -> None:
+        """Lift the deadlines a commit ends; hold the others this task enforces."""
+        deadline = _current.get()
+        while deadline is not None:
+            at = deadline.at
+            if at is not None and deadline._ends_at_commit():
+                deadline._lift()
+            elif at is not None and deadline._enforced():
+                self._held.append((deadline, at))
+                deadline.clear()
+            deadline = deadline._parent
+        if self._held:
+            self._started = clock.monotonic()
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Put the held deadlines back, later by the time the block took."""
+        if not self._held:
+            return
+        took = clock.monotonic() - self._started
+        for deadline, at in self._held:
+            if deadline.at is None:  # Unless the block moved it itself.
+                deadline.at = at + took
+                deadline._reschedule()
+
+
+def after_commit() -> AfterCommit:
+    """Run what follows a commit in a ``with`` block no deadline cuts off.
+
+    A unit of work runs its after-commit hooks and in-process event
+    handlers in it, each within its own timeout. The deadlines of the
+    work are lifted for the block, so what it runs sees none:
+
+    - one made ``until_commit``, an HTTP request's, stays lifted, and so
+      does every block it bounds, in any task: the work committed, and the
+      request is answered as committed, however long that takes. So it
+      is when the commit is made in a task the request started
+      (``asyncio.gather``, a task group, a ``BaseHTTPMiddleware``) that
+      only shares the deadline;
+    - the others this task enforces are put back when the block ends,
+      later by the time it took: what follows a commit does not count
+      against the work's time. A worker's task keeps the time it had
+      left when it committed.
+
+    Any other deadline, one another task enforces and no commit ends, is
+    left as it is.
+    """
+    return AfterCommit()
 
 
 async def within[T](awaitable: Awaitable[T], seconds: float | None = None) -> T:

@@ -145,9 +145,11 @@ Per-request context shared by logging and error responses.
 
 Deadlines: how long the work of a request, or of a block, may take.
 
+- `AfterCommit`: What follows a commit, free of the task's deadlines (see `after_commit`).
 - `Deadline`: When the work of a request, or of a `timeout` block, must be done.
 - `DeadlineExceeded`: The deadline ran out: the request's, or that of a `timeout` block.
 - `Timeout`: A block bounded by its seconds and the deadline (see `timeout`).
+- `after_commit`: Run what follows a commit in a `with` block no deadline cuts off.
 - `current_deadline`: Return the deadline of the work being done, or None outside one.
 - `enforced`: Whether a timer cuts the running task off when its deadline passes.
 - `remaining`: Return the seconds left before the deadline; None without one.

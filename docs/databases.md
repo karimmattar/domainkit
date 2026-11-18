@@ -1838,7 +1838,7 @@ class LedgerConfig(DomainConfig):
 | Hook | Runs |
 | --- | --- |
 | `on_stage` | In a committing `SqlAlchemyUnitOfWork`, in its transaction, to add rows (the outbox, the audit trail). Raising rolls it back. |
-| `on_committed` | After it committed. A failure is logged and reported, and the unit of work carries on. |
+| `on_committed` | After it committed, each within `EVENT_HANDLER_TIMEOUT` (since 2.9: the request's deadline no longer bounds it). A failure, or a hook cut off at that timeout (`HandlerTimedOut`), is logged and reported, and the unit of work carries on. |
 | `on_stage_transaction`, `on_transaction_committed` | The same, for a transaction the framework commits outside a unit of work. |
 | `on_migrated` | After `migrate` upgraded a database, in one transaction on the schema owner's connection. |
 

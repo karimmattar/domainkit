@@ -489,8 +489,18 @@ In-process [event handlers](learning.md#words) run right after a unit of
 work commits, inside the request. Each runs within
 `EVENT_HANDLER_TIMEOUT` seconds (10 by default). A handler still running
 then is cancelled, logged, and reported to the error reporters as
-`HandlerTimedOut` (a `TimeoutError`). Then the next handler runs. A
-handler may have its own limit:
+`HandlerTimedOut` (a `TimeoutError`). Then the next handler runs.
+
+The request's deadline, and a worker task's timeout, do not cut the
+handlers off: what follows a commit runs free of them
+(`deadlines.after_commit`). A request is answered as committed, and a
+task keeps the time it had left when it committed. The domains'
+after-commit hooks (`on_committed`, `on_transaction_committed`) get
+`EVENT_HANDLER_TIMEOUT` each too, and one still running then is cut off
+and reported as `HandlerTimedOut`. When the work itself is cancelled (a
+shutdown, a task cancelled), the handler cut off and those that did not
+run are logged and reported as `HandlerCancelled`. A handler may have
+its own limit:
 
 ```python
 event_bus.subscribe(InvoicePaid, refresh_totals, timeout=2)
@@ -1296,6 +1306,16 @@ starts:
   own ([live.md](live.md)).
 - A long-lived endpoint that does slow work before it starts answering
   uses `RequestTimeout(None)`, or a longer deadline.
+- A request that commits a unit of work is answered as committed: the
+  commit lifts its deadline, as the response's start does, whichever of
+  the request's tasks commits (one it started with `asyncio.gather` or a
+  task group, or the one a `BaseHTTPMiddleware` serves the route in). Its
+  in-process event handlers and after-commit hooks run, each within its
+  own timeout. *New in 2.9*: before, the deadline could cut them off and
+  answer 503 for a change that was made.
+- A request cut off as its `COMMIT` was sent may have made its change: it
+  is answered 503 `deadline_exceeded` without `Retry-After`, with a
+  detail that says to check before sending it again.
 - Code can lift the deadline of the work it is doing with
   `domainkit.deadlines.current_deadline().clear()`.
 - Tasks a request starts share its deadline while the request runs, and
@@ -1336,6 +1356,25 @@ async with deadlines.timeout(10.0):  # Bound a block.
 Workers and commands bound their own work the same way:
 `async with deadlines.timeout(60): await handle(message)`. Outside a
 request there is no deadline until a block sets one.
+
+A deadline cuts off work that has not committed. A unit of work runs
+what follows its commit in `deadlines.after_commit()`: no deadline cuts
+it off, and the code inside sees none.
+
+- A deadline made `until_commit` stays lifted, and so does every block it
+  bounds, in any task: the work committed, and its answer must say so.
+  This holds when the commit is made in a task that only shares the
+  deadline. `DeadlineMiddleware` makes each request's so:
+  `deadlines.timeout(seconds, until_commit=True)`.
+- The other deadlines the committing task enforces are put back when the
+  block ends, later by the time it took: what follows the commit does not
+  count against the work's time. A worker's task keeps the time it had
+  left. So is a route's own tighter `timeout()` around a commit: the
+  commit lifts the request's deadline, not a bound the route set itself,
+  and the block still raises `TimeoutError` when its seconds run out.
+  Put the commit last in such a block, or catch its `TimeoutError`.
+- Any other deadline, one that another task enforces and no commit ends,
+  is left as it is.
 
 The deadline itself is a `deadlines.Deadline`:
 
@@ -1403,6 +1442,13 @@ timers that cancel work run on the event loop's own clock.
 - **Worker tasks.** The messaging worker runs each message under a
   deadline of its timeout (the task's `timeout`, or `TASK_TIMEOUT`). So a
   task's transactions and outgoing calls keep to it as a request's do.
+  The in-process handlers of a commit it makes do not count against it,
+  so slow handlers no longer fail a task that committed, and run it, and
+  commit it, again. So `TASK_TIMEOUT` no longer bounds a run's whole
+  time: what follows each commit adds to it, up to `EVENT_HANDLER_TIMEOUT`
+  for each handler and hook. Keep `VISIBILITY_TIMEOUT` above both, or a
+  run still in its handlers may be claimed again
+  ([messaging.md](contrib/messaging.md)).
 - **Cache computations** run under the cache's `COMPUTE_TIMEOUT`, or,
   when they borrow their caller's resources, under that caller's
   deadline ([cache.md](cache.md#what-a-factory-may-use)).
@@ -1438,9 +1484,9 @@ Retry-After: 1
 ```
 
 - **Probes are never shed.** The health and readiness probes and the
-  metrics scrape (`CONCURRENCY_EXEMPT_PATHS`: `/health`, `/ready`,
-  `/metrics`) are never counted or refused, so a busy replica is not
-  taken for a dead one. Behind `--root-path`, the paths are compared
+  metrics scrape (`PROBE_PATHS`: `/health`, `/ready`, `/metrics`), and
+  the paths in `CONCURRENCY_EXEMPT_PATHS`, are never counted or refused,
+  so a busy replica is not taken for a dead one. Behind `--root-path`, the paths are compared
   without it.
 - **A slot is held until the response starts.** A request holds its slot
   until its response starts, or until it ends. A streamed response, an
@@ -1819,7 +1865,7 @@ Each setting has its full row on
 | `SLOW_CALLBACK_DURATION` | `0.1` | With `DEBUG`, log each loop step that holds the loop this long. `None` turns it off. |
 | `LOGGING` | minimal | The `dictConfig` mapping `setup()` applies. `build_logging_config` makes one. |
 | `ERROR_REPORTERS` | `()` | Reporters by dotted path, run on the reporting thread. |
-| `EVENT_HANDLER_TIMEOUT` | `10.0` | Seconds an in-process event handler may run. |
+| `EVENT_HANDLER_TIMEOUT` | `10.0` | Seconds an in-process event handler, or a domain's after-commit hook, may run. |
 | `ACCESS_LOG_SAMPLE_RATE` | `1.0` | The share of successful requests that write an access line. |
 | `ACCESS_LOG_SLOW_DURATION` | `1.0` | Seconds after which a request always writes its line. |
 | `ACCESS_LOG_PATH` | `"template"` | `"raw"` logs the path as sent. |
@@ -1830,7 +1876,7 @@ Each setting has its full row on
 | `MAX_CONCURRENT_REQUESTS` | `1000` | Requests each event loop works on at once. `None` turns shedding off. |
 | `MAX_QUEUED_REQUESTS` | `100` | Requests that may wait for a slot. |
 | `REQUEST_QUEUE_TIMEOUT` | `1.0` | Seconds a request may wait for a slot. |
-| `CONCURRENCY_EXEMPT_PATHS` | `("/health", "/ready", "/metrics")` | Paths never counted or shed. |
+| `CONCURRENCY_EXEMPT_PATHS` | `()` | Paths never counted or shed, besides `PROBE_PATHS`. |
 | `REQUEST_BODY_TIMEOUT` | `10.0` | Seconds a request body may take to arrive (408 after). |
 | `HTTP_CLIENT` | see below | The defaults of every `HttpClient`. |
 | `GUARD_LOOKUP_THREADS` | `16` | Threads for a guarded client's host lookups. |

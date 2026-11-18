@@ -9,11 +9,14 @@ import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy import insert, text, update
+from sqlalchemy.exc import DBAPIError
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 from domainkit import clock, deadlines
+from domainkit.ddd import AggregateRoot, DomainEvent, EventBus
 from domainkit.http.deadlines import RequestTimeout
 from domainkit.http.health import router as health_router
 from domainkit_tests.sample_routes import PaymentsUnitOfWork, payments
@@ -55,6 +58,10 @@ paying: list[deadlines.Deadline | None] = []
 """The deadline of each ``/slow-pay`` that wrote and hangs, for the test to end."""
 swallowing: list[deadlines.Deadline | None] = []
 """The deadline of each ``/swallow`` waiting, for the test to end."""
+told: list[object] = []
+"""What the handlers of ``/pay-and-tell``'s event did, in order."""
+telling: list[deadlines.Deadline] = []
+"""The deadline of the ``/pay-and-tell`` that committed, for its slow handler."""
 
 
 async def forever() -> None:
@@ -196,3 +203,114 @@ async def statement_timeout() -> dict[str, str]:
 async def month_long_statement_timeout() -> dict[str, str]:
     """``/statement-timeout`` under a deadline longer than PostgreSQL takes."""
     return await statement_timeout()
+
+
+class Payment(AggregateRoot[int]):
+    """A payment ``/pay-and-tell`` records, for the event it publishes."""
+
+
+class Paid(DomainEvent):
+    """A payment was recorded."""
+
+
+tellers = EventBus()
+"""The bus of ``/pay-and-tell``: a slow handler, then another."""
+
+
+async def tell_slowly(event: Paid) -> None:
+    """Run past the request's deadline, then note what is left of it.
+
+    It waits until 50 ms after the moment the deadline was set for, however
+    long the request took to commit.
+    """
+    told.append("slow started")
+    await asyncio.sleep(past(telling[0]))
+    told.append(("slow finished", deadlines.remaining()))
+
+
+def past(deadline: deadlines.Deadline) -> float:
+    """Seconds from now until 50 ms past the moment ``deadline`` was set for."""
+    assert deadline.seconds is not None
+    return max(deadline.started + deadline.seconds - clock.monotonic(), 0.0) + 0.05
+
+
+async def tell_next(event: Paid) -> None:
+    """Run after the slow handler."""
+    told.append("next")
+
+
+tellers.subscribe(Paid, tell_slowly)
+tellers.subscribe(Paid, tell_next)
+
+
+class PaysAndTells(PaymentsUnitOfWork):
+    """Records a payment, and publishes ``Paid`` once it is committed."""
+
+    def _seen(self) -> list[Any]:
+        payment = Payment(id=1)
+        payment.record(Paid())
+        return [payment]
+
+
+@router.post("/pay-and-tell", status_code=201)
+async def pay_and_tell(after: float = 0.0, in_task: bool = False) -> dict[str, Any]:
+    """Commit a payment whose handlers outlast the deadline, then wait ``after``.
+
+    ``in_task`` commits in a task of its own (``asyncio.gather``), which
+    shares the request's deadline without enforcing it.
+    """
+    deadline = deadlines.current_deadline()
+    assert deadline is not None
+    telling[:] = [deadline]
+
+    async def commit() -> None:
+        async with PaysAndTells(events=tellers) as uow:
+            await uow.session.execute(insert(payments))
+            await uow.commit()
+
+    if in_task:
+        await asyncio.gather(commit())
+    else:
+        await commit()
+    await asyncio.sleep(after)
+    return {"paid": True, "remaining": deadlines.remaining()}
+
+
+class LosesItsCommitsAnswer(PaymentsUnitOfWork):
+    """Commits, then loses the connection before the answer comes: in doubt."""
+
+    async def _commit(self) -> None:
+        await super()._commit()
+        raise DBAPIError(
+            "COMMIT",
+            {},
+            ConnectionResetError("the connection was lost"),
+            connection_invalidated=True,
+        )
+
+
+class CommitsForEver(PaymentsUnitOfWork):
+    """Sends its ``COMMIT``, whose answer never comes: the deadline cuts it."""
+
+    async def _commit(self) -> None:
+        await forever()
+
+
+@router.post("/pay-unanswered", status_code=201)
+async def pay_unanswered(lost: bool = True) -> dict[str, bool]:
+    """Commit, and lose the answer (``lost``), or wait for it until cut off."""
+    unit = LosesItsCommitsAnswer if lost else CommitsForEver
+    async with unit() as uow:
+        await uow.session.execute(insert(payments))
+        await uow.commit()
+    return {"paid": True}  # pragma: no cover - the commit raised.
+
+
+class InATask(BaseHTTPMiddleware):
+    """Starlette's ``BaseHTTPMiddleware``: it serves the route in a task of its own."""
+
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        """Pass the request on."""
+        return await call_next(request)

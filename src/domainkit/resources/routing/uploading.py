@@ -285,8 +285,11 @@ class UploadRoute(CommandRoute):
 
         What was stored is deleted when the request fails and its unit of
         work did not commit: a commit may have kept the file's name. A
-        service that asks for the file received gets it open, and it is
-        closed once the service is done, however it ends.
+        commit whose outcome is unknown (``UnitOfWork.in_doubt``: its
+        answer lost, or cut off as it committed) may have kept it too: the
+        file stays, and its storage and name are logged. A service that
+        asks for the file received gets it open, and it is closed once the
+        service is done, however it ends.
 
         Raises:
             NotFound: The aggregate is out of the caller's reach.
@@ -304,11 +307,19 @@ class UploadRoute(CommandRoute):
         handed = HANDED.set(received)
         try:
             request.scope[STORED] = stored
-            committed = context.uow.committed
+            uow = context.uow
+            committed, in_doubt = uow.committed, uow.in_doubt
             try:
                 return await super().handle(context)
             except BaseException:
-                if context.uow.committed == committed:
+                if uow.in_doubt != in_doubt:
+                    logger.warning(
+                        "Kept the upload %s on the %s storage: its request "
+                        "failed as it committed, and the commit may have kept it",
+                        stored.name,
+                        _named(bounds.storage),
+                    )
+                elif uow.committed == committed:
                     await _forget(bounds.storage, stored.name)
                 raise
         finally:
@@ -562,12 +573,31 @@ def _shown(max_size: "int | Decided[int]") -> str:
 
 
 async def _forget(storage: Storage | str, name: str) -> None:
-    """Delete what a failed request stored; log, never raise, if it cannot."""
+    """Delete what a failed request stored; log, never raise, if it cannot.
+
+    The lines name the file and its storage: a name is random, not a secret
+    (ADR 0040), and it is what an operator deletes by hand.
+    """
     target = storages[storage] if isinstance(storage, str) else storage
     with anyio.CancelScope(shield=True), anyio.move_on_after(FORGET_WITHIN) as scope:
         try:
             await target.delete(name)
         except Exception:
-            logger.exception("The upload of a failed request could not be deleted")
+            logger.exception(
+                "The upload %s of a failed request could not be deleted from "
+                "the %s storage",
+                name,
+                _named(storage),
+            )
     if scope.cancelled_caught:
-        logger.warning("The upload of a failed request took too long to delete")
+        logger.warning(
+            "The upload %s of a failed request took too long to delete from "
+            "the %s storage",
+            name,
+            _named(storage),
+        )
+
+
+def _named(storage: Storage | str) -> str:
+    """How logs name ``storage``: its ``STORAGES`` alias, or its class."""
+    return repr(storage) if isinstance(storage, str) else type(storage).__name__

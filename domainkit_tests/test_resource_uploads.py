@@ -627,6 +627,76 @@ def test_a_file_that_cannot_be_deleted_is_logged_and_the_refusal_kept(
         )
 
     assert answer.status_code == 409
-    assert len(storage.files) == 1
+    [name] = storage.files
     expected = "took too long" if hang else "could not be deleted"
     assert expected in caplog.text
+    assert f"The upload {name} of a failed request" in caplog.text
+    assert "from the Unforgetting storage" in caplog.text
+
+
+def test_a_file_is_kept_when_the_commit_may_have_landed(
+    store: InMemoryGadgets, use_auth: UseAuth, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A commit whose answer was lost may have named the file: it stays.
+
+    The unit of work counts the commit in doubt, and the log names the
+    file and its storage, for an operator to check.
+    """
+    use_auth()
+    storage = MemoryStorage()
+    named: list[str] = []
+    doubted: list[int] = []
+
+    async def attach_unanswered(
+        command: AttachManual, uow: FakeGadgetsUnitOfWork
+    ) -> Gadget:
+        """Name the gadget after its file; the answer to the commit is lost."""
+
+        async def lost() -> None:
+            raise ConnectionError("The answer to COMMIT was lost.")
+
+        uow._commit = lost  # type: ignore[method-assign]
+        async with uow:
+            gadget = await uow.gadgets.get(GadgetId(command.gadget_id))
+            gadget.rename(command.manual.filename)
+            named.append(command.manual.name)
+            try:
+                await uow.commit()
+            finally:
+                doubted.append(uow.in_doubt)
+        return gadget  # pragma: no cover - the commit raised.
+
+    resource = gadgets(store)
+    resource.upload_route(
+        AttachManual,
+        service=attach_unanswered,
+        field="manual",
+        types=[CHECKED_PDF],
+        max_size=10_000,
+        storage=storage,
+        path="/manual",
+    )
+    with (
+        caplog.at_level(logging.WARNING, logger=uploading.__name__),
+        pytest.raises(ConnectionError),
+    ):
+        client_of(resource).post(
+            f"{LOCATION}{ids(store)['a']}/manual",
+            content=PDF_FILE,
+            headers=as_("changer"),
+        )
+
+    (name,) = named
+    assert list(storage.files) == [name]
+    assert doubted == [1]
+    kept = (
+        f"Kept the upload {name} on the MemoryStorage storage: its request "
+        "failed as it committed, and the commit may have kept it"
+    )
+    assert caplog.messages == [kept]
+
+
+def test_logs_name_a_storage_by_its_alias_or_its_class() -> None:
+    """A storage given by alias is named by it; one given whole, by its class."""
+    assert uploading._named("documents") == "'documents'"
+    assert uploading._named(MemoryStorage()) == "MemoryStorage"

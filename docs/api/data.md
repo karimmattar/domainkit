@@ -183,6 +183,7 @@ Domain-driven design building blocks ("seedwork").
 - `EventHandler`: An event handler: `async def handle(event) -> None`.
 - `F`: A field of an aggregate, by name, to build conditions and orderings.
 - `Generated`: `Annotated` metadata: the database computes the column (`GeneratedField`).
+- `HandlerCancelled`: In-process handlers did not finish: the work they ran in was cancelled.
 - `HandlerKey`: A key a worker runs messages of: the handler, and the event type it takes.
 - `HandlerTimedOut`: An in-process handler ran past its timeout and was cut off.
 - `IPAddress`: An IPv4 or IPv6 address (Django's `GenericIPAddressField`).

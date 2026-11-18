@@ -6,11 +6,15 @@ the middleware. The deadline covers everything until the response starts:
 authentication, reading the body, the handler, and what they wait on (the
 database, outgoing calls). When it passes, that work is cancelled, the
 request is answered 503 ``deadline_exceeded`` with ``Retry-After``, and one
-warning is logged.
+warning is logged. A request cut off as it committed gets no
+``Retry-After``: its change may have been made (``failed_in_doubt``).
 
 Once the response starts, the deadline is lifted: a streamed response (an
 export, Server-Sent Events) and background tasks that run after the
-response are not cut off. WebSocket connections have no request deadline.
+response are not cut off. So it is once the request commits a unit of
+work (``deadlines.after_commit``): the request is answered as committed,
+never 503, and the commit's in-process event handlers run, each within
+its own timeout. WebSocket connections have no request deadline.
 
 A route gives itself another deadline, counted from when the request
 arrived, with a dependency; ``RequestTimeout(None)`` removes it::
@@ -35,6 +39,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from domainkit import deadlines
 from domainkit.conf import settings
 from domainkit.context import logged_path
+from domainkit.ddd.uow import failed_in_doubt
 from domainkit.http.errors import error_response
 
 try:
@@ -72,7 +77,7 @@ class DeadlineMiddleware:
         if scope["type"] != "http" or self.seconds is None:
             await self.app(scope, receive, send)
             return
-        bound = deadlines.timeout(self.seconds)
+        bound = deadlines.timeout(self.seconds, until_commit=True)
         started = False
 
         async def send_lifting(message: Message) -> None:
@@ -98,7 +103,7 @@ class DeadlineMiddleware:
                 logged_path(scope),
                 _given(bound),
             )
-            await _answer(scope, receive, send)
+            await _answer(scope, receive, send, in_doubt=failed_in_doubt(exc))
 
 
 def lift(bound: deadlines.Timeout) -> None:
@@ -113,14 +118,28 @@ def _given(bound: deadlines.Timeout) -> str:
     return "" if seconds is None else f" of {seconds:g}s"
 
 
-async def _answer(scope: Scope, receive: Receive, send: Send) -> None:
-    """503 ``deadline_exceeded``, with ``Retry-After``."""
-    response = error_response(
-        status.HTTP_503_SERVICE_UNAVAILABLE,
-        "The request took too long; try again shortly.",
-        code=DEADLINE_EXCEEDED,
-    )
-    response.headers["Retry-After"] = RETRY_AFTER
+async def _answer(
+    scope: Scope, receive: Receive, send: Send, *, in_doubt: bool
+) -> None:
+    """503 ``deadline_exceeded``, with ``Retry-After`` unless ``in_doubt``.
+
+    A request cut off as it committed (``failed_in_doubt``) may have made
+    its change: it is not invited to try again.
+    """
+    if in_doubt:
+        response = error_response(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "The request ran out of time as the change was committed, so it may "
+            "have been made; check before you send it again.",
+            code=DEADLINE_EXCEEDED,
+        )
+    else:
+        response = error_response(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "The request took too long; try again shortly.",
+            code=DEADLINE_EXCEEDED,
+        )
+        response.headers["Retry-After"] = RETRY_AFTER
     await response(scope, receive, send)
 
 
