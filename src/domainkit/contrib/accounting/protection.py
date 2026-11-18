@@ -2,20 +2,23 @@
 
 Triggers refuse every ``UPDATE``, ``DELETE``, and ``TRUNCATE`` of the two
 tables, for every role, the owner's included, as ``contrib.audit``'s
-``protect()`` does for the audit trail. Here they need no revision of the
-project's: after each ``migrate``, ``protect`` makes them and their
-functions afresh, on the schema owner's connection, whatever was there.
-A correction is a reversing entry. In staging and production the
-application checks at startup that they are there as ``protect`` makes
-them: enabled, of the right type, with no ``WHEN`` or column list,
-running the function with the right body (``accounting.E001``). On
-other databases nothing is created: SQLite has no roles to keep out.
+``protect()`` does for the audit trail: both are
+``domainkit.db.protection``'s, the same function names and bodies, and
+the same check. Here they need no revision of the project's: after each
+``migrate``, ``protect`` makes them and their functions afresh, on the
+schema owner's connection, whatever was there. A correction is a
+reversing entry.
+In staging and production the application checks at startup that they
+are there as ``protect`` makes them: enabled, of the right type, with no
+``WHEN``, column list, or arguments (since 2.9, as the trail's), running
+the function with the right body (``accounting.E001``). On other
+databases nothing is created: SQLite has no roles to keep out.
 """
 
 import logging
 from typing import Final
 
-from sqlalchemy import Table, inspect, text
+from sqlalchemy import Table
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -23,107 +26,55 @@ from domainkit.apps import registry
 from domainkit.checks import CheckFailed, CheckMessage
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
-from domainkit.db import connections
+from domainkit.db.protection import ROW_TRIGGER as ROW_TRIGGER
+from domainkit.db.protection import TRUNCATE_TRIGGER as TRUNCATE_TRIGGER
+from domainkit.db.protection import (
+    append_only_body,
+    append_only_statements,
+    migrate_command,
+    missing_append_only,
+    protect_append_only,
+    trigger_names,
+    unprotected,
+)
 
 from .settings import AccountingSettings
 from .tables import entries, postings
 from .uow import accounting_alias
 
 PROTECTED: Final = (entries, postings)
-ROW_TRIGGER: Final = 1 | 2 | 8 | 16
-"""``pg_trigger.tgtype`` of ``BEFORE UPDATE OR DELETE ... FOR EACH ROW``."""
-TRUNCATE_TRIGGER: Final = 2 | 32
-"""``pg_trigger.tgtype`` of ``BEFORE TRUNCATE ... FOR EACH STATEMENT``."""
-FIRING: Final = ("O", "A")
-"""``pg_trigger.tgenabled`` of a trigger that fires for the application."""
 logger = logging.getLogger(__name__)
-
-_TRIGGERS: Final = text(
-    """
-    SELECT c.relname, t.tgname, t.tgtype, p.proname, l.lanname, p.prosrc
-    FROM pg_trigger t
-    JOIN pg_class c ON c.oid = t.tgrelid
-    JOIN pg_proc p ON p.oid = t.tgfoid AND p.pronamespace = c.relnamespace
-    JOIN pg_language l ON l.oid = p.prolang
-    WHERE NOT t.tgisinternal AND pg_table_is_visible(c.oid)
-      AND t.tgenabled IN ('O', 'A') AND t.tgqual IS NULL
-      AND cardinality(t.tgattr::int2[]) = 0
-      AND c.relname IN (:entries, :postings)
-    """
-)
-"""The enabled triggers of the two tables that fire for every row (no
-``WHEN``, no ``UPDATE OF``), with the function each runs, from the
-tables' schema."""
 
 
 def triggers(table: Table) -> dict[str, int]:
     """The triggers that protect ``table``, by name, with the type each must have."""
-    function = f"{table.name}_append_only"
-    return {function: ROW_TRIGGER, f"{function}_truncate": TRUNCATE_TRIGGER}
+    return dict(zip(trigger_names(table), (ROW_TRIGGER, TRUNCATE_TRIGGER), strict=True))
 
 
 def statements(table: Table, name: str) -> tuple[str, ...]:
     """The statements that make trigger ``name`` of ``table`` afresh."""
-    function = f"{table.name}_append_only"
-    when = (
-        "BEFORE UPDATE OR DELETE ON {table} FOR EACH ROW"
-        if name == function
-        else "BEFORE TRUNCATE ON {table} FOR EACH STATEMENT"
-    ).format(table=table.name)
-    return (
-        f"DROP TRIGGER IF EXISTS {name} ON {table.name}",
-        f"CREATE TRIGGER {name} {when} EXECUTE FUNCTION {function}()",
-    )
+    made = append_only_statements(table)[0]
+    return made[1:3] if name == trigger_names(table)[0] else made[3:5]
 
 
 def body(table: Table) -> str:
     """The body of the triggers' function for ``table``: refuse, whatever the change."""
-    return f"""
-    BEGIN
-        RAISE EXCEPTION '{table.name} is append-only'
-            USING ERRCODE = 'insufficient_privilege';
-    END
-    """
+    return append_only_body(table)
 
 
 def function_statement(table: Table) -> str:
     """The statement that makes the triggers' function for ``table``."""
-    return f"""
-    CREATE OR REPLACE FUNCTION {table.name}_append_only() RETURNS trigger
-    LANGUAGE plpgsql AS $${body(table)}$$
-    """
-
-
-def _words(source: str) -> list[str]:
-    """``source`` without its layout, to compare a function's body."""
-    return source.split()
+    return append_only_statements(table)[0][0]
 
 
 async def missing(connection: AsyncConnection) -> list[str]:
-    """The protecting triggers the database lacks, has disabled, or made otherwise.
+    """The protecting triggers the connection's schema lacks, has disabled, or changed.
 
     A trigger counts when it is enabled, of its type, fires for every row
-    (no ``WHEN``, no column list), and runs the table's function, in
-    PL/pgSQL, with the body ``protect`` gives it.
+    (no ``WHEN``, no column list, no arguments), and runs the table's
+    function, in PL/pgSQL, with the body ``protect`` gives it.
     """
-    found = await connection.execute(
-        _TRIGGERS, {"entries": entries.name, "postings": postings.name}
-    )
-    present = {
-        (row.relname, row.tgname, row.tgtype, row.proname, row.lanname): row.prosrc
-        for row in found
-    }
-    return sorted(
-        name
-        for table in PROTECTED
-        for name, kind in triggers(table).items()
-        if _words(
-            present.get(
-                (table.name, name, kind, f"{table.name}_append_only", "plpgsql"), ""
-            )
-        )
-        != _words(body(table))
-    )
+    return await missing_append_only(connection, PROTECTED)
 
 
 async def protect(connection: AsyncConnection, database: str) -> None:
@@ -131,22 +82,12 @@ async def protect(connection: AsyncConnection, database: str) -> None:
 
     Each is dropped and made again, so a trigger changed in place (a
     ``WHEN``, another function) is put back. Only on PostgreSQL, in the
-    database that holds the ledger, once its tables exist
+    database that holds the ledger, for each table once it exists
     (``makemigrations`` may not have written them yet).
     """
     if connection.dialect.name != "postgresql" or database != accounting_alias():
         return
-    names = {table.name for table in PROTECTED}
-    exists = await connection.run_sync(
-        lambda sync: names <= set(inspect(sync).get_table_names())
-    )
-    if not exists:
-        return
-    for table in PROTECTED:
-        await connection.exec_driver_sql(function_statement(table))
-        for name in triggers(table):
-            for statement in statements(table, name):
-                await connection.exec_driver_sql(statement)
+    await protect_append_only(connection, PROTECTED)
 
 
 async def check_protection() -> None:
@@ -175,10 +116,7 @@ async def protection_problems() -> list[CheckMessage]:
     """``accounting.E001``: the ledger's database lacks triggers, or did not answer."""
     alias = accounting_alias()
     try:
-        async with connections.engine(alias).connect() as connection:
-            if connection.dialect.name != "postgresql":
-                return []
-            lacking = await missing(connection)
+        by_place = await unprotected(alias, PROTECTED)
     except (SQLAlchemyError, OSError) as exc:
         return [
             CheckMessage(
@@ -187,13 +125,12 @@ async def protection_problems() -> list[CheckMessage]:
                 f"({type(exc).__name__}).",
             )
         ]
-    if not lacking:
-        return []
     return [
         CheckMessage(
             "accounting.E001",
-            f"Entries and postings in {alias!r} can be changed: triggers "
+            f"Entries and postings in {place!r} can be changed: triggers "
             f"{', '.join(lacking)} are missing, disabled, or changed. Run "
-            "'manage.py migrate', which makes them.",
+            f"'manage.py {migrate_command(place)}', which makes them.",
         )
+        for place, lacking in by_place.items()
     ]

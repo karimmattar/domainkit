@@ -122,6 +122,20 @@ Range partitioning of large PostgreSQL tables, managed by the framework.
 - `Interval`: The length of one partition.
 - `partition_by_range`: Declare `table` range-partitioned by the timestamp `column`.
 
+## `domainkit.db.protection`
+
+Keep tables append-only in the database itself (PostgreSQL).
+
+- `ROW_TRIGGER`: `pg_trigger.tgtype` of `BEFORE UPDATE OR DELETE ... FOR EACH ROW`.
+- `TRUNCATE_TRIGGER`: `pg_trigger.tgtype` of `BEFORE TRUNCATE ... FOR EACH STATEMENT`.
+- `append_only_body`: The body of the triggers' function for `table`: refuse, whatever the change.
+- `append_only_statements`: The statements that protect `table`, and those that undo them.
+- `migrate_command`: The command that makes the triggers of a place `unprotected` names.
+- `missing_append_only`: The triggers of `tables` the connection's schema lacks, disabled, or changed.
+- `protect_append_only`: Make the triggers of each of `tables` there is, afresh; the tables protected.
+- `trigger_names`: The triggers that protect `table`: of rows, and of truncation.
+- `unprotected`: The triggers of `tables` that `database` lacks, by where it lacks them.
+
 ## `domainkit.db.query`
 
 Compile domain queries (`domainkit.ddd.query`) to SQLAlchemy expressions.

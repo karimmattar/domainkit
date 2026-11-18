@@ -1251,7 +1251,7 @@ jobs:
               domainkit.cache.* domainkit.db.connections.* domainkit.db.errors.*
               domainkit.db.metrics.* domainkit.db.partitioning.* domainkit.db.replicas.*
               domainkit.db.routing.* domainkit.db.snapshots.*
-              domainkit.db.squashing.* domainkit.db.types.*
+              domainkit.db.squashing.* domainkit.db.types.* domainkit.db.protection.*
               domainkit.storage.* domainkit.cloud.* domainkit.money.*
               domainkit.search.* domainkit.documents.*
           - name: messaging

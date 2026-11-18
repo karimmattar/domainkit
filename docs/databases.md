@@ -1720,6 +1720,31 @@ Tests use `LEDGERS = {"evidence": {"URL": "memory://"}}`: a
 `DomainConfig.ready()`. `registered_states()` returns the store an
 installed app registered, or None.
 
+## Append-only tables
+
+On PostgreSQL, `domainkit.db.protection` keeps a table append-only in the
+database itself: two triggers refuse every `UPDATE`, `DELETE`, and
+`TRUNCATE`, for every role, the owner's included (*new in 2.9*). The
+audit trail and the ledger's entries use it; a domain of a project may
+too, from an `on_migrated` hook, which runs on the schema owner's
+connection after each `migrate`:
+
+```python
+from domainkit.db.protection import protect_append_only
+
+
+async def protect_history(connection, database: str) -> None:
+    await protect_append_only(connection, [price_history])
+```
+
+| Name | What it does |
+| --- | --- |
+| `append_only_statements(table)` | The statements that protect `table`, and those that undo them, for a revision of its own. |
+| `protect_append_only(connection, tables)` | Makes the triggers afresh for each table the connection's `search_path` finds; on other databases, nothing. |
+| `missing_append_only(connection, tables)` | The triggers that schema lacks, has disabled, or changed: a trigger counts only as made, enabled, with no `WHEN`, columns, or arguments, running its function with the same body. |
+| `unprotected(database, tables)` | The same for a database, by place: its own schema, and each tenant's schema that holds the first table (`TENANCY.SCHEMA_DATABASES`). |
+| `migrate_command(place)` | The command that makes a place's triggers: `migrate`, or `migrate --tenant <tenant>`. |
+
 ## Hooks, models, and the database clock
 
 Three smaller modules serve the apps that build on the database.
