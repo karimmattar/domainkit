@@ -53,10 +53,12 @@ Who may call an endpoint: access rules, for any authentication (ADR 0080).
 - `ModelPermissions`: Django's model permissions, by method, for one model.
 - `Not`: Allows what `rule` refuses.
 - `NotAuthenticated`: The route needs a principal who proved who they are, and none did (401).
+- `OfflineContext`: A call made outside any request, to ask access rules on (New in 2.9).
 - `Principal`: Who sent a request, as the access rules read them (`scope["user"]`).
 - `Public`: `dependencies=[Public]`: the route needs no rule (`REQUIRE_ROUTE_RULES`).
 - `Require`: A FastAPI dependency: the rules must allow the request; returns the principal.
 - `Rule`: A rule, or a rule class that takes no arguments.
+- `RuleContext`: What an access rule may read of the call it is asked about (New in 2.9).
 - `acurrent_user`: `current_user` as a dependency FastAPI awaits, with no thread to hop to.
 - `check_object_permissions`: Refuse the request unless every rule allows it on `obj`.
 - `check_scopes_bounded`: Hold credentials limited to scopes to routes with a rule that checks them.

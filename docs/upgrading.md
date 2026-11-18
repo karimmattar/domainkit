@@ -375,6 +375,18 @@ No migration.
   `default_credentials` calls `environment_credentials` from
   `domainkit.cloud.aws`, so patch it there
   (`monkeypatch.setattr("domainkit.cloud.aws.environment_credentials", ...)`).
+- **Approvals asks maker and approver rules on a call of their own.** A
+  guard's `maker_rule`, when the approved command runs, and a policy's
+  `approver_rule`, in `approvers_of`, are asked on a new `OfflineContext`
+  each time: the query, the headers, and the cookies are empty,
+  `request.user` is the user asked about, `request.auth` is None, and
+  `request.state` is that call's alone. A rule that kept a value in
+  `request.state` for later calls no longer finds it there. A rule that
+  raises refuses, and is logged as a warning by its class and its
+  error's: the request fails with `maker_not_allowed` at once, where 2.8
+  ran it again until it was dead-lettered, and `approvers_of` leaves that
+  rule's users out, where 2.8 raised
+  ([Rules asked outside a request](auth/routes.md#rules-asked-outside-a-request)).
 - **`RATE_LIMIT_BACKEND` is checked before it counts.** A value that is
   neither a dotted path (`module.Class`, `module:Class`) nor a name a
   package offers is refused with the settings. One that does not import,

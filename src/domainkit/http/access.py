@@ -51,6 +51,11 @@ Every route must declare who may call it (``REQUIRE_ROUTE_RULES``): with
 ``Require``, a dependency marked ``reads_principal`` that refuses anonymous
 callers (``AuthenticatedUser``), or ``Public``. ``CurrentUser`` alone lets
 anyone in, so it declares nothing. ``open_routes`` lists those that do not.
+
+Code that asks a rule outside a request (a task, approvals' runs) asks it
+on an ``OfflineContext``: a whole connection of no client, its state its
+own. A rule that reads only what ``RuleContext`` names works there as on
+a route (ADR 0196).
 """
 
 import logging
@@ -62,9 +67,11 @@ from collections.abc import (
     Iterable,
     Iterator,
     Mapping,
+    MutableMapping,
     Sequence,
 )
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import (
     Annotated,
     Any,
@@ -80,6 +87,7 @@ from fastapi.dependencies.models import Dependant
 from fastapi.routing import APIRoute, APIWebSocketRoute, iter_route_contexts
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
+from starlette.datastructures import State
 from starlette.requests import HTTPConnection
 from starlette.routing import BaseRoute, Host, Mount, Route, WebSocketRoute
 
@@ -115,10 +123,12 @@ __all__ = [
     "ModelPermissions",
     "Not",
     "NotAuthenticated",
+    "OfflineContext",
     "Principal",
     "Public",
     "Require",
     "Rule",
+    "RuleContext",
     "acurrent_user",
     "check_object_permissions",
     "check_scopes_bounded",
@@ -208,6 +218,82 @@ class AnonymousPrincipal:
     async def ahas_perms(self, perms: Collection[str], obj: object = None) -> bool:
         """Never."""
         return False
+
+
+class RuleContext(Protocol):
+    """What an access rule may read of the call it is asked about (ADR 0196).
+
+    ``HTTPConnection`` (a request, a WebSocket) is one, and so is
+    ``OfflineContext``, which code asks rules on outside a request. The
+    built-in rules read no more: the method and the path are the
+    ``scope``'s ``method`` and ``path``, and the credentials' scopes
+    ``scopes_of(context)``. A rule that annotates ``request`` as a
+    ``RuleContext`` says it reads only these, so it answers offline as it
+    does on a route; ``BasePermission``'s hooks take an ``HTTPConnection``,
+    which is one.
+    """
+
+    @property
+    def scope(self) -> MutableMapping[str, Any]:
+        """The call as ASGI names it: ``method``, ``path``, ``auth``, ``user``."""
+        ...
+
+    @property
+    def user(self) -> Any:  # noqa: ANN401 - the rule's principal type.
+        """The principal the call is made as (``scope["user"]``)."""
+        ...
+
+    @property
+    def state(self) -> Any:  # noqa: ANN401 - Starlette's ``State``, or any.
+        """What rules keep for this call alone: no other call sees it."""
+        ...
+
+
+class OfflineContext(HTTPConnection):
+    """A call made outside any request, to ask access rules on (ADR 0196).
+
+    For code that has no request at hand: a task, a command, approvals'
+    runs of an approved command. Each is a whole connection of its own,
+    of no client: the ``method`` and ``path`` given, no headers, query,
+    cookies, or session data, ``user`` the principal it is made for, and
+    ``auth`` None, no credentials, unless ``scopes`` limits them. ``app``
+    holds only an empty ``state``, and the call's own ``state`` is seen by
+    no other call. A rule reads it as it reads a request; one that needs
+    what only a request carries (a header, a step-up) refuses.
+    """
+
+    def __init__(
+        self,
+        user: Principal,
+        *,
+        method: str = "POST",
+        path: str = "/",
+        scopes: Iterable[str] | None = None,
+    ) -> None:
+        """A call by ``user``, of ``method`` to ``path``; ``scopes`` limit it."""
+        super().__init__(
+            {
+                "type": "http",
+                "http_version": "1.1",
+                "method": method,
+                "scheme": "http",
+                "server": None,
+                "client": None,
+                "root_path": "",
+                "path": path,
+                "raw_path": path.encode(),
+                "query_string": b"",
+                "headers": [],
+                "path_params": {},
+                "app": SimpleNamespace(state=State()),
+                "user": user,
+                "auth": None
+                if scopes is None
+                else SimpleNamespace(scopes=frozenset(scopes)),
+                "session": {},
+                "state": {},
+            }
+        )
 
 
 class _Bearer(HTTPBearer):
@@ -1130,20 +1216,20 @@ def _rule(rule: Rule) -> BasePermission:
     return instance
 
 
-def scopes_of(connection: HTTPConnection) -> frozenset[str] | None:
+def scopes_of(connection: RuleContext) -> frozenset[str] | None:
     """The scopes the request's credentials are limited to; None: no limit."""
     credentials = connection.scope.get("auth")
     scopes: frozenset[str] | None = getattr(credentials, "scopes", None)
     return scopes
 
 
-def _within(connection: HTTPConnection, perms: Iterable[str]) -> bool:
+def _within(connection: RuleContext, perms: Iterable[str]) -> bool:
     """Whether the request's scopes, if any, cover every one of ``perms``."""
     scopes = scopes_of(connection)
     return scopes is None or scopes.issuperset(perms)
 
 
-def _method(request: HTTPConnection) -> str:
+def _method(request: RuleContext) -> str:
     """The request method (``GET`` for a WebSocket)."""
     method: Any = request.scope.get("method", "GET")
     return str(method)

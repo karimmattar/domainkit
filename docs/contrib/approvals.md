@@ -214,8 +214,12 @@ returns the approved command being run here, if any, and
 `approved(action, command)` says whether `command` is it.
 
 `maker_rule` is asked again when the approved command runs, on the maker
-as a user, with no credentials. So a rule about the submitting request's
-own scopes or step-up passes at submission only, and refuses at the run.
+as a user, on a call of its own with no credentials (an `OfflineContext`,
+[Rules asked outside a request](../auth/routes.md#rules-asked-outside-a-request)).
+So a rule about the submitting request's own scopes or step-up passes at
+submission only, and refuses at the run. Since 2.9, a rule that raises
+there refuses too, and is logged by its class and its error's: the
+request fails (`maker_not_allowed`), and the run is not tried again.
 
 ### Run by its maker
 
@@ -1227,9 +1231,9 @@ async def withdraw_stale() -> None:
   rule, acting in one's own name, the model permissions, and, at
   submission, the guard's permission and `maker_rule`. The run asks
   those of the maker only with `domainkit.contrib.auth` installed and a
-  maker that is a user's id, on a connection without credentials: a
-  `maker_rule` that reads credentials refuses there, and a maker that
-  names no user is never asked
+  maker that is a user's id, on a call without credentials
+  (`OfflineContext`): a `maker_rule` that reads credentials refuses
+  there, and a maker that names no user is never asked
   ([What maker-checker does not stop](#what-maker-checker-does-not-stop)).
   Code that acts for a person it did not authenticate, such as a command
   given a user's id, checks them first: `approvers_of(request)` lists who
@@ -1358,7 +1362,9 @@ users who may decide it now:
   group of theirs; superusers hold every permission);
 - the members of its group;
 - for an approver rule, the superusers and staff the rule lets through,
-  asked about the user alone, on a connection without credentials;
+  asked about the user alone, on a call of its own without credentials
+  (`OfflineContext`); a rule that raises lets no one through, and is
+  logged;
 - never its maker, a party to its command, or someone who decided it
   already.
 

@@ -231,6 +231,16 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   ([What each test starts from](docs/testing.md#what-each-test-starts-from),
   ADR 0113) (audit A28-ARCH-14).
 
+- `domainkit.http.access.OfflineContext(user, method=..., path=...,
+  scopes=...)`: a call made outside any request, to ask access rules on,
+  each of its own: no client, headers, query, or credentials, the user in
+  its scope, and a `state` no other call sees. `RuleContext` is what a
+  rule may read of both kinds of call (`scope`, `user`, `state`):
+  `HTTPConnection` is one, and a rule that annotates its `request` with
+  it answers offline as on a route; `scopes_of` takes one
+  ([Rules asked outside a request](docs/auth/routes.md#rules-asked-outside-a-request),
+  ADR 0196) (audit A28-ARCH-08).
+
 - `domainkit.conf.backends.BackendHandler`: the classes one setting
   names, imported by dotted path or by the name an installed package
   offers them by, checked to be of the setting's kind, and made once per
@@ -646,6 +656,18 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 - A docs test wrote its probe page into the repository's `docs/`, which
   other tests read at the same time; it writes it under a temporary
   directory of its own (audit A28-TEST-10).
+
+- Approvals asks a guard's `maker_rule` and a policy's `approver_rule`
+  on a call of its own each time (`OfflineContext`), where 2.8 shared one
+  connection in the process, without a query, an application, or a user.
+  A rule that reads the request's query, application, or user answers
+  there; what a rule keeps in `request.state` no other call sees; and a
+  rule that raises refuses and is logged by its class and its error's.
+  An approved command whose maker rule raises fails once
+  (`maker_not_allowed`) instead of being run again until dead-lettered,
+  and `approvers_of` no longer raises for every caller
+  ([upgrading.md](docs/upgrading.md#28-to-29), ADR 0196) (audit
+  A28-ARCH-08).
 
 ### Security
 

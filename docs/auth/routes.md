@@ -168,6 +168,45 @@ read the body before the limit is decided
 ([Bounds decided per request](../resources.md#bounds-decided-per-request)).
 `A & B`, `A | B`, and `~A` read the body if a rule of theirs does.
 
+### Rules asked outside a request
+
+Some rules are asked where no request exists: approvals asks a guard's
+`maker_rule` when the approved command runs in the worker, and a
+policy's `approver_rule` in `approvers_of`
+([approvals](../contrib/approvals.md#guarding-a-use-case)). They are asked
+on an `OfflineContext` (*new in 2.9*): a call of its own, by the user, of
+no client. It has the method and path it is given, no headers, query,
+cookies, or session data, no credentials (`request.auth` is None, so
+`scopes_of(request)` is None), and a `request.state` that no other call
+sees. A rule reads it as it reads a request. A rule that needs what only
+a request carries, such as a header or a step-up, refuses there. Code of
+your own that asks a rule outside a request makes one per call:
+
+```python
+from domainkit.http.access import OfflineContext
+
+allowed = await rule.has_permission(OfflineContext(user, path="/payouts"), user)
+```
+
+`scopes=[...]` limits its credentials to those scopes, as a scoped token
+limits a request's.
+
+`RuleContext` is what both kinds of call have: `scope` (with its
+`method`, `path`, `auth`, and `user`), `user`, and `state`. Annotate a
+rule's `request` with it to say the rule reads no more; it then answers
+offline as it does on a route. The built-in rules read no more, and keep
+their `HTTPConnection` annotation:
+
+```python
+from domainkit.contrib.auth import AnyUser
+from domainkit.http.access import BasePermission, RuleContext
+
+
+class IsCashier(BasePermission):
+    async def has_permission(self, request: RuleContext, user: AnyUser) -> bool:
+        return user.is_active and "cashiers" in {g.name for g in user.groups}
+```
+
 ### Refusals in the audit trail
 
 A refused user (`403`) is recorded in the audit trail when
