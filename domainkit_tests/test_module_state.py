@@ -16,6 +16,17 @@ no private name. ``UNRESET`` lists what 2.9 keeps without one, each group
 with its reason. It may only shrink: new state comes with its reset, and
 an entry whose state is gone, or that gains a reset, leaves the list
 (audit A28-ARCH-14).
+
+A module-level function behind ``functools.cache`` or ``lru_cache`` keeps
+what it answered: ``CACHED`` lists 2.9's, and only shrinks, so a new one
+is a reviewer's to accept.
+
+Reading the source does not see everything. Not found: a class
+attribute changed after the class is made; a ``ContextVar`` whose
+default is a container; a container changed through another name (an
+alias, a parameter, ``globals()[...]``, ``operator.setitem``, an explicit
+``__setitem__``); one made by a call this list does not name, such as
+``dict.fromkeys``; and caches made inside a function or a class.
 """
 
 import ast
@@ -171,8 +182,106 @@ UNRESET: Final = frozenset(
 """Module state of 2.9 without a public reset, by why; it only shrinks."""
 
 
-def module_state(root: Path, package: str) -> Iterator[str]:
-    """``<module>.<name>`` for each piece of state the modules of ``package`` keep."""
+CACHED: Final = frozenset(
+    {
+        # Made from code or data that do not change between tests:
+        # statements, type adapters, tables of fields, compiled patterns,
+        # parsed addresses, the environment's project.
+        "domainkit.architecture._public_names",
+        "domainkit.cache.core.adapter",
+        "domainkit.conf.env.project_prefix",
+        "domainkit.conf.env.project_root",
+        "domainkit.context._cached_address_group",
+        "domainkit.context._cached_network",
+        "domainkit.contrib.accounting.uow._covering",
+        "domainkit.contrib.accounting.uow._entry_by_reference",
+        "domainkit.contrib.auth.admin._group_change",
+        "domainkit.contrib.auth.admin._groups",
+        "domainkit.contrib.auth.admin._permissions",
+        "domainkit.contrib.auth.admin._user_change",
+        "domainkit.contrib.auth.admin._users",
+        "domainkit.contrib.auth.principals.user_shape",
+        "domainkit.contrib.auth.repositories.principalstore._principal_statement",
+        "domainkit.contrib.auth.repositories.principalstore._user_by_name",
+        "domainkit.contrib.auth.screens._confusable_letters",
+        "domainkit.contrib.auth.screens._top_level_domains",
+        "domainkit.contrib.auth.validators._password_list",
+        "domainkit.contrib.ciba.api._warn_free_text_step_up",
+        "domainkit.contrib.idempotency.statements._bury",
+        "domainkit.contrib.idempotency.statements._sweep",
+        "domainkit.contrib.limits.usage._lock_statement",
+        "domainkit.contrib.limits.usage._record_statement",
+        "domainkit.contrib.limits.usage._used_statement",
+        "domainkit.contrib.messaging.registry._adapter",
+        "domainkit.contrib.messaging.registry._validated",
+        "domainkit.db.connections._alone_driver",
+        "domainkit.db.connections._plain_select",
+        "domainkit.db.connections._proven",
+        "domainkit.db.connections._set_config",
+        "domainkit.ddd.events.inherits_actor",
+        "domainkit.ddd.fields.fields_of",
+        "domainkit.ddd.personal.counted_fields",
+        "domainkit.ddd.personal.personal_fields",
+        "domainkit.ddd.repository._declared_aggregate",
+        "domainkit.ddd.repository.default_ordering",
+        "domainkit.ddd.stores._implementation",
+        "domainkit.ddd.stores._in_memory_class",
+        "domainkit.ddd.stores.repositories_of",
+        "domainkit.http.live_events._adapter",
+        "domainkit.http.live_events._withheld",
+        "domainkit.http.responses._integer_bounds",
+        "domainkit.i18n.timezone.zone",
+        "domainkit.inspection._bounded_reader",
+        "domainkit.inspection._prefixed_svg",
+        "domainkit.money._iso_4217",
+        "domainkit.resources.schemas._nested",
+        "domainkit.utils.decimals._adapter",
+        # Live objects kept for the process, some made from settings: clients
+        # and their pools, TLS contexts, loaded backends, translations, a
+        # thread pool. A test that changes what made one gets the kept one.
+        "domainkit.broker.rabbitmq._ssl_context",
+        "domainkit.contrib.accounting.reconciliation._rule",
+        "domainkit.contrib.auth.authentication.load_authenticators",
+        "domainkit.contrib.auth.backends.load_backends",
+        "domainkit.contrib.auth.captcha._verifier",
+        "domainkit.contrib.auth.hashers.hashing_pool",
+        "domainkit.contrib.auth.hashers.load_hashers",
+        "domainkit.contrib.auth.validators.breach_validators",
+        "domainkit.contrib.auth.validators.load_validators",
+        "domainkit.contrib.identity.providers._client",
+        "domainkit.db.drivers._ssl_context",
+        "domainkit.i18n.translation._catalog",
+        "domainkit.outbound.client.tls_context",
+        "domainkit.outbound.guard.tls_context",
+        "domainkit.reporting._load",
+        "domainkit.search._http.shared_client",
+        "domainkit.tenancy._members",
+    }
+)
+"""Module-level functions of 2.9 behind a cache, by what they keep; it only shrinks."""
+
+
+def cached_functions(root: Path, package: str) -> Iterator[str]:
+    """``<module>.<name>`` for each module-level function behind a cache."""
+    for module, tree in _modules(root, package):
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and any(
+                _decorator(each) in {"cache", "lru_cache"}
+                for each in node.decorator_list
+            ):
+                yield f"{module}.{node.name}"
+
+
+def _decorator(node: ast.expr) -> str:
+    """What a decorator names: ``lru_cache`` for ``functools.lru_cache(8)``."""
+    called = node.func if isinstance(node, ast.Call) else node
+    if isinstance(called, ast.Name):
+        return called.id
+    return called.attr if isinstance(called, ast.Attribute) else ""
+
+
+def _modules(root: Path, package: str) -> Iterator[tuple[str, ast.Module]]:
+    """``(dotted name, tree)`` of each module of ``package``, templates left out."""
     base = root.joinpath(*package.split("."))
     for path in sorted(base.rglob("*.py")):
         parts = path.relative_to(root).with_suffix("").parts
@@ -180,8 +289,12 @@ def module_state(root: Path, package: str) -> Iterator[str]:
             continue
         if parts[-1] == "__init__":
             parts = parts[:-1]
-        module = ".".join(parts)
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+        yield ".".join(parts), ast.parse(path.read_text(encoding="utf-8"))
+
+
+def module_state(root: Path, package: str) -> Iterator[str]:
+    """``<module>.<name>`` for each piece of state the modules of ``package`` keep."""
+    for module, tree in _modules(root, package):
         rebound = _rebound(tree)
         for name, value in _bindings(tree.body):
             if name in rebound or (_is_container(value) and _changed(tree, name)):
@@ -275,6 +388,14 @@ def test_every_piece_of_module_state_is_reset_or_listed() -> None:
     assert sorted(set(RESETS) & UNRESET) == []
 
 
+def test_every_module_level_cache_is_listed() -> None:
+    """A new cache of a module's is a reviewer's to accept; the list only shrinks."""
+    found = set(cached_functions(SRC, "domainkit"))
+
+    assert sorted(found - CACHED) == [], "List it in CACHED, or keep no cache."
+    assert sorted(CACHED - found) == [], "Gone: remove it here."
+
+
 def test_each_reset_is_a_public_callable() -> None:
     """A project's conftest calls it by a public name (ADR 0113)."""
     resets = {path: _public(path) for path in sorted(set(RESETS.values()))}
@@ -291,7 +412,9 @@ def test_the_check_finds_each_kind_of_state(
         {
             "__init__.py": "",
             "kept.py": """
+                import functools
                 from collections import defaultdict
+                from functools import lru_cache
                 from weakref import WeakSet
 
                 TABLE = {"a": 1}
@@ -321,11 +444,21 @@ def test_the_check_finds_each_kind_of_state(
 
                 def forget():
                     del _nested["a"]
+
+                @functools.cache
+                def kept(): ...
+
+                @lru_cache(maxsize=8)
+                def bounded(): ...
+
+                @staticmethod
+                def plain(): ...
             """,
         },
     )
 
     found = set(module_state(tmp_path, "fakekit"))
+    cached = set(cached_functions(tmp_path, "fakekit"))
 
     assert found == {
         "fakekit.store.kept._seen",
@@ -336,3 +469,4 @@ def test_the_check_finds_each_kind_of_state(
         "fakekit.store.kept._fallback",
         "fakekit.store.kept._last",
     }
+    assert cached == {"fakekit.store.kept.kept", "fakekit.store.kept.bounded"}
