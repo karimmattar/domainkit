@@ -49,6 +49,25 @@ and a status.
   change users as they hold it everywhere, whatever tenant the request is
   served as: users belong to no tenant, so a member's role in one keeps no
   impersonation going (audit A28-SEC-04).
+### Added
+
+- `per_tenant=False` on `live_events.stream`, `forward`, and
+  `subscribe`: a route that serves every tenant on purpose, such as a
+  back office's, hears every tenant's events, its rule alone deciding.
+  By default a subscription hears the tenant it is served as
+  ([Live committed events](docs/live.md#live-committed-events), ADR 0183)
+  (audit A28-SEC-01).
+
+### Security
+
+- Live events are scoped to the tenant they were committed in: an event
+  reaches only the connections served as that tenant, and one committed
+  as no tenant only the connections served as none. With `LIVE_FANOUT`,
+  the message between processes names the tenant too. Another tenant's
+  events no longer count against a connection's buffers. A project
+  without `TENANCY` sees no change
+  ([upgrading.md](docs/upgrading.md#28-to-29), ADR 0183) (audit
+  A28-SEC-01).
 
 ## [2.8.0] - 2026-11-18
 

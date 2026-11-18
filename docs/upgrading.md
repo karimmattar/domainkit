@@ -85,6 +85,20 @@ project that relied on 2.8's behaviour notices, and what to change.
   with a left-to-right mark before its `+`, as right-to-left pages write
   it, is exported with an apostrophe first, as `+1 555 0100` already
   was. Numbers stay numbers.
+2.9 answers the audit of 2.8.0. Each item of this list says what a
+project that relied on 2.8's behaviour changes, and what to run.
+
+- **Live events are each tenant's own** (security,
+  [ADR 0183](adr/0183-keep-live-events-and-approval-requests-to-their-tenant-and-rows-of-no-tenant-to-keys-held-everywhere.md)).
+  With `TENANCY`, an event reaches only the connections served as the
+  tenant it was committed in, and one committed as no tenant only those
+  served as none. A route that streams every tenant's events on purpose,
+  such as a back office's, passes `per_tenant=False` to `stream`,
+  `forward`, or `subscribe`
+  ([tenancy](tenancy.md#live-events-and-approvals)). With `LIVE_FANOUT`,
+  connections served as a tenant miss the events that processes of
+  2.8.0 send, until every process is upgraded. Without `TENANCY`,
+  nothing changes.
 
 ## 2.7 to 2.8
 
