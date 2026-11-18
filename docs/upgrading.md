@@ -77,6 +77,14 @@ project that relied on 2.8's behaviour changes, and what to run.
   Grant those keys to the staff who use them, directly or through a
   group ([Rows of no tenant](tenancy.md#rows-of-no-tenant)). Routes of
   your own over rows every tenant shares say `everywhere=True`.
+- **Staff APIs count the keys held everywhere** (security). The admin
+  API (users, groups, permissions), the staff APIs of flags and
+  webhooks, the audit trail's history, and the admin site's models that
+  are not `TenantOwned` count a staff member's model permission, and
+  `audit.view_history`, as they hold it everywhere: a role in the tenant
+  served opens none of them (`403`). Staff who used them through a role
+  are granted the keys everywhere, directly or through a group
+  ([Rows of no tenant](tenancy.md#rows-of-no-tenant)).
 - **`check` names the apps whose rows every tenant shares**
   (`tenancy.I001`). It is an info: nothing to change, and
   `check --deploy` never refuses it.
