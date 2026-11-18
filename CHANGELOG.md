@@ -17,11 +17,14 @@ and a status.
   ([Running a command](docs/reference/commands.md#running-a-command),
   [upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-12).
 - `.github/workflows/docs.yml` publishes the documentation site to GitHub
-  Pages from a release's tag: only from a tag the release accepts, and
-  only for the newest final release. Its one job that writes may write
-  to Pages alone, and it reads no secret. The repository's owner turns
-  Pages on once ([One-time setup](docs/versioning.md#one-time-setup),
-  ADR 0189) (audit A28-DX-02).
+  Pages when a release tag is pushed: whatever tag starts it, the site
+  of the newest final release, once `release.yml`'s tag checks pass that
+  release, so a tag that those checks refuse publishes nothing.
+  `release_check.py --as-pushed` judges a tag as when it was pushed. The
+  workflow's one job that writes may write to Pages alone, and it reads
+  no secret. The repository's owner turns Pages on once
+  ([One-time setup](docs/versioning.md#one-time-setup), ADR 0189)
+  (audit A28-DX-02).
 - [Choosing a feature](docs/choosing.md): which tool a need takes where
   two look alike (idempotency keys or the inbox, money limits or rate
   limits, a step-up, an authorization, or approvals, a balance field or

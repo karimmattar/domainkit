@@ -1,13 +1,14 @@
-# The documentation site (mkdocs.yml), published to GitHub Pages from a
-# release tag (ADR 0189). CI's docs-site job builds the same site on every
-# change, for review; this workflow publishes it only for a release:
+# The documentation site (mkdocs.yml), published to GitHub Pages from the
+# newest final release (ADR 0189). CI's docs-site job builds the same site
+# on every change, for review; this workflow publishes it when a release
+# tag is pushed:
 #
-# - the tag passes the checks release.yml's tag job makes (the version, a
-#   commit of main, the release commit), so a tag the release refuses
-#   publishes nothing;
-# - the tag is the newest final release (.github/scripts/newest_release.py):
-#   a pre-release, or a patch of an older line, leaves the site showing the
-#   newest release.
+# - whatever tag started the run, it publishes the newest final release
+#   (.github/scripts/newest_release.py): a pre-release, or a patch of an
+#   older line, leaves the site on the newest release;
+# - that release must pass release.yml's tag checks (the version, a commit
+#   of main, the release commit), judged as when its tag was pushed, so a
+#   tag that those checks refuse publishes nothing.
 #
 # The site is built with --strict from the docs group alone, and handed to
 # Pages as an artifact. Only the deploy job may write, to Pages, with the
@@ -24,8 +25,9 @@ on:
 permissions:
   contents: read
 
-# One deployment at a time, never cancelled half way: the tags of one
-# release land together, and each runs to its verdict.
+# One run at a time, never cancelled half way. A run that waits behind
+# another is dropped when a newer one comes; nothing is lost, since every
+# run publishes the newest final release, the dropped run's included.
 concurrency:
   group: pages
   cancel-in-progress: false
@@ -34,12 +36,30 @@ env:
   POETRY_VERSION: "2.4.3"
 
 jobs:
+  newest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.newest.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Find the newest final release
+        id: newest
+        run: |
+          tag="$(python3 .github/scripts/newest_release.py)"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "The site shows ${tag:-no release: none is final yet}." >> "$GITHUB_STEP_SUMMARY"
+
   tag:
+    needs: newest
+    if: needs.newest.outputs.tag != ''
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    outputs:
-      publish: ${{ steps.newest.outputs.publish }}
     steps:
+      # This run's scripts judge the release, at its own commit.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -48,9 +68,15 @@ jobs:
         with:
           python-version: "3.13"
       - run: pipx install "poetry==${POETRY_VERSION}"
+      - name: Check out the newest final release, keeping this run's scripts
+        env:
+          TAG: ${{ needs.newest.outputs.tag }}
+        run: |
+          cp -R .github/scripts "$RUNNER_TEMP/scripts"
+          git checkout --quiet --detach "refs/tags/$TAG"
       - name: Check that the tag matches the version
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.newest.outputs.tag }}
         run: |
           version="$(poetry version --short)"
           if [ "$TAG" != "v$version" ]; then
@@ -59,7 +85,7 @@ jobs:
           fi
       - name: Check that the tagged commit is on main
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.newest.outputs.tag }}
         run: |
           if ! git merge-base --is-ancestor HEAD origin/main; then
             echo "Tag $TAG is not on a commit of main" >&2
@@ -67,28 +93,18 @@ jobs:
           fi
       - name: Check that the tagged commit is the release of that version
         env:
-          TAG: ${{ github.ref_name }}
-        run: python3 .github/scripts/release_check.py "$TAG"
-      - name: Check whether the tag is the newest release
-        id: newest
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          publish="$(python3 .github/scripts/newest_release.py "$TAG")"
-          echo "publish=$publish" >> "$GITHUB_OUTPUT"
-          if [ "$publish" != "true" ]; then
-            echo "$TAG is not the newest release: the site stays as it is." >> "$GITHUB_STEP_SUMMARY"
-          fi
+          TAG: ${{ needs.newest.outputs.tag }}
+        run: python3 "$RUNNER_TEMP/scripts/release_check.py" "$TAG" --as-pushed
 
   site:
-    needs: tag
-    if: needs.tag.outputs.publish == 'true'
+    needs: [newest, tag]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: refs/tags/${{ needs.newest.outputs.tag }}
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"

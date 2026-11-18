@@ -350,9 +350,11 @@ the changelog if it changes what is refused.
    The same tag runs `.github/workflows/docs.yml`, which publishes the
    documentation site to GitHub Pages
    ([ADR 0189](adr/0189-publish-the-documentation-site-from-the-newest-releases-tag.md)).
-   It makes the same three checks of the tag, and publishes only the
-   newest final release: a pre-release, or a patch of an older line,
-   leaves the site as it is (`.github/scripts/newest_release.py`). The
+   Whatever tag starts it, it publishes the newest final release
+   (`.github/scripts/newest_release.py`), so a pre-release, or a patch
+   of an older line, leaves the site on that release. It first makes
+   release.yml's three tag checks on that release, judged as when its
+   tag was pushed: a tag that those checks refuse publishes nothing. The
    site is built as CI's `docs-site` job builds it.
 
    CI keeps a run's `dist` and `sbom` for 90 days. To release an older

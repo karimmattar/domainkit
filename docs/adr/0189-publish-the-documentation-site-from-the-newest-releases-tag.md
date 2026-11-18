@@ -36,9 +36,9 @@ Options considered:
    on a release tag: the official `actions/upload-pages-artifact` and
    `actions/deploy-pages` [1, 2, 3]. The deploy job needs `pages: write`
    and `id-token: write` only; it writes no branch, and needs no token
-   stored. A tag the release refuses, a pre-release, or a patch of an
-   older line publishes nothing, so the site shows the newest final
-   release.
+   stored. Each run publishes the newest final release, if
+   `release.yml`'s tag checks pass it, so the site shows that release
+   whatever tag was pushed.
 2. **GitHub Pages, a folder per version**, with `mike` on a `gh-pages`
    branch [4]. It keeps every release's site, and adds a version picker.
    `mike deploy --push` commits to the branch, so the job needs
@@ -55,16 +55,23 @@ Options considered:
 
 Option 1.
 
-- `.github/workflows/docs.yml` runs on a pushed `v*` tag:
-  - its `tag` job makes the three checks of `release.yml`'s `tag` job
-    (the tag is the version, on a commit of `main`, the release commit);
-    `test_ci.py` checks that they are the same steps;
-  - `.github/scripts/newest_release.py` says whether the tag is a final
-    release newer than every other final release; if not, the run ends
-    there;
-  - its `site` job builds the site as CI's `docs-site` job does, with
-    `--strict` and the docs group alone, and uploads it as the Pages
-    artifact;
+- `.github/workflows/docs.yml` runs on a pushed `v*` tag, one run at a
+  time:
+  - its `newest` job finds the newest final release among the tags
+    (`.github/scripts/newest_release.py`), whatever tag started the run.
+    With none yet, the run ends there. A run that waits behind another
+    is dropped when a newer one comes, and loses nothing: the next run
+    publishes the newest;
+  - its `tag` job makes the three checks of `release.yml`'s `tag` job on
+    that release (the tag is the version, on a commit of `main`, the
+    release commit), with the run's own scripts; `test_ci.py` checks
+    that they are the same steps. `release_check.py --as-pushed` judges
+    the tag as when it was pushed, leaving out the tags newer than it,
+    such as a later line's pre-release. So a tag that those checks
+    refuse publishes nothing;
+  - its `site` job builds the site of that release as CI's `docs-site`
+    job does, with `--strict` and the docs group alone, and uploads it
+    as the Pages artifact;
   - its `deploy` job, the only one with write access (`pages: write`,
     `id-token: write`), deploys that artifact to the `github-pages`
     environment.
@@ -88,7 +95,12 @@ Option 1.
 - A release's site replaces the previous one. Older releases' pages stay
   readable under their tags on GitHub, as the code's links show them.
 - A patch of an older line (the security fixes of the last 1.x minor
-  after 2.0) and a pre-release leave the site as it is.
+  after 2.0) and a pre-release publish the newest final release again,
+  which leaves the site as it was.
+- The checks run when the tag is pushed, before the release's own run
+  has published it. A tag that `release.yml` refuses later, for its CI
+  run or at its approval, is not seen here. Only admins create `v*`
+  tags (`.github/rulesets/release-tag-creation.json`).
 - A later decision can add versions (option 2) without a change to what
   the code names, as [0152](0152-link-the-pages-the-code-names-to-the-releases-tag.md)
   foresaw.
