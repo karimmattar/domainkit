@@ -214,17 +214,27 @@ test of a large payout reads it back. In
 
 ```python
 assert trail == [
-    ("auth.action_authorized", maker.id),  # The maker confirmed the request,
-    ("approvals.request_submitted", maker.id),  # submitted it,
-    ("auth.action_authorization_used", maker.id),  # and so spent the act.
-    ("auth.action_authorized", approver.id),  # The approver confirmed,
-    ("approvals.approval_given", approver.id),
-    ("approvals.request_approved", approver.id),  # the one approval needed,
-    ("auth.action_authorization_used", approver.id),
-    ("payouts.payout_sent", maker.id),  # and the worker sent it, as the maker.
-    ("approvals.request_executed", maker.id),
+    {
+        ("auth.action_authorized", maker.id),  # The maker confirmed the request,
+        ("approvals.request_submitted", maker.id),  # submitted it,
+        ("auth.action_authorization_used", maker.id),  # and so spent the act.
+    },
+    {
+        ("auth.action_authorized", approver.id),  # The approver confirmed,
+        ("approvals.approval_given", approver.id),
+        ("approvals.request_approved", approver.id),  # the one approval needed,
+        ("auth.action_authorization_used", approver.id),
+    },
+    {
+        ("payouts.payout_sent", maker.id),  # And the worker sent it, as the maker.
+        ("approvals.request_executed", maker.id),
+    },
 ]
 ```
+
+The test's clock is frozen, and it moves the clock on between the maker,
+the approver, and the worker, so the trail reads as three moments. The
+entries of one moment share it, and the trail keeps no order among them.
 
 `python manage.py audit log` lists it, newest first.
 

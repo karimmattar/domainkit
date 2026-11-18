@@ -171,6 +171,87 @@ project that relied on 2.8's behaviour changes, and what to run.
   with a left-to-right mark before its `+`, as right-to-left pages write
   it, is exported with an apostrophe first, as `+1 555 0100` already
   was. Numbers stay numbers.
+- **The worker's heartbeat no longer ages while a dependency is away.**
+  `runworker --heartbeat-file` is rewritten while the worker's event
+  loop runs, whatever the broker, the databases, or the caches do, so
+  the documented health check no longer restarts workers during their
+  outage. A worker that relied on such a restart keeps running, and
+  logs each failing check. To keep the restart, run the worker with
+  `--ready-file /tmp/worker-ready`, which is removed while a check
+  fails, and point the health check at it
+  ([The worker](operations.md#the-worker)). The ready file goes after
+  one failed round of checks, where 2.8's heartbeat had to age past the
+  health check's 60 seconds: set the tolerance with the check's retries
+  (`HEALTHCHECK --retries`, or a probe's `failureThreshold`).
+- **`heartbeat.beat()` always touches its path**, then runs the checks,
+  and takes the ready file as `ready`. Code that called it to touch a
+  file only while the checks hold passes that file as `ready`, and
+  `None` as the path.
+- **Webhook deliveries whose task ended are marked failed.** The first
+  run of the new hourly task `domainkit.contrib.webhooks.fail_abandoned`
+  marks failed every delivery that 2.8 left `pending` with no task to
+  run it (the worker killed during the last attempt, the attempt past
+  its time limit, or its outcome not written), and logs how many. Send
+  them again with `webhooks replay --failed`. Retrying such a delivery's
+  dead task with `messages retry` sends nothing now, and logs so:
+  replay the delivery.
+- **Text messages, search, identity, and captcha open their circuits.**
+  After `HTTP_CLIENT.BREAKER_FAILURES` failures in a row (5), a provider
+  is not called for `BREAKER_COOLDOWN` seconds (30): text messages fail
+  with `... could not be reached (CircuitOpen).` and are retried, a
+  search raises `SearchError` at once, a login through an identity
+  provider fails at once, and a captcha check answers 503
+  `captcha_unavailable` at once, as it did after waiting. Their calls
+  and circuits are counted under the client names `notifications` (text
+  messages and push), `identity`, `captcha`, and `mail`, where they were
+  `other`: change a dashboard or an alert on `client="other"`. The test
+  plugin closes every client's circuits before each test; a test suite
+  that does not use it calls `domainkit.http.client.reset_circuits()`
+  between tests, or a circuit one test opens refuses the next one's
+  calls.
+- **The worker's log lines about a failing message name its id**, after
+  its target: `Dead-lettered task shop.flaky (message 0f8e...) after 2
+  attempts`. Change a log rule or an alert that matches the whole line.
+- **Contrib routes are renamed, and so are their operation ids.** Each
+  new name is the 2.8 name with its app's prefix, for every route
+  renamed: `accounting_` on the ledger's, `approvals_` on approvals',
+  `limits_` on limits', `webhooks_` on the webhooks admin's and owner's,
+  `flags_` on the flags admin's, `auth_admin_` on the auth admin's, and
+  `audit_` on the audit trail's history (`list_accounts` is
+  `accounting_list_accounts`, `read_history` is `audit_read_history`).
+  The routes named so already keep their names: `accounting_trial_balance`,
+  `accounting_general_ledger`, `accounting_import_statement`,
+  `accounting_reconcile`, `accounting_breaks`, `approvals_submit`,
+  `approvals_submit_authorization`, and `limits_usage`. The paths, the
+  methods, and the answers are unchanged, so a client that calls the
+  URLs changes nothing, and `openapi --diff` reports nothing. Code that
+  builds a URL with `url_path_for` and a 2.8 name uses the new name, and
+  a client generated from the OpenAPI document calls each method by its
+  new name once you generate it again. With `OPENAPI_OPERATION_IDS =
+  "fastapi"`, FastAPI's ids start with the new name too. FastAPI writes
+  an operation's summary, and the title of a response schema declared
+  inline, from the name: 50 summaries ("Delete User" is "Auth Admin
+  Delete User") and 7 titles ("Response List Flags" is "Response Flags
+  List Flags") change with them. A project's resource named `accounts`,
+  `users`, or `subscriptions` failed `check` beside the ledger, the auth
+  admin, or the webhooks admin (`openapi.E001`), and its `Location` and
+  links could name the contrib route; it clashes with none now
+  ([Operation ids](reference/responses.md#operation-ids), ADR 0192).
+- **A memory ledger keeps what it holds when the ledgers close.** In
+  tests, evidence recorded before `outbox.run_queued()`, a command, or a
+  client's shutdown is still there after it. A test that relied on the
+  close to empty a `memory://` ledger calls `ledgers.reset()`; the test
+  plugin calls it before each test, as before.
+- **An approval screen shows money as its amount and currency.** A
+  guard without `show` lists the command's arguments, and an argument
+  that is `Money` now reads `1500.00 USD`, where 2.8 showed
+  `{"amount":"1500.00","currency":"USD"}`. A test that compared a
+  screen's details compares the new text.
+- **A failed approval request keeps a seal that did not hold**
+  (security). Failing makes the seal again only if it held, so a request
+  changed around the application, then failed, still fails its seal.
+  Code that reads `sealed()` on failed requests, to report them, finds
+  these.
 - **`AUTH.IDENTIFIERS` names fields that the user table has a column
   for.** Startup refuses `groups` and `user_permissions`, which link
   tables keep (`auth.E011`). 2.8 started with them, and failed later, at

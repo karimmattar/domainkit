@@ -546,11 +546,15 @@ class ApprovalRequest(AggregateRoot[RequestId]):
         """Record that its approved command was refused, by the code ``error``.
 
         A request whose seal does not hold may fail too: failing is the end,
-        and runs nothing.
+        and runs nothing. Its seal is made again only if it held, as
+        ``pseudonymise`` makes it: the failed record of a request changed
+        around the application still shows the change.
         """
+        held = self.sealed()
         self.status = RequestStatus.FAILED
         self.executed_at = clock.now()
         self.reason = error
         self.run_token = None
-        self._reseal()
+        if held:
+            self._reseal()
         self.record(RequestFailed(request_id=self.id, action=self.action, error=error))

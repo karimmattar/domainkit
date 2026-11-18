@@ -1054,7 +1054,10 @@ reCAPTCHA, or hCaptcha), and sends the token it gives in the
 - a missing or refused token is `400 captcha_failed`;
 - a provider that cannot be reached refuses the request with
   `503 captcha_unavailable` (`CaptchaUnavailable`), so bots never pass
-  while it is down;
+  while it is down. Every check shares one client: after
+  `HTTP_CLIENT.BREAKER_FAILURES` failures in a row, the requests are
+  refused at once, without waiting on the provider, for
+  `BREAKER_COOLDOWN` seconds;
 - reCAPTCHA v3 scores each token: below `MIN_SCORE` (0.5) it is refused;
 - with `HOSTNAMES`, a token solved on another site's page that shows your
   site key is refused, and with `CHECK_ACTION`, one solved for another

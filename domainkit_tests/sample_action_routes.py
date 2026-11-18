@@ -205,6 +205,19 @@ async def archive_note(note_id: UUID, user: AuthenticatedUser) -> Response:
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@router.post(
+    "/notes/{note_id}/archive/twice",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(Require(ARCHIVING))],
+)
+async def archive_note_twice(note_id: UUID, user: AuthenticatedUser) -> Response:
+    """Spend the authorization of archiving the note twice, in code, off auth's."""
+    command = ArchiveNote(user_id=user.id, note_id=note_id)
+    await spend_authorization(NotesUnitOfWork(), ARCHIVE, command)
+    await spend_authorization(NotesUnitOfWork(), ARCHIVE, command)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.post("/notes/{note_id}/archive/authorization", status_code=201)
 async def ask_to_archive(
     note_id: UUID, request: Request, user: AuthenticatedUser

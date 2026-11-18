@@ -365,3 +365,19 @@ async def test_a_tampered_approved_request_fails_and_says_which(
     assert [record.getMessage() for record in caplog.records] == [
         f"Approval request {request.id} is tampered with"
     ]
+
+
+async def test_a_tampered_request_failed_still_shows_the_change() -> None:
+    """Failing it seals nothing: the failed record's seal fails, as it did."""
+    guard_acts()
+    request = await approved_act("u")
+    async with connections.engine().begin() as connection:
+        await connection.execute(
+            update(requests).where(requests.c.id == request.id).values(required=5)
+        )
+
+    await execute_request(request.id, request.run_token)
+
+    failed = await stored(request.id)
+    assert (failed.status, failed.reason) == (RequestStatus.FAILED, "request_tampered")
+    assert not failed.sealed()

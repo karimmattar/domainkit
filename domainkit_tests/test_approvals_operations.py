@@ -341,6 +341,36 @@ def test_erasure_fails_a_request_approved_and_launders_no_seal(project: str) -> 
     assert not decision.verified(theirs.id)
 
 
+def test_erasure_fails_an_approved_request_tampered_and_seals_nothing(
+    project: str,
+) -> None:
+    """Their approved request changed around the application fails, still unsealed.
+
+    Failing it as ``maker_not_allowed`` does not seal what someone changed,
+    as pseudonymising does not (FIN-94).
+    """
+    approved = submitted("approved", maker="subject")
+    decide(approved, "ann")
+    decide(approved, "bob")
+
+    async def tamper() -> None:
+        async with connections.engine().begin() as connection:
+            await connection.execute(
+                update(requests).where(requests.c.id == approved.id).values(required=1)
+            )
+
+    run_async(tamper())
+    (erase,) = on_erase_subject.of("approvals")
+
+    counts = run_async(erase.call("subject", "request"))
+
+    failed = run_async(_stored())[str(approved.id)]
+    assert counts == {"requests": 1, "failed": 1}
+    assert (failed.status, failed.reason) == (RequestStatus.FAILED, "maker_not_allowed")
+    assert failed.maker.startswith("erased:")
+    assert not failed.sealed()
+
+
 def test_setup_refuses_thresholds_and_rules_that_cannot_work(
     project: str,
 ) -> None:

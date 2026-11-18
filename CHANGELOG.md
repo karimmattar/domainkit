@@ -106,6 +106,25 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   ([Rows of no tenant](docs/tenancy.md#rows-of-no-tenant), ADR 0183)
   (audit A28-SEC-04).
 
+- `runworker --ready-file PATH`: the worker's readiness. Each round of
+  `--heartbeat-interval` rewrites the file while `/ready`'s checks and
+  the broker's hold, and removes it when one fails; it goes when the
+  worker stops. A fresh heartbeat without it is a degraded worker
+  ([The worker](docs/operations.md#the-worker), ADR 0187) (audit
+  A28-REL-02).
+
+- `domainkit.http.client.reset_circuits()` and `CircuitBreaker.reset()`:
+  close every client's circuits. The test plugin calls the first before
+  each test, so a client that backends share carries no open circuit
+  into the next test ([What each test starts from](docs/testing.md#what-each-test-starts-from))
+  (audit A28-ARCH-02).
+
+- `unfinished_arguments(target, argument)`
+  (`domainkit.contrib.messaging.admin`): a query of one argument of each
+  message of a task that has not finished (pending, running, or held),
+  for a statement on another table of the outbox's database to tell
+  whether a task still waits for one of its rows (audit A28-REL-05).
+
 - [Webhook deliveries fail](docs/runbook.md#webhook-deliveries-fail)
   says to `ANALYZE` the deliveries and the outbox tables on PostgreSQL
   after `migrate` made them, a restore, or a bulk load: until autovacuum
@@ -176,6 +195,44 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   statement, where it read one per group, up to 1,000 of them (audit
   A28-PERF-07).
 
+- `runworker --heartbeat-file` is the worker's liveness: its event loop
+  rewrites the file every `--heartbeat-interval` seconds, on a schedule
+  no check holds up, whatever the checks find; a failing check, or one
+  that raises, is logged. Before, the file aged
+  while the broker, a database, or a cache was away, and the documented
+  health check restarted the relaying workers that run the outbox during
+  a broker outage (ADR 0142). To restart on a failing dependency, as
+  before, check `--ready-file` instead. `heartbeat.beat` touches its path
+  first and takes `ready`
+  ([upgrading.md](docs/upgrading.md#28-to-29), ADR 0187) (audit
+  A28-REL-02).
+
+- The worker's log lines about a failing message name its id, as
+  `messages list` shows it and `messages retry` takes it: a retry, a dead
+  letter, an outcome that could not be written, a lost lease, a message
+  that could not be given back, and one whose target no worker knows
+  (audit A28-REL-08).
+
+- Tests cover two refusals that none reached: an act's authorization
+  spent a second time in code off auth's database, refused and told to
+  the trail as `used`, and a relay's probe that finds the broker away,
+  which opens the breaker again before any row is leased (audit
+  A28-TEST-02).
+
+- The routes of the ledger, approvals, limits, the webhooks admin and
+  owner's API, the flags admin, the auth admin, and the audit trail's
+  history are renamed: each new name is the 2.8 name with its app's
+  prefix, `accounting_`, `approvals_`, `limits_`, `webhooks_`, `flags_`,
+  `auth_admin_`, or `audit_` (`list_accounts` is
+  `accounting_list_accounts`), and so is each operation id. Code that
+  calls `url_path_for` with a 2.8 name, and a client generated from the
+  OpenAPI document, use the new names. A project's resource named
+  `accounts` beside the ledger failed `check` (`openapi.E001`), and its
+  `Location` and links could name the ledger's routes; a resource named
+  as a contrib app's now clashes with none of them
+  ([upgrading.md](docs/upgrading.md#28-to-29), ADR 0192) (audit
+  A28-DX-06).
+
 - `auth.E011` refuses an `AUTH.IDENTIFIERS` field that the user table has
   no column for, `groups` or `user_permissions`, which link tables keep.
   2.8 started with one, and failed later, at a login, a search, or a list
@@ -215,6 +272,52 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   each rung's calls, round trips, and modules as `benchmarks/budgets.toml`
   holds them, and `test_docs.py` fails when the two differ (audit
   A28-PERF-09).
+
+- A webhook delivery whose last attempt ends without an outcome is
+  marked failed, where it stayed `pending` for good: listed by
+  `webhooks deliveries --status failed`, replayed by `webhooks replay`,
+  and purged. Its last attempt marks it, if the database lets it, and an
+  hourly task of its own (`domainkit.contrib.webhooks.fail_abandoned`)
+  marks each pending delivery whose task died, was cancelled, or was
+  dropped (its worker killed, its time limit passed, or its outcome not
+  written), those of earlier releases included. A task that finds its
+  delivery no longer pending, such as a dead task retried with `messages
+  retry`, logs that it sent nothing. A late duplicate run no longer
+  overwrites a finished delivery's outcome
+  ([How a delivery runs](docs/contrib/webhooks.md#how-a-delivery-runs),
+  ADR 0187) (audit A28-REL-05).
+
+- Text message providers, the search engines, identity providers, and
+  captcha checks share one HTTP client each, as mail and push did, where
+  each backend made per call had its own. A provider that is down opens
+  its circuit after `HTTP_CLIENT.BREAKER_FAILURES` failures and is called
+  no more until `BREAKER_COOLDOWN` has passed, connections are reused,
+  and shutdown closes them. Their calls and circuits are counted as
+  `notifications` (text messages and push), `identity`, and `captcha`,
+  and mail's as `mail`, where they were `other` (ADR 0187) (audit
+  A28-ARCH-02).
+
+- A stopping relay that is still publishing to a broker that answers is
+  cancelled after `HELPER_GRACE` (5 seconds), and its messages are given
+  back. Only a relay running the outbox, its breaker open, waits for what
+  is left of `DRAIN_TIMEOUT` first, even while it is still claiming;
+  every relay did, so shutdown took up to 25 seconds (audit A28-TEST-07).
+
+- A memory ledger (`memory://`) keeps what it holds when the ledgers
+  close. `outbox.run_queued()` in a sync test, a command, and an
+  application's shutdown close them, and the evidence a queued handler
+  had recorded was gone when the test read it. `ledgers.reset()`, which
+  the test plugin calls before each test, still empties them
+  ([Ledgers](docs/databases.md#ledgers-immudb)) (audit A28-DX-06).
+
+- What a person deciding an approval request is shown of an argument
+  that is `Money`, or of a list's item that is, is its amount and
+  currency, `1500.00 USD`, as `Money` writes itself; 2.8 showed its JSON,
+  `{"amount":"1500.00","currency":"USD"}`. It holds for the approver's,
+  the maker's, and the rejecting and cancelling screens of a guard
+  without `show`
+  ([Approving with an authorization](docs/contrib/approvals.md#approving-with-an-authorization))
+  (audit A28-DX-06).
 
 - `diffsettings` reads a long text in a time that grows with its length.
   The pattern of `password=` pairs read each name again from every
@@ -310,6 +413,14 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   change users as they hold it everywhere, whatever tenant the request is
   served as: users belong to no tenant, so a member's role in one keeps no
   impersonation going (audit A28-SEC-04).
+
+- A failed approval request keeps the seal it had when that seal did not
+  hold: failing makes the seal again only if it held, as an erasure's
+  pseudonym does. The failed record of a request changed around the
+  application, failed by its run (`request_tampered`) or by `privacy
+  erase` (`maker_not_allowed`), still fails its seal
+  ([Approvals](docs/contrib/approvals.md),
+  [upgrading.md](docs/upgrading.md#28-to-29)). Found in review.
 
 - `diffsettings` hides the value after a name like a secret's and `=` or
   `:`, spaced or not, the name quoted or not, in any text it prints:
