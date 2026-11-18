@@ -390,9 +390,9 @@ No migration.
   application layer, as the old path was; a rule of the project's that
   names `domainkit.http`, `domainkit.http.client`, or
   `domainkit.http.guard` covers the new path too. Webhooks no longer
-  imports the guard's lookup: a test that faked DNS through
-  `domainkit.contrib.webhooks.guard.lookup` patches
-  `domainkit.outbound.guard.lookup` instead. `lifecycle.register("guard
+  imports the guard's lookup: a test that faked DNS by patching `lookup`
+  in `domainkit.contrib.webhooks.guard` patches it in
+  `domainkit.outbound.guard` instead, the module that calls it. `lifecycle.register("guard
   lookups", ...)` raises `ValueError`: shutdown closes the guard's lookup
   threads itself, under that name.
 - **The plugin forgets the push services' tokens before each test**
