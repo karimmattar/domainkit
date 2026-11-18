@@ -1,5 +1,7 @@
 site_name: domainkit
 site_description: Django's conventions for domain-driven FastAPI services.
+# Published from the newest release's tag (.github/workflows/docs.yml).
+site_url: https://karimmattar.github.io/domainkit/
 repo_url: https://github.com/karimmattar/domainkit
 edit_uri: edit/main/docs/
 strict: true
@@ -70,6 +72,7 @@ nav:
   - Getting started:
       - tutorial.md
       - learning.md
+      - choosing.md
       - tutorial/0-first-route.md
       - tutorial/1-first-resource.md
       - tutorial/2-rules.md
@@ -168,10 +171,14 @@ nav:
           - api/contrib.md
       - API reference: reference/api/index.md
       - versioning.md
+  # For the people who make domainkit: how it is decided, written, and
+  # reviewed. The pages a project uses are above.
+  - Project:
+      - Decisions: adr/README.md
       - style-guide.md
       - roadmap.md
-      - newcomer-study.md
       - feature-inventory.md
-      - Decisions: adr/README.md
+      - newcomer-study.md
       - audit/0.9.0.md
+      - audit/2.8.0.md
       - audit/scope.md

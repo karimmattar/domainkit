@@ -26,6 +26,11 @@ mutation-shards.json
 # Local files
 .env
 *.sqlite3
+
+# What running an example leaves: its migrations are made for the domainkit
+# installed, never committed here (examples/README.md)
+examples/*/migrations/
+examples/*/.venv/
 .DS_Store
 
 # Personal Claude Code context (private names and history)

@@ -30,20 +30,24 @@ has nothing to say.
    feature does, and why a service needs it.
 3. **"On this page"**: a short bullet list of what the reader will learn
    or be able to do.
-4. **A first example**: the smallest complete code that works. A reader
+4. **"When to use it, and when not to"**: two to four bullets. They say
+   which needs the feature serves, which it does not, and what to use
+   instead, with a link. [Choosing a feature](choosing.md) gathers them
+   in one place; keep the two in step.
+5. **A first example**: the smallest complete code that works. A reader
    who copies it and runs it gets a result.
-5. **Sections**, one per idea, from the most used to the least used. Each
+6. **Sections**, one per idea, from the most used to the least used. Each
    section starts with one sentence that says what it is about, then shows
    code, then explains the code.
-6. **Options**: a table of every setting, argument, or marker the feature
+7. **Options**: a table of every setting, argument, or marker the feature
    takes, with its default and what it does. Link to the reference page
    for the full setting rows.
-7. **Errors and refusals**: what goes wrong, what the reader sees (the
+8. **Errors and refusals**: what goes wrong, what the reader sees (the
    exception, the HTTP status, the problem `code`), and how to fix it.
-8. **Common mistakes**: two to five things people get wrong, each with the
+9. **Common mistakes**: two to five things people get wrong, each with the
    fix.
-9. **See also**: links to the guides, how-tos, and reference pages that
-   come next.
+10. **See also**: links to the guides, how-tos, and reference pages that
+    come next.
 
 A tutorial page has an opening paragraph, "What you will build", steps
 with numbers, and "What you learned" at the end. A how-to has "The
@@ -131,6 +135,10 @@ domainkit_tests/test_walkthroughs.py` checks:
 - every setting, command, and password validator is documented;
 - every section that code or error messages name exists;
 - every Python snippet parses and imports what exists;
+- every block titled with a file names that file in the prose above it,
+  because GitHub does not show a block's title;
+- each key feature's page says when to use it and when not to, and
+  [choosing a feature](choosing.md) links it;
 - the API pages list each module's public names, in order, with the
   first line of each docstring;
 - the tutorial's commands and edits still build a working service.

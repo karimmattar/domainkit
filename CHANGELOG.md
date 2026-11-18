@@ -5,11 +5,86 @@ All notable changes to domainkit. The format follows
 [Semantic Versioning](https://semver.org/); see `docs/versioning.md`.
 Entries end with the ids of the review findings they answer, such as
 `(FIN-77)`: [docs/audit/0.9.0.md](docs/audit/0.9.0.md) gives each a title
-and a status.
+and a status. Ids that start with `A28-` name the 2.8 audit's findings,
+listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 
 ## [Unreleased]
 
+### Added
+
+- `--version` prints domainkit's version (`python manage.py --version`,
+  `domainkit --version`), and `help <command>` prints the command's
+  options, as `<command> --help` does
+  ([Running a command](docs/reference/commands.md#running-a-command),
+  [upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-12).
+
+- `.github/workflows/docs.yml` publishes the documentation site to GitHub
+  Pages when a release tag is pushed: whatever tag starts it, the site
+  of the newest final release, once `release.yml`'s tag checks pass that
+  release, so a tag that those checks refuse publishes nothing.
+  `release_check.py --as-pushed` judges a tag as when it was pushed. The
+  workflow's one job that writes may write to Pages alone, and it reads
+  no secret. The repository's owner turns Pages on once
+  ([One-time setup](docs/versioning.md#one-time-setup), ADR 0189)
+  (audit A28-DX-02).
+
+- [Choosing a feature](docs/choosing.md): which tool a need takes where
+  two look alike (idempotency keys or the inbox, money limits or rate
+  limits, a step-up, an authorization, or approvals, a balance field or
+  the ledger, rows, databases, or schemas per tenant), and which to
+  leave alone. Sixteen feature pages open with "When to use it, and when
+  not to", and link the tool to use instead (audit A28-DX-05).
+
+- Runbook entries for a write that ran past its deadline, a retry that
+  finds the request ran (`409 idempotency_response_unavailable`), webhook
+  deliveries that fail, codes and mail that do not arrive, and requests
+  that fail during a rollout; the request flow, request deadlines, and
+  the rollout checklist say what a deadline answer tells about a commit,
+  and how a stopping process keeps serving
+  ([Runbook](docs/runbook.md#find-the-entry)) (audit A28-REL-06).
+
+- `examples/`: three runnable projects, each made by `domainkit init`,
+  with a walkthrough that opens with the problem it solves, and tests.
+  `payments-ledger` keeps wallets in double-entry books: payments under
+  an `Idempotency-Key`, holds captured or released, refunds as
+  reversals, and the trial balance. `maker-checker` holds large payouts
+  for approval, the maker and the approver each confirming the act.
+  `outbox-webhooks` sends transfers through a durable handler, with
+  retries and dead letters, and signed webhooks to a receiver that
+  verifies them. domainkit's tests play each one's CI workflow, on
+  SQLite and on PostgreSQL, so a change that breaks one fails CI; the
+  wheel and the sdist leave them out (ADR 0190). README.md and
+  `docs/learning.md` link them (audit A28-DX-06).
+
 ### Changed
+
+- `diffsettings` shows each installed domain's settings (`AUTH`,
+  `APPROVALS`, `LIMITS`, ...) as its schema validated them, defaults
+  filled in, and marks those left at their defaults under `--all`; 2.8
+  hid a domain's settings whole. It fails closed: values typed as
+  secrets, names that suggest one (`sid` and `pin` now among them), URL
+  passwords and `password=` pairs, and all text in a mapping or a value
+  typed `Any` (a provider's options) stay hidden
+  ([diffsettings](docs/reference/commands.md#diffsettings-show-the-settings),
+  [upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-10).
+
+- In development and tests, each problem the application finds at its
+  build or start (a route without an access rule, say) is logged as a
+  warning of its own, on one line; 2.8 logged them in one record, which
+  the log escaped onto one line with `\n` between them
+  ([upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-12).
+
+- `createsuperuser`'s note on a superuser that no code can reach says
+  "no verification code can be sent to the superuser ... until its email
+  address is verified" (audit A28-DX-12).
+
+- PyPI's "Documentation" link opens the first page, `docs/index.md`, not
+  `docs/reference.md` (audit A28-DX-02).
+
+- The site's navigation keeps the pages for those who make domainkit
+  (decisions, the style guide, the roadmap, the audits) under "Project",
+  apart from the reference; their addresses do not change. The feature
+  inventory says that it records the review of 1.5 (audit A28-DX-13).
 
 - CI's `coverage` job fails a pull request to `stg` with a line it adds or
   changes under `src/` that ran in no job, or left a branch untaken
@@ -18,22 +93,27 @@ and a status.
   Makefile now say, and Python processes the tests start are measured too
   (`patch = ["subprocess"]`); ADR 0191 records the gates (audit
   A28-TEST-05).
+
 - ADR 0106, CONTRIBUTING.md, README.md and `docs/versioning.md` say that
   mutation testing runs on request: `mutation (changed)` and the weekly
   shards run while the repository variable `MUTATION` is `on`, which it
   has not been since 1.5.0. `unmutated-functions.txt`, a CI output
   committed by mistake, is removed, and git ignores what the mutation
   jobs write (audit A28-TEST-04).
+
 - CI's integration job runs Kafka 4.4 and ElasticMQ 1.7, an SQS server,
   and the Kafka and SQS brokers' contract and redelivery run against them
   (`DOMAINKIT_TEST_KAFKA_URL`, `DOMAINKIT_TEST_SQS_URL`); `compose.yaml`
   and `make integration` start and name them too. The fakes stay for the
   failures (audit A28-TEST-03).
+
 - CI's test and integration runs list their 30 slowest tests
   (`--durations=30`) (audit A28-TEST-07).
+
 - The `postgresql (16)` job runs on Python 3.15, while `integration` runs
   on 3.13: each end of the Python range meets PostgreSQL (audit
   A28-TEST-11).
+
 - CONTRIBUTING.md says where a new test goes: in its module's file, or
   `test_<module>_<topic>.py`, naming the finding it answers in its
   docstring rather than in the file's name. The key ring's and the
@@ -42,19 +122,54 @@ and a status.
 
 ### Fixed
 
+- The tutorial and the recipes name the file each block makes or
+  changes in the text above it, which GitHub shows; a block's title, the
+  only place that named it, is shown by the site alone. `test_docs.py`
+  fails on a titled block whose file the text does not name (audit
+  A28-DX-01).
+
+- The README's quick start makes the four-file domain that `startdomain`
+  makes by default, and that the tutorial starts from, and describes
+  `--layered` and `--minimal` as they are. It counts the tutorial's six
+  parts, and says when a route answers 401, 403, or 404. The recipes
+  that make a layered domain say why (audit A28-DX-03).
+
+- The first example of [Authenticating requests](docs/auth/authentication.md#a-first-example)
+  runs in a project made by `init`: it logs in by email address, and
+  sends a host the local settings accept. `test_walkthroughs.py` runs it
+  (audit A28-DX-09).
+
+- The tutorial says that its commands need a POSIX shell, and to use WSL
+  or Git Bash on Windows
+  ([Before you start](docs/tutorial.md#before-you-start)) (audit
+  A28-DX-11).
+
+- [Free-threaded Python](docs/runtime.md#free-threaded-python) names
+  the `documents` (`fill_docx`, `placeholders`) and `saml` extras, whose
+  lxml turns the GIL back on for the rest of the process, beside
+  `immudb` (audit A28-PERF-06).
+
+- [What a request costs](docs/performance.md#what-a-request-costs) shows
+  each rung's calls, round trips, and modules as `benchmarks/budgets.toml`
+  holds them, and `test_docs.py` fails when the two differ (audit
+  A28-PERF-09).
+
 - `SqsBroker.close()` closes its connections to SQS, which it left open
   (audit A28-TEST-03).
+
 - The test plugin numbers a module-scoped or session-scoped fixture's
   factory objects from 0, whichever test runs first: it resets every
   factory before a test's fixtures, as well as before the test's own.
   `docs/testing.md`'s example of a module's rows passed or failed by the
   order of the tests (audit A28-TEST-08).
+
 - The upload and PDF tests no longer time their checks with a stopwatch.
   Each says which limit stopped a check: the clock or a signal, from the
   log; the decoder's or the cross-reference reader's count; or a clock
   that moves a fixed step each time it is read. A slow runner failed
   them, and a limit firing in another's place passed them (audit
   A28-TEST-01).
+
 - Refusals and destructive paths that no test ran have tests: an
   impersonation ends when its staff member loses the staff flag, or its
   user is gone; an approved command that names someone other than its
@@ -63,6 +178,7 @@ and a status.
   is downgraded alone, and a tenant database out of reach is named; a
   failed claim gives the messaging worker's slots back (audit
   A28-TEST-02).
+
 - Tests that waited a fixed time, or raced a short timeout, wait for what
   they test. The waits of a sign-in or an act on the phone are approved
   once they wait, and only hearing of the approval ends them in time; the
@@ -70,10 +186,12 @@ and a status.
   settle are checked by what happened. Tests that wait for something
   share one bound of 30 seconds (`domainkit_tests/support/waiting.py`)
   (audit A28-TEST-06).
+
 - The Redis and NATS servers the broker tests start are each the test's
   own: NATS picks its port and writes it to a file, and a Redis that fails
   to start, or a port another Redis answers on, is tried again on another
   port (audit A28-TEST-09).
+
 - A docs test wrote its probe page into the repository's `docs/`, which
   other tests read at the same time; it writes it under a temporary
   directory of its own (audit A28-TEST-10).
