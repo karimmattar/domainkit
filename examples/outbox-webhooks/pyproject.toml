@@ -2,7 +2,7 @@
 name = "transfersAPI"
 version = "0.1.0"
 requires-python = ">=3.13"
-dependencies = ["domainkit[httpclient,postgres,redis,sqlite,webhooks]>=2.8.0,<3"]
+dependencies = ["domainkit[httpclient,postgres,redis,sqlite,webhooks]>=2.9.0,<3"]
 
 [dependency-groups]
 dev = [

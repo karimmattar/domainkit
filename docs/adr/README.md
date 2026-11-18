@@ -199,7 +199,7 @@ statuses, and the amendments they name.
 | [0187](0187-keep-the-workers-heartbeat-to-its-liveness-fail-deliveries-whose-task-ended-and-share-provider-clients.md) | Keep the worker's heartbeat to its liveness, fail deliveries whose task ended, and share provider clients | Accepted |
 | [0188](0188-write-down-the-cores-layering-and-hold-the-boundaries-it-draws.md) | Write down the core's layering, and hold the boundaries it draws | Accepted; amended by [0195](0195-move-the-outgoing-client-below-the-adapters-and-hold-module-state-to-its-resets.md) on 2026-11-18 (at the end) |
 | [0189](0189-publish-the-documentation-site-from-the-newest-releases-tag.md) | Publish the documentation site from the newest release's tag | Accepted |
-| [0190](0190-keep-runnable-examples-as-projects-that-domainkits-tests-run.md) | Keep runnable examples as projects that domainkit's tests run | Accepted |
+| [0190](0190-keep-runnable-examples-as-projects-that-domainkits-tests-run.md) | Keep runnable examples as projects that domainkit's tests run | Accepted; amended 2026-11-18 (at the end) |
 | [0191](0191-gate-the-lines-a-change-adds.md) | Gate the lines a change adds | Accepted |
 | [0192](0192-start-a-contrib-routers-route-names-with-its-app.md) | Start a contrib router's route names with its app | Accepted |
 | [0195](0195-move-the-outgoing-client-below-the-adapters-and-hold-module-state-to-its-resets.md) | Move the outgoing client below the adapters, and hold module state to its resets | Accepted |

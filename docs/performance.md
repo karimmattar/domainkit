@@ -96,28 +96,28 @@ Of the other columns:
 | --- | --- | ---: | ---: | ---: | ---: |
 | `asgi` | A bare ASGI application: `GET /hello` | 5 (5) | 0/0/0/0 | 166 | 0.9 |
 | `fastapi` | Plain FastAPI: `GET /hello` | 234 (168) | 0/0/0/0 | 394 | 48 |
-| `bare` | domainkit, no middleware: `GET /hello` | 303 (1,653) | 0/0/0/0 | 806 | 60 |
-| `nested` | domainkit, no middleware, two routers deep: `GET /a/b/hello` | 303 (1,889) | 0/0/0/0 | 806 | 59 |
-| `default` | `DEFAULT_MIDDLEWARE`: `GET /hello` | 414 (1,825) | 0/0/0/0 | 807 | 105 |
-| `default-json` | `DEFAULT_MIDDLEWARE`, JSON access log: `GET /hello` | 551 (1,965) | 0/0/0/0 | 807 | 171 |
-| `template` | The `init` template's stack: `GET /hello` | 529 (2,018) | 0/0/0/0 | 809 | 135 |
-| `template-json` | The template's stack, JSON access log: `GET /hello` | 666 (2,158) | 0/0/0/0 | 809 | 207 |
-| `me` | Template stack, opaque token: `GET /me` | 686 (5,892) | 0/0/0/0 | 838 | 226 |
-| `read` | Template stack, token, `ModelPermissions`, read through a unit of work: `GET /items/{id}` | 1,660 (7,359) | 1/1/1/0 | 838 | 1,484 |
-| `write` | Template stack, token, `ModelPermissions`, write through a unit of work: `POST /items` | 2,049 (7,648) | 1/1/1/0 | 838 | 1,725 |
-| `resource-list` | Template stack, token, a `ResourceRouter` page of 20 items with a scope and `ModelActions`: `GET /resources/items`, measured before any rung writes | 2,684 | 1/1/1/0 | 838 | 2,167 |
-| `resource-read` | Template stack, token, a `ResourceRouter` read with a scope and `ModelActions`: `GET /resources/items/{id}` | 1,920 | 1/1/1/0 | 838 | 1,890 |
-| `resource-command` | Template stack, token, a `ResourceRouter` command on one item, with a scope: `POST /resources/items/{id}/rename` | 2,720 | 1/1/1/0 | 838 | 2,500 |
-| `keyed-write` | The write with an `Idempotency-Key` (`IdempotencyMiddleware` last): `POST /items` | 3,450 (10,977) | 4/3/3/0 | 839 | 3,548 |
-| `money-write` | Template stack, token, a `Money` field written through a unit of work: `POST /wallets` | 2,176 | 1/1/1/0 | 907 | 1,777 |
-| `posting` | Template stack, token, `post_entry` of two lines, the credited account's holder under a daily limit (`contrib.limits`): `POST /postings` | 8,059 | 14/1/1/0 | 907 | 7,216 |
-| `encrypted-read` | Template stack, token, a read of a field `Encrypted()` under the data key: `GET /cards/{id}` | 1,703 | 1/1/1/0 | 907 | 1,584 |
-| `step-up` | Template stack, a token that stepped up, a route behind `StepUp(max_age=...)`: `GET /stepped` | 1,525 | 1/1/1/0 | 907 | 1,348 |
-| `throttled` | Template stack, token, refused by `RATE_LIMIT` (429): `GET /me`; its message translated in one lookup since PERF-24 | 505 (4,401) | 0/0/0/0 | 838 | 188 |
+| `bare` | domainkit, no middleware: `GET /hello` | 304 (1,653) | 0/0/0/0 | 807 | 60 |
+| `nested` | domainkit, no middleware, two routers deep: `GET /a/b/hello` | 304 (1,889) | 0/0/0/0 | 807 | 59 |
+| `default` | `DEFAULT_MIDDLEWARE`: `GET /hello` | 413 (1,825) | 0/0/0/0 | 808 | 105 |
+| `default-json` | `DEFAULT_MIDDLEWARE`, JSON access log: `GET /hello` | 548 (1,965) | 0/0/0/0 | 808 | 171 |
+| `template` | The `init` template's stack: `GET /hello` | 527 (2,018) | 0/0/0/0 | 810 | 135 |
+| `template-json` | The template's stack, JSON access log: `GET /hello` | 663 (2,158) | 0/0/0/0 | 810 | 207 |
+| `me` | Template stack, opaque token: `GET /me` | 686 (5,892) | 0/0/0/0 | 839 | 226 |
+| `read` | Template stack, token, `ModelPermissions`, read through a unit of work: `GET /items/{id}` | 1,598 (7,359) | 1/1/1/0 | 839 | 1,484 |
+| `write` | Template stack, token, `ModelPermissions`, write through a unit of work: `POST /items` | 2,057 (7,648) | 1/1/1/0 | 839 | 1,725 |
+| `resource-list` | Template stack, token, a `ResourceRouter` page of 20 items with a scope and `ModelActions`: `GET /resources/items`, measured before any rung writes | 2,589 | 1/1/1/0 | 839 | 2,167 |
+| `resource-read` | Template stack, token, a `ResourceRouter` read with a scope and `ModelActions`: `GET /resources/items/{id}` | 1,870 | 1/1/1/0 | 839 | 1,890 |
+| `resource-command` | Template stack, token, a `ResourceRouter` command on one item, with a scope: `POST /resources/items/{id}/rename` | 2,658 | 1/1/1/0 | 839 | 2,500 |
+| `keyed-write` | The write with an `Idempotency-Key` (`IdempotencyMiddleware` last): `POST /items` | 3,459 (10,977) | 4/3/3/0 | 840 | 3,548 |
+| `money-write` | Template stack, token, a `Money` field written through a unit of work: `POST /wallets` | 2,188 | 1/1/1/0 | 909 | 1,777 |
+| `posting` | Template stack, token, `post_entry` of two lines, the credited account's holder under a daily limit (`contrib.limits`): `POST /postings` | 8,149 | 14/1/1/0 | 909 | 7,216 |
+| `encrypted-read` | Template stack, token, a read of a field `Encrypted()` under the data key: `GET /cards/{id}` | 1,644 | 1/1/1/0 | 909 | 1,584 |
+| `step-up` | Template stack, a token that stepped up, a route behind `StepUp(max_age=...)`: `GET /stepped` | 1,541 | 1/1/1/0 | 909 | 1,348 |
+| `throttled` | Template stack, token, refused by `RATE_LIMIT` (429): `GET /me`; its message translated in one lookup since PERF-24 | 505 (4,401) | 0/0/0/0 | 839 | 188 |
 
 The four money rungs came with the 0.15 audit (PERF-32). They install
 money's ledger, limits, keys, and a small domain of their own beside the
-catalog's (`benchmarks/project/money_routes.py`). So they hold 69 modules
+catalog's (`benchmarks/project/money_routes.py`). So they hold 70 modules
 more than the other database rungs, which install none of it.
 
 `benchmarks/budgets.toml` holds the gate for each rung
@@ -289,8 +289,8 @@ statements = 0
 transactions = 0
 checkouts = 0
 pings = 0
-modules = 838
-memory = 94
+modules = 839
+memory = 101
 ```
 
 `calls` and `memory` tolerances are fractions of the budget. The round
@@ -315,8 +315,8 @@ trips are exact. `modules` is a count, either way. `memory` is in MiB.
   served its warm-up, in MiB. It strays by a MiB or two from run to run,
   so its tolerance is a tenth of the budget. A dependency that brings
   tens of MiB, or a cache that grows with requests, fails the job. A bare
-  ASGI process holds 26 MiB, plain FastAPI 46, a domainkit application
-  90 to 94, and one with money's ledger, limits, and keys 110.
+  ASGI process holds 28 MiB, plain FastAPI 47, a domainkit application
+  96 to 101, and one with money's ledger, limits, and keys 115.
 - **Time is never gated** (ADR 0064): a shared runner's timings are too
   noisy. Under load, CI holds ratios to plain FastAPI in the same run,
   not times ([Under load](#under-load)). CI's job summary shows the CPU
