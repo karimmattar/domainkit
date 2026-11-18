@@ -39,7 +39,10 @@ async def book_transfer(event: TransferMade) -> None:
 
     The customer owes the amount sent, and the bank owes it to the card
     network until it settles. The transfer's id is the entry's reference:
-    a second run returns the entry the first posted.
+    a second run returns the entry the first posted. An entry over
+    ``APPROVALS.ENTRY_THRESHOLDS`` would be refused (``ApprovalRequired``)
+    and dead-lettered, as this run is no approved request of the books':
+    ``services.check_bookable`` refuses such a transfer before it is made.
     """
     currency = event.amount.currency.code
     booked_on = event.occurred_at.date()
@@ -79,9 +82,9 @@ async def ledger_account(code: str, currency: str) -> AccountId:
 async def open_month(day: date) -> None:
     """Open the accounting period of ``day``'s month, unless a period covers it.
 
-    The bank's finance team opens and closes periods as it chooses; a
-    transfer dated in a period it closed is refused, and waits in the
-    outbox's dead letters.
+    A start, for a bank whose finance team does not open periods yet:
+    delete this, and its call, once it does. A transfer dated in a period
+    the team closed is refused, and waits in the outbox's dead letters.
     """
     async with AccountingUnitOfWork() as books:
         if await books.periods.covering(day) is not None:
@@ -93,5 +96,7 @@ async def open_month(day: date) -> None:
             OpenPeriod(name=f"{first:%Y-%m}", starts_on=first, ends_on=last),
             AccountingUnitOfWork(),
         )
-    except (PeriodNameTaken, PeriodsOverlap):  # Opened meanwhile.
+    except PeriodNameTaken:  # Another run opened the month first.
+        return
+    except PeriodsOverlap:  # The team's periods hold other days: posting is refused.
         return

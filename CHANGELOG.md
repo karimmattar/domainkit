@@ -31,8 +31,11 @@ and a status.
   the double-entry books once it commits, as a balanced entry posted by
   a durable handler (`domains/payments/application/handlers.py`), which
   opens the month's accounting period when none covers the date; and its
-  facts are recorded as evidence (`defer_evidence`). Its tests prove both.
-  `docs/learning.md` names the profile as a complete example
+  facts are recorded as evidence (`defer_evidence`). A transfer whose
+  entry the books would hold for their own approvals
+  (`APPROVALS.ENTRY_THRESHOLDS`) is refused before anything moves, `422
+  transfer_too_large`. Its tests prove each. `docs/learning.md` names the
+  profile as a complete example
   ([fintech](docs/fintech.md)) (audit A28-DX-06).
 
 ### Fixed

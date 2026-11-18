@@ -2,9 +2,11 @@
 
 from typing import Final
 
-from domainkit.contrib.approvals import requires_approval
+from domainkit.apps import registry
+from domainkit.contrib.approvals import ApprovalsSettings, Threshold, requires_approval
 from domainkit.contrib.evidence import Evidence
 from domainkit.contrib.evidence.tasks import defer_evidence
+from domainkit.money import Money
 
 from domains.payments.application.commands import MakeTransfer, RegisterCard
 from domains.payments.application.unit_of_work import PaymentsUnitOfWork
@@ -14,6 +16,7 @@ from domains.payments.domain.model import (
     CardNotFound,
     Transfer,
     TransferId,
+    TransferTooLarge,
 )
 
 MAKE_TRANSFER: Final = "payments.make_transfer"
@@ -38,6 +41,7 @@ async def make_transfer(command: MakeTransfer, uow: PaymentsUnitOfWork) -> Trans
     one moved nothing. Its evidence is recorded once it commits, and its
     event is booked in the books (``handlers.book_transfer``).
     """
+    check_bookable(command.amount)
     async with uow:
         card = await uow.cards.get(CardId(command.card_id))
         if card.owner_id != command.maker_id:
@@ -52,6 +56,22 @@ async def make_transfer(command: MakeTransfer, uow: PaymentsUnitOfWork) -> Trans
         defer_evidence(uow, transfer_evidence(transfer))
         await uow.commit()
     return transfer
+
+
+def check_bookable(amount: Money) -> None:
+    """Refuse an amount the books take only with their own approvals.
+
+    Over ``APPROVALS.ENTRY_THRESHOLDS``, a posting needs ``ENTRY_APPROVALS``
+    approvals of its own, which a transfer's policy does not ask: its entry
+    would be refused once the money had left. Limits raised above the
+    thresholds therefore move nothing more: raise the thresholds with them.
+
+    Raises:
+        TransferTooLarge: The amount is over its currency's threshold.
+    """
+    thresholds = registry.settings(ApprovalsSettings).ENTRY_THRESHOLDS
+    if thresholds and Threshold(thresholds).exceeded_by([amount]):
+        raise TransferTooLarge("The books take a transfer this large only approved.")
 
 
 def transfer_evidence(transfer: Transfer) -> Evidence:

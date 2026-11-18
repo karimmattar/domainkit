@@ -123,6 +123,26 @@ def test_a_transfer_over_the_customers_limit_moves_nothing(
     assert usage.status_code == 403  # The customer reads no one's usage.
 
 
+def test_a_transfer_the_books_would_hold_is_refused_at_once(
+    client: TestClient, maker: Person
+) -> None:
+    """Over the books' threshold: refused before anything moves, whatever the limit."""
+    limit = SetLimit(
+        code="payments.customer",
+        kind="holder",
+        currency="USD",
+        subject=maker.id,
+        per_transaction=Money.of("50000.00", "USD"),
+    )
+    client.run(set_limit, limit, LimitsUnitOfWork())
+    card = maker.register_card()
+    authorization = maker.authorize(card, usd("15000.00"))
+
+    refused = maker.transfer(card, usd("15000.00"), authorization)
+
+    assert (refused.status_code, refused.json()["code"]) == (422, "transfer_too_large")
+
+
 def test_a_large_transfer_runs_once_another_person_approves_it(
     maker: Person, approver: Person, outbox: Outbox
 ) -> None:
