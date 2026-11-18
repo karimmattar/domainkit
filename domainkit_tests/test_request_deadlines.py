@@ -356,7 +356,7 @@ async def test_a_request_that_committed_is_answered_as_committed(
     """
     caplog.set_level(logging.WARNING, LOGGER)
     key = {"Idempotency-Key": "tell-once", "X-API-Key": "payer"}
-    async with paying(database_url, REQUEST_TIMEOUT=0.05) as client:
+    async with paying(database_url, REQUEST_TIMEOUT=0.5) as client:
         answer = await client.post("/pay-and-tell?after=0.1", json={}, headers=key)
         assert answer.status_code == 201
         assert answer.json() == {"paid": True, "remaining": None}

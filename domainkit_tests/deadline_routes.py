@@ -58,8 +58,8 @@ swallowing: list[deadlines.Deadline | None] = []
 """The deadline of each ``/swallow`` waiting, for the test to end."""
 told: list[object] = []
 """What the handlers of ``/pay-and-tell``'s event did, in order."""
-SLOW_HANDLER: float = 0.2
-"""Seconds ``/pay-and-tell``'s first handler takes: past the tests' deadline."""
+telling: list[deadlines.Deadline] = []
+"""The deadline of the ``/pay-and-tell`` that committed, for its slow handler."""
 
 
 async def forever() -> None:
@@ -216,10 +216,20 @@ tellers = EventBus()
 
 
 async def tell_slowly(event: Paid) -> None:
-    """Take longer than the request's deadline, then note what is left of it."""
+    """Run past the request's deadline, then note what is left of it.
+
+    It waits until 50 ms after the moment the deadline was set for, however
+    long the request took to commit.
+    """
     told.append("slow started")
-    await asyncio.sleep(SLOW_HANDLER)
+    await asyncio.sleep(past(telling[0]))
     told.append(("slow finished", deadlines.remaining()))
+
+
+def past(deadline: deadlines.Deadline) -> float:
+    """Seconds from now until 50 ms past the moment ``deadline`` was set for."""
+    assert deadline.seconds is not None
+    return max(deadline.started + deadline.seconds - clock.monotonic(), 0.0) + 0.05
 
 
 async def tell_next(event: Paid) -> None:
@@ -243,6 +253,9 @@ class PaysAndTells(PaymentsUnitOfWork):
 @router.post("/pay-and-tell", status_code=201)
 async def pay_and_tell(after: float = 0.0) -> dict[str, Any]:
     """Commit a payment whose handlers outlast the deadline, then wait ``after``."""
+    deadline = deadlines.current_deadline()
+    assert deadline is not None
+    telling[:] = [deadline]
     async with PaysAndTells(events=tellers) as uow:
         await uow.session.execute(insert(payments))
         await uow.commit()

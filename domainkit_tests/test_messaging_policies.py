@@ -50,6 +50,7 @@ from domainkit.ddd import EventBus
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.ratelimit import Decision
 from domainkit.management import CommandError
+from domainkit_tests.deadline_routes import past
 from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork, NoteWritten
 from domainkit_tests.test_messaging import (  # noqa: F401 - fixtures.
     FAST,
@@ -425,15 +426,16 @@ async def test_a_task_runs_under_its_own_timeout() -> None:
 async def test_a_task_that_committed_is_not_failed_by_its_slow_handlers() -> None:
     """What follows a task's commit does not count against its timeout.
 
-    The task commits a note whose event's first in-process handler sleeps
-    four times the task's timeout. It and the next handler run, free of the
-    deadline, and the message is done, run once: not failed, so not run
-    and committed again.
+    The task commits a note whose event's first in-process handler runs
+    until past the task's timeout. It and the next handler run, free of
+    the deadline, and the message is done, run once: not failed, so not
+    run and committed again.
     """
     bus = EventBus()
+    given: list[deadlines.Deadline] = []
 
     async def slow(event: NoteWritten) -> None:
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(past(given[0]))
         ran.append(("slow", deadlines.remaining()))
 
     async def after(event: NoteWritten) -> None:
@@ -442,8 +444,11 @@ async def test_a_task_that_committed_is_not_failed_by_its_slow_handlers() -> Non
     bus.subscribe(NoteWritten, slow)
     bus.subscribe(NoteWritten, after)
 
-    @task(name="tests.commits", timeout=0.05, max_attempts=2)
+    @task(name="tests.commits", timeout=0.5, max_attempts=2)
     async def commits() -> None:
+        deadline = deadlines.current_deadline()
+        assert deadline is not None
+        given.append(deadline)
         note = Note(id=NoteId(uuid.uuid4()), text="once")
         note.record(NoteWritten(note_id=note.id))
         async with NotesUnitOfWork(events=bus) as uow:
@@ -462,18 +467,19 @@ async def test_a_task_that_committed_is_not_failed_by_its_slow_handlers() -> Non
 async def test_what_follows_enqueue_runs_free_of_the_deadline() -> None:
     """``enqueue`` commits on its own; its after-commit hooks are not cut off.
 
-    A hook sleeps five times the request's deadline, which a commit
-    lifts: it runs to the end, sees no deadline, and the block ends
-    without raising.
+    A hook runs until past the deadline, which the commit lifts: it runs
+    to the end, sees no deadline, and the block ends without raising.
     """
     seen: list[float | None] = []
+    bound = deadlines.timeout(0.5, until_commit=True)
 
     async def slow(database: str) -> None:
-        await asyncio.sleep(0.1)
+        assert bound.deadline is not None
+        await asyncio.sleep(past(bound.deadline))
         seen.append(deadlines.remaining())
 
     on_transaction_committed(slow, domain="messaging")
-    async with deadlines.timeout(0.02, until_commit=True) as bound:
+    async with bound:
         await enqueue(low, label="queued")
         left = deadlines.remaining()
 
