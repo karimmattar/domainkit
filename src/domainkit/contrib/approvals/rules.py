@@ -319,11 +319,19 @@ class DecisionAction(BasePermission):
                 )
         return None
 
-    async def ask_authorization(self, request: Request, command: object) -> BaseModel:
+    async def ask_authorization(
+        self,
+        request: Request,
+        command: object,
+        uow: object = None,
+        if_match: str | None = None,
+    ) -> BaseModel:
         """Store an authorization of the act ``command`` makes; the twin's body.
 
         It is refused as ``request_action_authorization`` refuses, and as
-        the act itself would be refused.
+        the act itself would be refused. ``uow`` is the twin's unit of
+        work, held to ``if_match``, the request's ``If-Match``, which the
+        act is then bound to (ADR 0178).
 
         Raises:
             APIError: 404 ``not_found``, while the setting is off.
@@ -333,7 +341,7 @@ class DecisionAction(BasePermission):
         from .authorizing import ask
 
         return ApprovalAuthorizationOut.model_validate(
-            await ask(request, self.setting, command)
+            await ask(request, self.setting, command, uow=uow, if_match=if_match)
         )
 
 

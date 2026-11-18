@@ -66,7 +66,16 @@ The record an act decides on (ADR 0174): ``Action(binds=...)`` reads it,
 is asked for and again when the service opens its unit of work. The
 digest covers what it read when asked, so the phone signs it too; another
 value refuses the act (``409 action_record_changed``) and voids the
-authorization. An act held for approval (approvals' ``approval_pending``)
+authorization.
+
+The version the page read (ADR 0178): a twin that checked the request's
+``If-Match`` (a ``ResourceRouter``'s, on one aggregate) passes it on, and
+the digest covers the versions it names; the act's rule reads the act's
+``If-Match``, and an act that names other versions, or none, is refused
+as other arguments are. An authorization asked without one is spent as
+before, whatever the act sends. ``Action(require_if_match=True)`` refuses
+asking, and the act, without one (``428``). An act held for approval
+(approvals' ``approval_pending``)
 keeps its confirmed authorization until the request expires, within
 ``AUTHORIZATIONS.HELD_TTL`` of its own expiry (``hold_authorizations``).
 """
@@ -107,7 +116,15 @@ from domainkit.apps import registry
 from domainkit.apps.hooks import HookPoint
 from domainkit.conf import settings
 from domainkit.db.routing import router as database_router
-from domainkit.ddd import NotFound, PermissionDenied, UnitOfWork, UseCase, fingerprint
+from domainkit.ddd import (
+    NotFound,
+    PermissionDenied,
+    PreconditionFailed,
+    UnitOfWork,
+    UseCase,
+    fingerprint,
+)
+from domainkit.ddd.uow import expectations_of
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import IsUnscoped, NotAuthenticated, Require
 from domainkit.http.errors import APIError, FieldError, error_response, error_responses
@@ -174,6 +191,8 @@ __all__ = [
 
 AUTHORIZATION_HEADER: Final = "Action-Authorization"
 """The header a request sends its act's authorization in: ``<id>.<code>``."""
+IF_MATCH: Final = "If-Match"
+"""The header that names the versions the page read (ADR 0178)."""
 KEY_PURPOSE: Final = "auth.authorization"
 """What the key of authorization codes is derived for."""
 ENCODING: Final = "domainkit.authorization.v1"
@@ -342,6 +361,8 @@ class Action:
     place of both. ``binds(command, uow)`` reads the record the act decides
     on, in the act's unit of work, when it is asked for and when it runs:
     the authorization holds while it reads the same (ADR 0174).
+    ``require_if_match`` refuses asking, and the act, without ``If-Match``
+    naming the versions the page read (``428``, ADR 0178).
     """
 
     purpose: str
@@ -355,6 +376,8 @@ class Action:
     methods: Collection[str] | None = None
     binds: Binds | None = None
     """What the act decides on, read again when it runs (ADR 0174)."""
+    require_if_match: bool = False
+    """Whether asking and the act need ``If-Match`` (ADR 0178)."""
     adapter: TypeAdapter[Any] = field(init=False, repr=False)
     reads_unit_of_work: bool = field(init=False, repr=False)
     """Whether ``show`` takes the unit of work the act runs in (``uow``)."""
@@ -372,6 +395,7 @@ class Action:
             ttl: timedelta | None = None,
             methods: Collection[str] | None = None,
             binds: Binds | None = None,
+            require_if_match: bool = False,
         ) -> None:
             """Declare the act; ``command`` may be a use case, for its command."""
 
@@ -387,7 +411,7 @@ class Action:
                 not more than zero and at most 30 minutes; or ``methods``
                 names others than ``pwd``, ``otp``, and ``phone``, lacks
                 ``otp`` and ``phone``, or repeats one; ``binds`` is not
-                callable.
+                callable; ``require_if_match`` is not a bool.
         """
         if (
             not isinstance(self.purpose, str)
@@ -435,6 +459,10 @@ class Action:
                 f"Action {self.purpose!r}: binds is a function of the command and "
                 "the unit of work."
             )
+        if not isinstance(self.require_if_match, bool):
+            raise ImproperlyConfigured(
+                f"Action {self.purpose!r}: require_if_match is True or False."
+            )
         object.__setattr__(self, "ignore", frozenset(self.ignore))
         object.__setattr__(self, "adapter", TypeAdapter(command))
         object.__setattr__(self, "reads_unit_of_work", _takes_uow(self.show))
@@ -478,15 +506,33 @@ class Action:
             if key not in self.ignore
         }
 
-    def digest_of(self, command: object, bound: str | None = None) -> str:
+    def digest_of(
+        self,
+        command: object,
+        bound: str | None = None,
+        versions: Collection[int] | None = None,
+    ) -> str:
         """The act's digest: ``fingerprint(purpose, arguments)`` (64 hex digits).
 
         With ``bound``, the SHA-256 of what ``binds`` read of the record
         (ADR 0174), the SHA-256 of ``{"action", "arguments", "binds"}`` as
         canonical JSON: the digest covers the record as the user was shown
-        it, and the phone signs that.
+        it, and the phone signs that. With ``versions``, those the
+        request's ``If-Match`` names (ADR 0178), the SHA-256 of
+        ``{"action", "arguments", "binds", "if_match"}``, ``binds`` null
+        for an action that binds nothing and ``if_match`` the versions
+        sorted: the digest covers the version the page read.
         """
         arguments = self.arguments(command)
+        if versions is not None:
+            return _sha256(
+                {
+                    "action": self.purpose,
+                    "arguments": arguments,
+                    "binds": bound,
+                    "if_match": sorted(versions),
+                }
+            )
         if bound is None:
             return fingerprint(self.purpose, arguments)
         return _sha256({"action": self.purpose, "arguments": arguments, "binds": bound})
@@ -997,6 +1043,7 @@ async def request_action_authorization(
     command: object,
     *,
     unit_of_work: UnitOfWorkFactory | None = None,
+    if_match: str | None = None,
 ) -> ActionAuthorization:
     """Store an authorization of ``command`` for the request's user and login.
 
@@ -1009,15 +1056,30 @@ async def request_action_authorization(
     new one, opened for it. An action that ``binds`` reads the record in
     it too, first, and the digest covers what it read (ADR 0174).
 
+    ``if_match`` is the request's ``If-Match``, one tag, the version the
+    page read (ADR 0178): the digest covers it, and the act must name the
+    same. ``*``, or an empty value, names none: no ``If-Match``. It must
+    have been checked where ``show`` and ``binds`` read: the unit of work
+    ``unit_of_work`` lends holds an expectation of those versions
+    (``uow.expect``) that a load checked, as a ``ResourceRouter``'s twin
+    holds it; otherwise asking is refused, before anything is stored.
+
     Raises:
         NotAuthenticated: The request names no user.
         ActionNotAuthorized: Staff act as the user: the act is the user's.
         APIError: 400 ``step_up_unsupported``: the credentials are limited
             to scopes, or cannot be told apart from the user's others.
+        PreconditionRequired: The action requires ``If-Match``, and
+            ``if_match`` names no version (428).
+        RequestValidationError: ``if_match`` lists several tags, or the
+            request sent several ``If-Match`` lines (422).
+        PreconditionFailed: ``show`` or ``binds`` loaded the record at
+            another version (412).
         NoSecondFactor: The user has no way to confirm what the act asks.
         TypeError: ``command`` is not the action's command.
         ImproperlyConfigured: ``show`` or ``binds`` reads a unit of work,
-            and ``unit_of_work`` is None.
+            and ``unit_of_work`` is None; or ``if_match`` names versions
+            nothing checked in the unit of work it lends.
     """
     from .stepup import NoSecondFactor
 
@@ -1036,11 +1098,16 @@ async def request_action_authorization(
         )
     subject = action.subject_of(command)
     digest = action.digest_of(command)
+    versions = _asked(if_match, request)
+    if versions is None and action.require_if_match:
+        raise _precondition_required()
     if not await _can_confirm(user.id, action.required()):
         raise NoSecondFactor
     shown, bound = await action.read(command, unit_of_work)
-    if bound is not None:
-        digest = action.digest_of(command, bound)
+    if versions is not None:
+        _checked_where_read(action, versions, unit_of_work)
+    if bound is not None or versions is not None:
+        digest = action.digest_of(command, bound, versions)
     now = utc_now()
     authorization = ActionAuthorization(
         id=uuid4(),
@@ -1061,6 +1128,40 @@ async def request_action_authorization(
     return authorization
 
 
+def _asked(header: str | None, request: HTTPConnection) -> frozenset[int] | None:
+    """The version a twin's ``If-Match`` names, one tag (``asked_versions``).
+
+    The request's ``If-Match`` lines, if it sent several, are one list.
+    """
+    if header is None:
+        return None
+    from domainkit.resources.conditional import asked_versions
+
+    lines = request.headers.getlist(IF_MATCH)
+    return asked_versions(", ".join(lines) if len(lines) > 1 else header)
+
+
+def _checked_where_read(
+    action: Action, versions: frozenset[int], unit_of_work: UnitOfWorkFactory | None
+) -> None:
+    """Refuse versions no load checked in the unit of work ``show`` and ``binds`` read.
+
+    Raises:
+        ImproperlyConfigured: The unit of work lent holds no expectation of
+            ``versions`` that a load checked, or none was lent.
+    """
+    lent = None if unit_of_work is None else _unit_of_work_of(unit_of_work())
+    if lent is None or not any(
+        each.checked and each.versions == versions for each in expectations_of(lent)
+    ):
+        raise ImproperlyConfigured(
+            f"Action {action.purpose!r}: If-Match names versions nothing checked "
+            "where show and binds read: hold the unit of work to them "
+            "(uow.expect), load the record through it, and lend it "
+            "(unit_of_work=lambda: uow)."
+        )
+
+
 # The rule's side: checked once, kept for the act ---------------------------------
 
 
@@ -1071,6 +1172,10 @@ class _Accepted:
     authorization: ActionAuthorization
     code: str
     route: str
+    if_match: str | None = None
+    """The request's ``If-Match``, which the act's digest is computed with."""
+    versions: frozenset[int] | None = None
+    """The versions its digest covers, once taken; None: none (ADR 0178)."""
     taken: bool = False
     """Whether a decorated service took it: spent, or tried to."""
     consumed: bool = False
@@ -1152,7 +1257,7 @@ async def accepted_authorization(
         return None
     verdict.authorization = found
     _kept_on(connection).accepted[purpose] = _Accepted(
-        found, code, _route_of(connection)
+        found, code, _route_of(connection), connection.headers.get(IF_MATCH)
     )
     return found
 
@@ -1273,8 +1378,11 @@ def requires_authorization[F: Service | UseCase[Any]](
 
     Raises (when the service is called):
         AuthorizationRequired: No rule kept an authorization of the purpose.
-        ActionNotAuthorized: It is for other arguments or another subject
-            (it is voided), or was spent meanwhile.
+        PreconditionRequired: The action requires ``If-Match``, and the
+            request names no version (428).
+        ActionNotAuthorized: It is for other arguments, another subject,
+            or other versions than the request's ``If-Match`` names (it is
+            voided), or was spent meanwhile.
         ActionRecordChanged: The action binds the record, and it reads
             otherwise now (it is voided).
         ImproperlyConfigured: The action binds the record, and the service
@@ -1361,8 +1469,11 @@ async def spend_authorization(
 
     Raises:
         AuthorizationRequired: No rule kept an authorization of the purpose.
-        ActionNotAuthorized: It is for other arguments or another subject
-            (it is voided), or was spent meanwhile.
+        PreconditionRequired: The action requires ``If-Match``, and the
+            request names no version (428).
+        ActionNotAuthorized: It is for other arguments, another subject,
+            or other versions than the request's ``If-Match`` names (it is
+            voided), or was spent meanwhile.
         ActionRecordChanged: The action binds the record, and it reads
             otherwise now (it is voided).
         ImproperlyConfigured: The action binds the record, and ``uow`` is
@@ -1421,28 +1532,66 @@ USERS: Final = "action_authorization_users"
 async def _take(action: Action, command: object) -> _Accepted:
     """The kept authorization of ``action``, if it binds ``command``; it is taken.
 
+    The digest is computed with the versions the request's ``If-Match``
+    names (ADR 0178), and, unless the action requires them, without: an
+    authorization asked with ``If-Match`` holds only for an act that names
+    the same versions; one asked without, for any.
+
     Raises:
         AuthorizationRequired: None is kept.
-        ActionNotAuthorized: It binds other arguments or another subject:
-            it is voided, in a transaction of its own.
+        PreconditionRequired: The action requires ``If-Match``, and the
+            request names no version (428); nothing is voided.
+        ActionNotAuthorized: It binds other arguments, another subject, or
+            other versions: it is voided, in a transaction of its own.
     """
     kept = _kept.get()
     accepted = None if kept is None else kept.accepted.get(action.purpose)
     if accepted is None:
         raise AuthorizationRequired(action.purpose)
     accepted.taken = True
-    asked = replace(
-        accepted.authorization,
-        digest=action.digest_of(command, accepted.authorization.bound),
-        subject=action.subject_of(command),
-    )
-    if not _matches(accepted.code, asked):
-        async with AuthUnitOfWork() as uow:
-            await uow.authorizations.void(accepted.authorization.id, utc_now())
-            await uow.commit()
-        await audit_refusal(ACTION, "changed")
-        raise ActionNotAuthorized
-    return accepted
+    versions = _versions(accepted.if_match)
+    if versions is None and action.require_if_match:
+        raise _precondition_required()
+    held = [versions]
+    if versions is not None and not action.require_if_match:
+        held.append(None)  # Asked without If-Match: as before 2.8.
+    bound = accepted.authorization.bound
+    subject = action.subject_of(command)
+    for each in held:
+        asked = replace(
+            accepted.authorization,
+            digest=action.digest_of(command, bound, each),
+            subject=subject,
+        )
+        if _matches(accepted.code, asked):
+            accepted.versions = each
+            return accepted
+    async with AuthUnitOfWork() as uow:
+        await uow.authorizations.void(accepted.authorization.id, utc_now())
+        await uow.commit()
+    await audit_refusal(ACTION, "changed")
+    raise ActionNotAuthorized
+
+
+def _versions(header: str | None) -> frozenset[int] | None:
+    """The versions ``If-Match`` names, compared as a resource's write compares them.
+
+    None without one, an empty one, or ``*``, which names none; an empty
+    set for a value that names no version this API made, which nothing
+    matches.
+    """
+    if header is None or not header.strip():
+        return None
+    from domainkit.resources.conditional import expected_versions
+
+    return expected_versions(header)
+
+
+def _precondition_required() -> APIError:
+    """428 ``precondition_required``: the act asks for ``If-Match``."""
+    from domainkit.resources.conditional import PreconditionRequired
+
+    return PreconditionRequired()
 
 
 type Check = Callable[[object], Awaitable[None]]
@@ -1454,10 +1603,26 @@ def _binding(
 ) -> Check | None:
     """What checks the record ``action`` binds, in the act's unit of work; None: none.
 
+    An authorization that holds versions (``If-Match``, ADR 0178) is spent
+    only by an act whose unit of work is held to them (``uow.expect``), as
+    a ``ResourceRouter``'s route holds it: an act that would decide on
+    any version is refused, never let through.
+
     Raises:
         ImproperlyConfigured: The action binds the record, and the act has
-            no unit of work to read it in.
+            no unit of work to read it in; or the authorization holds
+            versions the act's unit of work is not held to.
     """
+    versions = accepted.versions
+    if versions is not None and (
+        held is None
+        or not any(each.versions == versions for each in expectations_of(held))
+    ):
+        raise ImproperlyConfigured(
+            f"Action {action.purpose!r}: its authorization holds the version "
+            "If-Match named, and the act's unit of work is not held to it: hold "
+            "it (uow.expect) where the act runs, as a resource's route does."
+        )
     if action.binds is None:
         return None
     if held is None:
@@ -1472,6 +1637,10 @@ def _binding(
             bound = await action.bound_in(command, uow)
         except NotFound as gone:  # It will never read as it did: void it.
             raise _Changed(gone) from gone
+        except PreconditionFailed as stale:  # Nor be at a version it holds.
+            if accepted.versions is None:
+                raise
+            raise _Changed(stale) from stale
         if not hmac.compare_digest(bound.encode(), stored.encode()):
             raise _Changed
 
@@ -1481,8 +1650,10 @@ def _binding(
 class _Changed(ActionRecordChanged):
     """What the act binds reads otherwise than when its authorization was asked for.
 
-    Or no longer exists (``binds`` raised ``NotFound``): ``answer`` is what
-    the act is refused with, once the authorization is voided.
+    Or no longer exists (``binds`` raised ``NotFound``), or is at none of
+    the versions the authorization holds (``PreconditionFailed``, ADR
+    0178): ``answer`` is what the act is refused with, once the
+    authorization is voided.
     """
 
     def __init__(self, answer: Exception | None = None) -> None:
@@ -1495,8 +1666,8 @@ async def _refuse_changed(accepted: _Accepted, changed: _Changed) -> NoReturn:
     """Void ``accepted``, in a transaction of its own; refuse the act.
 
     Raises:
-        Exception: What ``changed`` answers: ``ActionRecordChanged``, or
-            the record's ``NotFound``.
+        Exception: What ``changed`` answers: ``ActionRecordChanged``, the
+            record's ``NotFound``, or ``PreconditionFailed``.
     """
     async with AuthUnitOfWork() as uow:
         await uow.authorizations.void(accepted.authorization.id, utc_now())

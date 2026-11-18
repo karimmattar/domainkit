@@ -97,6 +97,33 @@ relied on 2.7's behaviour changes, and what to run.
   change that filled the screen is refused; make it in steps. Set
   `AUTH = {"AUTHORIZATIONS": {"NAMED_PERMISSIONS": []}}` to name none,
   or list the keys to name.
+- **A twin reads `If-Match`** ([ADR 0178](adr/0178-bind-an-act-to-the-version-its-page-read.md)).
+  On a `ResourceRouter`'s act on one aggregate, a twin asked with
+  `If-Match` answers `412 precondition_failed` when the aggregate is at
+  none of the versions it names, where 2.7 ignored the header, and the
+  authorization then holds only for an act that sends the same
+  `If-Match`: another, `*`, or none is `403 action_not_authorized`. A
+  client that sent `If-Match` to a twin by habit sends the act the same
+  one, or none to the twin. A twin asked without it, an `If-Match` sent
+  to the act alone, and the authorizations stored before are as in
+  2.7. A twin takes one tag: a list of several is `422`. To have every
+  client send it, declare the act with
+  `Action(..., require_if_match=True)`
+  ([The version the page read](auth/actions.md#the-version-the-page-read)).
+- **Twins' OpenAPI gains `If-Match`.** Each twin of an act on one
+  aggregate documents an optional `If-Match` header and a `412` (and
+  `422`) answer: a snapshot test of the schema sees them. Approvals'
+  approve, reject, and cancel twins pass the header on, as
+  `StepUp(for_=...)` does.
+- **Deploy every instance before clients send `If-Match` to twins.** A
+  2.7 instance computes the digest without it, so it refuses (`403`, and
+  voids) an act whose authorization a 2.8 instance stored with
+  `If-Match`.
+- **A route of your own that passes `if_match=`** to
+  `request_action_authorization` holds the unit of work it lends to the
+  version, and its act's unit of work too (`uow.expect`): a twin whose
+  `show` and `binds` checked nothing, or an act held to no version, is
+  refused (`500`, `ImproperlyConfigured`).
 - **A Word document's XML is bounded before it is parsed, and what
   `fill_docx` writes in it** (security). `placeholders` and `fill_docx`
   refuse, with `DocumentError`, a document whose content types and

@@ -324,6 +324,7 @@ REST resources over aggregates: routes, schemas, conditional writes, policies.
 - `RecordDeleted`: An aggregate was deleted through a generic route.
 - `ResourceRouter`: The routes of one aggregate type (see the module).
 - `Unset`: The type of `UNSET`: a field the request left out, as opposed to None.
+- `asked_versions`: The version a twin's `If-Match` names: the one its page read (ADR 0178).
 - `asking_authorization`: Whether the request is to a twin: it asks for an authorization of an act.
 - `entity_tag`: The weak tag of one aggregate at `version`, sent as `representation`.
 - `expected_versions`: The versions an `If-Match` value accepts; None for `*` (any).

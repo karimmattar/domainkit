@@ -30,7 +30,12 @@ from .access import (
     ModelActions,
 )
 from .batches import BatchAnswer, BatchError, BatchResult
-from .conditional import PreconditionRequired, entity_tag, expected_versions
+from .conditional import (
+    PreconditionRequired,
+    asked_versions,
+    entity_tag,
+    expected_versions,
+)
 from .events import RecordChanged, RecordCreated, RecordDeleted
 from .policies import FieldNotEditable, FieldPolicy
 from .renderers import ExportTooLarge, NotAcceptable
@@ -69,6 +74,7 @@ __all__ = [
     "RecordDeleted",
     "ResourceRouter",
     "Unset",
+    "asked_versions",
     "asking_authorization",
     "entity_tag",
     "expected_versions",
