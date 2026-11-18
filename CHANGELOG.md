@@ -84,6 +84,13 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   before (30 to 60 ms at 300,000 users, 0.01 ms now). Revisions leave
   them alone, by name; SQLite gets none (ADR 0185) (audit A28-PERF-02).
 
+- [Webhook deliveries fail](docs/runbook.md#webhook-deliveries-fail)
+  says to `ANALYZE` the deliveries and the outbox tables on PostgreSQL
+  after `migrate` made them, a restore, or a bulk load: until autovacuum
+  analyses them, the hourly check for abandoned deliveries may be
+  planned as a nested loop, 15.7 s over 6,000 deliveries (found in
+  review).
+
 ### Changed
 
 - `diffsettings` shows each installed domain's settings (`AUTH`,
