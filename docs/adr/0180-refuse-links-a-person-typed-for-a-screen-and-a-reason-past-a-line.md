@@ -114,8 +114,11 @@ service on the framework reported two gaps (user report A17):
   `IDENTIFIER_FIELDS`, `AUTH.IDENTIFIERS`: an address set is what is set);
   such a text sent as stored (a form saved whole) changes nothing, is not
   marked, and with `TYPED_LINKS` refused is left off the screen, though
-  the act binds it (`"shown"` keeps 2.7's screen); a rejection's and a
-  cancellation's reason. What an act is on (`named`) is never marked: a
+  the act binds it (`"shown"` keeps 2.7's screen); each such text that a
+  held `auth.set_staff` or `auth.reactivate` holds beside its grant
+  (`values`, ADR 0179), which holds no value the user has already: the
+  approver sees only what changes, and a form saved whole is held as the
+  admin API's act takes it; a rejection's and a cancellation's reason. What an act is on (`named`) is never marked: a
   group's name is checked where it is typed, a user's username or address
   is an identifier, never checked. The admin API checks a group's new
   name at the change too, with or without `ADMIN_ACTION`.
@@ -193,7 +196,8 @@ service on the framework reported two gaps (user report A17):
   a guard's arguments shown by name, unmarked (an IBAN or an amount there
   would read as numbers); a project's own screens, until it marks them.
 - **New names**: `Typed`, `LinkNotShown`, `holds_link`, `check_typed`,
-  `on_typed_text`, `AUTH.AUTHORIZATIONS.TYPED_LINKS`, and the problem code
+  `on_typed_text`, `typed_field` (in `domainkit.contrib.auth.integration`),
+  `AUTH.AUTHORIZATIONS.TYPED_LINKS`, and the problem code
   `link_not_shown`. No table changes.
 
 ## References

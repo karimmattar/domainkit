@@ -35,7 +35,13 @@ from domainkit.utils.decimals import jsonable
 
 from ._shown import FIELDS as FIELDS
 from ._shown import field_label as field_label
-from ._shown import grants_digest, group_item, named_first, named_permissions
+from ._shown import (
+    grants_digest,
+    group_item,
+    identifying_fields,
+    named_first,
+    named_permissions,
+)
 from .actions import Action, Shown, spent_in_code
 from .exceptions import GroupNotFound, UserNotFound
 from .gates import (
@@ -49,9 +55,8 @@ from .gates import (
 )
 from .models import AbstractBaseUser, Group, GroupId, UserId
 from .screens import Typed, Value, fitted, laid_out, named
-from .settings import auth_settings, identifier_fields
+from .settings import auth_settings
 from .uow import AuthUnitOfWork
-from .users import get_user_model
 
 PURPOSE: Final = "auth.admin_change"
 """The action each change of the admin API is, with ``ADMIN_ACTION`` on."""
@@ -330,7 +335,7 @@ async def show(act: AdminAct) -> Shown:
         state = pgettext("password", PASSWORD_STATES[act.password])
         details.append((gettext(PASSWORD), state))
     taken = {label for label, _ in details}
-    identifiers = _identifiers()
+    identifiers = identifying_fields()
     refused = auth_settings().AUTHORIZATIONS.TYPED_LINKS == "refused"
     for name, value in sorted(values.items()):
         label = field_label(name)
@@ -397,18 +402,6 @@ def _change_of(act: AdminAct) -> AdminChange:
         removed=frozenset(act.removed),
         values=dict(act.values),
     )
-
-
-def _identifiers() -> frozenset[str]:
-    """The user's fields that name them, which a screen shows as set, never as typed.
-
-    The username, the email, and each identifier (``IDENTIFIER_FIELDS``,
-    ``AUTH.IDENTIFIERS``): an address or a number there is what is set.
-    """
-    model = get_user_model()
-    named = {model.USERNAME_FIELD, model.EMAIL_FIELD}
-    named |= {*getattr(model, "IDENTIFIER_FIELDS", ()), *identifier_fields(model)}
-    return frozenset(each for each in named if each)
 
 
 def _typed(value: JsonValue) -> JsonValue:

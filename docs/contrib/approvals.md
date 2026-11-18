@@ -666,7 +666,14 @@ PATCH /admin/auth/users/6f1c... {"is_staff": true}                       200: th
   its own. Before, the request held the grant alone, and an approval of
   Bob's return was spent by a call that also gave Bob another address,
   which no approver saw (user report A17). A request of 2.7, which holds
-  none, is found and spent as before by a call that sets nothing else.
+  none, is found and spent as before by a call that sets nothing else. A
+  value the user holds already is not held: it changes nothing, so a
+  form saved whole holds what it changes, and the approver sees only
+  that. Each text staff typed there is `Typed`, as on the admin API's
+  screen (`typed_field`): with auth's `AUTHORIZATIONS.TYPED_LINKS`
+  refused, one that holds a link is refused when the change is held, and
+  approving a request that holds one is refused ([Text a person
+  typed](../auth/actions.md#text-a-person-typed)).
 - **A value another user has is refused before the hold** (since 2.8):
   an address that identifies users, a number, a username (`409`). Before,
   the commit refused it after the hold had spent the approval. A value

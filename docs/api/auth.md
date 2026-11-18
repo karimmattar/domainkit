@@ -654,6 +654,7 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `step_up_answer`: What a step-up answers: when, with what, and a JWT login's new token.
 - `stepping_credentials`: The request's credentials, if they can keep a step-up.
 - `target_of`: What the table keeps of an address or a number: an HMAC of it.
+- `typed_field`: A user's field `name` set to `value`, as a screen shows it (since 2.8).
 - `user_for_staff`: The user an operator names (`match_for_staff`); say which field matched.
 - `utc_now`: The current time in UTC.
 

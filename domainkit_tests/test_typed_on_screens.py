@@ -17,11 +17,16 @@ from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import JsonValue
 
 from domainkit.clock import FrozenClock
 from domainkit.conf import override_settings
 from domainkit.contrib.approvals import ApprovalsUnitOfWork, Policy, guard
-from domainkit.contrib.approvals.builtin import show_about_user
+from domainkit.contrib.approvals.builtin import (
+    SetStaff,
+    show_about_user,
+    show_set_staff,
+)
 from domainkit.contrib.auth.admin_actions import ADMIN_CHANGE, AdminAct
 from domainkit.contrib.auth.screens import Typed
 from domainkit.ddd import Command
@@ -40,6 +45,7 @@ from domainkit_tests.test_admin_actions import (
     stored,
 )
 from domainkit_tests.test_admin_actions import frozen as frozen  # The fixture.
+from domainkit_tests.test_admin_acts_bind_groups import pending, stored_requests
 from domainkit_tests.test_approval_screens import SCREENS, fingerprint_of, pairs
 from domainkit_tests.test_approvals_request_actions import (
     EVERY_STEP,
@@ -400,3 +406,70 @@ def test_a_form_saved_whole_leaves_a_field_it_does_not_change_off_the_screen(
     assert pairs(address) == [user_line, ("Email", "t@example.com")]
     bound = AdminAct(kind="update", user_id=target, values={"first_name": stored_name})
     assert row(alone.json()["id"])["digest"] == ADMIN_CHANGE.digest_of(bound)
+
+
+def test_a_held_grants_fields_are_typed_but_its_identifiers_and_flags(
+    client: TestClient,
+) -> None:
+    """Making staff, or a return, shows the fields sent with it: text staff typed.
+
+    An address, a number, and a username identify the user, as on the
+    admin API's screen; a flag is no text (review of ADR 0180).
+    """
+    target = create_user("target")
+    values: dict[str, JsonValue] = {
+        "first_name": "Ann",
+        "email": "a@example.com",
+        "is_active": True,
+    }
+
+    shown = run_async(show_set_staff(SetStaff(user_id=target, values=values)))
+
+    typed = {label: isinstance(value, Typed) for label, value in shown[1:]}
+    assert typed == {"Active": False, "Email": False, "First name": True}
+
+
+def test_a_held_grants_fields_are_checked_where_its_approver_sees_them(
+    steps: TestClient, frozen: FrozenClock
+) -> None:
+    """Held without the admin API's act, a name holding a link is refused when held.
+
+    One held before the setting cannot be approved. A name sent as it is
+    stored changes nothing: it is not held, so a form saved whole waits
+    for approval, as the admin API's act takes it, and its approver sees
+    only what changes (review of ADR 0180).
+    """
+    root = Staff(steps, frozen, "root", superuser=True)
+    boss = Staff(steps, frozen, "boss", superuser=True)
+    stored_name = "call +1 555 0100 123"
+    bob = create_user("bob", first_name=stored_name)
+    carol = create_user("carol")
+    dave = create_user("dave")
+    linked = {"is_staff": True, "fields": {"first_name": "www.evil"}}
+    whole_form = {
+        "is_staff": True,
+        "fields": {"first_name": stored_name, "last_name": "Jones"},
+    }
+
+    with override_settings(AUTH={**ACTS.settings["AUTH"], "ADMIN_ACTION": False}):
+        held_before = pending(root.call("PATCH", f"/users/{dave}", linked))
+    with override_settings(AUTH={**REFUSED, "ADMIN_ACTION": False}):
+        refused = root.call("PATCH", f"/users/{carol}", linked)
+        saved = root.call("PATCH", f"/users/{bob}", whole_form)
+    with override_settings(AUTH=REFUSED):
+        asked = root.ask(f"/users/{bob}/authorization/patch", whole_form)
+        approving = boss.client.post(
+            f"{API}/{held_before}/approve/authorization",
+            json={"fingerprint": fingerprint_of(boss, held_before)},
+            headers=boss.headers,
+        )
+
+    problem(refused, 422, "link_not_shown")
+    request_id = pending(saved)
+    held = {each["id"].hex: each["arguments"] for each in stored_requests()}
+    assert held[request_id.replace("-", "")] == {
+        "user_id": str(bob),
+        "values": {"last_name": "Jones"},
+    }
+    assert ("Last name", "Jones") in pairs(asked)
+    problem(approving, 422, "link_not_shown")

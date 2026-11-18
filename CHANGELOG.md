@@ -86,7 +86,9 @@ and a status.
   an address, or a number, read as a person reads it (full-width and
   look-alike dots, characters drawn as nothing, `example[.]com`, letters
   of other scripts that read as Latin); `check_typed(text)` checks text
-  where it is typed; a project's own checks register on `on_typed_text`.
+  where it is typed; a project's own checks register on `on_typed_text`;
+  `typed_field` (`domainkit.contrib.auth.integration`) marks a user's
+  field as another app's screen shows it.
   `.github/scripts/screen_data.py` refreshes the top-level domains and the
   letters from IANA and Unicode at each release, and the package's license
   reads `MIT AND Unicode-3.0` (user report A17).
@@ -176,11 +178,12 @@ and a status.
   approved (ADR 0179) (user report A17).
 
 - `auth.set_staff` and `auth.reactivate` hold what else the call sets
-  (`values`: an address, a number, a flag), which the approver sees and
-  the approval binds. They held the grant alone, and the approval was
-  spent by a call that also set a number no approver saw. A request of
-  2.7 is still found and spent by a call that sets nothing else (ADR
-  0179) (user report A17).
+  (`values`: an address, a number, a flag), but what the user holds
+  already, which the approver sees and the approval binds; a text staff
+  typed there is checked as typed text (ADR 0180). They held the grant
+  alone, and the approval was spent by a call that also set a number no
+  approver saw. A request of 2.7 is still found and spent by a call that
+  sets nothing else (ADR 0179) (user report A17).
 
 - `PATCH /users/{id}` and `POST /users` refuse a username, an address
   that identifies users, or a number another user has before the
