@@ -36,6 +36,18 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.8 to 2.9
+
+2.9 follows up 2.8. Each item of this list says what a project that
+relied on 2.8's behaviour changes, and what to run.
+
+- **A wider fixture's factory objects start at 0.** The test plugin
+  resets every factory before a test's fixtures, as well as before the
+  test's own: objects a module-scoped or session-scoped fixture builds are
+  numbered from 0, whichever test runs first, where 2.8 went on from the
+  test before. A test that asserted the numbers such a fixture's objects
+  happened to get asserts the ones from 0 (`Product 0`, `Product 1`).
+
 ## 2.7 to 2.8
 
 2.8 follows up 2.7. Each item of this list says what a project that

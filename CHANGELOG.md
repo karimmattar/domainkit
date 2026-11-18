@@ -39,6 +39,11 @@ and a status.
 
 - `SqsBroker.close()` closes its connections to SQS, which it left open
   (audit A28-TEST-03).
+- The test plugin numbers a module-scoped or session-scoped fixture's
+  factory objects from 0, whichever test runs first: it resets every
+  factory before a test's fixtures, as well as before the test's own.
+  `docs/testing.md`'s example of a module's rows passed or failed by the
+  order of the tests (audit A28-TEST-08).
 
 - The upload and PDF tests no longer time their checks with a stopwatch.
   Each says which limit stopped a check: the clock or a signal, from the
@@ -65,6 +70,9 @@ and a status.
   own: NATS picks its port and writes it to a file, and a Redis that fails
   to start, or a port another Redis answers on, is tried again on another
   port (audit A28-TEST-09).
+- A docs test wrote its probe page into the repository's `docs/`, which
+  other tests read at the same time; it writes it under a temporary
+  directory of its own (audit A28-TEST-10).
 
 ## [2.8.0] - 2026-11-18
 
