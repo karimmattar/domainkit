@@ -45,6 +45,7 @@ from domainkit.contrib.messaging.tables import (
     messages,
 )
 from domainkit.db import connections
+from domainkit.db.hooks import on_transaction_committed
 from domainkit.ddd import EventBus
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.ratelimit import Decision
@@ -455,6 +456,29 @@ async def test_a_task_that_committed_is_not_failed_by_its_slow_handlers() -> Non
 
     assert [row["status"] for row in await rows()] == [DONE]
     assert ran == [("slow", None), ("after", None), "committed"]
+
+
+@pytest.mark.usefixtures("tables")
+async def test_what_follows_enqueue_runs_free_of_the_deadline() -> None:
+    """``enqueue`` commits on its own; its after-commit hooks are not cut off.
+
+    A hook sleeps five times the request's deadline, which a commit
+    lifts: it runs to the end, sees no deadline, and the block ends
+    without raising.
+    """
+    seen: list[float | None] = []
+
+    async def slow(database: str) -> None:
+        await asyncio.sleep(0.1)
+        seen.append(deadlines.remaining())
+
+    on_transaction_committed(slow, domain="messaging")
+    async with deadlines.timeout(0.02, until_commit=True) as bound:
+        await enqueue(low, label="queued")
+        left = deadlines.remaining()
+
+    assert (seen, left, bound.expired()) == ([None], None, False)
+    assert [row["target"] for row in await rows()] == ["tests.low"]
 
 
 @pytest.mark.usefixtures("tables")
