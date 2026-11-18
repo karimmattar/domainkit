@@ -4,9 +4,10 @@ The client moved to ``domainkit.outbound`` in 2.9, below the adapters
 that call through it (ADR 0195). This module is a view of that one: each
 name is read from it, the same object, so ``isinstance`` and ``except``
 hold either way, and there is one set of clients, circuits, and metrics.
-A name set or deleted here (a 2.8 test's ``monkeypatch.setattr``) is set
-or deleted there, where the client and the adapters read it. New code
-imports and patches ``domainkit.outbound.client``.
+A name set here (a 2.8 test's ``monkeypatch.setattr``) is set there,
+where the client and the adapters read it, and deleting it puts back a
+name the client defined. New code imports and patches
+``domainkit.outbound.client``.
 """
 
 from typing import TYPE_CHECKING, Any

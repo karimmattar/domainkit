@@ -5,7 +5,8 @@ A28-ARCH-04). ``domainkit.http.client`` and ``domainkit.http.guard`` are
 views of the new modules: every name reads from them, the same object, so
 ``isinstance`` and ``except`` hold either way, and the process keeps one
 set of clients, circuits, metrics, and lookup threads. A name a 2.8 test
-sets or deletes on an old path is set or deleted where the code reads it.
+sets on an old path is set where the code reads it, and the patch's end
+puts back what the module defined.
 """
 
 import importlib
@@ -81,12 +82,13 @@ def test_monkeypatching_the_old_path_reaches_the_adapters_and_undoes_cleanly() -
     patch = pytest.MonkeyPatch()
     patch.setattr("domainkit.http.client.HttpClient", FakeClient)
     try:
-        made = shared_client("https://search.example.test", 3.0)
+        # The adapter keeps one client per URL: this one, for this test only.
+        made = shared_client("https://faked.example.test", 3.0)
     finally:
         patch.undo()
 
     assert isinstance(made, FakeClient)
-    assert made.options["base_url"] == "https://search.example.test"
+    assert made.options["base_url"] == "https://faked.example.test"
     assert client.HttpClient is real
     assert old_client.HttpClient is real
     assert "HttpClient" not in vars(old_client)
@@ -104,6 +106,47 @@ def test_mock_patch_on_the_old_path_reaches_the_code_and_undoes_cleanly() -> Non
     assert guard.lookup.__module__ == "domainkit.outbound.guard"
     assert "backoff" not in vars(old_client)
     assert "lookup" not in vars(old_guard)
+
+
+def test_mock_patch_with_create_on_a_moved_name_puts_it_back() -> None:
+    """``create=True`` deletes what it set; the moved name comes back (review).
+
+    The view holds no name, so ``mock`` takes each for not the view's own
+    and deletes it at the end; with ``create=True`` it puts nothing back,
+    which left the adapters without ``HttpClient`` for good.
+    """
+    real, resolver = client.HttpClient, guard.resolver
+    with mock.patch("domainkit.http.client.HttpClient", create=True) as fake:
+        assert client.HttpClient is fake
+    with mock.patch("domainkit.http.guard.resolver", create=True):
+        pass
+
+    assert client.HttpClient is real
+    assert guard.resolver is resolver
+    assert isinstance(shared_client("https://created.example.test", 3.0), real)
+
+
+def test_mock_patch_with_create_on_a_new_name_leaves_nothing() -> None:
+    """A name the module never had is deleted again at the end."""
+    with mock.patch.object(old_client, "made_up", create=True) as made:
+        assert client.made_up is made  # type: ignore[attr-defined]
+
+    assert not hasattr(client, "made_up")
+    assert not hasattr(old_client, "made_up")
+
+
+def test_monkeypatch_delattr_deletes_the_moved_name_until_undone() -> None:
+    """A name deleted through the view is gone from the module, then put back."""
+    real = client.HttpClient
+    patch = pytest.MonkeyPatch()
+    patch.delattr(old_client, "HttpClient")
+    try:
+        assert not hasattr(client, "HttpClient")
+    finally:
+        patch.undo()
+
+    assert client.HttpClient is real
+    assert "HttpClient" not in vars(old_client)
 
 
 def test_a_stub_s_shared_transport_is_read_live_through_the_old_path() -> None:

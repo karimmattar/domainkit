@@ -3,8 +3,9 @@
 The guard moved to ``domainkit.outbound`` in 2.9, with the outgoing HTTP
 client it serves (ADR 0195). This module is a view of that one: each name
 is read from it, the same object, with one resolver and its threads. A
-name set or deleted here (a 2.8 test's ``monkeypatch.setattr``) is set or
-deleted there, where the guard reads it. Like the module it names, this
+name set here (a 2.8 test's ``monkeypatch.setattr``) is set there, where
+the guard reads it, and deleting it puts back a name the guard defined.
+Like the module it names, this
 one is internal (``docs/versioning.md``); ``domainkit.outbound.guard``
 publishes the checks since 2.9.
 """
