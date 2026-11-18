@@ -844,10 +844,11 @@ async def _check_maker(guard: Guard, maker: str) -> None:
     it names one and passing its ``maker_rule`` if it has one (SEC-16b-7):
     a clerk dismissed, a customer frozen, or staff demoted after
     submitting runs nothing. It is asked in the request's tenant, where
-    the run is. The rule sees the user on a connection of no credentials
-    (``_RUN``): a rule about the submitting request itself (its scopes, a
-    step-up) was checked when the request was submitted, and one that
-    needs such credentials refuses here. A maker that names
+    the run is (a guard ``everywhere``: as where no tenant is served).
+    The rule sees the user on a connection of no credentials (``_RUN``):
+    a rule about the submitting request itself (its scopes, a step-up)
+    was checked when the request was submitted, and one that needs such
+    credentials refuses here. A maker that names
     no user (a principal of the project's own) is left to the project.
 
     Raises:
@@ -864,11 +865,12 @@ async def _check_maker(guard: Guard, maker: str) -> None:
 
     user = await get_user(user_id)
     rule = rule_instance(guard.maker_rule)
-    if (
-        user is None
-        or (guard.permission is not None and not await has_perm(user, guard.permission))
-        or (rule is not None and not await rule.has_permission(_RUN, user))
-    ):
+    with guard.checking():  # A guard of rows of no tenant: no role counts.
+        allowed = user is not None and (
+            (guard.permission is None or await has_perm(user, guard.permission))
+            and (rule is None or await rule.has_permission(_RUN, user))
+        )
+    if not allowed:
         raise MakerNotAllowed("Whoever submitted this command may no longer make it.")
 
 
@@ -892,7 +894,7 @@ async def approvers_of(request: ApprovalRequest) -> list[Any]:
         raise ImproperlyConfigured(f"approvers_of needs {AUTH}: install it.")
     from domainkit.contrib.auth import AuthUnitOfWork, get_user_model, has_perm
 
-    _, policy = policy_of(request)
+    guard, policy = policy_of(request)
     left_out = {request.maker, *await _parties(request)}
     left_out |= {each.approver for each in request.decisions}
     if request.permission is not None:
@@ -914,17 +916,18 @@ async def approvers_of(request: ApprovalRequest) -> list[Any]:
         )
     rule = rule_instance(policy.approver_rule)
     approvers = []
-    for user in users:
-        if str(user.id) in left_out:
-            continue
-        if request.permission is not None:
-            if not await has_perm(user, request.permission):
+    with guard.checking():
+        for user in users:
+            if str(user.id) in left_out:
                 continue
-        elif request.group is None and (
-            rule is None or not await rule.has_permission(_RUN, user)
-        ):
-            continue
-        approvers.append(user)
+            if request.permission is not None:
+                if not await has_perm(user, request.permission):
+                    continue
+            elif request.group is None and (
+                rule is None or not await rule.has_permission(_RUN, user)
+            ):
+                continue
+            approvers.append(user)
     return approvers
 
 

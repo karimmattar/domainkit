@@ -47,6 +47,7 @@ from typing import Any, Final, cast, get_type_hints
 from pydantic import TypeAdapter
 
 from domainkit.apps.hooks import HookPoint
+from domainkit.ddd.tenancy import no_tenant
 from domainkit.ddd.usecases import UseCase
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import BasePermission, Rule
@@ -260,6 +261,11 @@ class Guard:
     of the command, or a coroutine function that may read the database
     (the user a grant is for, by name rather than by id). It is read when
     shown, never stored with the request.
+
+    ``everywhere=True`` says the command acts on rows that belong to no
+    tenant (the ledger, users): its makers and approvers are checked as
+    where no tenant is served, so a member's role in the tenant served
+    never makes one of them (ADR 0183).
     """
 
     action: str
@@ -275,6 +281,7 @@ class Guard:
     http: bool = True
     by_maker: bool = False
     show: Show | None = None
+    everywhere: bool = False
     adapter: TypeAdapter[Any] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -366,6 +373,19 @@ class Guard:
         """The guard's policy called ``name``, if it still has one."""
         return next((each for each in self.policies if each.name == name), None)
 
+    @contextmanager
+    def checking(self) -> Iterator[None]:
+        """Check its makers and approvers inside the block, as ``everywhere`` says.
+
+        With ``everywhere``, as where no tenant is served: a member's keys
+        in the tenant served do not count.
+        """
+        if not self.everywhere:
+            yield
+            return
+        with no_tenant():
+            yield
+
 
 on_guard: HookPoint[Guard] = HookPoint("approvals.guard")
 """The guards the installed domains registered: ``guard()`` registers here."""
@@ -386,6 +406,7 @@ def guard(
     http: bool = True,
     by_maker: bool = False,
     show: Show | None = None,
+    everywhere: bool = False,
     domain: str | None = None,
 ) -> Guard:
     """Register the guard of a use case decorated ``requires_approval(action)``.
@@ -422,6 +443,7 @@ def guard(
         http=http,
         by_maker=by_maker,
         show=show,
+        everywhere=everywhere,
     )
     on_guard(registered, domain=domain)
     return registered

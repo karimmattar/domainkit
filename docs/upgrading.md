@@ -66,6 +66,14 @@ project that relied on 2.8's behaviour changes, and what to run.
   expire. Before you deploy, let the worker run the requests already
   approved: once deployed, such a request runs as no tenant. Without
   `TENANCY`, nothing changes.
+- **Limits and the ledger count the keys held everywhere** (security).
+  With `MembershipBackend`, a member's role no longer reaches the routes
+  of `domainkit.contrib.limits` or `domainkit.contrib.accounting`
+  (`403`), nor makes a maker or an approver of approvals' guards of
+  postings, captures, reversals, making superusers, and admin changes.
+  Grant those keys to the staff who use them, directly or through a
+  group ([Rows of no tenant](tenancy.md#rows-of-no-tenant)). Routes of
+  your own over rows every tenant shares say `everywhere=True`.
 
 ### Make and apply approvals' migration
 

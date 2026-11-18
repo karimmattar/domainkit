@@ -320,7 +320,12 @@ reads, leaves out the backends whose grants hold in one tenant only
   within that (`You can only grant permissions you have`);
 - a personal token, and a sign-in approval's access token, carry only
   scopes the user holds everywhere (`403 scope_not_held`). A scope only
-  bounds a token anyway: each request still needs the permission itself.
+  bounds a token anyway: each request still needs the permission itself;
+- the routes of limits and of the ledger, whose rows belong to no
+  tenant, and approvals' guards over them, count only what a user holds
+  everywhere ([rows of no tenant](#rows-of-no-tenant)); approval
+  requests and live events are each of one tenant
+  ([live events and approvals](#live-events-and-approvals)).
 
 `/auth/me` lists a member's keys in the tenant with the rest, as the
 checks count them.
@@ -683,6 +688,44 @@ runs it names. A request of no tenant is read where no tenant is served;
 code inside `all_tenants()` reads every tenant's
 ([Requests and tenants](contrib/approvals.md#requests-and-tenants)).
 
+## Rows of no tenant
+
+Some apps keep rows that every tenant shares: `domainkit.contrib.accounting`
+keeps one ledger, and `domainkit.contrib.limits` one set of limits. A
+member's role holds in its tenant alone, so their routes count only the
+keys a user holds everywhere: a company's finance role that names
+`limits.change_limit` or `accounting.view_account` changes no limit and
+reads no account (`403`). Staff granted the keys everywhere reach them
+from any tenant. Approvals' guards of postings, captures, and reversals,
+of making superusers, and of admin changes count their makers' and
+approvers' keys the same way.
+
+Routes of your own over such rows say so with `everywhere=True`:
+
+```python
+from fastapi import Depends
+
+from domainkit.http.access import HasPermissions, Require
+from domainkit.resources import ModelActions, ResourceRouter
+
+rates = ResourceRouter("/rates", ..., rule=ModelActions(Rate, everywhere=True))
+
+
+@router.post(
+    "/rates/publish",
+    dependencies=[
+        Depends(Require(HasPermissions("pricing.publish_rate", everywhere=True)))
+    ],
+)
+async def publish() -> None: ...
+```
+
+`everywhere=True` asks the user's permissions as where no tenant is
+served (`HasPermissions`, `HasObjectPermissions`, `HasModelPermission`,
+`ModelActions`), as every ceiling of the admin API counts them. A guard
+of approvals takes it too, for its makers and approvers
+([guarding a use case](contrib/approvals.md#guarding-a-use-case)).
+
 ## Reading the tenant in code
 
 | Function | Answers |
@@ -755,6 +798,9 @@ None
 - **`HasPermissions` where only the role should count.** It counts what
   a member holds everywhere too: staff who are members act as staff. Use
   `HasMemberPermissions` or `MemberActions`.
+- **`HasPermissions` on rows every tenant shares.** It counts a member's
+  role too: a role in one tenant reaches every tenant's rows. Say
+  `everywhere=True` ([rows of no tenant](#rows-of-no-tenant)).
 - **A mount under a tenant's path.** A Starlette route, WebSocket route,
   mount, or host takes no dependency, so no `PathTenant`, even inside a
   router included under `/{company_id}`. A tenants' resource refuses one
