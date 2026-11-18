@@ -9,8 +9,8 @@ retried with the task's backoff, up to ``WEBHOOKS.MAX_ATTEMPTS``; then the
 delivery is marked failed, and ``webhooks replay`` can send it again. A
 delivery whose task ends without an outcome (its worker killed, its last
 attempt out of time, or the outcome not written) is marked failed too:
-by its last attempt if the database lets it, else by the hourly purge
-(``fail_abandoned``).
+by its last attempt if the database lets it, else by an hourly task of
+its own (``fail_abandoned``).
 
 Each attempt decrypts the secrets it signs with, and stores again those a
 key in ``SECRET_KEY_FALLBACKS`` encrypted, under ``SECRET_KEY``. A secret
@@ -109,6 +109,8 @@ DELIVER: Final = "domainkit.contrib.webhooks.deliver"
 """The task key of one delivery's attempts."""
 PURGE: Final = "domainkit.contrib.webhooks.purge"
 """The hourly task that deletes old finished deliveries."""
+FAIL_ABANDONED: Final = "domainkit.contrib.webhooks.fail_abandoned"
+"""The hourly task that fails pending deliveries whose task ended."""
 FAN_OUT: Final = "domainkit.contrib.webhooks.fan_out"
 """The durable handler that queues each exposed event's deliveries."""
 DATABASE_MARGIN: Final = 30.0
@@ -362,7 +364,7 @@ async def deliver(delivery_id: uuid.UUID) -> None:
     """Make one attempt at a delivery (the task behind every delivery).
 
     A last attempt that raises marks the delivery failed before its task
-    dies, if the database lets it; else ``fail_abandoned`` does.
+    dies, if the database lets it; else ``fail_abandoned`` does, hourly.
 
     Raises:
         DeliveryFailed: the attempt failed and attempts are left.
@@ -381,10 +383,10 @@ async def _abandon(delivery_id: uuid.UUID) -> None:
     try:
         engine = connections.engine(webhooks_alias())
         await _finish(engine, delivery_id, FAILED, ABANDONED)
-    except Exception:  # The hourly purge marks it.
+    except Exception:  # The hourly fail_abandoned marks it.
         logger.warning(
             "Could not mark webhook delivery %s failed after its last attempt "
-            "raised; the hourly purge will",
+            "raised; the hourly check for abandoned deliveries will",
             delivery_id,
             exc_info=True,
         )
@@ -403,7 +405,17 @@ async def _attempt(delivery_id: uuid.UUID) -> None:
             )
         ).first()
         if delivery is None or delivery.status != PENDING or delivery.body == ERASED:
-            return  # Gone, finished (a duplicate run), or erased meanwhile.
+            # Gone, finished (a duplicate run, a retried dead task), or erased.
+            state = "gone" if delivery is None else delivery.status
+            if delivery is not None and delivery.body == ERASED:
+                state = "erased"
+            logger.info(
+                "Webhook delivery %s is not pending (%s): nothing sent; webhooks "
+                "replay sends a finished one again",
+                delivery_id,
+                state,
+            )
+            return
         subscription = (
             await connection.execute(
                 select(subscriptions).where(
@@ -762,45 +774,48 @@ async def fail_abandoned() -> int:
     the outcome could not be written.
     """
     tasks = unfinished_arguments(DELIVER, "delivery_id").subquery()
-    waiting = (
-        select(tasks.c.argument)
-        .where(
-            # Text with dashes in a task's arguments; 32 hex digits on SQLite.
-            func.replace(tasks.c.argument, "-", "")
-            == func.replace(cast(deliveries.c.id, Text), "-", "")
-        )
-        .correlate(deliveries)
+    # Text with dashes in a task's arguments; 32 hex digits on SQLite. Not
+    # correlated: the waiting tasks' ids are read once, not per delivery.
+    # NOT IN finds nothing once the list holds a NULL: none goes in it.
+    waiting = select(func.replace(tasks.c.argument, "-", "")).where(
+        tasks.c.argument.is_not(None)
     )
     async with connections.engine(webhooks_alias()).begin() as connection:
         failed = await connection.execute(
             update(deliveries)
-            .where(deliveries.c.status == PENDING, ~waiting.exists())
+            .where(
+                deliveries.c.status == PENDING,
+                func.replace(cast(deliveries.c.id, Text), "-", "").not_in(waiting),
+            )
             .values(status=FAILED, last_error=ABANDONED, finished_at=_now())
         )
     return int(failed.rowcount)
 
 
-async def purge_deliveries() -> None:
-    """Fail abandoned deliveries; delete those finished ``RETENTION_SECONDS`` ago.
-
-    Hourly.
-    """
-    config = registry.settings(WebhooksSettings)
+async def fail_abandoned_deliveries() -> None:
+    """Fail the pending deliveries whose task ended, and log how many (hourly)."""
     if abandoned := await fail_abandoned():
         logger.warning(
             "Marked %d webhook delivery(ies) failed: their task ended without an "
             "outcome. Replay them with webhooks replay --failed",
             abandoned,
         )
+
+
+async def purge_deliveries() -> None:
+    """Delete finished deliveries older than ``RETENTION_SECONDS`` (hourly)."""
+    config = registry.settings(WebhooksSettings)
     await purge(timedelta(seconds=config.RETENTION_SECONDS))
 
 
 def register(config: WebhooksSettings) -> None:
     """Register ``deliver`` with the queue, attempts, and backoff of ``config``.
 
-    And the hourly purge of old deliveries, which fails abandoned ones first.
+    And two hourly tasks, each on its own: the purge of old deliveries, and
+    the failing of those whose task ended (``fail_abandoned``).
     """
     periodic(timedelta(hours=1), name=PURGE)(purge_deliveries)
+    periodic(timedelta(hours=1), name=FAIL_ABANDONED)(fail_abandoned_deliveries)
     task(
         name=DELIVER,
         queue=config.QUEUE,

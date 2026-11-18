@@ -134,10 +134,13 @@ After `MAX_ATTEMPTS`, the delivery is marked failed.
 A last attempt can also end without an outcome: its worker is killed,
 it runs past its time limit, or the database fails as the outcome is
 written. Its task then dies, and the delivery is marked failed all the
-same: by the attempt, if the database lets it, else by the hourly task
-below. `last_error` says so, and `webhooks replay` sends it again.
-Retrying the dead task with `messages retry` sends nothing: replay the
-delivery instead.
+same: by the attempt, if the database lets it, else by an hourly task
+of its own (`domainkit.contrib.webhooks.fail_abandoned`), which marks
+failed each pending delivery whose task no longer waits to run (dead,
+cancelled, or dropped), and logs how many. `last_error` says so, and
+`webhooks replay` sends it again. Retrying the dead task with
+`messages retry` sends nothing, and the worker logs that the delivery
+is not pending: replay the delivery instead.
 
 A delivery is in one of four states:
 
@@ -151,8 +154,7 @@ A delivery is in one of four states:
 Delivery is at least once. A receiver must accept the same delivery
 twice: the `webhook-id` header is the same on every attempt. Finished
 deliveries and their attempts are deleted after `RETENTION_SECONDS`, by
-an hourly task. It first marks failed each pending delivery whose task
-no longer waits to run (dead, cancelled, or dropped), and logs how many.
+an hourly task.
 
 ## Signatures
 
