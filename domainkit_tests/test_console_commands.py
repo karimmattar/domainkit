@@ -6,6 +6,7 @@ import io
 import json
 import pkgutil
 import shutil
+import time
 import traceback
 from collections.abc import Iterator
 from pathlib import Path
@@ -355,6 +356,11 @@ PROBES = {
     "key_as_user": f"https://{PASSWORD}@o1.ingest.example.com/1",
     "user_with_slash": f"redis://us/er:{PASSWORD}@cache",
     "token_in_query": f"https://api.example.com/v1?access_token={PASSWORD}&x=1",
+    "libpq_spaced": f"host = db user = app password = {PASSWORD} dbname = shop",
+    "json_key": json.dumps({"type": "service_account", "private_key": PASSWORD}),
+    "header": f"Authorization: Bearer {PASSWORD}",
+    "header_basic": f"Proxy-Authorization: Basic {PASSWORD}==",
+    "quoted_key": f"{{'client_secret': '{PASSWORD} x'}}",
 }
 """Secrets in text, which the patterns find even in a field typed ``str``."""
 UNTYPED = {
@@ -404,6 +410,139 @@ def test_diffsettings_hides_passwords_in_typed_text(
 
     assert PASSWORD not in output
     assert "**********" in output
+
+
+def test_diffsettings_hides_the_value_of_a_secret_pair_and_keeps_the_rest(
+    make_package: MakePackage,
+) -> None:
+    """``password = x``, ``"private_key": "x"``, ``Authorization: Bearer x``.
+
+    A name and its value, with ``=`` or ``:`` between, spaced or not, the
+    name quoted or not; a header's scheme is hidden with its token. What
+    follows the value stays (audit A28-DX-10).
+    """
+    make_package("typed_probe", TYPED)
+    urls = [
+        f"host = db password = {PASSWORD} dbname = shop port = 5432",
+        json.dumps({"type": "service_account", "private_key": PASSWORD}),
+        f"Authorization: Bearer {PASSWORD}",
+        f"X-Request-Id: 7 Proxy-Authorization: Basic {PASSWORD}== X-Other: 1",
+        f"password: {PASSWORD} next: 1",
+        "token: Bearer, region: eu",  # A scheme with no token: the scheme hides.
+    ]
+    with override_settings(
+        INSTALLED_DOMAINS=["typed_probe"], ALPHA=UNSET, TYPED_PROBE={"URLS": urls}
+    ):
+        lines = run("diffsettings").splitlines()
+
+    shown = [
+        "host = db password = ********** dbname = shop port = 5432",
+        '{"type": "service_account", "private_key": **********}',
+        "Authorization: **********",
+        "X-Request-Id: 7 Proxy-Authorization: ********** X-Other: 1",
+        "password: ********** next: 1",
+        "token: ********** region: eu",
+    ]
+    (line,) = [line for line in lines if line.startswith("TYPED_PROBE")]
+    assert line.startswith(f"TYPED_PROBE = {{'URLS': {shown!r}, 'MODE': ")
+
+
+LONG_TEXTS = ["key.", "a.", "pin-", ".token", "key: a ", "a://", "Bearer key: "]
+"""Texts that made the patterns read each name or address again from within."""
+
+
+@pytest.mark.parametrize("unit", LONG_TEXTS)
+def test_diffsettings_reads_a_long_text_in_a_time_its_length_bounds(unit: str) -> None:
+    """100 KB of text is scrubbed well under a second, 2 KB in 20 ms.
+
+    Each name and each address is read from its start once: the pattern
+    that read a name again from each position within it took about a
+    second for 2 KB of ``key.``, and over 100 s for 10 KB; the one for a
+    URL's password read the rest of a word again at each ``a://``. The
+    bound grows with the length, so a text read again and again fails at
+    2 KB already, at once, and no machine is too slow for it: both take
+    about 1% of it (audit A28-DX-10).
+    """
+    for size in (2_000, 100_000):
+        text = unit * (size // len(unit))
+        started = time.perf_counter()
+        diffsettings._scrub(text)
+        assert time.perf_counter() - started < size / 100_000, size
+
+
+PLAIN = {
+    "apps.py": """
+        from collections import deque
+        from dataclasses import dataclass, field
+        from typing import Any, NamedTuple
+
+        from pydantic import BaseModel
+
+        from domainkit.apps import DomainConfig
+
+
+        @dataclass
+        class Provider:
+            NAME: str
+            OPTIONS: dict[str, Any] = field(default_factory=dict)
+            EXTRA: Any = None
+
+
+        class Pair(NamedTuple):
+            NAME: str
+            OPTIONS: dict[str, Any]
+
+
+        class PlainSettings(BaseModel):
+            PROVIDER: Provider | None = None
+            PAIR: Pair | None = None
+            PROVIDERS: list[Provider] = []
+            WAITING: deque[Provider] = deque()
+
+
+        class PlainConfig(DomainConfig):
+            settings_class = PlainSettings
+    """
+}
+
+
+def test_diffsettings_hides_the_text_of_values_that_are_not_models(
+    make_package: MakePackage,
+) -> None:
+    """A dataclass, and a mapping in a ``NamedTuple``, fail closed as mappings do.
+
+    No model's types say what their fields hold: their keys, numbers and
+    booleans show, their text is hidden, as in a field typed ``Any``. So
+    for a container the walk does not know, a ``deque`` (audit A28-DX-10).
+    """
+    make_package("plain_probe", PLAIN)
+    provider = {
+        "NAME": "sms",
+        "OPTIONS": {"client": PASSWORD, "pool": 4, "on": True},
+        "EXTRA": [PASSWORD, 2],
+    }
+    settings = {
+        "PROVIDER": provider,
+        "PAIR": ["second", {"client": PASSWORD, "pool": 5}],
+        "PROVIDERS": [provider],
+        "WAITING": [provider],
+    }
+    with override_settings(
+        INSTALLED_DOMAINS=["plain_probe"], ALPHA=UNSET, PLAIN_PROBE=settings
+    ):
+        output = run("diffsettings") + run("diffsettings", "--all")
+
+    assert PASSWORD not in output
+    hidden = (
+        "{'NAME': '**********', 'OPTIONS': {'client': '**********', 'pool': 4, "
+        "'on': True}, 'EXTRA': ['**********', 2]}"
+    )
+    (line,) = {line for line in output.splitlines() if line.startswith("PLAIN")}
+    assert line == (
+        f"PLAIN_PROBE = {{'PROVIDER': {hidden}, 'PAIR': ['second', "
+        f"{{'client': '**********', 'pool': 5}}], 'PROVIDERS': [{hidden}], "
+        f"'WAITING': [{hidden}]}}"
+    )
 
 
 def test_diffsettings_shows_typed_values_and_keeps_a_urls_user(

@@ -386,12 +386,17 @@ Secrets stay hidden:
   keys, and tokens;
 - settings and entries named like secrets: `password`, `secret`,
   `token`, `key`, `credential`, `auth`, `sid`, or `pin`;
-- a URL's password, and its user when it may be a key, and
-  `password=...` pairs, as in a query or a libpq connection string;
+- a URL's password, and its user when it may be a key;
+- in any text, the value after a name like a secret's and `=` or `:`,
+  spaced or not, the name quoted or not: `password=...` in a query,
+  `password = ...` in a libpq connection string, `"private_key": "..."`
+  in JSON, and a header such as `Authorization: Bearer ...`, its scheme
+  with it. *Changed in 2.9:* 2.8 hid `password=...` alone, unquoted;
 - in a domain's settings, all text that no type describes: in a mapping,
-  or a value typed `Any`, such as `NOTIFICATIONS["SMS_OPTIONS"]`, only
-  the keys, numbers, and booleans show. A provider's options are read by
-  the provider, so `diffsettings` cannot tell its secrets from the rest.
+  a value typed `Any`, such as `NOTIFICATIONS["SMS_OPTIONS"]`, or a value
+  that is not a model, such as a dataclass, only the keys, numbers, and
+  booleans show. A provider's options are read by the provider, so
+  `diffsettings` cannot tell its secrets from the rest.
 
 Type the secrets of your own domains' settings as `SecretStr`, so that
 they stay hidden wherever they are read. A class or function inside a

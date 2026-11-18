@@ -18,13 +18,39 @@ SECRET_KEY: Final = re.compile(
     re.IGNORECASE,
 )
 """Names of settings and entries shown hidden (``CONNECT_ARGS``, ``APP_SID``)."""
-URL_USERINFO: Final = re.compile(r"\b([a-z][a-z0-9+.-]*://)(\S*)@", re.IGNORECASE)
-"""A URL's user and password, up to the last ``@`` of the address."""
-SECRET_PAIR: Final = re.compile(
-    rf"\b([\w.-]*(?:{SECRET_KEY.pattern})[\w.-]*=)('(?:[^'\\]|\\.)*'|[^\s&;#]*)",
-    re.IGNORECASE,
+URL_USERINFO: Final = re.compile(
+    r"""
+    (?<!\S)  # A word, read from its start once.
+    (?>(\S*?)(?<![a-z0-9+.-])([a-z0-9+.-]++://))  # Its first URL's scheme,
+    (\S*)@  # and that URL's user and password, up to the word's last @.
+    """,
+    re.IGNORECASE | re.VERBOSE,
 )
-"""``password=...`` in a URL's query or a libpq connection string."""
+"""A URL's user and password, up to the last ``@`` of the address.
+
+Each word is read from its start once, at its first URL, so a long text is
+read in a time that grows with its length, as ``SECRET_PAIR`` reads it.
+"""
+SECRET_PAIR: Final = re.compile(
+    rf"""
+    (?<![\w.-])  # From the start of a name, never from within one:
+    (["']?+(?=[\w.-]*?(?:{SECRET_KEY.pattern}))[\w.-]++["']?+\s*+[:=]\s*+)
+    (  # the name, quoted or not, and its value,
+        "(?:[^"\\]|\\.)*+"  # quoted,
+        | '(?:[^'\\]|\\.)*+'
+        | (?:[a-z][\w-]*+[ \t]++(?=[\w.~+/-]++=*+(?![\w.~+/=-])(?!\s*+[:=])))?+
+        [^\s&;#]*+  # or up to a space, &, ;, or #, a scheme first (Bearer x).
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+"""``password=...`` and ``password: ...``, the name quoted or not.
+
+As in a URL's query, a libpq connection string (``password = x``), JSON
+(``"private_key": "..."``), or a header (``Authorization: Bearer x``).
+Each name and each value is matched from its start once, never again from
+within it, so a long text is read in a time that grows with its length.
+"""
 UNSHOWN: Final = frozenset({"SETTINGS_MODULE"})
 
 
@@ -35,10 +61,11 @@ class Command(BaseCommand):
     schema validated them, defaults filled in. Secrets stay hidden: secret
     values (``SecretStr`` keys and tokens), settings or entries whose names
     suggest secrets (a project's ``PAYMENT_API_KEY``, ``AUTH.TOKEN_TTL``),
-    the user and password of a URL, ``password=...`` pairs, and, in a
-    domain's settings, every text that no type describes: the strings of a
-    mapping or of a value typed ``Any`` (``SMS_OPTIONS``) show as hidden,
-    beside their keys and numbers.
+    the user and password of a URL, ``password=...`` and ``password: ...``
+    pairs, and, in a domain's settings, every text that no type describes:
+    the strings of a mapping, of a value typed ``Any`` (``SMS_OPTIONS``), or
+    of a value that is not a model (a dataclass) show as hidden, beside
+    their keys and numbers.
     """
 
     help = "Show settings that differ from the defaults (--all: every setting)."
@@ -109,7 +136,12 @@ def _shown(model: BaseModel) -> dict[str, Any]:
 
 
 def _typed(value: object, free_form: bool) -> object:
-    """``value`` of a typed field: shown, but secrets and untyped text hidden."""
+    """``value`` of a typed field: shown, but secrets and untyped text hidden.
+
+    A value of fields or entries that is not a model, such as a dataclass,
+    or a mapping in a ``NamedTuple``, is shown as ``_opaque`` shows it: no
+    model's types say what it holds.
+    """
     if free_form:
         return _opaque(value)
     if isinstance(value, BaseModel):
@@ -118,7 +150,10 @@ def _typed(value: object, free_form: bool) -> object:
         return HIDDEN
     if isinstance(value, list | tuple | set | frozenset):
         return [_typed(item, free_form=False) for item in value]
-    return to_jsonable_python(value, fallback=_named)
+    shown = to_jsonable_python(value, fallback=_named)
+    if isinstance(shown, dict | list):
+        return _opaque(shown)
+    return shown
 
 
 def _opaque(value: object) -> object:
@@ -191,7 +226,7 @@ def _userinfo(match: re.Match[str]) -> str:
     ``@``; a user that holds a ``/``, or no ``:`` at all (a key in the
     user's place, as some services give), is hidden too.
     """
-    scheme, userinfo = match[1], match[2]
+    scheme, userinfo = match[1] + match[2], match[3]
     user, colon, _ = userinfo.partition(":")
     if colon and "/" not in user:
         return f"{scheme}{user}:{HIDDEN}@"

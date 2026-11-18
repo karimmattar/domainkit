@@ -90,8 +90,9 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   filled in, and marks those left at their defaults under `--all`; 2.8
   hid a domain's settings whole. It fails closed: values typed as
   secrets, names that suggest one (`sid` and `pin` now among them), URL
-  passwords and `password=` pairs, and all text in a mapping or a value
-  typed `Any` (a provider's options) stay hidden
+  passwords and `password=` pairs, and all text in a mapping, a value
+  typed `Any` (a provider's options), or a value that is not a model (a
+  dataclass) stay hidden
   ([diffsettings](docs/reference/commands.md#diffsettings-show-the-settings),
   [upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-10).
 
@@ -166,6 +167,22 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   each rung's calls, round trips, and modules as `benchmarks/budgets.toml`
   holds them, and `test_docs.py` fails when the two differ (audit
   A28-PERF-09).
+
+- `diffsettings` reads a long text in a time that grows with its length.
+  The pattern of `password=` pairs read each name again from every
+  position within it, and that of a URL's password read the rest of a
+  word again at each `://`: 10 KB of dotted names took over 100 s; 100 KB
+  of any text now takes milliseconds (audit A28-DX-10).
+
+### Security
+
+- `diffsettings` hides the value after a name like a secret's and `=` or
+  `:`, spaced or not, the name quoted or not, in any text it prints:
+  `password = ...` in a libpq connection string, `"private_key": "..."`
+  in JSON, and a header such as `Authorization: Bearer ...`, its scheme
+  with it. 2.8 hid `password=...` alone, unquoted
+  ([diffsettings](docs/reference/commands.md#diffsettings-show-the-settings),
+  [upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-10).
 
 ## [2.8.0] - 2026-11-18
 
