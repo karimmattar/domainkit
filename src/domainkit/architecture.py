@@ -114,6 +114,18 @@ the client's path of 2.8; the client lives in ``domainkit.outbound``,
 which the infrastructure layer imports with no exception (ADR 0195).
 """
 
+MOVED: Final = MappingProxyType(
+    {
+        "domainkit.http.client": "domainkit.outbound.client",
+        "domainkit.http.guard": "domainkit.outbound.guard",
+    }
+)
+"""Modules that left ``domainkit.http`` in 2.9, by their 2.8 path (ADR 0195).
+
+A project's rule that names an old path, or a package that held it, names
+the new one too: it keeps applying to the same code.
+"""
+
 _PUBLIC_ONLY: Final = ("domainkit.http.problems",)
 """Allowed modules a layer may import only the names of their ``__all__`` from.
 
@@ -201,20 +213,42 @@ class LayerRules:
         """These rules with more entries; nothing already here is removed.
 
         Nothing extends ``allowed_modules``: a project adds rules, never
-        exceptions to them.
+        exceptions to them. A library entry that names a module's path of
+        2.8 (``domainkit.http.client``), or a package that held it
+        (``domainkit.http``), names its 2.9 home too (``MOVED``), where the
+        entry kept a layer from the old path.
         """
+        more = {
+            layer: (*entries, *self._moved(layer, entries))
+            for layer, entries in (forbidden_libraries or {}).items()
+        }
         return type(self)(
             layers=_merged(self.layers, layers),
             domain_allowed=_merged(self.domain_allowed, domain_allowed),
-            forbidden_libraries=_merged_table(
-                self.forbidden_libraries, forbidden_libraries or {}
-            ),
+            forbidden_libraries=_merged_table(self.forbidden_libraries, more),
             allowed_modules=self.allowed_modules,
             forbidden_layers=_merged_table(
                 self.forbidden_layers, forbidden_layers or {}
             ),
             public_surface=_merged(self.public_surface, public_surface),
         )
+
+    def _moved(self, layer: str, entries: Iterable[str]) -> Iterator[str]:
+        """The 2.9 homes of what ``entries`` forbade ``layer`` at a path of 2.8.
+
+        Under the default exceptions: a project's ``domainkit.http`` entry
+        for the infrastructure layer left the client to it in 2.8, as the
+        exception for ``domainkit.http.client`` lifted it, and leaves
+        ``domainkit.outbound.client`` to it now.
+        """
+        for entry in entries:
+            for old, new in MOVED.items():
+                if _within(entry, (old,)):
+                    yield new + entry.removeprefix(old)
+                elif _within(old, (entry,)):
+                    exception = _closest(old, self.allowed_modules.get(layer, ()))
+                    if exception is None or len(exception) <= len(entry):
+                        yield new
 
     @classmethod
     def from_config(cls, config: "ArchitectureConfig") -> Self:

@@ -265,7 +265,7 @@ another name they hold, such as Starlette's `UploadFile` or
 | `ARCHITECTURE` key | Default | Meaning |
 | --- | --- | --- |
 | `DOMAIN_ALLOWED` | `()` | More packages a domain layer may import, such as a shared kernel (`"myproject.kernel"`). Up to 64 dotted names. |
-| `FORBIDDEN_LIBRARIES` | `{}` | More libraries a layer must not import, by layer: `{"application": ("httpx",)}`. Not the domain layer, which is an allowlist: use `DOMAIN_ALLOWED`. Up to 12 layers, each with up to 64 names. |
+| `FORBIDDEN_LIBRARIES` | `{}` | More libraries a layer must not import, by layer: `{"application": ("httpx",)}`. Not the domain layer, which is an allowlist: use `DOMAIN_ALLOWED`. Up to 12 layers, each with up to 64 names. A name of 2.8's paths, `domainkit.http.client` or `domainkit.http.guard`, or `domainkit.http`, which held them, covers their home in `domainkit.outbound` too, wherever it covered the old path (*new in 2.9*). |
 | `EXTRA_LAYERS` | `()` | Layer packages of the project's own, such as `ports`, so the two tables here can name them. Up to 8, none a built-in layer. |
 | `FORBIDDEN_LAYERS` | `{}` | More layers of the same domain a layer must not import: `{"ports": ("infrastructure", "api")}`. Every layer named must be built in or in `EXTRA_LAYERS`, and none may forbid itself. Up to 12 layers, each forbidding up to 12. |
 | `PUBLIC_SURFACE` | `()` | More parts of a domain that other domains may import, each starting with a layer: `("domain.values",)`. |
