@@ -36,6 +36,62 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.8 to 2.9
+
+2.9 answers the audit of 2.8. Each part below says what a project that
+relied on 2.8's behaviour changes, and what to run.
+
+### `migrate` makes three indexes on the user table, on PostgreSQL
+
+Logins by address, signups, the checks for a taken address or username,
+and the admin API's list of users read the whole users table in 2.8. On
+PostgreSQL, `migrate` now makes, on the user table, a project's own too
+(`AUTH.USER_TABLE`), where missing:
+
+- `ix_<table>_email_lower`, on `lower(email)` (the `EMAIL_FIELD`);
+- `ix_<table>_username_lower`, on `lower(username)` (the
+  `USERNAME_FIELD`);
+- `ix_<table>_email_id`, on `(email, id)`, the admin API's order where
+  addresses identify users.
+
+No `makemigrations`: they are not declared on the table, and revisions
+leave them alone. SQLite gets none, as it cannot reflect an index on
+`lower()` ([ADR 0185](adr/0185-bound-keyset-pages-index-the-user-lookups-and-read-fewer-grants.md)).
+
+Building an index holds writes to the table while it runs. On a large
+users table, make them before you deploy, without holding writes, under
+the same names; `migrate` then finds them and makes nothing. For the
+default table:
+
+```sql
+CREATE INDEX CONCURRENTLY ix_domainkit_users_email_lower ON domainkit_users (lower(email));
+CREATE INDEX CONCURRENTLY ix_domainkit_users_username_lower ON domainkit_users (lower(username));
+CREATE INDEX CONCURRENTLY ix_domainkit_users_email_id ON domainkit_users (email, id);
+```
+
+A concurrent build that fails leaves an invalid index of that name, which
+`migrate` takes as made: drop it, and build it again.
+
+### Keyset pages, admin changes, and exports read less
+
+Nothing to change; plans and costs change.
+
+- **A keyset page starts at its position.** What follows a position
+  begins with a bound on the ordering's first field, so an index whose
+  first column is that field is read from the position. A list ordered
+  ascending by a field that may be missing still reads from the start:
+  order it descending, or put a field that is never missing first
+  ([Pages](queries.md#pages)).
+- **The admin API reads only the grants on objects that count.** A
+  backend that reads its grants from a table can answer
+  `object_grants_beyond(holder, permissions)` to leave out, in its query,
+  the grants of the permissions staff hold on whole models
+  ([Backends](auth/users.md#backends)). One that does not keeps working:
+  its `object_grants` is filtered.
+- **An export counts at most `max_export + 1` matches**
+  (`count(at_most=...)`), and flags' `GET /settings` reads its values in
+  one statement.
+
 ## 2.7 to 2.8
 
 2.8 follows up 2.7. Each item of this list says what a project that

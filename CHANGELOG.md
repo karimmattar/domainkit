@@ -9,6 +9,49 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `Repository.count(criteria, at_most=n)`: a count that stops at `n`.
+  SQL counts a subquery with `LIMIT n`, so a database reads no further
+  matches; a repository of one's own counts all and stops
+  (`_count_at_most`). An export now counts at most `max_export + 1`:
+  refusing one of 1,000,000 rows took 35 to 57 ms, and now 1 to 7 ms
+  (ADR 0185) (audit A28-PERF-08).
+- `BaseBackend.object_grants_beyond(holder, permissions)`, and
+  `object_grants(holder, beyond=...)`: a holder's grants on objects, less
+  those of the permissions given. The default filters what
+  `object_grants` answers; `ObjectPermissionBackend` leaves them out in
+  its query. It is asked only of a class that defines both methods, so a
+  backend that overrides `object_grants` alone keeps every grant it adds
+  (ADR 0185) (audit A28-PERF-05).
+- On PostgreSQL, `migrate` makes three indexes on the user table, a
+  project's own too, where missing: `lower()` of the address and of the
+  username, and the address then the id. Logins by address, signups, the
+  checks for a taken address or username, and the admin API's list of
+  users each read the whole table before (30 to 60 ms at 300,000 users,
+  0.01 ms now). Revisions leave them alone; SQLite gets none (ADR 0185)
+  (audit A28-PERF-02).
+
+### Changed
+
+- What follows a keyset position starts with a bound on the first field
+  of the ordering (`>=` ascending, `<=` descending, a money field's
+  currency), so a database reads an index from the position instead of
+  from its first row. It selects the same rows. A middle page of 300,000
+  rows took 13 to 20 ms on PostgreSQL, and now 0.03 to 0.1 ms. Ascending
+  on a field that may be missing still reads from the start (ADR 0185)
+  (audit A28-PERF-01).
+- The admin API's bound on grants on objects reads only the grants that
+  count: none for a superuser, and for staff none of a permission they
+  hold on the whole model; their own are read only when some remain.
+  `ObjectPermissionBackend` reads the grants' columns instead of loading
+  them. An admin change, or an impersonated request, for a user of
+  10,000 grants cost 117 to 138 ms of CPU, and now 0.5 to 17 ms; the
+  refusal and its count are as before (ADR 0185) (audit A28-PERF-05).
+- Flags' `GET /settings` reads every stored value in one statement, not
+  one per declared setting: 100 settings took 76 ms, now 9 ms
+  (audit A28-PERF-07).
+
 ## [2.8.0] - 2026-11-18
 
 2.8 answers fourteen of a project's fifteen notes on 2.7 (the last,

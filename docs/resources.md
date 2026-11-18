@@ -1014,7 +1014,9 @@ f056550e-1f49-4cf9-b364-d942a15aded4,0,Big lamp,5
 ```
 
 - More than `max_export` matches (10,000) is `422 export_too_large`
-  (`ExportTooLarge`): narrow the export with filters.
+  (`ExportTooLarge`): narrow the export with filters. The count before
+  the export stops at `max_export + 1` (since 2.9), so a filter that
+  matches much is refused without counting every match.
 - A request that accepts none of the offered types is `406
   not_acceptable` (`NotAcceptable`), with an `Accept` header that names
   them: `application/json, text/csv, application/x-ndjson`. Without
