@@ -52,8 +52,9 @@ The route is like any FastAPI WebSocket route. What domainkit adds is in
 gives every connection these limits:
 
 - **Caps.** A process holds at most `LIVE_MAX_CONNECTIONS` live
-  connections, and a caller (a user, or an address for anonymous callers)
-  at most `LIVE_MAX_CONNECTIONS_PER_CALLER`. One more is refused at once,
+  connections, and a caller (a user, or an address for anonymous callers;
+  staff acting as a user count as themselves) at most
+  `LIVE_MAX_CONNECTIONS_PER_CALLER`. One more is refused at once,
   with 503 and `Retry-After`.
 - **Limited sending.** At most `LIVE_SEND_QUEUE` messages wait for a
   client. A client that takes longer than `LIVE_SEND_TIMEOUT` seconds to
@@ -421,6 +422,15 @@ the same `data`. The `address` is not sent.
   both allow it, for the user as of the last re-check. `rule` is
   required. Pass `AllowAny()` to send every event of those types to
   whoever may connect.
+- **Tenants.** An event keeps the tenant it was committed in
+  (`current_tenant()`), and reaches only the connections served as that
+  tenant ([tenancy](tenancy.md#live-events-and-approvals)). One committed
+  as no tenant reaches only the connections served as none. Another
+  tenant's events never count against a connection's buffers.
+  `per_tenant=False` on `stream`, `forward`, or `subscribe` hears every
+  tenant's events, and `rule` alone decides. The rule never sees an
+  event's tenant, so keep it to routes only staff reach, such as a back
+  office's: a member's rule there lets through every tenant's events.
 - **Scopes.** The user is read as `current_user` reads it. Credentials
   limited to scopes need a route that declares a rule that checks scopes,
   a `Public` one included
@@ -493,6 +503,11 @@ own. The committing process's subscribers get it at once, and once.
 - **Personal fields travel.** Rules decide from the event's fields, so
   the whole event goes between processes; clients still get `render`'s
   fields, `Personal` ones left out.
+- **The tenant travels too.** Each message names the tenant the event
+  was committed in, and the other processes hand it to that tenant's
+  connections alone. A message that names none, as a process of 2.8.0
+  sends, is of no tenant: during a rolling deploy, connections served as
+  a tenant miss the events of processes not yet upgraded.
 - **Best effort.** A listener that reconnects misses what was sent
   meanwhile, as a client that reconnects does.
 - **PostgreSQL's notifications hold less than 8,000 bytes.** A larger

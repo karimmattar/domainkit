@@ -1202,6 +1202,10 @@ def following(
     value for each of its fields. Missing values sort last, as ``order``
     sorts them.
 
+    The alternatives come after a bound on the first field that everything
+    after the position meets (``_start``): it selects nothing more, but lets
+    a database read an index from the position on, not from its first row.
+
     Raises:
         InvalidQuery: The position does not fit the ordering.
     """
@@ -1223,7 +1227,33 @@ def following(
         same.append(name.isnull() if value is None else name == value)
     if not alternatives:
         raise InvalidQuery("Nothing sorts after a position whose values are missing.")
-    return Or.of(*alternatives)
+    beyond = Or.of(*alternatives)
+    if len(ordering) == 1:  # The id alone: its one alternative is a range already.
+        return beyond
+    first = ordering[0]
+    start = _start(
+        F(first.field),
+        position[0],
+        descending=first.descending,
+        nullable=fields[first.field].nullable,
+    )
+    return beyond if start is None else And.of(start, beyond)
+
+
+def _start(
+    name: F, value: object, *, descending: bool, nullable: bool
+) -> Criteria | None:
+    """An inclusive bound on the first field for what sorts after ``value``.
+
+    ``>=`` ascending, ``<=`` descending; on a money field, its currency's.
+    None where no such range holds all of it: past a missing value, or past
+    a present one where missing values follow (ascending, nullable).
+    """
+    if value is None or (nullable and not descending):
+        return None
+    if isinstance(value, Money):
+        name, value = F(f"{name.name}.currency"), value.currency
+    return name <= value if descending else name >= value
 
 
 def _beyond(

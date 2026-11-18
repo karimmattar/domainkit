@@ -56,6 +56,55 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   wheel and the sdist leave them out (ADR 0190). README.md and
   `docs/learning.md` link them (audit A28-DX-06).
 
+- `Repository.count(criteria, at_most=n)`: a count that stops at `n`.
+  SQL counts a subquery with `LIMIT n`, so a database reads no further
+  matches; a repository of one's own counts all and stops
+  (`_count_at_most`), as does a subclass that overrides `_count`. An
+  export now counts at most `max_export + 1`: refusing one of 1,000,000
+  rows took 35 to 57 ms, and now 1 to 7 ms. A repository that overrides
+  `count` is asked as before, and counts every match (ADR 0185)
+  (audit A28-PERF-08).
+
+- `BaseBackend.object_grants_beyond(holder, permissions)`, and
+  `object_grants(holder, beyond=...)`: a holder's grants on objects, less
+  those of the permissions given. The default filters what
+  `object_grants` answers; `ObjectPermissionBackend` leaves them out in
+  its query. It is asked only of a class that defines both methods, or
+  neither, so a backend that overrides `object_grants` alone keeps every
+  grant it adds (ADR 0185) (audit A28-PERF-05).
+
+- On PostgreSQL, `migrate` makes indexes on the user table, a project's
+  own too, where missing: `lower()` of the address and of the username,
+  where each is text, and the field the admin API lists users by, then
+  the id. It reads the table's indexes first and makes only those
+  missing, so with none to make it takes no lock. Logins by address,
+  signups, the checks for a taken address or username, and the admin
+  API's list of users each read the whole table before (30 to 60 ms at
+  300,000 users, 0.01 ms now). Revisions leave them alone, by name;
+  SQLite gets none (ADR 0185) (audit A28-PERF-02).
+
+- `per_tenant=False` on `live_events.stream`, `forward`, and
+  `subscribe`: a route that serves every tenant on purpose, such as a
+  back office's, hears every tenant's events, its rule alone deciding.
+  By default a subscription hears the tenant it is served as
+  ([Live committed events](docs/live.md#live-committed-events), ADR 0183)
+  (audit A28-SEC-01).
+
+- `everywhere=True` on `HasPermissions` (and `HasObjectPermissions`),
+  `HasModelPermission`, `ModelActions`, and approvals' `guard()`
+  (`Guard.everywhere`): only the permissions a user holds where no
+  tenant is served count, never a member's role, for routes and guarded
+  commands over rows every tenant shares. Unset, nothing changes
+  ([Rows of no tenant](docs/tenancy.md#rows-of-no-tenant), ADR 0183)
+  (audit A28-SEC-04).
+
+- `tenancy.I001`: with `TENANCY` set, `check` names the installed apps
+  whose rows every tenant shares, `domainkit.contrib.accounting` and
+  `domainkit.contrib.limits`. It is an info, which `check --deploy` lists
+  and never refuses
+  ([Rows of no tenant](docs/tenancy.md#rows-of-no-tenant), ADR 0183)
+  (audit A28-SEC-04).
+
 - `runworker --ready-file PATH`: the worker's readiness. Each round of
   `--heartbeat-interval` rewrites the file while `/ready`'s checks and
   the broker's hold, and removes it when one fails; it goes when the
@@ -104,6 +153,37 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   (decisions, the style guide, the roadmap, the audits) under "Project",
   apart from the reference; their addresses do not change. The feature
   inventory says that it records the review of 1.5 (audit A28-DX-13).
+
+- What follows a keyset position starts with a bound on the first field
+  of the ordering (`>=` ascending, `<=` descending, a money field's
+  currency), so a database reads an index from the position instead of
+  from its first row. It selects the same rows. A middle page of 300,000
+  rows took 13 to 20 ms on PostgreSQL, and now 0.03 to 0.1 ms. Ascending
+  on a field that may be missing still reads from the start (ADR 0185)
+  (audit A28-PERF-01).
+
+- The admin API's bound on grants on objects reads only the grants that
+  count: none for a superuser, and for staff none of a permission they
+  hold on the whole model; their own are read only when some remain.
+  `ObjectPermissionBackend` reads the grants' columns instead of loading
+  them. An admin change, or an impersonated request, for a user of
+  10,000 grants cost 117 to 138 ms of CPU, and now 0.5 to 17 ms; the
+  refusal and its count are as before (ADR 0185) (audit A28-PERF-05).
+
+- Flags' `GET /settings` reads every stored value in one statement, not
+  one per declared setting: 100 settings took 76 ms, now 9 ms
+  (audit A28-PERF-07).
+
+- An approver's list of approval requests reads through an index of the
+  tenant, the action, the policy, and the time submitted
+  (`ix_domainkit_approval_requests_scope`). An approver of a rare policy
+  read the whole table on every page: 29 ms a page at 300,000 requests on
+  PostgreSQL, 0.08 ms with the index. Run `makemigrations` and `migrate`
+  (audit A28-PERF-04).
+
+- An approval screen reads the names of the groups a change holds in one
+  statement, where it read one per group, up to 1,000 of them (audit
+  A28-PERF-07).
 
 - `runworker --heartbeat-file` is the worker's liveness: its event loop
   rewrites the file every `--heartbeat-interval` seconds, on a schedule
@@ -186,6 +266,95 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   back. Only a relay running the outbox, its breaker open, waits for what
   is left of `DRAIN_TIMEOUT` first, even while it is still claiming;
   every relay did, so shutdown took up to 25 seconds (audit A28-TEST-07).
+
+### Security
+
+- Live events are scoped to the tenant they were committed in: an event
+  reaches only the connections served as that tenant, and one committed
+  as no tenant only the connections served as none. With `LIVE_FANOUT`,
+  the message between processes names the tenant too. Another tenant's
+  events no longer count against a connection's buffers. A project
+  without `TENANCY` sees no change
+  ([upgrading.md](docs/upgrading.md#28-to-29), ADR 0183) (audit
+  A28-SEC-01).
+
+- Approval requests are scoped to the tenant they were submitted in:
+  they are listed, read, approved, rejected, and cancelled where that
+  tenant is served alone, by the routes and from code, and the approved
+  command runs in that tenant, whichever tenant the message that runs it
+  names. Expiry, erasure, and decisions made inside `all_tenants()`
+  commit each request as its tenant alone, a maker's call spends a
+  request of the tenant it is served as, and a run checks the seal
+  before it serves the request's tenant. The requests table gains a
+  nullable `tenant_id`, which the seal covers where it is set: run
+  `makemigrations` and `migrate` before the new code serves. A request
+  stored before has no tenant, keeps its seal, and is read where no
+  tenant is served
+  ([Requests and tenants](docs/contrib/approvals.md#requests-and-tenants),
+  [upgrading.md](docs/upgrading.md#28-to-29), ADR 0183) (audit
+  A28-SEC-02).
+
+- The routes of `domainkit.contrib.limits` and
+  `domainkit.contrib.accounting`, and approvals' guards of postings,
+  captures, reversals, making superusers, and admin changes, count only
+  the permissions a user holds everywhere: a member's role in the tenant
+  served reaches none of their rows, nor reads those guards' requests
+  through `approvals.view_every_approvalrequest`
+  ([Rows of no tenant](docs/tenancy.md#rows-of-no-tenant),
+  [upgrading.md](docs/upgrading.md#28-to-29), ADR 0183) (audit
+  A28-SEC-04).
+
+- The staff APIs count a staff member's permissions as they hold them
+  everywhere: the admin API (users, groups, permissions), the staff APIs
+  of `domainkit.contrib.flags` and `domainkit.contrib.webhooks`, the
+  audit trail's history (`audit.view_history`), and the admin site's
+  models that are not `TenantOwned`. A role in the tenant served opens
+  none of them
+  ([Rows of no tenant](docs/tenancy.md#rows-of-no-tenant),
+  [upgrading.md](docs/upgrading.md#28-to-29), ADR 0183) (audit
+  A28-SEC-04).
+
+- Staff acting as a user (an impersonation) have pages cached per user
+  (`cache_page(vary_on_user=True)`) and responses kept for an
+  `Idempotency-Key` of their own for each user they act as, apart from
+  their own and the user's. A response so kept is about the user too:
+  `privacy erase` drops it, and the user's export lists it, withheld. The
+  trail still names the staff member, and rate limits, throttles, and
+  live connections still count them (audit A28-SEC-03).
+
+- The SAML ACS bounds a response before it checks its signature: 50,000
+  nodes, counted on its bytes, no DTD or entity, 32 levels, 32 namespace
+  declarations on the path to an element, each of a URI of 128 characters
+  at most, and 32 attributes on it, and 32 elements and 16 KiB in a
+  `SignedInfo`; it reads the XML as UTF-8. It parses each response in a
+  thread of its own, which ends with it, never on the event loop's
+  thread, and at most 4 at once on a loop;
+  a response that waits more than 5 seconds for one is refused. The
+  names lxml keeps for a thread go with it, and the loop serves other
+  requests meanwhile. What lxml or signxml raise of a response refuses
+  it (`saml_refused`) (audit A28-PERF-03).
+
+- `holds_link` reads a name spaced out or bracketed as the link it
+  spells, so `TYPED_LINKS = "refused"` refuses it: `example . com`
+  (but before a capital), `example (dot) com`, `example<dot>com`,
+  `https : //`, white space and new lines around them, and, before `com`,
+  `example .com`, `example. com`, `example (.) com` and `example dot
+  com`. It reads these in the text as typed, not in the cuts a screen
+  may show. Prose whose next word is a top-level domain (`vs. net`,
+  `Done. Info sent`, `Rejected . No receipt`) holds none. The docs list
+  what it still does not read (audit A28-SEC-05).
+
+- CSV exports guard a formula behind any character that shows nothing:
+  white space, a control, a format character (a directional mark, a soft
+  hyphen, the Arabic number sign), or another default ignorable code
+  point (a variation selector, a tag). Screens, Office documents' checks,
+  and CSV cells read one definition of what shows nothing
+  (audit A28-ARCH-13).
+
+- Each request of an impersonation checks the staff member's right to
+  change users as they hold it everywhere, whatever tenant the request is
+  served as: users belong to no tenant, so a member's role in one keeps no
+  impersonation going (audit A28-SEC-04).
 
 ## [2.8.0] - 2026-11-18
 

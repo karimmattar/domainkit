@@ -1,6 +1,6 @@
 # 0147. Name who caused each event, and tell the old address
 
-- Status: Accepted
+- Status: Accepted; amended 2026-11-18 (at the end)
 - Date: 2026-11-16
 
 ## Context
@@ -178,3 +178,22 @@ with each message, log line, and audit row.
    <https://github.com/OWASP/ASVS/blob/master/5.0/en/0x15-V6-Authentication.md>
 8. django-allauth, *Signals*, `email_changed`:
    <https://docs.allauth.org/en/latest/account/signals.html>
+
+## Amendment (2026-11-18): what staff acting as a user are answered is kept for that user
+
+The 2.8 audit found per-user state kept by the request's `actor`
+alone, the staff member under an impersonation (A28-SEC-03). The actor
+stays as this record decided: the trail, events and approvals name the
+staff member, with `impersonating` beside it.
+
+- `caller_key(actor, impersonating)`, beside `current_request`, names
+  whom a request's answers are kept for: the actor, or `<staff id>:as:<user id>`
+  under an impersonation. Idempotency keys and pages cached with
+  `vary_on_user=True` are kept by it, apart from the staff member's own,
+  the user's, and those of each other user the staff member acts as.
+- A response kept for an `Idempotency-Key` under an impersonation names
+  the user among its subjects: erasing the user drops it, and the user's
+  export lists it, withheld.
+- Rate limits, throttles, live connections, and outbound lookups count
+  what a caller uses, and keep counting the actor: one person, one
+  budget, whomever they act as.

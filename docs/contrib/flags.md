@@ -251,8 +251,11 @@ router.include_router(flags_router, prefix="/admin/flags")
 | `PUT /settings/{key}` | `flags.change_dynamicsetting` | Store a value; a value the type refuses is 422. |
 | `DELETE /settings/{key}` | `flags.change_dynamicsetting` | Go back to the default (204). |
 
-Every route also needs a staff user (`is_staff`) or a superuser. The
-body of `POST /flags` is the rules and a `name`:
+Every route also needs a staff user (`is_staff`) or a superuser, and
+counts its permission as the staff member holds it everywhere: a
+member's role in the tenant served does not count
+([rows of no tenant](../tenancy.md#rows-of-no-tenant)). The body of
+`POST /flags` is the rules and a `name`:
 
 ```json
 {"name": "beta", "everyone": null, "percentage": 10, "users": [], "groups": ["staff"], "note": ""}
