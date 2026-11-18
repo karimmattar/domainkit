@@ -47,11 +47,14 @@ migration comes with these items.
   `domainkit.http.client` and `domainkit.http.uploads`, but from 2.9
   only the names their `__all__` lists, and not `uploads.serve`, without
   a warning; 3.0 refuses the rest. `check` passes, and `check --deploy`
-  fails until each import changes, or `SILENCED_CHECKS` names the
-  warning. Type a route's file as `domainkit.http.uploads.Upload`, not
-  Starlette's `UploadFile`; import `StoredUpload` from
-  `domainkit.storage`; and serve a file from its route, with `serve`
-  there ([Layer rules](reference/settings.md#layer-rules)).
+  fails until each import changes. `SILENCED_CHECKS` can silence the
+  warning, but only as a whole: there is no way to allow one import, so
+  silencing it also hides the next one. Change the imports instead. Type
+  a route's file as `domainkit.http.uploads.Upload`, not Starlette's
+  `UploadFile`. Import `StoredUpload` from `domainkit.storage`,
+  `UpstreamError` from `domainkit.exceptions`, and `httpx2` itself, not
+  through `domainkit.http.client`. Serve a file from its route, with
+  `serve` there ([Layer rules](reference/settings.md#layer-rules)).
 - **`domainkit.contrib.objectpermissions` needs `domainkit.contrib.auth`
   in `INSTALLED_DOMAINS`.** It always did, at its first grant; now
   `setup()` says so (`apps.E001`).
