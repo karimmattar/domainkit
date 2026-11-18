@@ -110,7 +110,7 @@ async def readiness_failures(seconds: float | None = None) -> list[str]:
     Each check is bounded by ``seconds`` (``READINESS_TIMEOUT``), and all
     run at once. A group that raises counts as failing under its name
     (``GROUPS``), and is logged. For a process that serves no ``/ready``
-    of its own, such as the worker (``runworker --heartbeat-file``).
+    of its own, such as the worker (``runworker --ready-file``).
     """
     within = settings.READINESS_TIMEOUT if seconds is None else seconds
     brokers = settings.BROKERS if settings.READINESS_BROKERS else {}

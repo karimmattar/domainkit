@@ -152,7 +152,7 @@ statuses, and the amendments they name.
 | [0139](0139-hold-a-rung-under-load-against-plain-fastapi-in-the-same-run.md) | Hold a rung under load against plain FastAPI in the same run | Accepted |
 | [0140](0140-auth-asks-other-apps-through-hooks.md) | Auth asks other apps through hooks | Accepted |
 | [0141](0141-codes-that-open-an-account-go-only-where-it-was-proved.md) | Codes that open an account go only where it was proved | Accepted |
-| [0142](0142-while-the-broker-is-away-relaying-workers-run-the-outbox.md) | While the broker is away, relaying workers run the outbox | Accepted |
+| [0142](0142-while-the-broker-is-away-relaying-workers-run-the-outbox.md) | While the broker is away, relaying workers run the outbox | Accepted; amended 2026-11-18 (at the end), by [0187](0187-keep-the-workers-heartbeat-to-its-liveness-fail-deliveries-whose-task-ended-and-share-provider-clients.md) |
 | [0143](0143-fan-live-events-out-through-postgresql-or-redis.md) | Fan live events out through PostgreSQL or Redis | Accepted; amended by [0157](0157-priorities-on-rabbitmq-an-unpartitioned-outbox-and-audit-trail-and-live-routes-in-several-processes.md) and [0183](0183-keep-live-events-and-approval-requests-to-their-tenant-and-rows-of-no-tenant-to-keys-held-everywhere.md) |
 | [0144](0144-authorize-one-act-not-a-window-of-time.md) | Authorize one act, not a window of time | Accepted; amended 2026-11-16 (at the end); amended by [0162](0162-twins-name-their-method-and-skip-the-acts-own-dependencies.md), [0163](0163-authorize-admin-changes-and-requests-steps-as-acts.md), [0164](0164-let-the-asker-withdraw-a-phone-request-count-sessions-per-user-and-word-each-kind.md), [0173](0173-show-an-act-whole-or-refuse-it.md) and [0174](0174-bind-an-act-to-the-record-it-decides-on-and-keep-a-held-acts-authorization.md) |
 | [0145](0145-mount-part-of-a-router-as-a-copy.md) | Mount part of a router as a copy | Accepted |
@@ -195,6 +195,7 @@ statuses, and the amendments they name.
 | [0182](0182-let-a-gateway-raise-a-routes-problems-and-name-users-by-the-fields-a-project-chooses.md) | Let a gateway raise a route's problems, and name users by the fields a project chooses | Accepted |
 | [0183](0183-keep-live-events-and-approval-requests-to-their-tenant-and-rows-of-no-tenant-to-keys-held-everywhere.md) | Keep live events and approval requests to their tenant, and rows of no tenant to keys held everywhere | Accepted; amended 2026-11-18 (at the end) |
 | [0185](0185-bound-keyset-pages-index-the-user-lookups-and-read-fewer-grants.md) | Bound keyset pages, index the user lookups, and read fewer grants | Accepted |
+| [0187](0187-keep-the-workers-heartbeat-to-its-liveness-fail-deliveries-whose-task-ended-and-share-provider-clients.md) | Keep the worker's heartbeat to its liveness, fail deliveries whose task ended, and share provider clients | Accepted |
 | [0189](0189-publish-the-documentation-site-from-the-newest-releases-tag.md) | Publish the documentation site from the newest release's tag | Accepted |
 | [0190](0190-keep-runnable-examples-as-projects-that-domainkits-tests-run.md) | Keep runnable examples as projects that domainkit's tests run | Accepted |
 

@@ -105,6 +105,25 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   ([Rows of no tenant](docs/tenancy.md#rows-of-no-tenant), ADR 0183)
   (audit A28-SEC-04).
 
+- `runworker --ready-file PATH`: the worker's readiness. Each round of
+  `--heartbeat-interval` rewrites the file while `/ready`'s checks and
+  the broker's hold, and removes it when one fails; it goes when the
+  worker stops. A fresh heartbeat without it is a degraded worker
+  ([The worker](docs/operations.md#the-worker), ADR 0187) (audit
+  A28-REL-02).
+
+- `domainkit.http.client.reset_circuits()` and `CircuitBreaker.reset()`:
+  close every client's circuits. The test plugin calls the first before
+  each test, so a client that backends share carries no open circuit
+  into the next test ([What each test starts from](docs/testing.md#what-each-test-starts-from))
+  (audit A28-ARCH-02).
+
+- `unfinished_arguments(target, argument)`
+  (`domainkit.contrib.messaging.admin`): a query of one argument of each
+  message of a task that has not finished (pending, running, or held),
+  for a statement on another table of the outbox's database to tell
+  whether a task still waits for one of its rows (audit A28-REL-05).
+
 ### Changed
 
 - `diffsettings` shows each installed domain's settings (`AUTH`,
@@ -166,6 +185,24 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   statement, where it read one per group, up to 1,000 of them (audit
   A28-PERF-07).
 
+- `runworker --heartbeat-file` is the worker's liveness: its event loop
+  rewrites the file every `--heartbeat-interval` seconds, on a schedule
+  no check holds up, whatever the checks find; a failing check, or one
+  that raises, is logged. Before, the file aged
+  while the broker, a database, or a cache was away, and the documented
+  health check restarted the relaying workers that run the outbox during
+  a broker outage (ADR 0142). To restart on a failing dependency, as
+  before, check `--ready-file` instead. `heartbeat.beat` touches its path
+  first and takes `ready`
+  ([upgrading.md](docs/upgrading.md#28-to-29), ADR 0187) (audit
+  A28-REL-02).
+
+- The worker's log lines about a failing message name its id, as
+  `messages list` shows it and `messages retry` takes it: a retry, a dead
+  letter, an outcome that could not be written, a lost lease, a message
+  that could not be given back, and one whose target no worker knows
+  (audit A28-REL-08).
+
 ### Fixed
 
 - The tutorial and the recipes name the file each block makes or
@@ -199,6 +236,36 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   each rung's calls, round trips, and modules as `benchmarks/budgets.toml`
   holds them, and `test_docs.py` fails when the two differ (audit
   A28-PERF-09).
+
+- A webhook delivery whose last attempt ends without an outcome is
+  marked failed, where it stayed `pending` for good: listed by
+  `webhooks deliveries --status failed`, replayed by `webhooks replay`,
+  and purged. Its last attempt marks it, if the database lets it, and an
+  hourly task of its own (`domainkit.contrib.webhooks.fail_abandoned`)
+  marks each pending delivery whose task died, was cancelled, or was
+  dropped (its worker killed, its time limit passed, or its outcome not
+  written), those of earlier releases included. A task that finds its
+  delivery no longer pending, such as a dead task retried with `messages
+  retry`, logs that it sent nothing. A late duplicate run no longer
+  overwrites a finished delivery's outcome
+  ([How a delivery runs](docs/contrib/webhooks.md#how-a-delivery-runs),
+  ADR 0187) (audit A28-REL-05).
+
+- Text message providers, the search engines, identity providers, and
+  captcha checks share one HTTP client each, as mail and push did, where
+  each backend made per call had its own. A provider that is down opens
+  its circuit after `HTTP_CLIENT.BREAKER_FAILURES` failures and is called
+  no more until `BREAKER_COOLDOWN` has passed, connections are reused,
+  and shutdown closes them. Their calls and circuits are counted as
+  `notifications` (text messages and push), `identity`, and `captcha`,
+  and mail's as `mail`, where they were `other` (ADR 0187) (audit
+  A28-ARCH-02).
+
+- A stopping relay that is still publishing to a broker that answers is
+  cancelled after `HELPER_GRACE` (5 seconds), and its messages are given
+  back. Only a relay running the outbox, its breaker open, waits for what
+  is left of `DRAIN_TIMEOUT` first, even while it is still claiming;
+  every relay did, so shutdown took up to 25 seconds (audit A28-TEST-07).
 
 ### Security
 
