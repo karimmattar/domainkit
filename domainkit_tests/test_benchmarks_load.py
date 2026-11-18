@@ -298,8 +298,9 @@ async def test_a_connection_that_cannot_be_read_is_unexpected(
     handler: Handler, said: str
 ) -> None:
     """A lost connection, or an answer this client does not read, is counted."""
-    async with serving(handler) as port:
-        measured = await loading.load(port, RUNGS["template"], {}, 1, 0.1, 0.0)
+    async with serving(handler) as port:  # The first answer ends the round:
+        # its time only has to outlast a connect on a slow machine.
+        measured = await loading.load(port, RUNGS["template"], {}, 1, 30.0, 0.0)
 
     assert measured.requests == 0
     assert measured.unexpected == 1
