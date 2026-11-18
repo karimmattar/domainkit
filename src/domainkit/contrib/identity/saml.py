@@ -29,7 +29,7 @@ for tokens at ``/identity/ticket``, or with an ``error`` code.
 Encrypted assertions are not read.
 
 Anyone may post to the ACS, so its response is bounded before signxml
-reads it (since 2.9): ``MAX_RESPONSE`` base64 characters, and
+reads it (since 2.8.1): ``MAX_RESPONSE`` base64 characters, and
 ``MAX_NODES`` nodes, counted on its bytes as ``domainkit.documents``
 counts a Word document's (each ``<`` twice, each ``=`` once). A DTD or
 an entity is refused before parsing, and it is read as UTF-8 only, so

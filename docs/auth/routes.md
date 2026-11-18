@@ -787,7 +787,7 @@ Who may impersonate whom:
   that its staff member is still active, still staff or a superuser, and
   still holds the `change` permission on the user model, as they hold it
   everywhere: a role in the tenant the request is served as counts for
-  nothing there, since users belong to no tenant (since 2.9). It also checks
+  nothing there, since users belong to no tenant (since 2.8.1). It also checks
   again that the staff member holds every permission the user holds, as
   when the token was issued. Deactivating or deleting the staff member,
   taking that permission away, or granting the user a permission the
@@ -817,7 +817,7 @@ What the token may do:
   (`cache_page(vary_on_user=True)`) and a response kept for an
   `Idempotency-Key` are kept for the staff member acting as that user,
   apart from the staff member's own, the user's, and those of each other
-  user the staff member acts as (since 2.9). A kept response is about
+  user the staff member acts as (since 2.8.1). A kept response is about
   the user too: erasing them drops it. Rate limits, throttles, and live
   connections count the staff member, whomever they act as.
 

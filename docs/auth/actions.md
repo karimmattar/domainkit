@@ -272,8 +272,8 @@ AUTH = {"ADMIN_ACTION": True, "AUTHORIZATIONS": {"TYPED_LINKS": "refused"}}
   as their letters, characters drawn as nothing (zero-width spaces)
   dropped, the dots that look like one (`。`, `．`, a middle dot, a bullet)
   as a dot, `example[.]com` and `ann[at]example` as what they spell
-  (since 2.9 also `example (dot) com`, `example<dot>com`, `https : //`,
-  and white space or new lines around them), and since 2.9 a name spaced
+  (since 2.8.1 also `example (dot) com`, `example<dot>com`, `https : //`,
+  and white space or new lines around them), and since 2.8.1 a name spaced
   out, in the text as typed: `example . com` (white space or new lines on
   both sides of the dot, but before a capital, which starts a sentence:
   `Rejected . No receipt`), and before `com` alone, `example .com`,

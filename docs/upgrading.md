@@ -36,10 +36,13 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
-## 2.8 to 2.9
+## 2.8.0 to 2.8.1
 
-2.9 answers the audit of 2.8. Each item of this list says what a
-project that relied on 2.8's behaviour notices, and what to change.
+2.8.1 is a security release. Each item of this list says what a
+project that relied on 2.8.0's behaviour notices, and what to change.
+With `domainkit.contrib.approvals` installed, make and apply its
+migration ([below](#make-and-apply-approvals-migration)) before the new
+code serves.
 
 - **Staff acting as a user get answers kept for that user alone.** Under
   an impersonation, a page cached with `vary_on_user=True` and a
@@ -85,9 +88,6 @@ project that relied on 2.8's behaviour notices, and what to change.
   with a left-to-right mark before its `+`, as right-to-left pages write
   it, is exported with an apostrophe first, as `+1 555 0100` already
   was. Numbers stay numbers.
-2.9 answers the audit of 2.8.0. Each item of this list says what a
-project that relied on 2.8's behaviour changes, and what to run.
-
 - **Live events are each tenant's own** (security,
   [ADR 0183](adr/0183-keep-live-events-and-approval-requests-to-their-tenant-and-rows-of-no-tenant-to-keys-held-everywhere.md)).
   With `TENANCY`, an event reaches only the connections served as the
