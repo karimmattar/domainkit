@@ -113,6 +113,35 @@ async def test_other_databases_get_no_triggers_and_lack_none(
 
 
 @pytest.mark.anyio
+async def test_a_database_is_asked_where_its_tables_are(
+    make_database: MakeDatabase,
+) -> None:
+    """Its own schema, lacking every trigger; but per tenant, none before a tenant.
+
+    A database that keeps a schema per tenant holds no tables of its own,
+    and lacks nothing until a tenant's schema holds them.
+    """
+    url = make_database("places")
+    if not url.startswith("postgresql"):
+        pytest.skip("the triggers are PostgreSQL's")
+    with override_settings(DATABASES={"default": {"URL": url}}):
+        own = await unprotected("default", LEDGER)
+        with override_settings(TENANCY={"SCHEMA_DATABASES": ["default"]}):
+            per_tenant = await unprotected("default", LEDGER)
+        await connections.close_all()
+
+    assert own == {
+        "default": [
+            ENTRIES,
+            f"{ENTRIES}_truncate",
+            "domainkit_accounting_postings_append_only",
+            "domainkit_accounting_postings_append_only_truncate",
+        ]
+    }
+    assert per_tenant == {}
+
+
+@pytest.mark.anyio
 @pytest.mark.usefixtures("books")
 async def test_a_trigger_given_arguments_counts_as_changed() -> None:
     """The ledger's check is the trail's: no ``WHEN``, columns, or arguments."""
