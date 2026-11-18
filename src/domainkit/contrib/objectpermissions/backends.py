@@ -1,5 +1,9 @@
 """``ObjectPermissionBackend``: what grants allow on one object."""
 
+from collections.abc import Mapping
+from datetime import datetime
+from typing import Final, cast
+
 from domainkit.clock import now
 from domainkit.contrib.auth.backends import BaseBackend, ObjectGrant, memoised
 from domainkit.contrib.auth.models import AbstractBaseUser, AnyUser, Group
@@ -56,6 +60,16 @@ class ObjectPermissionBackend(BaseBackend):
         Grants live beside their objects, so each database hosting a domain
         is read. A user's grants count whether the user is active or not.
         """
+        return await self.object_grants_beyond(holder, frozenset())
+
+    async def object_grants_beyond(
+        self, holder: AbstractBaseUser | Group, permissions: frozenset[str]
+    ) -> frozenset[ObjectGrant]:
+        """``object_grants(holder)``, less the grants of ``permissions``, in the query.
+
+        Only the columns a grant needs are read: nothing is loaded or
+        tracked, so a holder of many grants costs the event loop less.
+        """
         whom: Criteria
         if isinstance(holder, Group):
             whom = F("group_id") == holder.id
@@ -64,17 +78,40 @@ class ObjectPermissionBackend(BaseBackend):
             whom = F("user_id") == holder.id
             if groups:
                 whom |= F("group_id").in_(groups)
-        found: list[ObjectGrant] = []
         current = whom & in_force(now())
+        if permissions:
+            current &= ~F("permission").in_(sorted(permissions))
+        found: list[ObjectGrant] = []
         for database in router.hosting_targets():
             async with ObjectPermissionsUnitOfWork(database=database) as uow:
-                found.extend(
-                    ObjectGrant(
-                        grant.permission,
-                        grant.content_type,
-                        grant.object_id,
-                        grant.expires_at,
-                    )
-                    for grant in await uow.grants.filter(current)
+                rows = await uow.grants.values(current, *_COLUMNS)
+            found.extend(
+                ObjectGrant(
+                    cast("str", row["permission"]),
+                    cast("str", row["content_type"]),
+                    _object_id(row),
+                    cast("datetime | None", row["expires_at"]),
                 )
+                for row in rows
+            )
         return ObjectGrant.lasting(found)  # A grant held twice: its last end.
+
+
+_COLUMNS: Final = (
+    "permission",
+    "content_type",
+    "object_uuid",
+    "object_int",
+    "object_text",
+    "expires_at",
+)
+"""What ``object_grants`` reads of each grant."""
+
+
+def _object_id(row: Mapping[str, object]) -> object:
+    """The object's id, whichever column holds it (``ObjectPermission.object_id``)."""
+    if row["object_uuid"] is not None:
+        return row["object_uuid"]
+    if row["object_int"] is not None:
+        return row["object_int"]
+    return row["object_text"] or ""
