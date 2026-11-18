@@ -12,7 +12,7 @@ grants them in the tenant served, beside what users hold everywhere.
 """
 
 from collections.abc import Iterator
-from typing import Any, Final
+from typing import Any, ClassVar, Final
 from uuid import UUID
 
 import pytest
@@ -27,12 +27,15 @@ from domainkit.contrib.approvals import (
     CancelRequest,
     Policy,
     RejectRequest,
+    RequestApproved,
+    RequestCancelled,
     RequestExpired,
     RequestId,
     RequestNotFound,
     RequestStatus,
     RequestTampered,
     approve_request,
+    approvers_of,
     cancel_request,
     expire_requests,
     guard,
@@ -52,8 +55,15 @@ from domainkit.contrib.messaging.tables import messages
 from domainkit.contrib.messaging.testing import drain
 from domainkit.db import connections
 from domainkit.ddd import Command, event_bus
-from domainkit.ddd.tenancy import all_tenants, current_tenant, no_tenant
+from domainkit.ddd.tenancy import (
+    TenantRequired,
+    all_tenants,
+    current_tenant,
+    no_tenant,
+    row_tenant,
+)
 from domainkit.http import get_asgi_application
+from domainkit.http.access import BasePermission, Principal
 from domainkit.management.base import run_async
 from domainkit.tenancy import tenant
 from domainkit_tests.conftest import Migrated, Shape
@@ -401,24 +411,113 @@ def test_the_services_find_no_request_of_another_tenant(client: TestClient) -> N
     assert stored(of_a.id).status is RequestStatus.PENDING
 
 
-def test_code_that_reads_every_tenant_says_so(client: TestClient) -> None:
-    """Inside ``all_tenants()`` a's request is decided; it still runs as a."""
-    of_a = made_in("a", "mia", "back office")
-    anna = str(user_id("anna"))
+def where() -> tuple[str | None, str | None]:
+    """The tenant served, and the tenant rows are read in (None: every tenant's)."""
+    try:
+        rows = row_tenant()
+    except TenantRequired:
+        rows = "no tenant"
+    return current_tenant(), rows
 
-    async def decide() -> None:
+
+def test_code_that_reads_every_tenant_says_so(client: TestClient) -> None:
+    """Inside ``all_tenants()`` a's request is decided, as a alone, and runs as a.
+
+    Code across tenants reads every tenant's requests; the approval commits
+    as the request's tenant alone, so its handlers read a's rows, and its
+    run is queued as a.
+    """
+    of_a, made_in_b = made_in("a", "mia", "back office"), made_in("b")
+    anna = str(user_id("anna"))
+    heard: list[tuple[str | None, str | None]] = []
+
+    async def note_approved(event: RequestApproved) -> None:
+        heard.append(where())
+
+    event_bus.subscribe(RequestApproved, note_approved)
+
+    async def decide() -> int:
         with all_tenants():
+            async with ApprovalsUnitOfWork() as uow:
+                every = await uow.requests.count()
             await approve_request(
                 ApproveRequest(
                     request_id=of_a.id, approver=anna, fingerprint=of_a.fingerprint
                 ),
                 ApprovalsUnitOfWork(),
             )
-        await drain()
+        return every
 
-    run_async(decide())
-
+    assert run_async(decide()) == 2
+    assert heard == [("a", "a")]
+    assert queued_tenants() == ["a"]
+    run_async(drain())
     assert RAN == [("back office", "a")]
+    assert stored(made_in_b.id).status is RequestStatus.PENDING
+
+
+def test_a_tenant_changed_around_the_application_is_never_served(
+    client: TestClient,
+) -> None:
+    """An approved request whose tenant is not one fails as tampered, and runs nothing.
+
+    Its seal is checked before its tenant is served: no error to retry.
+    """
+    of_a = made_in("a", "mia", "moved")
+    assert approve(client, of_a, as_member("anna", "a")).status_code == 200
+
+    async def garble() -> None:
+        async with connections.engine().begin() as connection:
+            await connection.execute(
+                update(requests)
+                .where(requests.c.id == of_a.id)
+                .values(tenant_id="not a tenant!")
+            )
+
+    run_async(garble())
+    run_async(drain())
+
+    done = stored(of_a.id)
+    assert (done.status, done.reason) == (RequestStatus.FAILED, RequestTampered.code)
+    assert RAN == []
+
+
+class Noting(BasePermission):
+    """An approver rule that notes the tenant it is asked in, and allows."""
+
+    asked: ClassVar[list[tuple[str | None, str | None]]] = []
+
+    async def has_permission(self, request: Any, user: Principal) -> bool:  # noqa: ANN401 - a connection.
+        """Allow, noting where."""
+        self.asked.append(where())
+        return True
+
+
+async def note_ruled(command: Noted, uow: AccountingUnitOfWork) -> None:
+    """Run nothing: a guard whose approvers a rule names."""
+
+
+noted_by_rule = requires_approval("tests.noted_by_rule")(note_ruled)
+
+
+def test_whom_to_tell_is_asked_in_the_requests_tenant(client: TestClient) -> None:
+    """``approvers_of`` asks the approver rule as the request's tenant, from none."""
+    guard(
+        "tests.noted_by_rule",
+        noted_by_rule,
+        unit_of_work=AccountingUnitOfWork,
+        policies=[Policy("tests.by_rule", approver_rule=Noting())],
+        domain="alpha",
+    )
+    person("staffer", is_staff=True)
+    with tenant("a"):
+        made = submitted("tests.noted_by_rule", Noted(note="x"), user_id("maker"))
+    Noting.asked.clear()
+
+    found = run_async(approvers_of(made))
+
+    assert [user.username for user in found] == ["staffer"]
+    assert Noting.asked == [("a", "a")]
 
 
 def test_expiry_reaches_every_tenant_and_commits_as_each(client: TestClient) -> None:
@@ -430,10 +529,10 @@ def test_expiry_reaches_every_tenant_and_commits_as_each(client: TestClient) -> 
     from domainkit.clock import freeze_time
 
     made = {name: made_in(name) for name in ("a", "b")} | {None: made_in(None)}
-    heard: list[tuple[UUID, str | None]] = []
+    heard: list[tuple[UUID, tuple[str | None, str | None]]] = []
 
     async def note_expired(event: RequestExpired) -> None:
-        heard.append((event.request_id, current_tenant()))
+        heard.append((event.request_id, where()))
 
     event_bus.subscribe(RequestExpired, note_expired)
     later = max(each.expires_at for each in made.values())
@@ -441,19 +540,34 @@ def test_expiry_reaches_every_tenant_and_commits_as_each(client: TestClient) -> 
         assert run_async(expire_requests()) == 3
 
     assert sorted(heard, key=str) == sorted(
-        ((each.id, name) for name, each in made.items()), key=str
+        (
+            (each.id, (name, "no tenant" if name is None else name))
+            for name, each in made.items()
+        ),
+        key=str,
     )
     assert {stored(each.id).status for each in made.values()} == {RequestStatus.EXPIRED}
 
 
 def test_erasing_a_person_reaches_every_tenants_requests(client: TestClient) -> None:
-    """``privacy erase`` pseudonymises the maker in a's and b's requests alike."""
+    """``privacy erase`` pseudonymises the maker in a's and b's requests alike.
+
+    Each tenant's are committed as that tenant alone: a handler of their
+    cancellation reads that tenant's rows.
+    """
     of_a, of_b = made_in("a"), made_in("b")
     maker = str(user_id("maker"))
+    heard: list[tuple[str | None, str | None]] = []
+
+    async def note_cancelled(event: RequestCancelled) -> None:
+        heard.append(where())
+
+    event_bus.subscribe(RequestCancelled, note_cancelled)
 
     counts = run_async(erase_subject(maker))
 
     assert counts == {"requests": 2, "cancelled": 2}
+    assert sorted(heard) == [("a", "a"), ("b", "b")]
     assert {stored(each.id).maker.startswith("erased:") for each in (of_a, of_b)} == {
         True
     }

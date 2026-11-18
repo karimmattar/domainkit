@@ -57,10 +57,13 @@ and a status.
   they are listed, read, approved, rejected, and cancelled where that
   tenant is served alone, by the routes and from code, and the approved
   command runs in that tenant, whichever tenant the message that runs it
-  names. The requests table gains a nullable `tenant_id`, which the seal
-  covers where it is set: run `makemigrations` and `migrate` before the
-  new code serves. A request stored before has no tenant, keeps its
-  seal, and is read where no tenant is served
+  names. Expiry, erasure, and decisions made inside `all_tenants()`
+  commit each request as its tenant alone, and a run checks the seal
+  before it serves the request's tenant. The requests table gains a
+  nullable `tenant_id`, which the seal covers where it is set: run
+  `makemigrations` and `migrate` before the new code serves. A request
+  stored before has no tenant, keeps its seal, and is read where no
+  tenant is served
   ([Requests and tenants](docs/contrib/approvals.md#requests-and-tenants),
   [upgrading.md](docs/upgrading.md#28-to-29), ADR 0183) (audit
   A28-SEC-02).

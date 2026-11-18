@@ -396,10 +396,14 @@ is served alone:
   stored before the tenant was recorded have none.
 - Code that works across tenants says so: inside `all_tenants()` every
   request is read ([Outside a request](../tenancy.md#outside-a-request)).
-- The approved command runs in the request's tenant, whichever tenant
-  the message that runs it names: the maker's check, the command, and
-  the request's end are that tenant's. Expiry reaches every tenant's
-  requests, and `privacy erase` too.
+  Approving, rejecting, and cancelling commit as the request's tenant
+  alone, even there: what the commit publishes, the handlers it runs,
+  and the run it queues are that tenant's.
+- The approved command runs in the request's tenant alone, whichever
+  tenant the message that runs it names: the maker's check, the
+  command, and the request's end are that tenant's. Expiry reaches every
+  tenant's requests, and `privacy erase` too, each committed as its
+  request's tenant alone. `approvers_of` asks as the request's tenant.
 - The seal covers the tenant, where the request has one: a request moved
   to another tenant in the database is neither decided nor run
   (`request_tampered`). Do not set `tenant_id` on a stored request by
