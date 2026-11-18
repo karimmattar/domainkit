@@ -385,13 +385,16 @@ Secrets stay hidden:
 - values typed as secrets (`SecretStr`, bytes), such as connection URLs,
   keys, and tokens;
 - settings and entries named like secrets: `password`, `secret`,
-  `token`, `key`, `credential`, `auth`, `sid`, or `pin`;
+  `token`, `key`, `credential`, `auth`, `sid`, `pin`, or `pwd`;
 - a URL's password, and its user when it may be a key;
 - in any text, the value after a name like a secret's and `=` or `:`,
   spaced or not, the name quoted or not: `password=...` in a query,
   `password = ...` in a libpq connection string, `"private_key": "..."`
-  in JSON, and a header such as `Authorization: Bearer ...`, its scheme
-  with it. *Changed in 2.9:* 2.8 hid `password=...` alone, unquoted;
+  in JSON, ODBC's `PWD=...`, and a header such as
+  `Authorization: Bearer ...`, its scheme with it. The value is on the
+  name's line, or on the next one indented; a URL's host is no name, so
+  `https://auth.example.com:8443` keeps its port. *Changed in 2.9:* 2.8
+  hid `password=...` alone, unquoted;
 - in a domain's settings, all text that no type describes: in a mapping,
   a value typed `Any`, such as `NOTIFICATIONS["SMS_OPTIONS"]`, or a value
   that is not a model, such as a dataclass, only the keys, numbers, and

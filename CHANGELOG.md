@@ -97,10 +97,11 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   `APPROVALS`, `LIMITS`, ...) as its schema validated them, defaults
   filled in, and marks those left at their defaults under `--all`; 2.8
   hid a domain's settings whole. It fails closed: values typed as
-  secrets, names that suggest one (`sid` and `pin` now among them), URL
-  passwords and `password=` pairs, and all text in a mapping, a value
-  typed `Any` (a provider's options), or a value that is not a model (a
-  dataclass) stay hidden
+  secrets, names that suggest one (`sid`, `pin`, and `pwd` now among
+  them), URL passwords and `password=` pairs, and all text in a mapping,
+  a value typed `Any` (a provider's options), or a value that is not a
+  model (a dataclass) stay hidden. A set's items print sorted, the same
+  in every process
   ([diffsettings](docs/reference/commands.md#diffsettings-show-the-settings),
   [upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-10).
 
@@ -193,8 +194,9 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 - `diffsettings` hides the value after a name like a secret's and `=` or
   `:`, spaced or not, the name quoted or not, in any text it prints:
   `password = ...` in a libpq connection string, `"private_key": "..."`
-  in JSON, and a header such as `Authorization: Bearer ...`, its scheme
-  with it. 2.8 hid `password=...` alone, unquoted
+  in JSON, ODBC's `PWD=...`, and a header such as
+  `Authorization: Bearer ...`, its scheme with it. 2.8 hid `password=...`
+  alone, unquoted
   ([diffsettings](docs/reference/commands.md#diffsettings-show-the-settings),
   [upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-10).
 

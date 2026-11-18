@@ -6,9 +6,10 @@ import io
 import json
 import pkgutil
 import shutil
-import time
+import timeit
 import traceback
 from collections.abc import Iterator
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, get_args
@@ -361,6 +362,12 @@ PROBES = {
     "header": f"Authorization: Bearer {PASSWORD}",
     "header_basic": f"Proxy-Authorization: Basic {PASSWORD}==",
     "quoted_key": f"{{'client_secret': '{PASSWORD} x'}}",
+    "quoted_first": f'password="a"{PASSWORD}',
+    "quoted_empty": f'password=""{PASSWORD}',
+    "single_quoted_empty": f"password=''{PASSWORD}",
+    "empty_yaml_value": f"password:\ntoken: {PASSWORD}",
+    "next_line_indented": f"password:\n  {PASSWORD}\nregion: eu",
+    "odbc": f"DRIVER={{ODBC Driver 18}};SERVER=db;UID=app;PWD={PASSWORD};",
 }
 """Secrets in text, which the patterns find even in a field typed ``str``."""
 UNTYPED = {
@@ -418,8 +425,10 @@ def test_diffsettings_hides_the_value_of_a_secret_pair_and_keeps_the_rest(
     """``password = x``, ``"private_key": "x"``, ``Authorization: Bearer x``.
 
     A name and its value, with ``=`` or ``:`` between, spaced or not, the
-    name quoted or not; a header's scheme is hidden with its token. What
-    follows the value stays (audit A28-DX-10).
+    name quoted or not; a header's scheme is hidden with its token. A value
+    is on the name's line, or the next one indented; a quoted one ends where
+    a delimiter follows the quote. What follows the value stays, and a URL's
+    host is no name, whatever its words (audit A28-DX-10).
     """
     make_package("typed_probe", TYPED)
     urls = [
@@ -429,6 +438,12 @@ def test_diffsettings_hides_the_value_of_a_secret_pair_and_keeps_the_rest(
         f"X-Request-Id: 7 Proxy-Authorization: Basic {PASSWORD}== X-Other: 1",
         f"password: {PASSWORD} next: 1",
         "token: Bearer, region: eu",  # A scheme with no token: the scheme hides.
+        f"password:\ntoken: {PASSWORD}\nregion: eu",
+        f'password="a"{PASSWORD} next=1',
+        "https://auth.example.com:8443/realms/x",  # A host is no name.
+        f"https://app:{PASSWORD}@keycloak.example.com:8443/ redis://cache-key:6379/0",
+        f"/password={PASSWORD} ODBC: UID=app;PWD={PASSWORD};",
+        "cwd=/srv pwdless=1",
     ]
     with override_settings(
         INSTALLED_DOMAINS=["typed_probe"], ALPHA=UNSET, TYPED_PROBE={"URLS": urls}
@@ -442,6 +457,12 @@ def test_diffsettings_hides_the_value_of_a_secret_pair_and_keeps_the_rest(
         "X-Request-Id: 7 Proxy-Authorization: ********** X-Other: 1",
         "password: ********** next: 1",
         "token: ********** region: eu",
+        "password:**********\ntoken: **********\nregion: eu",
+        "password=********** next=1",
+        "https://auth.example.com:8443/realms/x",
+        "https://app:**********@keycloak.example.com:8443/ redis://cache-key:6379/0",
+        "/password=********** ODBC: UID=app;PWD=**********;",
+        "cwd=/srv pwdless=1",
     ]
     (line,) = [line for line in lines if line.startswith("TYPED_PROBE")]
     assert line.startswith(f"TYPED_PROBE = {{'URLS': {shown!r}, 'MODE': ")
@@ -453,21 +474,33 @@ LONG_TEXTS = ["key.", "a.", "pin-", ".token", "key: a ", "a://", "Bearer key: "]
 
 @pytest.mark.parametrize("unit", LONG_TEXTS)
 def test_diffsettings_reads_a_long_text_in_a_time_its_length_bounds(unit: str) -> None:
-    """100 KB of text is scrubbed well under a second, 2 KB in 20 ms.
+    """100 KB of text is scrubbed well under a second, 2 KB in 50 ms.
 
     Each name and each address is read from its start once: the pattern
     that read a name again from each position within it took about a
     second for 2 KB of ``key.``, and over 100 s for 10 KB; the one for a
-    URL's password read the rest of a word again at each ``a://``. The
-    bound grows with the length, so a text read again and again fails at
-    2 KB already, at once, and no machine is too slow for it: both take
-    about 1% of it (audit A28-DX-10).
+    URL's password read the rest of a word again at each ``a://``. A text
+    read again and again fails at 2 KB already, at once. The best of three
+    runs counts, so a machine busy for a moment does not; each takes a few
+    percent of its bound at most (audit A28-DX-10).
     """
-    for size in (2_000, 100_000):
-        text = unit * (size // len(unit))
-        started = time.perf_counter()
-        diffsettings._scrub(text)
-        assert time.perf_counter() - started < size / 100_000, size
+    for size, bound in ((2_000, 0.05), (100_000, 1.0)):
+        scrub = partial(diffsettings._scrub, unit * (size // len(unit)))
+        assert min(timeit.repeat(scrub, number=1, repeat=3)) < bound, size
+
+
+def test_diffsettings_prints_a_sets_items_in_one_order() -> None:
+    """A set's items are sorted, typed or not, so two runs print one line.
+
+    A set of text is ordered by the hash seed, which each process draws
+    (``AUDIT.REQUIRE``); ``{8, 1}`` is out of order in every process (audit
+    A28-DX-10).
+    """
+    assert list({8, 1}) == [8, 1]  # The order the set itself gives.
+
+    assert diffsettings._typed(frozenset({8, 1}), free_form=False) == [1, 8]
+    assert diffsettings._opaque({8, 1, "x"}) == ["**********", 1, 8]
+    assert diffsettings._typed((8, 1), free_form=False) == [8, 1]  # A tuple's own.
 
 
 PLAIN = {

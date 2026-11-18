@@ -14,10 +14,13 @@ from domainkit.conf.global_settings import HIDDEN
 from domainkit.management.base import BaseCommand
 
 SECRET_KEY: Final = re.compile(
-    r"pass|secret|token|key|credential|auth|(?<![a-z])(?:sid|pin)(?![a-z])",
+    r"pass|secret|token|key|credential|auth|(?<![a-z])(?:sid|pin|pwd)(?![a-z])",
     re.IGNORECASE,
 )
-"""Names of settings and entries shown hidden (``CONNECT_ARGS``, ``APP_SID``)."""
+"""Names of settings and entries shown hidden (``CONNECT_ARGS``, ``APP_SID``).
+
+``sid``, ``pin``, and ``pwd`` (ODBC's ``PWD=``) only as words of their own.
+"""
 URL_USERINFO: Final = re.compile(
     r"""
     (?<!\S)  # A word, read from its start once.
@@ -33,11 +36,12 @@ read in a time that grows with its length, as ``SECRET_PAIR`` reads it.
 """
 SECRET_PAIR: Final = re.compile(
     rf"""
-    (?<![\w.-])  # From the start of a name, never from within one:
-    (["']?+(?=[\w.-]*?(?:{SECRET_KEY.pattern}))[\w.-]++["']?+\s*+[:=]\s*+)
-    (  # the name, quoted or not, and its value,
-        "(?:[^"\\]|\\.)*+"  # quoted,
-        | '(?:[^'\\]|\\.)*+'
+    (?<![\w.-])(?<!//)(?<!@)  # From the start of a name, not a URL's host:
+    (["']?+(?=[\w.-]*?(?:{SECRET_KEY.pattern}))[\w.-]++["']?+\s*+[:=]
+    [ \t]*+(?:\r?\n[ \t]++)?+)  # the name, quoted or not, and its value:
+    (  # on its line, or the next one indented,
+        "(?:[^"\\]|\\.)*+"(?![^\s&;#,)\]}}])  # quoted, up to a delimiter,
+        | '(?:[^'\\]|\\.)*+'(?![^\s&;#,)\]}}])
         | (?:[a-z][\w-]*+[ \t]++(?=[\w.~+/-]++=*+(?![\w.~+/=-])(?!\s*+[:=])))?+
         [^\s&;#]*+  # or up to a space, &, ;, or #, a scheme first (Bearer x).
     )
@@ -48,8 +52,12 @@ SECRET_PAIR: Final = re.compile(
 
 As in a URL's query, a libpq connection string (``password = x``), JSON
 (``"private_key": "..."``), or a header (``Authorization: Bearer x``).
-Each name and each value is matched from its start once, never again from
-within it, so a long text is read in a time that grows with its length.
+A value starts on the name's line, or on the next one indented. A quoted
+value is one only where a delimiter follows its closing quote: ``"a"x`` is
+read whole, unquoted. A host after ``//`` or ``@`` is no name, so
+``https://auth.example.com:8443`` keeps its port. Each name and each value
+is matched from its start once, never again from within it, so a long text
+is read in a time that grows with its length.
 """
 UNSHOWN: Final = frozenset({"SETTINGS_MODULE"})
 
@@ -149,7 +157,7 @@ def _typed(value: object, free_form: bool) -> object:
     if isinstance(value, SecretStr | SecretBytes | bytes | bytearray):
         return HIDDEN
     if isinstance(value, list | tuple | set | frozenset):
-        return [_typed(item, free_form=False) for item in value]
+        return _items(value, [_typed(item, free_form=False) for item in value])
     shown = to_jsonable_python(value, fallback=_named)
     if isinstance(shown, dict | list):
         return _opaque(shown)
@@ -170,8 +178,17 @@ def _opaque(value: object) -> object:
     if isinstance(value, Mapping):
         return {str(key): _opaque(item) for key, item in value.items()}
     if isinstance(value, list | tuple | set | frozenset):
-        return [_opaque(item) for item in value]
+        return _items(value, [_opaque(item) for item in value])
     return HIDDEN
+
+
+def _items(value: object, shown: list[object]) -> list[object]:
+    """The ``shown`` items of ``value``, a set's sorted by their text.
+
+    A set's order follows the hash seed, which differs between processes:
+    sorted, two runs print the same lines.
+    """
+    return sorted(shown, key=repr) if isinstance(value, set | frozenset) else shown
 
 
 def _free_form(annotation: object) -> bool:
