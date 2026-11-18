@@ -52,7 +52,12 @@ from domainkit.contrib.objectpermissions import (
 from domainkit.contrib.objectpermissions.criteria import compile_visible
 from domainkit.contrib.objectpermissions.models import object_column
 from domainkit.contrib.objectpermissions.tables import object_permissions
-from domainkit.db import SqlAlchemyRepository, SqlAlchemyUnitOfWork, map_imperatively
+from domainkit.db import (
+    SqlAlchemyRepository,
+    SqlAlchemyUnitOfWork,
+    connections,
+    map_imperatively,
+)
 from domainkit.ddd import (
     AggregateRoot,
     DomainEvent,
@@ -890,6 +895,28 @@ def test_the_admin_bound_reads_only_the_grants_that_count(project: str) -> None:
     }
     both = frozenset({CHANGE, VIEW})
     assert run(ObjectPermissionBackend().object_grants_beyond(owner, both)) == set()
+
+    async def by_number_and_text() -> None:
+        async with connections.engine().begin() as connection:
+            for column, value in (("object_int", 7), ("object_text", "k-1")):
+                await connection.execute(
+                    object_permissions.insert(),
+                    {
+                        "id": uuid4(),
+                        "version": 1,
+                        "content_type": "x.y",
+                        "permission": "x.view_y",
+                        column: value,
+                        "user_id": owner.id,
+                        "granted_at": datetime.now(UTC),
+                    },
+                )
+
+    run(by_number_and_text())  # Ids read from the column that holds them.
+    assert run(ObjectPermissionBackend().object_grants_beyond(owner, both)) == {
+        ObjectGrant("x.view_y", "x.y", 7),
+        ObjectGrant("x.view_y", "x.y", "k-1"),
+    }
 
 
 def test_only_the_class_that_lists_grants_leaves_some_out(project: str) -> None:

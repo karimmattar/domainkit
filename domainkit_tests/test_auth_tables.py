@@ -258,6 +258,33 @@ def test_migrate_makes_the_lookup_indexes_on_postgresql(migrated: str) -> None:
     assert checked.getvalue() == "No changes detected.\n"
 
 
+def test_migrate_before_any_revision_makes_no_index(
+    database_url: str, tmp_path: Path
+) -> None:
+    """Without the user table yet, ``migrate`` makes no index, and fails not."""
+    registry.clear()
+    with override_settings(
+        INSTALLED_DOMAINS=[CONTENTTYPES, AUTH, ALPHA],
+        DATABASES={"default": {"URL": database_url}},
+        MIGRATIONS_DIR=tmp_path / "migrations",
+        AUTH={"PASSWORD_HASHERS": [FAST_HASHER]},
+    ):
+        setup()
+        call_command("migrate", stdout=io.StringIO())
+        tables = run_async(table_names())
+    registry.clear()
+
+    assert users.name not in tables
+
+
+async def table_names() -> set[str]:
+    """The default database's tables."""
+    async with connections.engine().connect() as connection:
+        return set(
+            await connection.run_sync(lambda sync: inspect(sync).get_table_names())
+        )
+
+
 @contextmanager
 def statements() -> Iterator[list[tuple[str, Any]]]:
     """Each statement the default database runs in the block, with its values."""
