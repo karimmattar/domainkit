@@ -1,6 +1,7 @@
 """Parse rates such as ``"100/minute"``."""
 
 import re
+from types import MappingProxyType
 from typing import Final
 
 __all__ = [
@@ -8,8 +9,10 @@ __all__ = [
     "parse_rate",
 ]
 
-PERIODS: Final = {"second": 1, "minute": 60, "hour": 3600, "day": 86400}
-"""The periods a rate may name, in seconds."""
+PERIODS: Final = MappingProxyType(
+    {"second": 1, "minute": 60, "hour": 3600, "day": 86400}
+)
+"""The periods a rate may name, in seconds; read-only, as it is public."""
 _RATE: Final = re.compile(r"\s*(\d+)\s*/\s*(second|minute|hour|day)\s*")
 
 
