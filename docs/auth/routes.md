@@ -780,7 +780,9 @@ Who may impersonate whom:
   lifetime.
 - **Checked again on every request.** Each request with the token checks
   that its staff member is still active, still staff or a superuser, and
-  still holds the `change` permission on the user model. It also checks
+  still holds the `change` permission on the user model, as they hold it
+  everywhere: a role in the tenant the request is served as counts for
+  nothing there, since users belong to no tenant (since 2.9). It also checks
   again that the staff member holds every permission the user holds, as
   when the token was issued. Deactivating or deleting the staff member,
   taking that permission away, or granting the user a permission the
