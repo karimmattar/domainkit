@@ -197,7 +197,7 @@ def task(
 ) -> Callable[[Task], Task]: ...
 
 
-def task(
+def task(  # noqa: PLR0913
     function: Task | None = None,
     /,
     *,
@@ -251,7 +251,7 @@ def task(
     return register(function) if function is not None else register
 
 
-def periodic(
+def periodic(  # noqa: PLR0913
     every: timedelta | None = None,
     *,
     cron: str | None = None,

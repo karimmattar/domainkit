@@ -250,6 +250,13 @@ domains' own models keep those keys as secrets.
 `ARCHITECTURE` adds to these rules, and only adds: a rule the framework
 states always holds. A broken rule is `architecture.E001`.
 
+From the two 2.x modules, `domainkit.http.client` and
+`domainkit.http.uploads`, the infrastructure layer imports the names
+their `__all__` lists, but `uploads.serve`, which answers a request:
+another name they hold, such as Starlette's `UploadFile` or
+`StreamingResponse`, or `serve`, is `architecture.W001`, a warning, which
+3.0 makes a refusal (*new in 2.9*, ADR 0188).
+
 | `ARCHITECTURE` key | Default | Meaning |
 | --- | --- | --- |
 | `DOMAIN_ALLOWED` | `()` | More packages a domain layer may import, such as a shared kernel (`"myproject.kernel"`). Up to 64 dotted names. |

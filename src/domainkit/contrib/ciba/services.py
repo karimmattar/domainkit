@@ -174,7 +174,7 @@ def _match_code(match: bool) -> str | None:
     return f"{secrets.randbelow(100):02d}" if match else None
 
 
-def _request(
+def _request(  # noqa: PLR0913
     *,
     channel: str,
     handle: str,

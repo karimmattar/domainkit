@@ -1,6 +1,6 @@
 # 0140. Auth asks other apps through hooks
 
-- Status: Accepted
+- Status: Accepted; amended by [0188](0188-write-down-the-cores-layering-and-hold-the-boundaries-it-draws.md) on 2026-11-18 (at the end)
 - Date: 2026-11-11
 
 ## Context
@@ -49,3 +49,12 @@ registers in its `ready()`, and the offering app calls what is there.
   `SuperuserCheck`).
 - The apps still depend one way: audit and approvals on auth. That is
   the direction the rest of the framework has.
+
+## Amendment (2026-11-18, 2.9)
+
+The guard finds rings of any length, not only pairs
+([0188](0188-write-down-the-cores-layering-and-hold-the-boundaries-it-draws.md)). It found one, which stays for now with its reason:
+auth forgets credentials on privacy's `PersonalDataErased`, privacy
+writes audit's trail, and audit's history API is guarded by auth's
+rules. Auth stays on the event: retention purges publish it, and
+`on_erase_subject` runs only for `privacy erase`.

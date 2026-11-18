@@ -58,6 +58,7 @@ SQLAlchemy integration: connections, ORM metadata, repositories, migrations.
 - `SqlAlchemyUnitOfWork`: Open a session on enter, commit on `commit()`, close on exit.
 - `UTCDateTime`: Timezone-aware UTC timestamps, also on SQLite (which has no time zones).
 - `ValueObjectType`: A single-field value object, stored as its field (`ProductName.value`).
+- `affected_rows`: How many rows the `UPDATE` or `DELETE` that gave `result` changed.
 - `child`: A relationship to the one child entity an aggregate owns, or None.
 - `children`: A relationship to the child entities an aggregate owns (`list[Line]`).
 - `connections`: Process-wide connection handler.
@@ -122,6 +123,21 @@ Range partitioning of large PostgreSQL tables, managed by the framework.
 - `Interval`: The length of one partition.
 - `partition_by_range`: Declare `table` range-partitioned by the timestamp `column`.
 
+## `domainkit.db.protection`
+
+Keep tables append-only in the database itself (PostgreSQL).
+
+- `MAX_TABLE_NAME`: The longest table name whose triggers' names PostgreSQL keeps whole (63 bytes).
+- `ROW_TRIGGER`: `pg_trigger.tgtype` of `BEFORE UPDATE OR DELETE ... FOR EACH ROW`.
+- `TRUNCATE_TRIGGER`: `pg_trigger.tgtype` of `BEFORE TRUNCATE ... FOR EACH STATEMENT`.
+- `append_only_body`: The body of the triggers' function for `table`: refuse, whatever the change.
+- `append_only_statements`: The statements that protect `table`, and those that undo them.
+- `migrate_command`: The command that makes the triggers of a place `unprotected` names.
+- `missing_append_only`: The triggers of `tables` the connection's schema lacks, disabled, or changed.
+- `protect_append_only`: Make the triggers of each of `tables` there is, afresh; the tables protected.
+- `trigger_names`: The triggers that protect `table`: of rows, and of truncation.
+- `unprotected`: The triggers of `tables` that `database` lacks, by where it lacks them.
+
 ## `domainkit.db.query`
 
 Compile domain queries (`domainkit.ddd.query`) to SQLAlchemy expressions.
@@ -132,6 +148,7 @@ Compile domain queries (`domainkit.ddd.query`) to SQLAlchemy expressions.
 
 Where each domain's data lives: routing targets, aliases, and shards.
 
+- `DatabaseRouter`: Answer where data lives, from `DATABASES`, `SHARDS`, and routing.
 - `bucket_for`: The bucket of `key` among `buckets`; stable across processes and hosts.
 - `for_each_shard`: Run `function(alias)` on every database of `group` at once.
 - `router`: The process-wide router; it reads settings on every call.

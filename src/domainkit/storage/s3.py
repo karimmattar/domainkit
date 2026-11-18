@@ -18,7 +18,7 @@ only. Every request is signed with Signature Version 4 here and sent
 through ``domainkit.http.client`` (pooled, retried, bounded by the
 deadline): no AWS SDK is needed. Credentials come from
 ``access_key_id`` and ``secret_access_key``, else from the environment
-as AWS's tools read it (``domainkit.keys.aws.default_credentials``:
+as AWS's tools read it (``domainkit.cloud.aws.default_credentials``:
 variables, a web identity, the container's).
 
 Files of up to 8 MiB are one ``PUT``; larger ones a multipart upload,
@@ -52,14 +52,14 @@ from urllib.parse import quote, urlsplit
 from weakref import WeakKeyDictionary
 
 from domainkit import clock
-from domainkit.exceptions import UpstreamError
-from domainkit.keys.aws import (
+from domainkit.cloud.aws import (
     ALGORITHM,
     AwsCredentials,
     CredentialSource,
     default_credentials,
     signing_key,
 )
+from domainkit.exceptions import UpstreamError
 from domainkit.storage.base import StorageError, new_name
 from domainkit.storage.remote import ObjectStorage, PresignedUpload
 
@@ -99,7 +99,7 @@ class S3Storage(ObjectStorage):
 
     write_once: ClassVar[Mapping[str, str]] = {"If-None-Match": "*"}  # Signed.
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         bucket: str,
         *,

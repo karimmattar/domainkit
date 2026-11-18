@@ -347,6 +347,34 @@ No migration.
   numbered from 0, whichever test runs first, where 2.8 went on from the
   test before. A test that asserted the numbers such a fixture's objects
   happened to get asserts the ones from 0 (`Product 0`, `Product 1`).
+- **`check` warns of web names a gateway takes through an allowed
+  module** (`architecture.W001`). The infrastructure layer may import
+  `domainkit.http.client` and `domainkit.http.uploads`, but from 2.9
+  only the names their `__all__` lists, and not `uploads.serve`, without
+  a warning; 3.0 refuses the rest. `check` passes, and `check --deploy`
+  fails until each import changes. `SILENCED_CHECKS` can silence the
+  warning, but only as a whole: there is no way to allow one import, so
+  silencing it also hides the next one. Change the imports instead. Type
+  a route's file as `domainkit.http.uploads.Upload`, not Starlette's
+  `UploadFile`. Import `StoredUpload` from `domainkit.storage`,
+  `UpstreamError` from `domainkit.exceptions`, and `httpx2` itself, not
+  through `domainkit.http.client`. Serve a file from its route, with
+  `serve` there ([Layer rules](reference/settings.md#layer-rules)).
+- **`domainkit.contrib.objectpermissions` needs `domainkit.contrib.auth`
+  in `INSTALLED_DOMAINS`.** It always did, at its first grant; now
+  `setup()` says so (`apps.E001`).
+- **The ledger's triggers are checked as the audit trail's are.** Where
+  deployed, a trigger on the entries or postings given arguments fails
+  the startup check (`accounting.E001`), as it did on the trail. `migrate`
+  makes the triggers again.
+- **AWS's signing and credentials are defined in `domainkit.cloud.aws`.**
+  `AwsCredentials`, `sign`, and the credential functions still import
+  from `domainkit.keys.aws`, the same objects; what prints a class by its
+  module prints the new one. A test that patches one of them in
+  `domainkit.keys.aws` no longer reaches the code that calls it:
+  `default_credentials` calls `environment_credentials` from
+  `domainkit.cloud.aws`, so patch it there
+  (`monkeypatch.setattr("domainkit.cloud.aws.environment_credentials", ...)`).
 
 ### `migrate` makes the user lookups' indexes, on PostgreSQL
 

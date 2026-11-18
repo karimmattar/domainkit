@@ -39,7 +39,7 @@ if TYPE_CHECKING:
 class CommandRoute:
     """``ResourceRouter.command_route`` (see the module)."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         router: "ResourceRouter",
         command: type[Command],

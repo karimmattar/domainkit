@@ -15,6 +15,7 @@ when their entry expires.
 import logging
 import re
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Final
 
@@ -269,6 +270,22 @@ def dynamic_setting[T](
 def declared_settings() -> list[DynamicSettingDefinition[Any]]:
     """Every declared dynamic setting, by key."""
     return [_declared[key] for key in sorted(_declared)]
+
+
+@contextmanager
+def declared_kept() -> Iterator[None]:
+    """Put the declared dynamic settings back as they were when the block ends.
+
+    Settings the block declared are forgotten, and any it declared again
+    come back as they were: the pytest plugin keeps each test's to itself
+    (ADR 0113).
+    """
+    kept = dict(_declared)
+    try:
+        yield
+    finally:
+        _declared.clear()
+        _declared.update(kept)
 
 
 def declared(key: str) -> DynamicSettingDefinition[Any]:

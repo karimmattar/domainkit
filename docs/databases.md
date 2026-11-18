@@ -250,7 +250,21 @@ A `SqlAlchemyUnitOfWork` also takes these arguments:
 | `events=` | | The `EventBus` to publish to. |
 
 Inside the block, `uow.session` is the SQLAlchemy `AsyncSession`, and
-`uow.alias` the SQL alias in use.
+`uow.alias` the SQL alias in use. `domainkit.db.affected_rows(result)`
+says how many rows an `UPDATE` or `DELETE` run there changed (*new in
+2.9*): `AsyncSession.execute` is typed to return any result, and only
+the result of a change counts rows.
+
+```python
+from sqlalchemy import update
+
+from domainkit.db import affected_rows
+
+result = await uow.session.execute(
+    update(invoices).where(invoices.c.id == invoice_id).values(paid=True)
+)
+paid = affected_rows(result) == 1
+```
 
 ## Tables from domain classes
 
@@ -1742,6 +1756,67 @@ server keeps it; `ledgers.reset()` forgets it (since 2.9).
 `use_states(store)` for an installed app to register its store, in its
 `DomainConfig.ready()`. `registered_states()` returns the store an
 installed app registered, or None.
+
+## Append-only tables
+
+On PostgreSQL, `domainkit.db.protection` keeps a table append-only in the
+database itself: two triggers refuse every `UPDATE`, `DELETE`, and
+`TRUNCATE`, for every role, the owner's included (*new in 2.9*). The
+audit trail and the ledger's entries use it; a domain of a project may
+too, from an `on_migrated` hook, which runs on the schema owner's
+connection after each `migrate`:
+
+```python
+from domainkit.db.protection import protect_append_only
+
+
+async def protect_history(connection, database: str) -> None:
+    await protect_append_only(connection, [price_history])
+```
+
+The triggers are named after the table: `<table>_append_only` and
+`<table>_append_only_truncate`. So the table's name must be lowercase
+letters, digits, and underscores, not starting with a digit, of at most 42
+characters (`MAX_TABLE_NAME`, so the second name fits PostgreSQL's 63),
+and the table must name no schema: each tenant's schema gets its own
+triggers, on the table its `search_path` finds. Each function refuses
+another table with `ValueError`, on SQLite too, before it makes or asks
+anything. A name that is a reserved word, such as `order`, is quoted.
+`contrib.audit`'s `protect(op, table)` and `unprotect(op, table)`, which
+revisions already written call, take any table as 2.8 did:
+`append_only_statements(table, checked=False)` writes their statements
+from the name as it is.
+
+| Name | What it does |
+| --- | --- |
+| `append_only_statements(table)` | The statements that protect `table`, and those that undo them, for a revision of its own. |
+| `protect_append_only(connection, tables)` | Makes the triggers afresh for each table the connection's `search_path` finds; on other databases, nothing. |
+| `missing_append_only(connection, tables)` | The triggers that schema lacks, has disabled, or changed: a trigger counts only as made, enabled, with no `WHEN`, columns, or arguments, running its function with the same body. |
+| `unprotected(database, tables)` | The same for a database, by place: its own schema, and each tenant's schema that holds the first table (`TENANCY.SCHEMA_DATABASES`). |
+| `migrate_command(place)` | The command that makes a place's triggers: `migrate`, or `migrate --tenant <tenant>`. |
+
+## Digests
+
+A digest of a record is only as good as the one text the record has.
+`domainkit.utils.canonical.canonical_json(value)` writes a value as RFC
+8785's JSON Canonicalization Scheme does, in UTF-8: members sorted, no
+white space, numbers and strings written as ECMAScript writes them (*new
+in 2.9*). Any implementation of RFC 8785 gives the same bytes, so a
+client can work out the same digest from what it shows. It refuses what
+has no single text: NaN, an integer past 2**53 - 1, a lone surrogate, a
+`Decimal` (write it as text, with `decimal_text`).
+
+```python
+import hashlib
+
+from domainkit.utils.canonical import canonical_json
+
+digest = hashlib.sha256(canonical_json({"amount": "10.00", "to": "acct-7"})).hexdigest()
+```
+
+Use it for new digests. The digests the framework already stores (an
+audit row's, an evidence record's, an approved command's fingerprint)
+keep their own encoders, so what was stored still verifies.
 
 ## Hooks, models, and the database clock
 

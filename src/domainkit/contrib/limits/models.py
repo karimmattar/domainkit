@@ -227,7 +227,7 @@ class Limit(AggregateRoot[LimitId]):
     changed_at: datetime = field(default_factory=_now)
 
     @classmethod
-    def define(
+    def define(  # noqa: PLR0913
         cls,
         code: str,
         kind: str,

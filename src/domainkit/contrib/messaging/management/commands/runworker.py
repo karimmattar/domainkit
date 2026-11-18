@@ -103,7 +103,7 @@ class Command(BaseCommand):
             "--ready-file (default: %(default)s)",
         )
 
-    async def handle(
+    async def handle(  # noqa: PLR0915
         self,
         *,
         once: bool,

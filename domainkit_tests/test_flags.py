@@ -79,10 +79,8 @@ def run(*args: str, **options: Any) -> str:  # noqa: ANN401 - command options.
 @pytest.fixture(autouse=True)
 def declared() -> Iterator[None]:
     """Forget the dynamic settings a test declares."""
-    before = dict(store_module._declared)
-    yield
-    store_module._declared.clear()
-    store_module._declared.update(before)
+    with store_module.declared_kept():
+        yield
 
 
 @pytest.fixture

@@ -28,7 +28,9 @@ catalogs.
 
 ``APIError`` and ``FieldError`` are defined in ``domainkit.http.problems``,
 which the infrastructure layer may import (since 2.8, ADR 0182); this module
-re-exports them, and ``DomainkitError``, as 2.7's did.
+re-exports them, and ``DomainkitError``, as 2.7's did. Its ``__all__`` lists
+the names ``domainkit.http`` takes from it, and the two problems (since 2.9):
+the rest is the framework's own.
 """
 
 import re
@@ -75,6 +77,14 @@ from domainkit.http.problems import FieldError as FieldError
 from domainkit.http.responses import BuiltJSONResponse, JSONResponse
 from domainkit.i18n import gettext, validation_message
 from domainkit.money import MoneyError
+
+__all__ = [
+    "APIError",
+    "ErrorResponse",
+    "FieldError",
+    "error_response",
+    "error_responses",
+]
 
 STATUS_CODES: Final[tuple[tuple[type[DomainError], int], ...]] = (
     (PreconditionFailed, status.HTTP_412_PRECONDITION_FAILED),

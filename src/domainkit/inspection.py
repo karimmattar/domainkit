@@ -1223,7 +1223,7 @@ def bounded_reader(pypdf: Any) -> Any:  # noqa: ANN401 - the module, and its cla
 
 
 @cache
-def _bounded_reader(reader: type, limit: type[Exception]) -> type:
+def _bounded_reader(reader: type, limit: type[Exception]) -> type:  # noqa: C901
     """The class ``bounded_reader`` gives, made once."""
 
     class Searched(io.BytesIO):

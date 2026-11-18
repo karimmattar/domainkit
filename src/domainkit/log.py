@@ -48,6 +48,7 @@ from domainkit.exceptions import ImproperlyConfigured
 from domainkit.tracing import current_ids
 
 __all__ = [
+    "SECURITY_LOGGER",
     "WARNING_RESERVE",
     "BackgroundHandler",
     "BackgroundListener",

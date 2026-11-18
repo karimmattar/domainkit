@@ -32,6 +32,11 @@ from typing import Final, Protocol
 from sqlalchemy import Connection, Table, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from domainkit.db.protection import ROW_TRIGGER as ROW_TRIGGER
+from domainkit.db.protection import TRUNCATE_TRIGGER as TRUNCATE_TRIGGER
+from domainkit.db.protection import append_only_statements, protect_append_only
+from domainkit.db.protection import trigger_names as trigger_names
+
 from .tables import audit_checkpoints, audit_log, audit_seals, ledger_states
 
 __all__ = [
@@ -40,63 +45,18 @@ __all__ = [
     "unprotect",
 ]
 
-ROW_TRIGGER: Final = 1 | 2 | 8 | 16
-"""``pg_trigger.tgtype`` of ``BEFORE UPDATE OR DELETE ... FOR EACH ROW``.
-
-The bits are ``ROW`` (1), ``BEFORE`` (2), ``DELETE`` (8), and ``UPDATE``
-(16), as PostgreSQL's ``catalog/pg_trigger.h`` defines them."""
-TRUNCATE_TRIGGER: Final = 2 | 32
-"""``pg_trigger.tgtype`` of ``BEFORE TRUNCATE ... FOR EACH STATEMENT``
-(``BEFORE``, 2, and ``TRUNCATE``, 32)."""
-
-
-def trigger_names(table: Table) -> tuple[str, str]:
-    """The triggers that protect ``table``: of rows, and of truncation."""
-    function = f"{table.name}_append_only"
-    return function, f"{function}_truncate"
-
-
-def function_body(table: Table) -> str:
-    """The body of the triggers' function for ``table``, as ``protect`` writes it."""
-    return f"""
-    BEGIN
-        RAISE EXCEPTION '{table.name} is append-only'
-            USING ERRCODE = 'insufficient_privilege';
-    END
-    """
-
 
 def statements(table: Table) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """The statements that protect ``table``, and those that undo them.
 
-    Protecting replaces what is there: the function, and each trigger
-    dropped and made again, so a trigger changed in place (disabled, under
-    a ``WHEN``, running another function) is put back as it must be.
+    ``domainkit.db.protection``'s, which the ledger's entries share: the
+    function names and bodies are those of 2.8, so triggers made then
+    still count as made. Written from the table's name as it is,
+    unchecked, as in 2.8 (``checked=False``): ``protect`` and
+    ``unprotect`` take a project's own tables too, from revisions already
+    written.
     """
-    function, truncate = trigger_names(table)
-    body = function_body(table)
-    protect = (
-        f"""
-    CREATE OR REPLACE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql
-    AS $${body}$$
-    """,
-        f"DROP TRIGGER IF EXISTS {function} ON {table.name}",
-        (
-            f"CREATE TRIGGER {function} BEFORE UPDATE OR DELETE ON {table.name} "
-            f"FOR EACH ROW EXECUTE FUNCTION {function}()"
-        ),
-        f"DROP TRIGGER IF EXISTS {truncate} ON {table.name}",
-        (
-            f"CREATE TRIGGER {truncate} BEFORE TRUNCATE ON {table.name} "
-            f"FOR EACH STATEMENT EXECUTE FUNCTION {function}()"
-        ),
-    )
-    unprotect = (
-        f"DROP TRIGGER IF EXISTS {truncate} ON {table.name}",
-        f"DROP TRIGGER IF EXISTS {function} ON {table.name}",
-        f"DROP FUNCTION IF EXISTS {function}()",
-    )
-    return protect, unprotect
+    return append_only_statements(table, checked=False)
 
 
 PROTECT, UNPROTECT = statements(audit_log)
@@ -183,18 +143,8 @@ async def protect_migrated(connection: AsyncConnection, database: str) -> None:
     """
     if connection.dialect.name != "postgresql":
         return
-    present = {
-        table.name
-        for table in (audit_log, audit_seals, audit_checkpoints, ledger_states)
-        if await connection.scalar(
-            text("SELECT to_regclass(:name)"), {"name": table.name}
-        )
-        is not None
-    }
-    for table in (audit_log, audit_seals, audit_checkpoints):
-        if table.name in present:
-            for statement in statements(table)[0]:
-                await connection.exec_driver_sql(statement)
-    if ledger_states.name in present:
+    await protect_append_only(connection, (audit_log, audit_seals, audit_checkpoints))
+    found = text("SELECT to_regclass(:name)")
+    if await connection.scalar(found, {"name": ledger_states.name}) is not None:
         for statement in advance_only():
             await connection.exec_driver_sql(statement)

@@ -89,7 +89,7 @@ class Command(BaseCommand):
             help="with --sql: the revision to start from (default: the database's)",
         )
 
-    def handle(
+    def handle(  # noqa: C901
         self,
         *,
         target: str,

@@ -89,7 +89,7 @@ def _owned(subscription: Subscription, owner: str) -> Subscription:
     return subscription
 
 
-def owned_router(
+def owned_router(  # noqa: C901, PLR0915
     owner: OwnerOf | None = None, *, resolver: OwnerResolver | None = None
 ) -> APIRouter:
     """The self-service routes, with ``owner`` naming whose subscriptions are whose.

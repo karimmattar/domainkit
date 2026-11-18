@@ -220,14 +220,26 @@ extend-exclude = ["src/domainkit/management/templates", "**/mutants"]
 [tool.ruff.lint]
 # S: security (bandit), ASYNC: blocking calls in async code, BLE: blind except,
 # G/LOG: logging misuse, DTZ: naive datetimes, T20: stray prints.
+# C901/PLR0913/PLR0915: how complex a function, its arguments, its statements.
 select = [
     "E", "F", "I", "UP", "B", "SIM", "D", "ANN", "RUF",
     "S", "ASYNC", "BLE", "G", "LOG", "DTZ", "T20",
     "PT", "C4", "RET", "PIE", "PERF", "PTH", "ERA", "ISC",
+    "C901", "PLR0913", "PLR0915",
 ]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.ruff.lint.pylint]
+# Keyword-only arguments count too: past ten, take an options object. The
+# functions over the gates when they came (2.9) carry a "# noqa" on their
+# def line; it goes once the function is split.
+max-args = 10
+max-statements = 50
 
 [tool.ruff.lint.per-file-ignores]
 # Tests assert, and use throwaway credentials and server-side identifiers.
