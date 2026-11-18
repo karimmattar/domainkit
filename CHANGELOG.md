@@ -25,6 +25,13 @@ and a status.
   is downgraded alone, and a tenant database out of reach is named; a
   failed claim gives the messaging worker's slots back (audit
   A28-TEST-02).
+- Tests that waited a fixed time, or raced a short timeout, wait for what
+  they test. The waits of a sign-in or an act on the phone are approved
+  once they wait, and only hearing of the approval ends them in time; the
+  worker's due task, a sub-second drain, and a connection that does not
+  settle are checked by what happened. Tests that wait for something
+  share one bound of 30 seconds (`domainkit_tests/support/waiting.py`)
+  (audit A28-TEST-06).
 
 ## [2.8.0] - 2026-11-18
 

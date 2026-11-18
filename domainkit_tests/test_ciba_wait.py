@@ -6,14 +6,17 @@ request. ``…/wait`` holds until the phone answers, never counts as a
 poll, and never redeems.
 """
 
+import asyncio
 import threading
 import time
 from datetime import timedelta
-from typing import Any
+from typing import Any, Literal
 
+import pytest
 from fastapi.testclient import TestClient
 
 from domainkit import clock
+from domainkit.contrib.ciba import services
 from domainkit_tests.test_auth_cookies import TRUSTED
 from domainkit_tests.test_ciba import PHONE, App, Phone, app, redeem, rows, start_push
 from domainkit_tests.test_ciba_authorizations import (
@@ -36,6 +39,46 @@ def wait(web: TestClient, handle: str, route: str = "wait", **headers: str) -> A
         json={"request": handle},
         headers={**TRUSTED, **headers},
     )
+
+
+class Waits:
+    """``asyncio`` as the waits of ``ciba.services`` see it: they say when they wait.
+
+    ``begun`` is set once a wait has read its request, still pending, and
+    waits to hear of the phone's answer.
+    """
+
+    def __init__(self) -> None:
+        """Nothing waits yet."""
+        self.begun = threading.Event()
+
+    def __getattr__(self, name: str) -> Any:  # noqa: ANN401 - asyncio's names.
+        """``asyncio``'s own."""
+        return getattr(asyncio, name)
+
+    def Event(self) -> asyncio.Event:
+        """An event whose ``wait`` sets ``begun`` first."""
+        begun = self.begun
+
+        class Told(asyncio.Event):
+            async def wait(self) -> Literal[True]:
+                begun.set()
+                return await super().wait()
+
+        return Told()
+
+
+@pytest.fixture
+def waits(monkeypatch: pytest.MonkeyPatch) -> Waits:
+    """Waits that say when they wait, and read their request only when told.
+
+    Their step, which reads the request again, is longer than any test: a
+    wait that did not hear the phone's answer would not answer in time.
+    """
+    seen = Waits()
+    monkeypatch.setattr(services, "asyncio", seen)
+    monkeypatch.setattr(services, "WAIT_STEP", 60.0)
+    return seen
 
 
 def test_a_wait_answers_once_the_phone_approves(app: App) -> None:
@@ -79,8 +122,12 @@ def test_a_wait_answers_as_a_poll_once_an_approved_request_expired(app: App) -> 
     assert waited.json()["code"] == polled.json()["code"] == "expired_token"
 
 
-def test_a_wait_in_progress_hears_the_approval(app: App) -> None:
-    """The phone approves while the page waits: the wait answers then."""
+def test_a_wait_in_progress_hears_the_approval(app: App, waits: Waits) -> None:
+    """The phone approves while the page waits: the wait answers then.
+
+    The approval comes once the wait waits, not after a fixed sleep, and
+    only hearing of it ends the wait in time (A28-TEST-06).
+    """
     web = app(NUMBER_MATCHING=False, WAIT_SECONDS=20)
     phone = Phone(app(PHONE))
     started = start_push(web)
@@ -90,14 +137,12 @@ def test_a_wait_in_progress_hears_the_approval(app: App) -> None:
         target=lambda: answers.append(wait(web, started["request"]))
     )
 
-    begun = time.monotonic()
     holding.start()
-    time.sleep(0.3)
+    assert waits.begun.wait(10)
     assert phone.approve(waiting["id"]).status_code == 204
     holding.join(10)
 
     assert [answer.json() for answer in answers] == [{"status": "approved"}]
-    assert time.monotonic() - begun < 5  # Not the whole WAIT_SECONDS.
 
 
 def test_a_denied_or_unknown_request_answers_as_a_poll_does(app: App) -> None:
@@ -176,8 +221,14 @@ def test_an_act_waits_until_the_phone_confirms_and_the_token_hands_it_over(
     assert spent.json()["code"] == "sign_in_unknown"
 
 
-def test_an_acts_wait_in_progress_hears_the_phone_confirm(acting: App) -> None:
-    """The phone confirms while the page waits: the wait answers then."""
+def test_an_acts_wait_in_progress_hears_the_phone_confirm(
+    acting: App, waits: Waits
+) -> None:
+    """The phone confirms while the page waits: the wait answers then.
+
+    As for a sign-in, the confirmation comes once the wait waits
+    (A28-TEST-06).
+    """
     phone = Phone(acting(PHONE))
     session = Session(acting(WAIT_SECONDS=20))
     _, started, listed = asked_of_the_phone(session, phone)
@@ -188,15 +239,13 @@ def test_an_acts_wait_in_progress_hears_the_phone_confirm(acting: App) -> None:
         )
     )
 
-    begun = time.monotonic()
     holding.start()
-    time.sleep(0.3)
+    assert waits.begun.wait(10)
     confirmed = approve(phone, listed, started)
     holding.join(10)
 
     assert confirmed.status_code == 204, confirmed.json()
     assert [answer.json() for answer in answers] == [{"status": "approved"}]
-    assert time.monotonic() - begun < 5  # Not the whole WAIT_SECONDS.
 
 
 def test_an_acts_wait_is_the_asking_sessions_only(acting: App) -> None:
