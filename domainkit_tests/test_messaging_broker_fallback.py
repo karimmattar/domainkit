@@ -20,7 +20,7 @@ from domainkit.broker import BrokerUnavailable, MemoryBroker
 from domainkit.conf import override_settings
 from domainkit.contrib.messaging import MessagingSettings, Worker, enqueue
 from domainkit.contrib.messaging.breaker import Watched
-from domainkit.contrib.messaging.dispatch import BrokerWorkers
+from domainkit.contrib.messaging.dispatch import BrokerWorkers, close_publishers
 from domainkit.contrib.messaging.ordering import Promoted
 from domainkit.contrib.messaging.tables import DONE
 from domainkit_tests.test_messaging import (
@@ -175,8 +175,9 @@ async def test_a_failed_probe_opens_the_breaker_again_and_leases_nothing(
         tried.append(message_id)
         await publishing(queue, body, message_id=message_id)
 
-    monkeypatch.setattr(broker_tables, "publish", counted)
     await enqueue(send_email, to="ada@example.com")
+    await close_publishers()  # The commit's own publication is not the round's.
+    monkeypatch.setattr(broker_tables, "publish", counted)
     config = quick(BREAKER_COOLDOWN=60.0)
     worker = Worker(config)
     runner = BrokerWorkers([worker], ["default", "emails"], config)
