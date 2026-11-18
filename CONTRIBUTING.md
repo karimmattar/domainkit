@@ -103,7 +103,8 @@ to `.ci/`. `make services-down` stops them and drops their data.
   [ADR 0188](docs/adr/0188-write-down-the-cores-layering-and-hold-the-boundaries-it-draws.md)).
   A contrib app imports another app's public names, the core's public
   names, and no ring of apps (`test_contrib_boundaries.py`). A function
-  stays under ruff's complexity gates (`pyproject.toml`).
+  stays under ruff's complexity gates (`pyproject.toml`); the few that
+  were over them in 2.9 say so with a `# noqa` on their `def` line.
 
 ## Writing it up
 

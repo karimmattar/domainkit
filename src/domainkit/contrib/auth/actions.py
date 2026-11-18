@@ -2236,7 +2236,7 @@ async def link_action_authorization(
     )
 
 
-async def confirm_action_with(
+async def confirm_action_with(  # noqa: PLR0913
     authorization_id: UUID,
     methods: Iterable[str],
     *,

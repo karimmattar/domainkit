@@ -191,9 +191,10 @@ refuses a trigger given arguments, as the trail's did.
   calls (ADR 0113).
 - **Complexity gates.** ruff's C901 (complexity over 15), PLR0913 (over
   10 arguments, keyword-only ones counted), and PLR0915 (over 50
-  statements) run in CI's lint job. The 24 files over them when the gate
-  came are listed in `pyproject.toml`; a file leaves the list once its
-  functions are split.
+  statements) run in CI's lint job. The 29 functions over them when the
+  gate came carry a `# noqa` naming the rule on their `def` line, which
+  goes once the function is split; a new function in the same file is
+  gated as any other.
 - **`domainkit.db.affected_rows(result)`**: the rows an `UPDATE` or
   `DELETE` changed, typed, and a `TypeError` for a result that counts
   none. It replaces the waived `rowcount` reads, but in files other 2.9
@@ -247,7 +248,7 @@ Options weighed:
 - A test's admin report and dynamic settings no longer reach the next
   test.
 - New code over the complexity gates fails lint; work merged into 2.9
-  after this may need its own entry, or a split.
+  after this may need its own `# noqa`, or a split.
 
 ## References
 

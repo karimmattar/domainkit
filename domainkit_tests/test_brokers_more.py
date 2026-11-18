@@ -301,7 +301,7 @@ async def test_nats_tls_and_failures_of_its_own(tmp_path: Path) -> None:
 class FakeKafka:
     """aiokafka's producer, consumer, and admin client, over lists in memory."""
 
-    def __init__(self) -> None:
+    def __init__(self) -> None:  # noqa: C901
         """No topics; nothing committed."""
         self.topics: dict[str, list[tuple[bytes, list[tuple[str, bytes]]]]] = {}
         self.committed: dict[Any, int] = {}

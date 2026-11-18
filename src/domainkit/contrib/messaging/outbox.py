@@ -110,7 +110,7 @@ def context_headers(**extra: object) -> dict[str, Any]:
     }
 
 
-def message_row(
+def message_row(  # noqa: PLR0913
     *,
     kind: str,
     target: str,

@@ -99,7 +99,7 @@ class S3Storage(ObjectStorage):
 
     write_once: ClassVar[Mapping[str, str]] = {"If-None-Match": "*"}  # Signed.
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         bucket: str,
         *,

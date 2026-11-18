@@ -67,7 +67,7 @@ class AdminQuery:
     options: Mapping[str, Any]
 
 
-def command(
+def command(  # noqa: PLR0913
     command: type[Command],
     *,
     service: Service,
@@ -234,7 +234,7 @@ class AdminSite:
         self.admins: dict[type, ModelAdmin] = {}
         self._router: APIRouter | None = None
 
-    def register(
+    def register(  # noqa: PLR0913
         self,
         model: type,
         *,

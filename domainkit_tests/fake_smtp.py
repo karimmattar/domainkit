@@ -99,7 +99,7 @@ class _Handler(socketserver.StreamRequestHandler):
 
     server: "_Server"
 
-    def handle(self) -> None:
+    def handle(self) -> None:  # noqa: C901, PLR0915
         """Answer commands until QUIT or the client goes away."""
         smtp = self.server.smtp
         if smtp.implicit and smtp.tls is not None:

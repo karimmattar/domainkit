@@ -1016,7 +1016,7 @@ class RequestBodyLimitMiddleware:
         self._lock = threading.Lock()
         """Guards working ``_largest`` out, once, whichever thread asks first."""
 
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:  # noqa: C901, PLR0915
         """Check ``Content-Length`` first, then count streamed bytes."""
         if scope["type"] == "websocket":
             await self._websocket(scope, receive, send)

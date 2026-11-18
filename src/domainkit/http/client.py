@@ -355,7 +355,7 @@ class HttpClient:
     Options left as None follow ``HTTP_CLIENT``, read at each call.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         *,
         base_url: str | None = None,

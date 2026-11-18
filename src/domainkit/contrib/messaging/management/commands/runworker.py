@@ -93,7 +93,7 @@ class Command(BaseCommand):
             help="seconds between checks for --heartbeat-file (default: %(default)s)",
         )
 
-    async def handle(
+    async def handle(  # noqa: PLR0915
         self,
         *,
         once: bool,

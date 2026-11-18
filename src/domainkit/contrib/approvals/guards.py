@@ -371,7 +371,7 @@ on_guard: HookPoint[Guard] = HookPoint("approvals.guard")
 """The guards the installed domains registered: ``guard()`` registers here."""
 
 
-def guard(
+def guard(  # noqa: PLR0913
     action: str,
     service: Service | UseCase[Any],
     *,
