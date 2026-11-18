@@ -307,6 +307,20 @@ class SqlAlchemyRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
         statement = self._where(counted, criteria)
         return int(await self.session.scalar(statement) or 0)
 
+    async def _count_at_most(self, criteria: Criteria | None, limit: int) -> int:
+        """``SELECT count(*)`` of the first ``limit`` matches; none past is read.
+
+        A subclass that counts in a way of its own (``_count``) is asked
+        that way, and its answer stops at ``limit``.
+        """
+        if type(self)._count is not SqlAlchemyRepository._count:
+            return await super()._count_at_most(criteria, limit)
+        matches = self._where(
+            select(literal(1)).select_from(self.aggregate_type), criteria
+        ).limit(limit)
+        statement = select(func.count()).select_from(matches.subquery())
+        return int(await self.session.scalar(statement) or 0)
+
     async def _exists(self, criteria: Criteria | None) -> bool:
         """``SELECT EXISTS (...)`` of the matches."""
         matches = self._where(

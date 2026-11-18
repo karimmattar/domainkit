@@ -55,7 +55,6 @@ from pydantic import (
 )
 from sqlalchemy import exists, func, select
 
-from domainkit.db.encrypted import EncryptedType
 from domainkit.ddd import DuplicateValue, PermissionDenied
 from domainkit.ddd.query import And, F
 from domainkit.ddd.query import Selection as Listing
@@ -118,6 +117,7 @@ from .models import (
 )
 from .repositories import GroupRepository, user_search
 from .settings import auth_settings, identifier_fields
+from .tables import listing_field
 from .throttling import Attempt, Limit, attempt
 from .tokens import LoginMethod, LoginOrigin, logging_in
 from .uow import AuthUnitOfWork
@@ -577,11 +577,7 @@ async def user_listing(
 
 def _ordered_by(model: type[AbstractBaseUser]) -> str:
     """The first identifier that is not encrypted, else the username, as before."""
-    columns = get_user_table().c
-    for name in identifier_fields(model):
-        if not isinstance(columns[name].type, EncryptedType):
-            return name
-    return model.USERNAME_FIELD
+    return listing_field(model, get_user_table())
 
 
 async def group_listing() -> Listing:
@@ -1963,7 +1959,7 @@ async def may_change(actor: AnyUser, user: AbstractBaseUser) -> None:
         )
     refusal = "You can only change users whose permissions you have"
     await may_grant(actor, granted | _keys(*user.groups), refusal)
-    await may_hold(actor, await object_grants(user), refusal)
+    await may_hold(actor, await _grants_that_count(actor, user), refusal)
     await _may_change_member(actor, user, refusal)
 
 
@@ -2025,7 +2021,22 @@ async def _may_change_group(actor: AnyUser, group: Group) -> None:
     """Refuse to change a group that grants what ``actor`` lacks, on objects too."""
     refusal = "You can only change groups whose permissions you have"
     await may_grant(actor, group.permission_keys(), refusal)
-    await may_hold(actor, await object_grants(group), refusal)
+    await may_hold(actor, await _grants_that_count(actor, group), refusal)
+
+
+async def _grants_that_count(
+    actor: AnyUser, holder: AbstractBaseUser | Group
+) -> frozenset[ObjectGrant]:
+    """The grants of ``holder`` on objects that ``may_hold`` weighs for ``actor``.
+
+    Read only where they count (A28-PERF-05): for staff, but the grants of
+    the permissions they hold on whole models, left out in the query. A
+    superuser holds every grant, and while a backend does not list its
+    grants only superusers pass, so ``may_hold`` needs none then.
+    """
+    if actor.is_superuser or backends_without_object_grants():
+        return frozenset()
+    return await object_grants(holder, beyond=await get_all_permissions(actor))
 
 
 async def may_grant(

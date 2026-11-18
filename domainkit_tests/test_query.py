@@ -684,7 +684,11 @@ def test_positions_must_fit_their_ordering() -> None:
 
 
 def test_what_follows_a_position_is_what_sorts_after_it() -> None:
-    """Keyset criteria for both directions, with and without missing values."""
+    """Keyset criteria for both directions, with and without missing values.
+
+    A bound on the first field comes first where one range holds everything
+    after the position, so a database reads an index from there (ADR 0185).
+    """
     one = make_gadget("one", stock=None, size=Size.LARGE)
     two = make_gadget("two", stock=1, size=Size.SMALL)
 
@@ -697,15 +701,29 @@ def test_what_follows_a_position_is_what_sorts_after_it() -> None:
         (F("stock").isnull(False), And((F("stock").isnull(), F("id") > one.id)))
     )
     sized = following(Gadget, (Ordering("size"), Ordering("id")), (Size.SMALL, two.id))
-    assert sized == Or(
-        (F("size") > Size.SMALL, And((F("size") == Size.SMALL, F("id") > two.id)))
+    assert sized == And(
+        (
+            F("size") >= Size.SMALL,
+            Or(
+                (
+                    F("size") > Size.SMALL,
+                    And((F("size") == Size.SMALL, F("id") > two.id)),
+                )
+            ),
+        )
     )
     nullable = following(Gadget, (Ordering("stock"), Ordering("id")), (1, two.id))
     assert nullable == Or(
         (F("stock") > 1, F("stock").isnull(), And((F("stock") == 1, F("id") > two.id)))
     )
     down = following(Gadget, (Ordering("stock", True), Ordering("id")), (1, two.id))
-    assert down == Or((F("stock") < 1, And((F("stock") == 1, F("id") > two.id))))
+    assert down == And(
+        (
+            F("stock") <= 1,
+            Or((F("stock") < 1, And((F("stock") == 1, F("id") > two.id)))),
+        )
+    )
+    assert following(Gadget, (Ordering("id"),), (two.id,)) == (F("id") > two.id)
 
 
 ORDERABLE = ("name", "label", "price", "stock", "active", "color", "size", "made_at")

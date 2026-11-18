@@ -52,7 +52,12 @@ from domainkit.contrib.objectpermissions import (
 from domainkit.contrib.objectpermissions.criteria import compile_visible
 from domainkit.contrib.objectpermissions.models import object_column
 from domainkit.contrib.objectpermissions.tables import object_permissions
-from domainkit.db import SqlAlchemyRepository, SqlAlchemyUnitOfWork, map_imperatively
+from domainkit.db import (
+    SqlAlchemyRepository,
+    SqlAlchemyUnitOfWork,
+    connections,
+    map_imperatively,
+)
 from domainkit.ddd import (
     AggregateRoot,
     DomainEvent,
@@ -861,6 +866,96 @@ def test_staff_change_what_holds_object_grants_only_holding_them(
         admin.set_user_groups(peer.id, admin.GroupsIn(groups=["keepers"]), peer)
     )
     assert joined.groups == ["keepers"]
+
+
+def test_the_admin_bound_reads_only_the_grants_that_count(project: str) -> None:
+    """A superuser's change reads no grant; staff read those they lack on models.
+
+    A grant of a permission staff hold on the whole model is left out in
+    the query, and their own grants are read only when some remain
+    (A28-PERF-05). The refusal still counts what they lack.
+    """
+    from domainkit.contrib.auth import admin
+    from domainkit.contrib.auth.backends import ObjectGrant, object_grants
+
+    first, second = products("first", "second")
+    root = person("root", is_superuser=True)
+    owner = person("owner")
+    run(grant_permission(root, CHANGE, first, user=owner.id))
+    run(grant_permission(root, VIEW, second, user=owner.id))
+    modeller = person("modeller", "auth.change_user", CHANGE, VIEW, is_staff=True)
+    changer = person("changer", "auth.change_user", CHANGE, is_staff=True)
+
+    assert counted(admin.may_change(root, owner))[1] == 0
+    assert counted(admin.may_change(modeller, owner))[1] == 1  # The owner's, none.
+    with pytest.raises(PermissionDenied, match="you lack 1 of its grants"):
+        run(admin.may_change(changer, owner))
+    assert run(object_grants(owner, beyond=frozenset({CHANGE}))) == {
+        ObjectGrant(VIEW, "shop.product", second.id)
+    }
+    both = frozenset({CHANGE, VIEW})
+    assert run(ObjectPermissionBackend().object_grants_beyond(owner, both)) == set()
+
+    async def by_number_and_text() -> None:
+        async with connections.engine().begin() as connection:
+            for column, value in (("object_int", 7), ("object_text", "k-1")):
+                await connection.execute(
+                    object_permissions.insert(),
+                    {
+                        "id": uuid4(),
+                        "version": 1,
+                        "content_type": "x.y",
+                        "permission": "x.view_y",
+                        column: value,
+                        "user_id": owner.id,
+                        "granted_at": datetime.now(UTC),
+                    },
+                )
+
+    run(by_number_and_text())  # Ids read from the column that holds them.
+    assert run(ObjectPermissionBackend().object_grants_beyond(owner, both)) == {
+        ObjectGrant("x.view_y", "x.y", 7),
+        ObjectGrant("x.view_y", "x.y", "k-1"),
+    }
+
+
+def test_only_the_class_that_lists_grants_leaves_some_out(project: str) -> None:
+    """``object_grants_beyond`` is asked of the class of ``object_grants`` only.
+
+    A subclass that lists more grants through ``object_grants`` alone keeps
+    them: they are filtered as they are listed.
+    """
+    from domainkit.contrib.auth import backends as auth_backends
+    from domainkit.contrib.auth.backends import BaseBackend, ObjectGrant, object_grants
+
+    (first,) = products("first")
+    root = person("root", is_superuser=True)
+    owner = person("owner")
+    run(grant_permission(root, CHANGE, first, user=owner.id))
+    extra = ObjectGrant(VIEW, "shop.product", 1)
+    other = ObjectGrant(CHANGE, "shop.product", 2)
+
+    class More(ObjectPermissionBackend):
+        async def object_grants(
+            self, holder: AbstractBaseUser | Group
+        ) -> frozenset[ObjectGrant]:
+            return await super().object_grants(holder) | {extra}
+
+    class Listed(BaseBackend):
+        async def object_grants(
+            self, holder: AbstractBaseUser | Group
+        ) -> frozenset[ObjectGrant]:
+            return frozenset({extra, other})
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(auth_backends, "get_backends", lambda: (More(), Listed()))
+        assert run(object_grants(owner, beyond=frozenset({CHANGE}))) == {extra}
+        assert run(object_grants(owner)) == {
+            extra,
+            other,
+            ObjectGrant(CHANGE, "shop.product", first.id),
+        }
+    assert run(Listed().object_grants_beyond(owner, frozenset({VIEW}))) == {other}
 
 
 # Memoised per request (user report A11) ---------------------------------------------
