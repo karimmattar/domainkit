@@ -132,6 +132,7 @@ Compile domain queries (`domainkit.ddd.query`) to SQLAlchemy expressions.
 
 Where each domain's data lives: routing targets, aliases, and shards.
 
+- `DatabaseRouter`: Answer where data lives, from `DATABASES`, `SHARDS`, and routing.
 - `bucket_for`: The bucket of `key` among `buckets`; stable across processes and hosts.
 - `for_each_shard`: Run `function(alias)` on every database of `group` at once.
 - `router`: The process-wide router; it reads settings on every call.

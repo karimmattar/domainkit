@@ -114,6 +114,16 @@ Request deadlines over HTTP: `REQUEST_TIMEOUT`, and `RequestTimeout` per route.
 - `DeadlineMiddleware`: Cancel HTTP requests that run past their deadline, and answer 503.
 - `RequestTimeout`: A dependency that gives a route its own deadline (`Depends`).
 
+## `domainkit.http.errors`
+
+One error format for every failure, and the mapping from domain errors.
+
+- `APIError`: An HTTP error outside the domain (a bad cursor, an oversized body).
+- `ErrorResponse`: Body of every error response; also the schema documented in OpenAPI.
+- `FieldError`: One invalid part of a request; the submitted value is left out.
+- `error_response`: Build an error body that carries the request id for support cases.
+- `error_responses`: OpenAPI `responses` for the error statuses a route may answer with.
+
 ## `domainkit.http.health`
 
 The liveness and readiness endpoints every generated project mounts.

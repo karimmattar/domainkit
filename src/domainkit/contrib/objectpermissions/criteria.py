@@ -27,7 +27,7 @@ from domainkit.contrib.auth import current_user
 from domainkit.contrib.auth.backends import has_perm
 from domainkit.contrib.auth.models import AnyUser
 from domainkit.db.query import column_of, mapper_of, register_compiler
-from domainkit.ddd.fields import InvalidQuery
+from domainkit.ddd import InvalidQuery
 from domainkit.ddd.query import Condition, Criteria
 from domainkit.http.access import scopes_of
 

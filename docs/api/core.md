@@ -131,6 +131,15 @@ Django-style settings access.
 - `settings`: Typed, lazily loaded settings for the selected module.
 - `use_settings`: Temporarily load another settings module, then restore the current one.
 
+## `domainkit.context`
+
+Per-request context shared by logging and error responses.
+
+- `SYSTEM_ACTOR`: The actor of work no caller asked for: periodic tasks, commands' messages.
+- `RequestContext`: Facts about the request or job being served; no personal data.
+- `bind_request`: Make `context` current for the duration of the block.
+- `current_request`: Return the request being served, or None outside a request.
+
 ## `domainkit.deadlines`
 
 Deadlines: how long the work of a request, or of a block, may take.
@@ -299,6 +308,7 @@ Shutting a process down, in phases, within one budget (`SHUTDOWN_TIMEOUT`).
 
 Structured logging: JSON for log pipelines, escaped text for terminals.
 
+- `SECURITY_LOGGER`: The logger of rejected requests and other security events (`domainkit.security`).
 - `WARNING_RESERVE`: Part of a logging queue only records at `WARNING` and above may fill.
 - `BackgroundHandler`: Put records on a bounded queue for `BackgroundListener` to write.
 - `BackgroundListener`: The logging thread: takes records off the queue and writes them.
@@ -455,6 +465,7 @@ OpenTelemetry spans and log correlation (`domainkit[tracing]`).
 One text form for a `Decimal`: fixed point, never an exponent.
 
 - `decimal_text`: `value` in fixed point (`"1000"` for `Decimal("1E+3")`), at its places.
+- `jsonable`: `value` as JSON-ready data, each `Decimal` in it as `decimal_text`.
 
 ## `domainkit.utils.loops`
 
@@ -462,6 +473,20 @@ Event loops for the framework's own entry points: uvloop when it is there.
 
 - `PerLoop`: One value per event loop, made on the loop's first use.
 - `loop_factory`: The factory of `kind`'s loops; None stands for asyncio's own.
+
+## `domainkit.utils.module_loading`
+
+Import objects by dotted path (`django.utils.module_loading`).
+
+- `import_string`: Return the attribute named by `package.module.attr` or `package.module:attr`.
+- `lazy_names`: A module `__getattr__` that imports `names` on first use: name to module.
+
+## `domainkit.utils.rates`
+
+Parse rates such as `"100/minute"`.
+
+- `PERIODS`: The periods a rate may name, in seconds.
+- `parse_rate`: Return `(count, period in seconds)`; raise ValueError when malformed.
 
 ## `domainkit.cloud.aws`
 

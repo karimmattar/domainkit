@@ -150,7 +150,7 @@ statuses, and the amendments they name.
 | [0137](0137-a-new-phone-asks-and-the-bound-one-approves.md) | A new phone asks, and the bound one approves | Accepted |
 | [0138](0138-mount-an-accounts-routes-with-one-call.md) | Mount an account's routes with one call | Accepted |
 | [0139](0139-hold-a-rung-under-load-against-plain-fastapi-in-the-same-run.md) | Hold a rung under load against plain FastAPI in the same run | Accepted |
-| [0140](0140-auth-asks-other-apps-through-hooks.md) | Auth asks other apps through hooks | Accepted |
+| [0140](0140-auth-asks-other-apps-through-hooks.md) | Auth asks other apps through hooks | Accepted; amended by [0188](0188-write-down-the-cores-layering-and-hold-the-boundaries-it-draws.md) on 2026-11-18 (at the end) |
 | [0141](0141-codes-that-open-an-account-go-only-where-it-was-proved.md) | Codes that open an account go only where it was proved | Accepted |
 | [0142](0142-while-the-broker-is-away-relaying-workers-run-the-outbox.md) | While the broker is away, relaying workers run the outbox | Accepted |
 | [0143](0143-fan-live-events-out-through-postgresql-or-redis.md) | Fan live events out through PostgreSQL or Redis | Accepted; amended by [0157](0157-priorities-on-rabbitmq-an-unpartitioned-outbox-and-audit-trail-and-live-routes-in-several-processes.md) |
@@ -193,6 +193,7 @@ statuses, and the amendments they name.
 | [0180](0180-refuse-links-a-person-typed-for-a-screen-and-a-reason-past-a-line.md) | Refuse links a person typed for a screen, and a reason past a line | Accepted |
 | [0181](0181-decide-a-body-limit-per-request-count-before-the-rules-hand-over-the-file-received-and-bound-the-xml-parsed.md) | Decide a body limit per request, count before the rules, hand over the file received, and bound the XML parsed | Accepted |
 | [0182](0182-let-a-gateway-raise-a-routes-problems-and-name-users-by-the-fields-a-project-chooses.md) | Let a gateway raise a route's problems, and name users by the fields a project chooses | Accepted |
+| [0188](0188-write-down-the-cores-layering-and-hold-the-boundaries-it-draws.md) | Write down the core's layering, and hold the boundaries it draws | Accepted |
 
 ### Decisions still without a record
 

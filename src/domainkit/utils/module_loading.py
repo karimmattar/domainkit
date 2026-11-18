@@ -5,6 +5,11 @@ from collections.abc import Callable, Mapping
 from importlib import import_module
 from typing import Any
 
+__all__ = [
+    "import_string",
+    "lazy_names",
+]
+
 
 def import_string(dotted_path: str) -> Any:  # noqa: ANN401 - returns whatever the path names.
     """Return the attribute named by ``package.module.attr`` or ``package.module:attr``.

@@ -3,7 +3,13 @@
 import re
 from typing import Final
 
+__all__ = [
+    "PERIODS",
+    "parse_rate",
+]
+
 PERIODS: Final = {"second": 1, "minute": 60, "hour": 3600, "day": 86400}
+"""The periods a rate may name, in seconds."""
 _RATE: Final = re.compile(r"\s*(\d+)\s*/\s*(second|minute|hour|day)\s*")
 
 
