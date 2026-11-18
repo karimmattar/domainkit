@@ -338,6 +338,32 @@ async def test_permissions_held_everywhere_leave_a_tenants_keys_out() -> None:
         assert current_tenant() == "a"
 
 
+@pytest.mark.anyio
+async def test_scopes_still_bound_permissions_held_everywhere() -> None:
+    """Credentials whose scopes leave the key out are refused, held or not."""
+    everywhere = Everywhere()
+    key = "billing.view_invoice"
+
+    for scopes, allowed in ((frozenset(), False), (frozenset({key}), True)):
+        request = connection(scopes)
+        for rule in (HasPermissions(key), HasPermissions(key, everywhere=True)):
+            assert await rule.has_permission(request, everywhere) is allowed
+        for rule in (
+            HasObjectPermissions(key),
+            HasObjectPermissions(key, everywhere=True),
+        ):
+            held = await rule.has_object_permission(request, everywhere, object())
+            assert held is allowed
+
+
+class Everywhere(Member):
+    """A principal that holds every key, whatever tenant is served."""
+
+    async def ahas_perms(self, perms: Any, obj: object = None) -> bool:  # noqa: ANN401
+        """Every key, always."""
+        return True
+
+
 def test_model_actions_say_everywhere_to_each_action() -> None:
     """``ModelActions(..., everywhere=True)`` asks each action's key everywhere."""
     for action in ("view", "add", "change", "delete"):
