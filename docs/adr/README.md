@@ -191,7 +191,7 @@ statuses, and the amendments they name.
 | [0178](0178-bind-an-act-to-the-version-its-page-read.md) | Bind an act to the version its page read | Accepted |
 | [0179](0179-bind-the-admin-acts-groups-by-id-and-keep-a-held-confirmation-to-its-request.md) | Bind the admin act's groups by id, and keep a held confirmation to its request | Accepted |
 | [0180](0180-refuse-links-a-person-typed-for-a-screen-and-a-reason-past-a-line.md) | Refuse links a person typed for a screen, and a reason past a line | Accepted |
-| [0181](0181-decide-a-body-limit-per-request-count-before-the-rules-hand-over-the-file-received-and-bound-the-xml-parsed.md) | Decide a body limit per request, count before the rules, hand over the file received, and bound the XML parsed | Accepted |
+| [0181](0181-decide-a-body-limit-per-request-count-before-the-rules-hand-over-the-file-received-and-bound-the-xml-parsed.md) | Decide a body limit per request, count before the rules, hand over the file received, and bound the XML parsed | Accepted; amended 2026-11-18 (at the end) |
 | [0182](0182-let-a-gateway-raise-a-routes-problems-and-name-users-by-the-fields-a-project-chooses.md) | Let a gateway raise a route's problems, and name users by the fields a project chooses | Accepted |
 
 ### Decisions still without a record

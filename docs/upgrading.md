@@ -52,10 +52,15 @@ project that relied on 2.8's behaviour notices, and what to change.
   before.
 - **The SAML ACS refuses a response past its bounds.** A response whose
   XML makes more than 50,000 nodes (each `<` counts twice, each `=`
-  once), or that is in UTF-16 or UTF-32, gets `?error=saml_refused`,
-  where 2.8 parsed it. A response of a thousand group values makes some
-  7,000 nodes, and identity providers write UTF-8. Responses are parsed
-  in a thread of their own, at most 4 at once on an event loop.
+  once), that has an element with more than 32 namespaces in scope or a
+  `SignedInfo` of more than 32 elements, or that is not in UTF-8 (in
+  UTF-16, or declaring Latin-1 with bytes past ASCII), gets
+  `?error=saml_refused`, where 2.8 read it. A response of a thousand
+  group values makes some 7,000 nodes, identity providers write UTF-8,
+  and they declare fewer than ten namespaces. Responses are parsed in a
+  thread of their own, at most 4 at once on an event loop; one that
+  waits more than 5 seconds for its turn is refused. A response that
+  lxml or signxml cannot read gets `saml_refused` where 2.8 answered 500.
 - **With `TYPED_LINKS = "refused"`, more typed text is refused.** A name
   spaced out (`example . com`, `example .com`), or spelled with `dot` or
   a full stop and a space before `com`, `net` or `org` (`example dot
