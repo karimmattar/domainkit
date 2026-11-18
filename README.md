@@ -229,13 +229,14 @@ make integration    # the tests against the servers of compose.yaml, as CI runs 
 make                # every command
 ```
 
-Without servers, the database tests use SQLite, the Redis and RabbitMQ
-tests use in-memory fakes, and the tests that need PostgreSQL, immudb, or a
-real Redis, Valkey, or RabbitMQ are skipped. `compose.yaml` starts the
-servers CI's integration job uses, at the same images and ports, with
-throwaway certificates in `.ci/`; `make integration` sets the variables
-that point the tests at them (the `DOMAINKIT_TEST_*` names at the top of
-`domainkit_tests/test_immudb.py`, `test_redis.py`, and `test_rabbitmq.py`).
+Without servers, the database tests use SQLite, the Redis, RabbitMQ,
+Kafka, and SQS tests use in-memory fakes, and the tests that need
+PostgreSQL, immudb, or a real Redis, Valkey, RabbitMQ, Kafka, or SQS are
+skipped. `compose.yaml` starts the servers CI's integration job uses, at
+the same images and ports, with throwaway certificates in `.ci/`; `make
+integration` sets the variables that point the tests at them (the
+`DOMAINKIT_TEST_*` names at the top of `domainkit_tests/test_immudb.py`,
+`test_redis.py`, `test_rabbitmq.py`, and `test_brokers_more.py`).
 Each run must cover 98%; CI also combines the runs with and without
 servers, which must cover 98% of the package and every line a pull request
 adds (`make cov`).
@@ -246,9 +247,10 @@ suite on every core of the runner (`pytest -n auto`):
 - lint, strict typing, and deptry: every package the code imports is declared
 - the tests on Python 3.13, 3.14, and 3.15
 - the tests again against PostgreSQL 18, immudb with TLS and a signing key,
-  Redis 8 (plain and TLS), Valkey 9, and RabbitMQ 4 (plain and TLS); no test
-  may be skipped there
-- the PostgreSQL tests on PostgreSQL 16, the oldest supported
+  Redis 8 (plain and TLS), Valkey 9, RabbitMQ 4 (plain and TLS), Kafka 4,
+  and ElasticMQ for SQS; no test may be skipped there
+- the PostgreSQL tests on PostgreSQL 16, the oldest supported, and on
+  Python 3.15, the newest
 - coverage of both runs combined: 98% of the package, and every line a
   pull request adds or changes, its branches included
 - the benchmark ladder: Python calls and database round trips per request,

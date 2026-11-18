@@ -150,6 +150,11 @@ class SqsBroker(PullBroker):
             "ListQueues", {"QueueNamePrefix": str(self.config.PREFIX), "MaxResults": 1}
         )
 
+    async def close(self) -> None:
+        """Wait for answers, then close the connections to SQS."""
+        await super().close()
+        await self.client.aclose()
+
 
 class _SqsPuller(Puller):
     """Receives from each queue in turn."""

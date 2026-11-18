@@ -261,8 +261,9 @@ lowers that range's top. Renovate widens a range when a new major
 appears, once CI passes with it.
 
 **PostgreSQL.** Each release supports PostgreSQL 16 to 18 (TEST-18). CI
-runs the suite against the newest (`integration`, on 18) and the oldest
-(`postgresql (16)`); both are required checks. Dropping a version is a
+runs the suite against the newest (`integration`, on 18, with Python 3.13)
+and the oldest (`postgresql (16)`, with Python 3.15), so each end of the
+Python range meets PostgreSQL; both are required checks. Dropping a version is a
 minor-release change, and appears in the changelog; a new major is added
 once both jobs pass with it. SQLite is for development and tests.
 

@@ -24,7 +24,7 @@ Each `make` command runs what CI runs, the same way:
 | --- | --- | --- |
 | `make lint` | `poetry check --lock`, `ruff check`, `ruff format --check`, `mypy` (strict), `deptry` | `lint` |
 | `make test` | the suite on SQLite and in-memory fakes, in random order, with coverage | `test (3.13)`, `test (3.14)`, `test (3.15)` |
-| `make integration` | the suite against PostgreSQL, PostGIS, immudb, Redis, Valkey, and RabbitMQ from `compose.yaml`, with `redis-server`, `nats-server`, and SoftHSM installed (the broker and key tests start their own); a skipped test fails | `integration` |
+| `make integration` | the suite against PostgreSQL, PostGIS, immudb, Redis, Valkey, RabbitMQ, Kafka, and ElasticMQ (SQS) from `compose.yaml`, with `redis-server`, `nats-server`, and SoftHSM installed (the broker and key tests start their own); a skipped test fails | `integration` |
 | `make cov` | both runs combined, which must cover 98%, and every line the change adds since `origin/stg` (`BASE=`) | `coverage` |
 | `make bench` | Python calls and round trips per request against `benchmarks/budgets.toml`; then the rungs under load against `benchmarks/load.toml` | `bench` |
 | `make docs` | the documentation site, with every link and public name checked | `docs-site` |

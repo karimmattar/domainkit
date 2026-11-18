@@ -24,8 +24,21 @@ and a status.
   has not been since 1.5.0. `unmutated-functions.txt`, a CI output
   committed by mistake, is removed, and git ignores what the mutation
   jobs write (audit A28-TEST-04).
+- CI's integration job runs Kafka 4.4 and ElasticMQ 1.7, an SQS server,
+  and the Kafka and SQS brokers' contract and redelivery run against them
+  (`DOMAINKIT_TEST_KAFKA_URL`, `DOMAINKIT_TEST_SQS_URL`); `compose.yaml`
+  and `make integration` start and name them too. The fakes stay for the
+  failures (audit A28-TEST-03).
+- CI's test and integration runs list their 30 slowest tests
+  (`--durations=30`) (audit A28-TEST-07).
+- The `postgresql (16)` job runs on Python 3.15, while `integration` runs
+  on 3.13: each end of the Python range meets PostgreSQL (audit
+  A28-TEST-11).
 
 ### Fixed
+
+- `SqsBroker.close()` closes its connections to SQS, which it left open
+  (audit A28-TEST-03).
 
 - The upload and PDF tests no longer time their checks with a stopwatch.
   Each says which limit stopped a check: the clock or a signal, from the
@@ -48,6 +61,10 @@ and a status.
   settle are checked by what happened. Tests that wait for something
   share one bound of 30 seconds (`domainkit_tests/support/waiting.py`)
   (audit A28-TEST-06).
+- The Redis and NATS servers the broker tests start are each the test's
+  own: NATS picks its port and writes it to a file, and a Redis that fails
+  to start, or a port another Redis answers on, is tried again on another
+  port (audit A28-TEST-09).
 
 ## [2.8.0] - 2026-11-18
 
