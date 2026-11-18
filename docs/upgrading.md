@@ -36,6 +36,40 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.8 to 2.9
+
+2.9 answers the findings of the 2.8 audit. Each item of this list says
+what a project that relied on 2.8's behaviour changes, and what to run.
+No migration is needed for these items.
+
+- **The worker's heartbeat no longer ages while a dependency is away.**
+  `runworker --heartbeat-file` is rewritten while the worker's event
+  loop runs, whatever the broker, the databases, or the caches do, so
+  the documented health check no longer restarts workers during their
+  outage. A worker that relied on such a restart keeps running, and
+  logs each failing check. To keep the restart, run the worker with
+  `--ready-file /tmp/worker-ready`, which is removed while a check
+  fails, and point the health check at it
+  ([The worker](operations.md#the-worker)).
+- **Webhook deliveries whose task ended are marked failed.** The first
+  hourly purge after the upgrade marks failed every delivery that 2.8
+  left `pending` with no task to run it (the worker killed during the
+  last attempt, the attempt past its time limit, or its outcome not
+  written), and logs how many. Send them again with `webhooks replay
+  --failed`. Retrying such a delivery's dead task with `messages retry`
+  sends nothing now: replay the delivery.
+- **Text messages, search, identity, and captcha open their circuits.**
+  After `HTTP_CLIENT.BREAKER_FAILURES` failures in a row (5), a provider
+  is not called for `BREAKER_COOLDOWN` seconds (30): text messages fail
+  with `... could not be reached (CircuitOpen).` and are retried, a
+  search raises `SearchError` at once, a login through an identity
+  provider fails at once, and a captcha check answers 503
+  `captcha_unavailable` at once, as it did after waiting. The test
+  plugin closes every client's circuits before each test.
+- **The worker's log lines about a failing message name its id**, after
+  its target: `Dead-lettered task shop.flaky (message 0f8e...) after 2
+  attempts`. Change a log rule or an alert that matches the whole line.
+
 ## 2.7 to 2.8
 
 2.8 follows up 2.7. Each item of this list says what a project that

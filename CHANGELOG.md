@@ -9,6 +9,62 @@ and a status.
 
 ## [Unreleased]
 
+### Added
+
+- `runworker --ready-file PATH`: the worker's readiness. Each round of
+  `--heartbeat-interval` rewrites the file while `/ready`'s checks and
+  the broker's hold, and removes it when one fails; it goes when the
+  worker stops. A fresh heartbeat without it is a degraded worker
+  ([The worker](docs/operations.md#the-worker), ADR 0187) (audit
+  A28-REL-02).
+- `domainkit.http.client.reset_circuits()` and `CircuitBreaker.reset()`:
+  close every client's circuits. The test plugin calls the first before
+  each test, so a client that backends share carries no open circuit
+  into the next test ([What each test starts from](docs/testing.md#what-each-test-starts-from))
+  (audit A28-ARCH-02).
+
+### Changed
+
+- `runworker --heartbeat-file` is the worker's liveness: its event loop
+  rewrites the file every `--heartbeat-interval` seconds, whatever its
+  checks find, and a failing check is logged. Before, the file aged
+  while the broker, a database, or a cache was away, and the documented
+  health check restarted the relaying workers that run the outbox during
+  a broker outage (ADR 0142). To restart on a failing dependency, as
+  before, check `--ready-file` instead. `heartbeat.beat` touches its path
+  first and takes `ready`
+  ([upgrading.md](docs/upgrading.md#28-to-29), ADR 0187) (audit
+  A28-REL-02).
+- The worker's log lines about a failing message name its id, as
+  `messages list` shows it and `messages retry` takes it: a retry, a dead
+  letter, an outcome that could not be written, a lost lease, a message
+  that could not be given back, and one whose target no worker knows
+  (audit A28-REL-08).
+
+### Fixed
+
+- A webhook delivery whose last attempt ends without an outcome is
+  marked failed, where it stayed `pending` for good: listed by
+  `webhooks deliveries --status failed`, replayed by `webhooks replay`,
+  and purged. Its last attempt marks it, if the database lets it, and the
+  hourly purge marks each pending delivery whose task died, was
+  cancelled, or was dropped (its worker killed, its time limit passed, or
+  its outcome not written), those of earlier releases included. A late
+  duplicate run no longer overwrites a finished delivery's outcome
+  ([How a delivery runs](docs/contrib/webhooks.md#how-a-delivery-runs),
+  ADR 0187) (audit A28-REL-05).
+- Text message providers, the search engines, identity providers, and
+  captcha checks share one HTTP client each, as mail and push did, where
+  each backend made per call had its own. A provider that is down opens
+  its circuit after `HTTP_CLIENT.BREAKER_FAILURES` failures and is called
+  no more until `BREAKER_COOLDOWN` has passed, connections are reused,
+  and shutdown closes them (ADR 0187) (audit A28-ARCH-02).
+- A stopping relay that is still publishing to a broker that answers is
+  cancelled after `HELPER_GRACE` (5 seconds), and its messages are given
+  back. Only a relay running messages from the outbox, while the broker
+  is away, waits for what is left of `DRAIN_TIMEOUT` first; every relay
+  did, so shutdown took up to 25 seconds (audit A28-TEST-07).
+
 ## [2.8.0] - 2026-11-18
 
 2.8 answers fourteen of a project's fifteen notes on 2.7 (the last,
