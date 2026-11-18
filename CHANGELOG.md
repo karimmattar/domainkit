@@ -9,6 +9,24 @@ and a status.
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-11-18
+
+2.8 answers fourteen of a project's fifteen notes on 2.7 (the last,
+uvicorn as an extra, waits for 3.0). An act binds the version its page
+read: a twin holds `If-Match`, and the digest covers it (ADR 0178). The
+admin API's act binds groups by id, a held authorization serves its own
+request alone, and making staff and a user's return hold what else the
+call changes (ADR 0179). Screens can refuse a link, an address, or a
+number a person typed, read as the phone shows it, and a reason past a
+line (ADR 0180). An upload route decides its body limit per request and
+counts before its rules, its service is given the file as received, and
+a Word document's XML is bounded before it is parsed (ADR 0181);
+`OfficeCheck` reads a field's name as Word and LibreOffice do, and
+checks SVG pictures and mail merges (ADR 0175). The infrastructure layer
+may raise a route's problems, and a project chooses the fields users
+are named by (ADR 0182). No migration: read
+[upgrading.md](docs/upgrading.md#27-to-28) before you deploy.
+
 ### Added
 
 - `domainkit.http.problems`: `APIError` and `FieldError`, the problems a
@@ -8780,7 +8798,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.7.0...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.8.0...HEAD
+[2.8.0]: https://github.com/karimmattar/domainkit/compare/v2.7.0...v2.8.0
 [2.7.0]: https://github.com/karimmattar/domainkit/compare/v2.6.0...v2.7.0
 [2.6.0]: https://github.com/karimmattar/domainkit/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/karimmattar/domainkit/compare/v2.4.0...v2.5.0
