@@ -61,11 +61,12 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import timedelta
 from types import TracebackType
 from typing import Any, Final, Self
+from weakref import WeakSet
 
 from domainkit import clock, deadlines
 from domainkit.ddd.events import DomainEvent, EventBus, event_bus
@@ -86,6 +87,8 @@ logger = logging.getLogger(__name__)
 _random = secrets.SystemRandom()
 _IN_DOUBT: Final = "domainkit_commit_in_doubt"
 """The attribute that marks the error of a commit in doubt (``failed_in_doubt``)."""
+_MARKED: Final[WeakSet[BaseException]] = WeakSet()
+"""Errors of commits in doubt that take no attribute (a frozen dataclass's)."""
 _CAUSES: Final = 16
 """How far ``failed_in_doubt`` follows the errors an error was raised from."""
 
@@ -386,7 +389,7 @@ class UnitOfWork(ABC):
         except BaseException as exc:
             if not self._refused(exc):
                 self.in_doubt += 1
-                setattr(exc, _IN_DOUBT, True)  # What answers the request reads it.
+                _mark_in_doubt(exc)  # What answers the request reads it.
             raise
         self.committed += 1
         if self._commits is not None:
@@ -618,10 +621,32 @@ def failed_in_doubt(exc: BaseException) -> bool:
     for _ in range(_CAUSES):
         if seen is None:
             return False
-        if getattr(seen, _IN_DOUBT, False):
+        if getattr(seen, _IN_DOUBT, False) or _marked(seen):
             return True
         seen = seen.__cause__ or seen.__context__
     return False
+
+
+def _mark_in_doubt(exc: BaseException) -> None:
+    """Mark ``exc`` for ``failed_in_doubt``; never raise in its place.
+
+    By an attribute, or, for an error that takes none (a frozen
+    dataclass's), in ``_MARKED``. One that is neither hashable nor takes an
+    attribute stays unmarked: the commit still counts in ``in_doubt``.
+    """
+    try:
+        setattr(exc, _IN_DOUBT, True)
+    except (AttributeError, TypeError):
+        with suppress(TypeError):
+            _MARKED.add(exc)
+
+
+def _marked(exc: BaseException) -> bool:
+    """Whether ``_MARKED`` holds ``exc``; False for an error that is not hashable."""
+    try:
+        return exc in _MARKED
+    except TypeError:
+        return False
 
 
 def expectations_of(uow: UnitOfWork) -> tuple[Expectation, ...]:

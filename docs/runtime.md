@@ -1343,7 +1343,10 @@ it off, and the code inside sees none.
 - The other deadlines the committing task enforces are put back when the
   block ends, later by the time it took: what follows the commit does not
   count against the work's time. A worker's task keeps the time it had
-  left.
+  left. So is a route's own tighter `timeout()` around a commit: the
+  commit lifts the request's deadline, not a bound the route set itself,
+  and the block still raises `TimeoutError` when its seconds run out.
+  Put the commit last in such a block, or catch its `TimeoutError`.
 - Any other deadline, one that another task enforces and no commit ends,
   is left as it is.
 

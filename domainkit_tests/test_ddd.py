@@ -502,6 +502,52 @@ async def test_an_error_raised_from_a_commit_in_doubt_is_in_doubt() -> None:
     assert failed_in_doubt(loop) is False
 
 
+@dataclasses.dataclass(frozen=True)
+class FrozenFailure(Exception):
+    """A driver's error that takes no attribute: a frozen dataclass."""
+
+    reason: str
+
+
+class Sealed(Exception):
+    """An error that takes no attribute and has no hash."""
+
+    __hash__ = None  # type: ignore[assignment]
+
+    def __setattr__(self, name: str, value: object) -> None:
+        """Refuse every attribute."""
+        raise AttributeError(name)
+
+
+@pytest.mark.parametrize(
+    ("failure", "marked"),
+    [
+        (FrozenFailure("the reply was lost"), True),
+        (Sealed("the reply was lost"), False),
+    ],
+    ids=["frozen-dataclass", "unhashable"],
+)
+async def test_an_error_that_takes_no_attribute_is_raised_as_it_was(
+    failure: Exception, marked: bool
+) -> None:
+    """Marking the error in doubt never replaces it.
+
+    A frozen dataclass's error is marked aside; one that is not hashable
+    either stays unmarked. Both are raised as they were, and counted.
+    """
+    uow = LosesItsAnswer(failure)
+
+    async def commit() -> None:
+        async with uow:
+            await uow.commit()
+
+    with pytest.raises(type(failure)) as caught:
+        await commit()
+    assert caught.value is failure
+    assert uow.in_doubt == 1
+    assert failed_in_doubt(failure) is marked
+
+
 async def test_handlers_a_cancellation_stops_are_logged_and_reported(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

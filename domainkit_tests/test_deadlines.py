@@ -525,3 +525,36 @@ async def test_a_commit_lifts_the_blocks_its_deadline_bounds_in_other_tasks() ->
         left, _ = await asyncio.gather(waits(), commits())
     assert left is None
     assert not bound.expired()
+
+
+async def test_a_deadline_keeps_its_open_blocks_only() -> None:
+    """Blocks bounded by a request's deadline leave its list as they end.
+
+    Two open at once, in two tasks, are both on it; three thousand, one
+    after another, leave nothing behind.
+    """
+    entered, release = asyncio.Event(), asyncio.Event()
+    count: list[int] = []
+
+    async def opens() -> None:
+        async with deadlines.timeout(120.0):
+            count.append(1)
+            if len(count) == 2:
+                entered.set()
+            await release.wait()
+
+    async with deadlines.timeout(60.0, until_commit=True) as bound:
+        assert bound.deadline is not None
+        seen: list[int] = []
+
+        async def looks() -> None:
+            await entered.wait()
+            seen.append(len(bound.deadline._bounded or ()))  # type: ignore[union-attr]
+            release.set()
+
+        await asyncio.gather(opens(), opens(), looks())
+        assert seen == [2]
+        for _ in range(3000):
+            async with deadlines.timeout(120.0):
+                pass
+        assert bound.deadline._bounded == []

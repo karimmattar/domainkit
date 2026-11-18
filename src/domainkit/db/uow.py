@@ -47,9 +47,17 @@ from typing import Any, Final, Self
 from weakref import WeakKeyDictionary
 
 from sqlalchemy import BigInteger, Connection, bindparam, event, func, select, text
-from sqlalchemy.exc import DBAPIError, IntegrityError, SQLAlchemyError
+from sqlalchemy.exc import (
+    DBAPIError,
+    DisconnectionError,
+    IntegrityError,
+    PendingRollbackError,
+    ResourceClosedError,
+    StatementError,
+)
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, AsyncSessionTransaction
-from sqlalchemy.orm.exc import StaleDataError
+from sqlalchemy.orm.exc import FlushError, StaleDataError
 
 from domainkit.apps import registry
 from domainkit.conf import settings
@@ -77,6 +85,17 @@ from domainkit.reporting import report_error
 from domainkit.tracing import span
 
 MESSAGING: Final = "domainkit.contrib.messaging"
+REFUSED_BEFORE_COMMIT: Final = (
+    StaleDataError,
+    FlushError,
+    PendingRollbackError,
+    ResourceClosedError,
+    PoolTimeout,
+    DisconnectionError,
+)
+"""SQLAlchemy's own errors that come before a ``COMMIT`` is sent: a stale
+version or a refused flush, a session or connection unusable, no connection
+to be had. A commit they fail stored nothing."""
 CONFLICTS: Final = frozenset({"40001", "40P01"})
 """PostgreSQL's SQLSTATEs of a transaction that lost a race and may succeed
 if run again: ``serialization_failure`` and ``deadlock_detected``."""
@@ -433,22 +452,22 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         """Whether the commit surely stored nothing.
 
         A constraint, a stale version, a lost race, or another error the
-        server sent back; and SQLAlchemy's own errors that are no driver's
-        (a value it could not bind, a flush it refused, a pool out of
-        connections), raised before a ``COMMIT`` could be answered. A
-        connection lost or cut off (SQLSTATE class ``08``), a timeout, or a
-        cancellation leaves the outcome unknown: the server may have
-        applied the ``COMMIT`` whose answer never came.
+        server sent back; SQLAlchemy's own errors that come before a
+        ``COMMIT`` is sent (``REFUSED_BEFORE_COMMIT``); and a statement it
+        could not build or bind. A connection lost or cut off (SQLSTATE
+        class ``08``), a timeout, or a cancellation leaves the outcome
+        unknown: the server may have applied the ``COMMIT`` whose answer
+        never came. So do SQLAlchemy's other errors (``InvalidRequestError``,
+        ``MissingGreenlet``): a session's ``after_commit`` listener may raise
+        them once the ``COMMIT`` landed.
         """
-        if super()._refused(exc):
+        if super()._refused(exc) or isinstance(exc, REFUSED_BEFORE_COMMIT):
             return True
-        if not isinstance(exc, SQLAlchemyError):
-            return False
-        if not isinstance(exc, DBAPIError):
-            return True
-        if exc.connection_invalidated:
-            return False
-        return not (sqlstate_of(exc) or "").startswith(CONNECTION_EXCEPTION)
+        if isinstance(exc, DBAPIError):
+            return not exc.connection_invalidated and not (
+                sqlstate_of(exc) or ""
+            ).startswith(CONNECTION_EXCEPTION)
+        return isinstance(exc, StatementError)  # Built or bound: never sent.
 
     async def _begin_savepoint(self) -> Savepoint:
         """``SAVEPOINT`` in the session's transaction (flushing first)."""

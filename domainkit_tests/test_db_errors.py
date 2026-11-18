@@ -26,10 +26,15 @@ from sqlalchemy import (
 from sqlalchemy import UniqueConstraint as Unique
 from sqlalchemy.exc import (
     DBAPIError,
+    DisconnectionError,
     IntegrityError,
     InvalidRequestError,
+    MissingGreenlet,
+    PendingRollbackError,
+    ResourceClosedError,
     StatementError,
 )
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.orm.exc import FlushError, StaleDataError
 
@@ -780,10 +785,16 @@ def answered(sqlstate: str | None, *, invalidated: bool = False) -> DBAPIError:
         (answered("23514"), 0),
         (answered(None), 0),  # SQLite's errors are answers too.
         (StaleDataError("a version moved"), 0),
-        # SQLAlchemy's own, before a COMMIT could be answered.
+        # SQLAlchemy's own, before a COMMIT is sent.
         (StatementError("bind failed", "INSERT", {}, ValueError("bad")), 0),
-        (InvalidRequestError("the session is closed"), 0),
         (FlushError("an instance with that identity is present"), 0),
+        (PendingRollbackError("roll back first"), 0),
+        (ResourceClosedError("this connection is closed"), 0),
+        (PoolTimeout("QueuePool limit reached"), 0),
+        (DisconnectionError("the connection was invalid"), 0),
+        # Its others may come from an after_commit listener: in doubt.
+        (InvalidRequestError("not in a transaction"), 1),
+        (MissingGreenlet("greenlet_spawn has not been called"), 1),
         (answered("08006"), 1),  # The connection failed.
         (answered(None, invalidated=True), 1),
         (TimeoutError("command_timeout"), 1),
@@ -805,3 +816,34 @@ async def test_a_commit_the_database_did_not_answer_is_in_doubt(
     with pytest.raises(raised):
         await write()
     assert (uow.committed, uow.in_doubt) == (0, in_doubt)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [InvalidRequestError("not in a transaction"), MissingGreenlet("no greenlet")],
+)
+async def test_an_error_after_the_commit_landed_is_in_doubt(
+    notes_table: None, failure: Exception
+) -> None:
+    """A session's ``after_commit`` listener fails once the ``COMMIT`` landed.
+
+    The row is stored: the commit counts in doubt, so an upload it names
+    is kept, not deleted.
+    """
+    note = Note(id=NoteId(uuid4()), text="landed")
+    uow = NotesUnitOfWork()
+
+    def fails(session: object) -> None:
+        raise failure
+
+    async def write() -> None:
+        async with uow:
+            event.listen(uow.session.sync_session, "after_commit", fails)
+            await uow.notes.add(note)
+            await uow.commit()
+
+    with pytest.raises(type(failure)):
+        await write()
+    assert (uow.committed, uow.in_doubt) == (0, 1)
+    async with NotesUnitOfWork() as reader:
+        assert (await reader.notes.get(note.id)).text == "landed"

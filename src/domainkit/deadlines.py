@@ -97,8 +97,8 @@ class Deadline:
         self._parent: Deadline | None = None
         """The deadline of the work this block was entered in, if any."""
         self._bounded: list[Deadline] | None = None
-        """Blocks bounded by this deadline, in any task, that a commit lifts
-        with it (``until_commit``)."""
+        """Open blocks bounded by this deadline, in any task, that a commit
+        lifts with it (``until_commit``); each leaves it as it ends."""
 
     def remaining(self) -> float | None:
         """Seconds left, never below 0; None without a deadline."""
@@ -241,6 +241,8 @@ class Timeout:
         self._by_deadline = False
         self._timer: asyncio.Timeout | None = None
         self._token: Token[Deadline | None] | None = None
+        self._bounding: list[Deadline] | None = None
+        """The list of open blocks this block's deadline is on (``_bounded``)."""
 
     def expired(self) -> bool:
         """Whether this block's own timer ran out (and cancelled the block)."""
@@ -265,20 +267,21 @@ class Timeout:
         self.deadline = Deadline(limit)
         self.deadline.until_commit = self.until_commit
         self.deadline._parent = outer
-        if self._by_deadline and outer is not None and outer._ends_at_commit():
-            # Bounded by a deadline a commit lifts: lifted with it, whichever
-            # task commits, with a timer of its own (in a task that only
-            # shares the deadline) or without.
-            self.deadline.until_commit = True
-            if outer._bounded is None:
-                outer._bounded = []
-            outer._bounded.append(self.deadline)
         if self._by_deadline and outer is not None and outer._enforced():
             self.deadline._enforce(None, outer)
         elif limit is not None:
             self._timer = asyncio.timeout(limit)
             await self._timer.__aenter__()
             self.deadline._enforce(self._timer)
+        if self._by_deadline and outer is not None and outer._ends_at_commit():
+            # Bounded by a deadline a commit lifts: lifted with it, whichever
+            # task commits, with a timer of its own (in a task that only
+            # shares the deadline) or without, while the block is open.
+            self.deadline.until_commit = True
+            if outer._bounded is None:
+                outer._bounded = []
+            outer._bounded.append(self.deadline)
+            self._bounding = outer._bounded
         self._token = _current.set(self.deadline)
         return self
 
@@ -297,6 +300,9 @@ class Timeout:
         if self.deadline is None or self._token is None:
             return  # Never entered.
         _current.reset(self._token)
+        if self._bounding is not None:
+            self._bounding.remove(self.deadline)  # It keeps open blocks only.
+            self._bounding = None
         self.deadline._enforce(None)
         self.deadline.clear()  # Tasks that outlive the block are not bound.
         if self._timer is None:
