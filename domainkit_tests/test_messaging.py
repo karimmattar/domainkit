@@ -2814,9 +2814,17 @@ async def test_workers_claim_only_what_they_can_run(
     gates.update(c0=asyncio.Event(), c1=asyncio.Event(), c2=asyncio.Event())
     for name in ("c0", "c1", "c2"):
         await enqueue(wait_at_gate, name=name)
+    # Not a test of timeouts: the gates hold their tasks past FAST's 0.2 s.
+    slow = {"TASK_TIMEOUT": 30, "VISIBILITY_TIMEOUT": 60}
     worker = Worker(
         MessagingSettings(
-            **{**FAST, "POLL_INTERVAL": 0.01, "CONCURRENCY": 2, "BATCH_SIZE": 10}
+            **{
+                **FAST,
+                "POLL_INTERVAL": 0.01,
+                "CONCURRENCY": 2,
+                "BATCH_SIZE": 10,
+                **slow,
+            }
         )
     )
     claim = Flaky(worker._claim, times=0)
