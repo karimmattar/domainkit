@@ -35,8 +35,9 @@ counts a Word document's (each ``<`` twice, each ``=`` once). A DTD or
 an entity is refused before parsing, and it is read as UTF-8 only, so
 the count sees what is parsed. It is then read once for what makes
 canonicalization cost: ``MAX_DEPTH`` levels, ``MAX_DECLARATIONS``
-namespace declarations on the path to an element and ``MAX_ATTRIBUTES``
-attributes on it, and ``MAX_SIGNED_INFO`` elements and
+namespace declarations on the path to an element, of ``MAX_NAMESPACE_URI``
+characters at most, and ``MAX_ATTRIBUTES`` attributes on it, and
+``MAX_SIGNED_INFO`` elements and
 ``MAX_SIGNED_INFO_BYTES`` bytes in a ``SignedInfo``. It is
 parsed in a thread of its own, which ends with it and takes with it the
 names lxml keeps for the thread, never on the event loop's; ``PARSES``
@@ -94,16 +95,23 @@ MAX_NODES: Final = 50_000
 """The most nodes a SAMLResponse's XML may make, counted before it is parsed.
 
 A thousand group values make some 7,000."""
-MAX_DEPTH: Final = 64
+MAX_DEPTH: Final = 32
 """How deep an element may sit, the response's root at 1.
 
-Identity providers write under ten levels."""
+Identity providers write under ten levels, an encrypted assertion's
+included."""
 MAX_DECLARATIONS: Final = 32
 """The most namespace declarations on the path from the root to an element,
 the element's own included, a prefix declared again counted again.
 
 Identity providers write about five on a path. Okta declares ``xs`` and
 ``xsi`` again on each attribute value: on siblings, each path holds them once."""
+MAX_NAMESPACE_URI: Final = 128
+"""The most characters a namespace declaration's URI may hold.
+
+SAML's and XML Signature's are under 60. Exclusive canonicalization, which
+identity providers sign with, writes a declaration again on each element
+that uses it."""
 MAX_ATTRIBUTES: Final = 32
 """The most attributes an element may hold, its namespace declarations aside.
 
@@ -256,8 +264,9 @@ def verified_claims(
 
     Bounded before it is parsed: ``MAX_RESPONSE`` characters, ``MAX_NODES``
     nodes, no DTD or entity; read as UTF-8. Then bounded before signxml
-    reads it: ``MAX_DEPTH``, ``MAX_DECLARATIONS``, ``MAX_ATTRIBUTES``,
-    ``MAX_SIGNED_INFO`` and ``MAX_SIGNED_INFO_BYTES`` (``_shaped``).
+    reads it: ``MAX_DEPTH``, ``MAX_DECLARATIONS``, ``MAX_NAMESPACE_URI``,
+    ``MAX_ATTRIBUTES``, ``MAX_SIGNED_INFO`` and ``MAX_SIGNED_INFO_BYTES``
+    (``_shaped``).
     CPU-bound, and lxml keeps each name it parses for the thread's life:
     the ACS calls it in a thread of its own.
 
@@ -361,8 +370,9 @@ def _shaped(document: bytes) -> None:
 
     Read once, as signxml's parser reads it (UTF-8, no entity): each
     element's depth, the namespace declarations on its path, each one
-    counted, which canonicalization walks for each element, and its
-    attributes, which it sorts; in the signed part signxml canonicalizes
+    counted, which canonicalization walks for each element, their URIs'
+    lengths, which it may write again for each, and its attributes, which
+    it sorts; in the signed part signxml canonicalizes
     before it checks a digest as well as in a ``SignedInfo``. And each
     ``SignedInfo``'s elements and bytes, which signxml canonicalizes
     before it checks a signature. The declarations on a path bound the
@@ -370,9 +380,10 @@ def _shaped(document: bytes) -> None:
 
     Raises:
         AssertionRefused: An element sits deeper than ``MAX_DEPTH``, has
-            more than ``MAX_DECLARATIONS`` on its path or
-            ``MAX_ATTRIBUTES`` attributes, or a ``SignedInfo`` more than
-            ``MAX_SIGNED_INFO`` elements or ``MAX_SIGNED_INFO_BYTES`` bytes.
+            more than ``MAX_DECLARATIONS`` on its path, one of a URI past
+            ``MAX_NAMESPACE_URI``, or ``MAX_ATTRIBUTES`` attributes; or a
+            ``SignedInfo`` more than ``MAX_SIGNED_INFO`` elements or
+            ``MAX_SIGNED_INFO_BYTES`` bytes.
         lxml.etree.XMLSyntaxError: It is not well-formed.
     """
     from lxml import etree
@@ -389,6 +400,10 @@ def _shaped(document: bytes) -> None:
         huge_tree=False,
     ):
         if event == "start-ns":
+            if len(item[1]) > MAX_NAMESPACE_URI:
+                raise AssertionRefused(
+                    f"a namespace URI of more than {MAX_NAMESPACE_URI} characters"
+                )
             declared += 1
         elif event == "start":
             path, declared = paths[-1] + declared, 0

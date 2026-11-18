@@ -301,14 +301,16 @@ signature is checked (since 2.9):
   with a byte order mark or not, whatever it declares, so the count sees
   what is parsed: a response not in UTF-8 is refused.
 - Then it is read once more, for what checking a signature costs: an
-  element sits at most 64 levels deep, has at most 32 namespace
+  element sits at most 32 levels deep, has at most 32 namespace
   declarations on its path from the root (a prefix declared again counts
   again; Okta declares `xs` and `xsi` again on each attribute value, but
-  on siblings, so each path holds them once) and 32 attributes
-  (namespace declarations aside). A `SignedInfo` holds at most 32
-  elements and 16 KiB. Identity providers write fewer than ten levels,
-  about five declarations on a path, up to some seven attributes on an
-  element, and a `SignedInfo` of some ten elements, under 2 KiB.
+  on siblings, so each path holds them once), each of a URI of 128
+  characters at most, and 32 attributes (namespace declarations aside).
+  A `SignedInfo` holds at most 32 elements and 16 KiB. Identity
+  providers write fewer than ten levels, an encrypted assertion's
+  included, about five declarations on a path, namespace URIs under 60
+  characters, up to some seven attributes on an element, and a
+  `SignedInfo` of some ten elements, under 2 KiB.
 - Each response is parsed in a thread of its own, which ends with it,
   never on the event loop's. lxml keeps every name a thread parses for
   as long as the thread lives; the names go with the thread. At most 4
@@ -316,10 +318,13 @@ signature is checked (since 2.9):
   within 5 seconds is refused.
 - Within these bounds, the whole check of XML written to cost the most
   (the bytes counted, both readings, and signxml up to its refusal) took
-  up to 50 ms and 15 MiB for a response no one signed, and up to 200 ms
-  and 36 MiB for one the provider signed and that was then changed,
-  whose signed part signxml canonicalizes before its digest refuses it,
-  with inclusive or exclusive canonicalization alike.
+  up to 50 ms and 15 MiB for a response no one signed. For one the
+  provider signed and that was then changed, whose signed part signxml
+  canonicalizes before its digest refuses it, the costliest shapes took
+  up to 275 ms, most of their runs 150 to 230 ms, and up to 46 MiB over
+  what the process held before, with inclusive or exclusive
+  canonicalization (measured on a shared machine at a load average near
+  8).
   The thread is not a daemon: a worker that exits while a response is
   parsed waits for that long, rather than stop the parse halfway.
 
