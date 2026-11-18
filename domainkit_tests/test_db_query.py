@@ -2,12 +2,13 @@
 
 import asyncio
 import os
+import re
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, Any, NewType
-from uuid import uuid4
+from typing import Annotated, Any, Final, NewType
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import Depends, FastAPI
@@ -72,6 +73,7 @@ from domainkit_tests.gadgets import (
     MADE,
     Color,
     Gadget,
+    GadgetId,
     GadgetMade,
     GadgetRepository,
     GadgetsUnitOfWork,
@@ -987,45 +989,76 @@ async def test_pages_through_missing_values_cover_each_once_in_order(
     assert (seen, counted) == (everything, reads)
 
 
-@postgres_only
+@pytest.mark.parametrize(
+    ("backend", "how"),
+    [
+        ("memory", "filter"),
+        ("memory", "values"),
+        pytest.param("sql", "filter", marks=postgres_only),
+        pytest.param("sql", "values", marks=postgres_only),
+    ],
+)
+@pytest.mark.parametrize(
+    ("limit", "reads"), [(9, [1, 3]), (3, [1, 2, 3])], ids=["room-left", "filled"]
+)
 async def test_a_row_that_moves_between_the_parts_is_read_once(
-    tables: None, monkeypatch: pytest.MonkeyPatch
+    tables: None,
+    monkeypatch: pytest.MonkeyPatch,
+    backend: str,
+    how: str,
+    limit: int,
+    reads: list[int],
 ) -> None:
-    """The second part leaves out what the first read.
+    """A row the first part read, and the second reads again, is kept once.
 
     Each statement reads a snapshot of its own on PostgreSQL (``READ
     COMMITTED``): a gadget read in the first part, whose stock another
-    request takes away before the second, would be read there again.
-    SQLite keeps one snapshot for the transaction, and the other request
-    waits for it.
+    request takes away before the second, comes back there, and is
+    dropped. When the second part came back full with it, the part is read
+    again for one more, so the page is not short of what follows. In
+    memory, the gadget changes between the two reads alike. SQLite keeps
+    one snapshot for the transaction, and the other request waits for it.
     """
     items = [make_gadget(f"g{n}", stock=s) for n, s in enumerate([1, 2, None, None])]
-    await store(*items)
+    for n, each in enumerate(items):  # g1 sorts first of the missing, once moved.
+        each.id = GadgetId(UUID(int=n + 1))
     moved = items[1]
-    read = GadgetRepository._filter
     calls: list[int] = []
 
-    async def racing(self: GadgetRepository, query: Selection) -> list[Gadget]:
-        found = await read(self, query)
+    async def move() -> None:
+        if backend == "memory":
+            moved.stock = None
+            return
+        async with connections.engine().begin() as other:
+            await other.execute(
+                update(gadgets).where(gadgets.c.id == moved.id).values(stock=None)
+            )
+
+    owner = InMemoryGadgets if backend == "memory" else GadgetRepository
+    name = "_filter" if how == "filter" or backend == "memory" else "_values"
+    read = getattr(owner, name)
+
+    async def racing(self: object, *arguments: Any) -> list[Any]:  # noqa: ANN401
+        found: list[Any] = await read(self, *arguments)
         calls.append(len(found))
         if len(calls) == 1:  # Another request commits between the two parts.
-            async with connections.engine().begin() as other:
-                await other.execute(
-                    update(gadgets).where(gadgets.c.id == moved.id).values(stock=None)
-                )
+            await move()
         return found
 
     ordering = (Ordering("stock"), Ordering("id"))
+    await store(*items)
     async with GadgetsUnitOfWork(readonly=True) as uow:
-        everything = await uow.gadgets.filter(Selection(ordering=ordering))
-        after = position_of(everything[0], ordering)
-        monkeypatch.setattr(GadgetRepository, "_filter", racing)
-        found = await uow.gadgets.filter(
-            Selection(ordering=ordering, after=after, limit=9)
+        repository = InMemoryGadgets(items) if backend == "memory" else uow.gadgets
+        everything = await repository.filter(Selection(ordering=ordering))
+        query = Selection(
+            ordering=ordering, after=position_of(everything[0], ordering), limit=limit
         )
-    names = [each.name for each in found]
-    assert (names[0], sorted(names)) == ("g1", ["g1", "g2", "g3"])
-    assert calls == [1, 2]
+        monkeypatch.setattr(owner, name, racing)
+        if how == "filter":
+            names: list[object] = [each.name for each in await repository.filter(query)]
+        else:
+            names = [row["name"] for row in await repository.values(query, "name")]
+    assert (names, calls) == (["g1", "g2", "g3"][:limit], reads)
 
 
 @pytest.mark.parametrize("fields", [("name",), ("name", "id")])
@@ -1034,9 +1067,11 @@ async def test_values_through_missing_values_cover_each_once(
 ) -> None:
     """``values`` reads the parts as ``filter`` does, and gives the fields asked.
 
-    It reads the ids too, to tell the parts apart, and leaves them out of
-    the rows when they were not asked for. Past the last stock, the first
-    part finds nothing, and the second reads the missing ones.
+    It reads the ids too, to tell the parts apart (see the test above),
+    and leaves them out of the rows when they were not asked for: a row
+    with a key no one asked for is the regression this catches. Past the
+    last stock, the first part finds nothing, and the second reads the
+    missing ones.
     """
     stocks = [3, None, 1, None, 0]
     await store(*[make_gadget(f"g{n}", stock=s) for n, s in enumerate(stocks)])
@@ -1051,6 +1086,39 @@ async def test_values_through_missing_values_cover_each_once(
             assert [row["name"] for row in rows] == [
                 each.name for each in everything[index + 1 :]
             ]
+
+
+PARAMETER: Final = re.compile(r"\?|\$\d+")
+"""A bound parameter in a statement as the driver gets it (SQLite's, asyncpg's)."""
+
+
+async def test_the_second_part_binds_as_many_values_however_long_the_first(
+    tables: None,
+) -> None:
+    """The ids the first part read are not sent with the second.
+
+    Leaving them out in SQL bound one parameter per id, so a first part of
+    32,767 rows or more could not be sent (SQLite's and asyncpg's limits),
+    and a long one was slow; they are dropped as the rows come back.
+    """
+    await store(*[make_gadget(f"g{n}", stock=n % 40) for n in range(40)])
+    await store(*[make_gadget(f"m{n}") for n in range(3)])
+    ordering = (Ordering("stock"), Ordering("id"))
+    sent: list[int] = []
+    async with GadgetsUnitOfWork(readonly=True) as uow:
+        everything = await uow.gadgets.filter(Selection(ordering=ordering))
+        for index in (36, 0):  # Three stocks follow, then thirty-nine.
+            after = position_of(everything[index], ordering)
+            query = Selection(ordering=ordering, after=after, limit=50)
+            with CapturedQueries() as queries:
+                found = await uow.gadgets.filter(query)
+            assert [each.id for each in found] == [
+                each.id for each in everything[index + 1 :]
+            ]
+            selects = [each for each in queries.statements if "LIMIT" in each]
+            assert len(selects) == 2
+            sent.append(len(PARAMETER.findall(selects[1])))
+    assert sent[0] == sent[1]
 
 
 async def test_a_count_stops_where_it_is_told(tables: None) -> None:

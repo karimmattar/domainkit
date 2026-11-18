@@ -684,22 +684,30 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
         """What ``read`` finds of ``query``'s parts (``_parts``), up to its limit.
 
         Each part after the first is read only while the limit is not
-        reached, for what is left of it, and without the ids read before
-        (``key`` gives one's): each statement may read a snapshot of its
-        own (PostgreSQL's ``READ COMMITTED``), where a row whose ordering
-        field moved to the next part since would be read twice.
+        reached, for what is left of it, without what was read before
+        (``key`` gives a row's id): each statement may read a snapshot of
+        its own (PostgreSQL's ``READ COMMITTED``), and a row whose ordering
+        field moved to the next part since comes back there. A part that
+        came back full with such rows is read again, asking for as many
+        more, so the page is never short for them; this runs only when a
+        row moved, at most as often as the rows read before.
         """
         first, *others = self._parts(query)
         found = await read(first)
         for part in others:
             limit = cast("int", part.limit)  # Only a limited query has parts.
-            if len(found) >= limit:
+            wanted = limit - len(found)
+            if wanted <= 0:
                 break
-            rest = part.replace(limit=limit - len(found))
-            if found:
-                read_before = ~F(ID).in_([key(each) for each in found])
-                rest = rest.where(read_before.bind(self.aggregate_type))
-            found += await read(rest)
+            seen = {key(each) for each in found}
+            asked = wanted
+            while True:
+                rows = await read(part.replace(limit=asked))
+                fresh = [each for each in rows if key(each) not in seen]
+                if len(fresh) >= wanted or len(rows) < asked:
+                    break
+                asked = wanted + len(rows) - len(fresh)
+            found += fresh[:wanted]
         return found
 
     def _parts(self, query: Selection) -> list[Selection]:

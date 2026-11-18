@@ -206,13 +206,17 @@ ones descending), and no one range holds both.
   crosses from one group to the other costs one more statement for the
   page, plus one more for each child relationship it loads. `explain`
   gives the plan of each part, the second's too.
-- The second part leaves out the ids the first read: on PostgreSQL each
-  statement reads a snapshot of its own (`READ COMMITTED`), and a row
-  whose field went missing between them came back twice. Between the two
-  parts, as between pages, a row that changes its ordering field can be
-  missed; `FOR UPDATE` holds the rows read. With `NOWAIT`, if the second
-  part cannot take its locks, the rows the first part locked stay locked
-  until the unit of work ends.
+- A row the first part read, that the second reads again, is dropped as
+  it comes back: on PostgreSQL each statement reads a snapshot of its own
+  (`READ COMMITTED`), and a row whose field went missing between them
+  came back twice. If the second part came back full with such rows, it
+  is read again, asking for as many more, so the page is not short of
+  them. The ids are not sent with the second part: one bound parameter
+  per id fails past 32,767 of them (SQLite's and asyncpg's limits), and
+  is slower below. Between the two parts, as between pages, a row that
+  changes its ordering field can be missed; `FOR UPDATE` holds the rows
+  read. With `NOWAIT`, if the second part cannot take its locks, the rows
+  the first part locked stay locked until the unit of work ends.
 - Measured on 300,000 rows, a tenth of them missing, with an index on
   the field and the id: past a value ascending, 39 ms on PostgreSQL and
   10 ms on SQLite, now 0.04 and 0.1 ms for the first part, 0.02 and

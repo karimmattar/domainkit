@@ -241,8 +241,9 @@ class SqlAlchemyRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
         SQLite. The values stay bound parameters. Nothing is loaded or
         tracked; a locking query is planned without its lock. A page that
         ``filter`` reads in two parts (``following_parts``) gets the plan
-        of each, in turn: the second's too, which ``filter`` reads only
-        while the first leaves the page short.
+        of each, in turn: the second's is the statement ``filter`` runs
+        only while the first leaves the page short (there with the limit
+        that is left).
 
         Raises:
             ValueError: ``analyze`` on a database that cannot.

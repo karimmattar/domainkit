@@ -415,14 +415,15 @@ descending), no one range holds what follows: a page reads the rest of
 its group, then, only if it is not full, the other group, in a second
 statement. Each starts the index at its own first row. Such a page costs
 one more statement for the page, plus one more for each child
-relationship it loads. The second part leaves out the rows the first
-read. Between the two parts, as between pages, a row that changes its
-ordering field can be missed; `FOR UPDATE` ([row locks](#row-locks))
-holds the rows read. With `nowait`, if the second part cannot take its
-locks, the rows the first part locked stay locked until the unit of
-work ends. On PostgreSQL, a descending list needs its index descending
-too, `(field DESC, id)`: on `(field, id)` it reads the missing values
-past the position, as a tie group's. Two cases read more:
+relationship it loads. A row the first part read, that the second
+reads again, is kept once, and the page stays full. Between the two
+parts, as between pages, a row that changes its ordering field can be
+missed; `FOR UPDATE` ([row locks](#row-locks)) holds the rows read.
+With `nowait`, if the second part cannot take its locks, the rows the
+first part locked stay locked until the unit of work ends. On
+PostgreSQL, a descending list needs its index descending too,
+`(field DESC, id)`: on `(field, id)` it reads the missing values past
+the position, as a tie group's. Two cases read more:
 
 - **Ties on the first field.** A page reads the rows of its tie group that
   come before the position, as the bound covers only the first field.
