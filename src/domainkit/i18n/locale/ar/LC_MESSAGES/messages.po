@@ -1635,6 +1635,9 @@ msgstr "السبب المذكور"
 msgid "This act cannot be shown whole on one screen: make it in smaller steps."
 msgstr "لا يمكن عرض هذا الإجراء كاملًا على شاشة واحدة: نفّذه على خطوات أصغر."
 
+msgid "Text typed for this act holds a link, an email address, or a number to call, which a confirmation screen does not show: write it without one."
+msgstr "النص المكتوب لهذا الإجراء يحوي رابطًا أو بريدًا إلكترونيًا أو رقمًا للاتصال، ولا تعرضه شاشة التأكيد: اكتبه من دونه."
+
 #. domainkit.contrib.approvals: what a screen shows of a decision
 msgid "Approve a request"
 msgstr "الموافقة على طلب"

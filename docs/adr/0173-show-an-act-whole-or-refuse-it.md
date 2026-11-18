@@ -1,6 +1,6 @@
 # 0173. Show an act whole, or refuse it
 
-- Status: Accepted
+- Status: Accepted; amended by [0180](0180-refuse-links-a-person-typed-for-a-screen-and-a-reason-past-a-line.md)
 - Date: 2026-11-17
 - Amends: [0144](0144-authorize-one-act-not-a-window-of-time.md),
   [0163](0163-authorize-admin-changes-and-requests-steps-as-acts.md)

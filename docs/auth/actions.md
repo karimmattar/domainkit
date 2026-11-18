@@ -209,12 +209,114 @@ single object is counted, whatever its key. A change of the admin API that
 approvals would hold is refused at its twin when the approver's screen,
 a line longer, could not show it whole, and a request that its approvers
 could not be shown whole is refused when it is submitted, rather than
-left waiting. Rejecting and cancelling are never refused for what they
-show: they stop a request. Off, the default in 2.x, what does not fit is
-cut and counted, never left out unsaid.
+left waiting. Rejecting and cancelling are never refused for what the
+request shows: they stop it. Their own reason is refused past a line
+(since 2.8), as an impersonation's is. Off, the default in 2.x, what does
+not fit is cut and counted, never left out unsaid.
 
 ```python
 AUTH = {"ADMIN_ACTION": True, "AUTHORIZATIONS": {"WHOLE": True}}
+```
+
+### Text a person typed
+
+*New in 2.8* ([ADR 0180](../adr/0180-refuse-links-a-person-typed-for-a-screen-and-a-reason-past-a-line.md)).
+Part of a screen is text the person asking typed: a reason, a name
+given, a note. A stolen session writes it, and the phone shows it to its
+owner, or to an approver: "Locked out? Call +1 555 010 0100 to confirm".
+Mark such text `Typed` where the screen is built; with
+`AUTH["AUTHORIZATIONS"]["TYPED_LINKS"]` set to `"refused"`, `laid_out`
+refuses one that holds a link, an email address, or a number to call,
+when the act is asked for, before an authorization is stored:
+`LinkNotShown`, `422 link_not_shown`. `"shown"`, the default, shows it
+as typed, as 2.7 did.
+
+```python
+from domainkit.contrib.auth.actions import Shown
+from domainkit.contrib.auth.screens import Typed, laid_out, named
+
+details = {"Member": named(member.name, member.id), "Note": Typed(command.note)}
+Shown("End a membership", laid_out(details))
+```
+
+```python
+AUTH = {"ADMIN_ACTION": True, "AUTHORIZATIONS": {"TYPED_LINKS": "refused"}}
+```
+
+- **What the framework marks**: an impersonation's reason, on the admin
+  API's screen and as a held impersonation's "Stated reason"; a group's
+  new name; each text a change sets on a user but the fields that
+  identify them (an email or a mobile number set is what is set); a
+  rejection's and a cancellation's reason. The admin API checks a group's
+  new name at the change too, with or without `ADMIN_ACTION`: approvers'
+  screens show it later. A request whose approval would refuse what it
+  typed is refused when it is submitted, with `APPROVE_ACTION` on.
+- **What it never marks**: what the act is on (`named`), which never
+  locks its user or group. A group's name is checked where it is typed,
+  as a screen may show it cut; a user's username, address, or number is
+  an identifier, set as one, and never checked. A text field sent as it
+  is stored (a form saved whole) changes nothing: it is not checked, and
+  with `TYPED_LINKS` refused it is left off the screen, so a stored link
+  is never shown through it (`"shown"` keeps 2.7's screen). Rejecting and cancelling
+  check their own reason, never the request's, so a request stored before
+  the setting can always be stopped.
+- **A guard's `show`** marks what its maker typed:
+  `guard(..., show=lambda c: [("Payee", c.payee), ("Memo", Typed(c.memo))])`.
+  Arguments shown by name are not marked: an IBAN or an amount would read
+  as a number.
+- **What is checked is what the phone shows too.** A line cut to 63
+  characters and `…`, an escaped character, or a list's first items
+  "and 4 more" may read as a link the text did not hold: `evil.corporate`
+  cut to `evil.co…`. Each line that shows typed text is checked as shown.
+- **`holds_link(text)`** reads text as a person reads it: full-width forms
+  as their letters, characters drawn as nothing (zero-width spaces)
+  dropped, the dots that look like one (`。`, `．`, a middle dot, a bullet)
+  as a dot, `example[.]com` and `ann[at]example` as what they spell. It
+  finds a scheme (`https://`, `tel:`, `mailto:`), an at sign before a
+  letter or a digit, an IP address, a name ending in a top-level domain
+  IANA lists or one kept for special use (`evil.example`, also with
+  Cyrillic letters that read as Latin), `www.` anything, or seven digits
+  or more written as one number (`+1 (555) 010-0100`). When unsure, it
+  holds one. Not a date; nor an amount (with two digits of cents,
+  `1.234.567,89`; in groups of three by commas, `1,250,000`, or beside a
+  currency, `12 500 000 EUR`), nor a code (its letters touching its
+  digits, `INC0012345`, or joined by a hyphen to two runs of fewer than
+  seven digits, `CVE-2024-12345`), unless the number holds a plus sign or
+  a bracket, or the text a word that asks for a call (`call`, `tel`,
+  `ext`, `WhatsApp`, and their Arabic words, read through look-alike
+  letters) or a telephone's sign: `call 555 010 0123 EUR` and
+  `support-555-010-0123` hold one. `v1.2`, `Q3 report`, `readers`,
+  `2026-11-17`, and `invoice.pdf` hold none.
+- **Known false positives** read as links to a reader too, and are
+  written otherwise: a file or a group named with a top-level domain after
+  a dot (`notes.md`, `team.legal`, `Q3.report`), an account number or a
+  postal code in groups (`GB29 NWBK 6016 1331 9268 19`, `100-0001`,
+  `01310-100`), seven digits or more alone or beside a currency
+  (`build 1234567`, `EUR 1250000`), digits in threes by dots or spaces
+  with no cents (`1.234.567`, `612 345 678`: numbers to call in Spain), a
+  code with a run of seven digits (`JIRA-1234567`), and an amount in a
+  text that asks for a call.
+- **`on_typed_text`** runs a project's own check on each typed text, as
+  typed, whatever the setting: raise to refuse the act. One text may be
+  checked more than once (at a twin's two screens, then at the act), so a
+  check reads and has no side effect. `check_typed(text)` runs the checks
+  where text is typed and shown later, each cut past its twentieth
+  character included.
+
+```python
+from domainkit.apps import DomainConfig
+from domainkit.contrib.auth.screens import on_typed_text
+from domainkit.ddd import BusinessRuleViolation
+
+
+def no_shouting(text: str) -> None:
+    if text.isupper():
+        raise BusinessRuleViolation("Write it in lower case.")
+
+
+class AccountsConfig(DomainConfig):
+    def ready(self) -> None:
+        on_typed_text(no_shouting)
 ```
 
 ## A use case as the act
@@ -972,6 +1074,7 @@ An app that confirms its own way (the phone of
 | `AUTHORIZATIONS.TTL` | 5 minutes | How long an authorization works, from asking to spending; 30 minutes at most. |
 | `AUTHORIZATIONS.METHODS` | `["otp"]` | What confirming one proves, unless its action names others: `otp`, `pwd`, `phone`. |
 | `AUTHORIZATIONS.WHOLE` | `False` | The framework's acts show what they do whole, or are refused (`422 too_much_to_show`); off, what does not fit is cut and counted. |
+| `AUTHORIZATIONS.TYPED_LINKS` | `"shown"` | `"refused"`: text a person typed for the act that holds a link, an email address, or a number to call is refused (`422 link_not_shown`). |
 | `AUTHORIZATIONS.HELD_TTL` | `None` | How long past its expiry an authorization is kept while its act waits for approval; a week at most. |
 | `AUTHORIZATIONS.ACTIONS` | `{}` | Per act, by purpose, its own `TTL` and `METHODS`. |
 | `MFA.RATE` | `"10/hour"` | Wrong codes per user, confirmations included. |
@@ -988,6 +1091,7 @@ An app that confirms its own way (the phone of
 | `400 step_up_unsupported` | Asking with credentials limited to scopes, or that cannot be told apart. |
 | `409 no_second_factor` | Asking, for a user with no way to confirm what the act asks. |
 | `422 too_much_to_show` | Asking, for an act its screen cannot show whole (`TooMuchToShow`): a `show` that lays it out whole, or a framework act under `AUTHORIZATIONS.WHOLE`. |
+| `422 link_not_shown` | Asking, for an act whose screen shows typed text that holds a link, an email address, or a number to call (`LinkNotShown`), under `AUTHORIZATIONS.TYPED_LINKS` refused. |
 | `409 authorization_confirmed`, `409 authorization_expired` | Confirming twice, or one ended; confirming too late. |
 | `409 authorization_needs_other_factors` | A code or a passkey where the act asks the phone; the phone asked for an act that asks the password. |
 | `409 authorization_changed` | The phone, or another app (the app's own act), confirms a digest other than the act's. |

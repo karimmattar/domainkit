@@ -300,10 +300,15 @@ What an act shows, laid out on a phone's screen: whole, or refused (ADR 0173).
 
 - `LINES`: The most labelled lines a screen holds: 6.
 - `LINE_LENGTH`: The most characters (code points) a line, its label, or a title holds: 64.
+- `LinkNotShown`: Text typed for the act holds a link, an email address, or a number to call (422).
 - `TooMuchToShow`: The act cannot be shown whole on one screen: make it in smaller steps (422).
+- `Typed`: Text a person typed for the act, as a screen shows it (since 2.8, ADR 0180).
+- `check_typed`: Run the checks a screen runs on `text`, which a person typed (since 2.8).
 - `fitted`: `text` as a screen shows it: printable, at most `length` characters.
+- `holds_link`: Whether `text` holds a link, an email address, or a number to call.
 - `laid_out`: `details` on a screen's lines: six labelled lines of 64 characters at most.
 - `named`: What an act is on, on one line: its name, cut to fit if need be, and its id.
+- `on_typed_text`: Register a check of text a person typed for an act (since 2.8).
 
 ## `domainkit.contrib.auth.signup`
 
@@ -649,6 +654,7 @@ What apps built on auth use: log a user in, step them up, hear of them.
 - `step_up_answer`: What a step-up answers: when, with what, and a JWT login's new token.
 - `stepping_credentials`: The request's credentials, if they can keep a step-up.
 - `target_of`: What the table keeps of an address or a number: an HMAC of it.
+- `typed_field`: A user's field `name` set to `value`, as a screen shows it (since 2.8).
 - `user_for_staff`: The user an operator names (`match_for_staff`); say which field matched.
 - `utc_now`: The current time in UTC.
 

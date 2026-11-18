@@ -80,6 +80,33 @@ and a status.
   ([The version the page read](docs/auth/actions.md#the-version-the-page-read),
   ADR 0178) (user report A25).
 
+- `AUTH["AUTHORIZATIONS"]["TYPED_LINKS"]` (`"shown"`): set to `"refused"`,
+  the framework's acts refuse, when asked for, text a person typed that
+  holds a link, an email address, or a number to call (`422
+  link_not_shown`): an impersonation's reason, a group's new name, the
+  text fields a change sets anew on a user but those that identify them
+  (with the setting, one sent as stored is left off the screen), a
+  rejection's or a cancellation's reason, and what a guard's `show` marks
+  `Typed`, as typed and as the phone shows it, cut or escaped; when
+  unsure, a number is one to call. A held impersonation whose reason holds one is refused when it
+  is submitted, and approving a request whose typed text holds one is
+  refused; the admin API refuses a group named so, with or without its
+  act; rejecting and cancelling check their own reason only ([Text a
+  person typed](docs/auth/actions.md#text-a-person-typed), ADR 0180) (user
+  report A17).
+
+- `domainkit.contrib.auth.screens`: `Typed` marks text a person typed for
+  `laid_out` to check; `holds_link(text)` says whether text holds a link,
+  an address, or a number, read as a person reads it (full-width and
+  look-alike dots, characters drawn as nothing, `example[.]com`, letters
+  of other scripts that read as Latin); `check_typed(text)` checks text
+  where it is typed; a project's own checks register on `on_typed_text`;
+  `typed_field` (`domainkit.contrib.auth.integration`) marks a user's
+  field as another app's screen shows it.
+  `.github/scripts/screen_data.py` refreshes the top-level domains and the
+  letters from IANA and Unicode at each release, and the package's license
+  reads `MIT AND Unicode-3.0` (user report A17).
+
 - `command_route` and `upload_route` take `before_rules=`: FastAPI
   dependencies that run before the route's rules, on the act and on its
   twin, the requests the rules refuse included. On an upload route they
@@ -204,13 +231,6 @@ and a status.
   the authorization held for the first, which still waited, made it once
   approved (ADR 0179) (user report A17).
 
-- `auth.set_staff` and `auth.reactivate` hold what else the call sets
-  (`values`: an address, a number, a flag), which the approver sees and
-  the approval binds. They held the grant alone, and the approval was
-  spent by a call that also set a number no approver saw. A request of
-  2.7 is still found and spent by a call that sets nothing else (ADR
-  0179) (user report A17).
-
 - `PATCH /users/{id}` and `POST /users` refuse a username, an address
   that identifies users, or a number another user has before the
   `on_admin_change` checks: the commit refused it after approvals' hold
@@ -237,6 +257,21 @@ and a status.
   ([upgrading.md](docs/upgrading.md#27-to-28),
   [The version the page read](docs/auth/actions.md#the-version-the-page-read),
   ADR 0178) (user report A25).
+
+- `auth.set_staff` and `auth.reactivate` hold what else the call sets
+  (`values`: an address, a number, a flag), but what the user holds
+  already, which the approver sees and the approval binds; a text staff
+  typed there is checked as typed text (ADR 0180). They held the grant
+  alone, and the approval was spent by a call that also set a number no
+  approver saw. A request of 2.7 is still found and spent by a call that
+  sets nothing else (ADR 0179) (user report A17).
+
+- With `AUTH["AUTHORIZATIONS"]["WHOLE"]` on, a rejection's or a
+  cancellation's reason longer than a line is refused at its twin (`422
+  too_much_to_show`), as an impersonation's reason is: the phone cut it,
+  though the maker reads it whole. Off, it is cut, as in 2.7
+  ([upgrading.md](docs/upgrading.md#27-to-28), ADR 0180) (user report
+  A17).
 
 - `placeholders` and `fill_docx` bound the XML they parse, and what
   `fill_docx` writes in it, in the process that calls them:

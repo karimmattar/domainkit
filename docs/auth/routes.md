@@ -652,7 +652,13 @@ PUT  /admin/auth/users/6f1c.../groups {"groups": ["auditors"]}
   fit is cut and counted, the flags first ("auditors, clerks and 4 more",
   "2 more values"). The phone shows these words, read from the server's
   record ([Confirming one act](ciba.md#confirming-one-act), [What a
-  screen shows](actions.md#what-a-screen-shows)).
+  screen shows](actions.md#what-a-screen-shows)). With
+  `AUTH["AUTHORIZATIONS"]["TYPED_LINKS"]` set to `"refused"` (since 2.8),
+  what staff typed that holds a link, an email address, or a number to
+  call is refused at the twin (`422 link_not_shown`): an impersonation's
+  reason, a group's new name (at the change too, without the act), and
+  the fields set anew but those that identify the user ([Text a person
+  typed](actions.md#text-a-person-typed)).
 - **The twin checks what the change checks**: the staff member's bounds,
   the fields, a password's validators, impersonation's rules, a user or
   group that is not there, the last active superuser deleted or
