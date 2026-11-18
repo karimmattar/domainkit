@@ -88,12 +88,25 @@ Options weighed:
   missing value, and the bound already starts the scan at the position.
 - **`migrate` makes the user lookups' indexes on PostgreSQL.** Auth's
   `on_migrated` hook makes, on the user table, a project's own too, where
-  missing: `ix_<table>_email_lower` on `lower(EMAIL_FIELD)`,
-  `ix_<table>_username_lower` on `lower(USERNAME_FIELD)`, and
-  `ix_<table>_email_id` on the address, then the id
-  (`tables.lookup_indexes`). A field the table lacks or encrypts gets
-  none. The names are the table's `unmanaged_indexes`, so a revision
-  never drops one. SQLite gets none. The queries are left as they were:
+  missing (`tables.lookup_indexes`):
+  - `ix_<table>_<EMAIL_FIELD>_lower` and `ix_<table>_<USERNAME_FIELD>_lower`,
+    on `lower()` of each, where the column holds text (a `String`, or a
+    `TypeDecorator` over one) and is not encrypted: `lower()` of bytes
+    does not exist, and would fail the whole hook;
+  - `ix_<table>_<field>_id`, on the field the admin API lists users by
+    (`listing_field`: the first of `AUTH.IDENTIFIERS` not encrypted, else
+    the `USERNAME_FIELD`), then the id, where the table has an `id` and
+    that column is not unique (a unique one has an index of its own).
+
+  It reads the table's index names from the catalog first, and runs
+  `CREATE INDEX IF NOT EXISTS` only for a missing one: the statement
+  locks the table against writes before it looks for the index, so a
+  `migrate` with nothing to make would otherwise wait behind every open
+  write, and hold the writes after it. The names are the table's
+  `unmanaged_index_names`, matched exactly, so a revision never drops one
+  and still sees a project's index whose name starts the same way
+  (`unmanaged_indexes` stays a list of prefixes, for the audit trail's).
+  SQLite gets none. The queries are left as they were:
   each compares `lower(column)` with a value, so the planner uses the
   index on that expression ([PostgreSQL: indexes on
   expressions](https://www.postgresql.org/docs/16/indexes-expressional.html)).
@@ -113,8 +126,10 @@ Options weighed:
 - **Counts stop where told.** `Repository.count(..., at_most=n)` answers
   at most `n`. SQL counts a subquery with `LIMIT n`; a repository of
   one's own counts all and stops (`_count_at_most`, whose default takes
-  the smaller of `_count` and `n`). An export counts at most
-  `max_export + 1`.
+  the smaller of `_count` and `n`), and so does a `SqlAlchemyRepository`
+  whose subclass overrides `_count`. An export counts at most
+  `max_export + 1`; a repository whose `count` keeps 2.8's signature is
+  asked as before, and counts every match.
 - Flags' `GET /settings` reads the stored values with one `get_many`
   (A28-PERF-07), not one `find` per declared setting.
 
@@ -141,7 +156,9 @@ What still reads more than a page:
   A page within a large tie group of the first field reads the group up
   to the position (a third of 300,000 rows: 22.7 ms before, 7.9 after).
   A row comparison would serve the second where every field sorts one
-  way; it can be added later behind the same `following()`.
+  way; it can be added later behind the same `following()`. A money
+  field is bounded by its currency alone: in a project of one currency,
+  a page deep in an ordering by money reads from the start.
 - SQLite has no index on `lower()`: logins there still read the whole
   table. SQLite serves development and tests.
 - An allowed export still counts every match when fewer than
@@ -153,10 +170,12 @@ To watch:
   ([PostgreSQL: CREATE
   INDEX](https://www.postgresql.org/docs/16/sql-createindex.html)). On a
   large table, make them first with `CREATE INDEX CONCURRENTLY` under the
-  same names; `migrate` then finds them and makes nothing. A concurrent
+  same names; `migrate` then finds them in the catalog, builds none, and
+  takes no lock on the table. A concurrent
   build that fails leaves an invalid index of that name, which `migrate`
   takes as made: drop it and build it again.
-- A change of `EMAIL_FIELD` or `USERNAME_FIELD` makes the new indexes.
+- A change of `EMAIL_FIELD`, `USERNAME_FIELD`, or the first of
+  `AUTH.IDENTIFIERS` makes the new indexes.
   The old ones are no longer the table's unmanaged indexes, so the next
   revision written on PostgreSQL drops them, a drop that fails on a
   database that never had them (SQLite): drop them by hand instead, and

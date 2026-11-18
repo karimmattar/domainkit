@@ -14,23 +14,27 @@ and a status.
 - `Repository.count(criteria, at_most=n)`: a count that stops at `n`.
   SQL counts a subquery with `LIMIT n`, so a database reads no further
   matches; a repository of one's own counts all and stops
-  (`_count_at_most`). An export now counts at most `max_export + 1`:
-  refusing one of 1,000,000 rows took 35 to 57 ms, and now 1 to 7 ms
-  (ADR 0185) (audit A28-PERF-08).
+  (`_count_at_most`), as does a subclass that overrides `_count`. An
+  export now counts at most `max_export + 1`: refusing one of 1,000,000
+  rows took 35 to 57 ms, and now 1 to 7 ms. A repository whose `count`
+  keeps 2.8's signature is asked as before (ADR 0185)
+  (audit A28-PERF-08).
 - `BaseBackend.object_grants_beyond(holder, permissions)`, and
   `object_grants(holder, beyond=...)`: a holder's grants on objects, less
   those of the permissions given. The default filters what
   `object_grants` answers; `ObjectPermissionBackend` leaves them out in
-  its query. It is asked only of a class that defines both methods, so a
-  backend that overrides `object_grants` alone keeps every grant it adds
-  (ADR 0185) (audit A28-PERF-05).
-- On PostgreSQL, `migrate` makes three indexes on the user table, a
-  project's own too, where missing: `lower()` of the address and of the
-  username, and the address then the id. Logins by address, signups, the
-  checks for a taken address or username, and the admin API's list of
-  users each read the whole table before (30 to 60 ms at 300,000 users,
-  0.01 ms now). Revisions leave them alone; SQLite gets none (ADR 0185)
-  (audit A28-PERF-02).
+  its query. It is asked only of a class that defines both methods, or
+  neither, so a backend that overrides `object_grants` alone keeps every
+  grant it adds (ADR 0185) (audit A28-PERF-05).
+- On PostgreSQL, `migrate` makes indexes on the user table, a project's
+  own too, where missing: `lower()` of the address and of the username,
+  where each is text, and the field the admin API lists users by, then
+  the id. It reads the table's indexes first and makes only those
+  missing, so with none to make it takes no lock. Logins by address,
+  signups, the checks for a taken address or username, and the admin
+  API's list of users each read the whole table before (30 to 60 ms at
+  300,000 users, 0.01 ms now). Revisions leave them alone, by name;
+  SQLite gets none (ADR 0185) (audit A28-PERF-02).
 
 ### Changed
 

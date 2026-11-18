@@ -415,6 +415,9 @@ read more:
   descending, or put a field that is never missing first.
 - **Ties on the first field.** A page reads the rows of its tie group that
   come before the position, as the bound covers only the first field.
+- **Money first.** A money field is bounded by its currency alone, not
+  its amount: where every amount is in one currency, a page deep in an
+  ordering by money reads the index from its start, as it did before.
 
 ### Pages over HTTP
 

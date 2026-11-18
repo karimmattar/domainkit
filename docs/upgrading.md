@@ -41,27 +41,35 @@ never published), with each section below.
 2.9 answers the audit of 2.8. Each part below says what a project that
 relied on 2.8's behaviour changes, and what to run.
 
-### `migrate` makes three indexes on the user table, on PostgreSQL
+### `migrate` makes the user lookups' indexes, on PostgreSQL
 
 Logins by address, signups, the checks for a taken address or username,
 and the admin API's list of users read the whole users table in 2.8. On
 PostgreSQL, `migrate` now makes, on the user table, a project's own too
-(`AUTH.USER_TABLE`), where missing:
+(`AUTH.USER_TABLE`), those of these indexes that are missing:
 
-- `ix_<table>_email_lower`, on `lower(email)` (the `EMAIL_FIELD`);
-- `ix_<table>_username_lower`, on `lower(username)` (the
-  `USERNAME_FIELD`);
-- `ix_<table>_email_id`, on `(email, id)`, the admin API's order where
-  addresses identify users.
+- `ix_<table>_<EMAIL_FIELD>_lower`, on `lower()` of the `EMAIL_FIELD`
+  (`ix_domainkit_users_email_lower` on the default table);
+- `ix_<table>_<USERNAME_FIELD>_lower`, on `lower()` of the
+  `USERNAME_FIELD` (`ix_domainkit_users_username_lower`);
+- `ix_<table>_<field>_id`, on the field the admin API lists users by,
+  then the id: the first of `AUTH.IDENTIFIERS` the table does not
+  encrypt, else the `USERNAME_FIELD` (`ix_domainkit_users_email_id` where
+  addresses come first). None where that column is unique, as its own
+  index serves the order, or the table has no `id`.
 
-No `makemigrations`: they are not declared on the table, and revisions
-leave them alone. SQLite gets none, as it cannot reflect an index on
-`lower()` ([ADR 0185](adr/0185-bound-keyset-pages-index-the-user-lookups-and-read-fewer-grants.md)).
+A column kept as anything but text, such as bytes of a type of your
+own, gets no `lower()` index; an encrypted one gets none. No
+`makemigrations`: they are not declared on the table, and revisions
+leave them alone, by name. SQLite gets none, as it cannot reflect an
+index on `lower()` ([ADR 0185](adr/0185-bound-keyset-pages-index-the-user-lookups-and-read-fewer-grants.md)).
 
-Building an index holds writes to the table while it runs. On a large
-users table, make them before you deploy, without holding writes, under
-the same names; `migrate` then finds them and makes nothing. For the
-default table:
+`migrate` reads the table's indexes from the catalog first, and makes
+only those missing: with none to make, it takes no lock on the table.
+Building one holds writes to the table while it runs. On a large users
+table, make them before you deploy, without holding writes, under the
+same names; `migrate` then finds them and builds none. For the default
+table, with addresses first in `AUTH.IDENTIFIERS`:
 
 ```sql
 CREATE INDEX CONCURRENTLY ix_domainkit_users_email_lower ON domainkit_users (lower(email));
@@ -71,6 +79,27 @@ CREATE INDEX CONCURRENTLY ix_domainkit_users_email_id ON domainkit_users (email,
 
 A concurrent build that fails leaves an invalid index of that name, which
 `migrate` takes as made: drop it, and build it again.
+
+### A repository that overrides `count` may take `at_most`
+
+An export now asks its repository's `count` for at most `max_export + 1`
+matches: `count(criteria, include_deleted=..., at_most=...)`. A
+repository of the project's that overrides `count` with 2.8's signature
+keeps working: the export sees that it takes no `at_most`, asks it as
+2.8 did, and it counts every match. To count less, take the new
+argument and hand it on:
+
+```python
+async def count(self, criteria=None, *, include_deleted=False, at_most=None):
+    return await super().count(
+        criteria, include_deleted=include_deleted, at_most=at_most
+    )
+```
+
+A call of the project's own that passes `at_most` to such an override
+fails with a `TypeError` until it does. A repository that overrides
+`_count` instead needs nothing: a count that stops is asked of it, and
+its answer stops at `at_most`.
 
 ### Keyset pages, admin changes, and exports read less
 
