@@ -18,7 +18,8 @@ these:
 
 A block titled with a file and `` (new file)`` is a file to create, with
 the block's text: it must not exist yet. One titled with a file and
-`` (whole file)`` replaces the text of a file that exists.
+`` (whole file)`` replaces the text of a file that exists: Python that
+parses, is not empty, and adds to no class with ``...``.
 
 What cannot be placed (no such file, a name defined twice, an addition to
 a class the file lacks, a new file that exists) is refused, so a page
@@ -60,6 +61,7 @@ def apply_edit(path: Path, code: str) -> None:
         path = path.with_name(path.name.removesuffix(WHOLE_FILE))
         if not path.is_file():
             raise Refused(f"{path} does not exist: create it instead")
+        _check_whole(path, code)
         path.write_text(code, encoding="utf-8")
         return
     if "*" in path.name:
@@ -83,6 +85,24 @@ def apply_edit(path: Path, code: str) -> None:
         else:
             text = _append(text, source)
         path.write_text(text, encoding="utf-8")
+
+
+def _check_whole(path: Path, code: str) -> None:
+    """Refuse a whole file that is empty, does not parse, or adds to a class.
+
+    Raises:
+        Refused: Written as it is, it would leave ``path`` broken, or keep
+            ``...`` where the reader would keep the rest of a class.
+    """
+    try:
+        body = ast.parse(code).body
+    except SyntaxError as error:
+        raise Refused(f"{path}: the whole file does not parse: {error}") from None
+    if not body:
+        raise Refused(f"{path}: the whole file is empty")
+    for node in body:
+        if isinstance(node, ast.ClassDef) and _is_addition(node) and node.body[1:]:
+            raise Refused(f"{path}: a whole file writes {node.name} whole, not ...")
 
 
 def _start(node: ast.stmt) -> int:

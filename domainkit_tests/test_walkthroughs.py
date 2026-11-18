@@ -856,6 +856,30 @@ def test_a_whole_file_replaces_the_text_of_one_that_exists(tmp_path: Path) -> No
     assert not (tmp_path / "new.py").exists()
 
 
+@pytest.mark.parametrize(
+    ("code", "message"),
+    [
+        ("\n", "is empty"),
+        ("def broken(:\n", "does not parse"),
+        ("class Account:\n    ...\n    x: int\n", "writes Account whole"),
+    ],
+)
+def test_a_whole_file_that_would_break_the_file_is_refused(
+    tmp_path: Path, code: str, message: str
+) -> None:
+    """Empty, not Python, or an addition's ``...``: the file stays as it was."""
+    module = tmp_path / "model.py"
+    module.write_text(ORIGINAL, encoding="utf-8")
+
+    with pytest.raises(walkthrough_edits.Refused, match=re.escape(message)):
+        walkthrough_edits.apply_edit(tmp_path / "model.py (whole file)", code)
+
+    assert module.read_text(encoding="utf-8") == ORIGINAL
+    # A class whose whole body is ``...`` adds nothing: it is a class.
+    walkthrough_edits.apply_edit(tmp_path / "model.py (whole file)", "class S: ...\n")
+    assert module.read_text(encoding="utf-8") == "class S: ...\n"
+
+
 def test_an_edit_of_a_name_defined_twice_is_refused(tmp_path: Path) -> None:
     """Which ``deposit`` the page means is for it to say."""
     module = tmp_path / "model.py"
