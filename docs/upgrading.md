@@ -50,6 +50,12 @@ project that relied on 2.8's behaviour notices, and what to change.
   just before the deploy, while acting as a user, runs again. Rate
   limits, throttles, and live connections count the staff member, as
   before.
+- **The SAML ACS refuses a response past its bounds.** A response whose
+  XML makes more than 50,000 nodes (each `<` counts twice, each `=`
+  once), or that is in UTF-16 or UTF-32, gets `?error=saml_refused`,
+  where 2.8 parsed it. A response of a thousand group values makes some
+  7,000 nodes, and identity providers write UTF-8. Responses are parsed
+  in a thread of their own, at most 4 at once on an event loop.
 
 ## 2.7 to 2.8
 

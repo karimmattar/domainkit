@@ -290,6 +290,25 @@ What the ACS believes:
   `SIGNUP`.
 - **Encrypted assertions are not read.**
 
+Anyone may post to the ACS, so what it parses is bounded before it is
+parsed (since 2.9):
+
+- At most 1,000,000 base64 characters, and 50,000 nodes, counted on the
+  XML's bytes as a Word document's are ([The XML parsed](../documents.md#the-xml-parsed)):
+  each `<` twice, each `=` once. A response of a thousand group values
+  makes some 7,000.
+- A DTD or an entity is refused before parsing. The XML is read as UTF-8,
+  with a byte order mark or not, whatever it declares, so the count sees
+  what is parsed: a response in UTF-16 is refused.
+- Each response is parsed in a thread of its own, which ends with it,
+  never on the event loop's. lxml keeps every name a thread parses for
+  as long as the thread lives; the names go with the thread. At most 4
+  are parsed at once on a loop, and the others wait. At the bound, XML
+  written to cost the most took 14 MiB and 19 ms to parse.
+
+A response past these bounds gets `?error=saml_refused`, as one that
+does not hold.
+
 SAML logs in; it does not link. Its identities are kept under the
 provider name `saml:<name>`.
 

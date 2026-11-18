@@ -18,6 +18,12 @@ and a status.
   `privacy erase` drops it, and the user's export lists it, withheld. The
   trail still names the staff member, and rate limits, throttles, and
   live connections still count them (audit A28-SEC-03).
+- The SAML ACS bounds a response before it parses it: 50,000 nodes,
+  counted on its bytes, and no DTD or entity; it reads the XML as UTF-8.
+  It parses each response in a thread of its own, which ends with it,
+  never on the event loop's thread, and at most 4 at once on a loop. The
+  names lxml keeps for a thread go with it, and the loop serves other
+  requests meanwhile (audit A28-PERF-03).
 
 ## [2.8.0] - 2026-11-18
 

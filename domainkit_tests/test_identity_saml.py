@@ -1,6 +1,8 @@
 """SAML 2.0 single sign-on: only what the provider signed, for this request."""
 
+import asyncio
 import base64
+import threading
 import zlib
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
@@ -15,8 +17,12 @@ from cryptography.x509.oid import NameOID
 from fastapi.testclient import TestClient
 from lxml import etree
 from signxml.signer import XMLSigner
+from signxml.verifier import XMLVerifier
 
 from domainkit.conf import override_settings
+from domainkit.contrib.identity import saml
+from domainkit.contrib.identity.providers import Claims
+from domainkit.contrib.identity.settings import SamlSettings
 from domainkit_tests.conftest import ExitStackClients, Migrated
 from domainkit_tests.support.auth import bearer, create_user
 from domainkit_tests.test_identity_providers import PROVIDERS
@@ -306,3 +312,154 @@ def test_a_saml_login_is_finished_only_in_the_browser_that_started_it(
     assert elsewhere == {"error": "saml_refused"}
     assert stolen.json()["code"] == "identity_not_linked"
     assert redeemed.status_code == 200, redeemed.json()
+
+
+def unsigned(names: int, *, extra: str = "") -> str:
+    """A SAMLResponse of ``names`` distinct element names, signed by no one."""
+    body = "".join(f"<n{index}x/>" for index in range(names))
+    xml = (
+        f'{extra}<samlp:Response xmlns:samlp="{saml.PROTOCOL}">{body}</samlp:Response>'
+    )
+    return base64.b64encode(xml.encode()).decode()
+
+
+def test_the_acs_parses_each_response_in_a_thread_of_its_own(
+    app: App, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Never on the event loop's, nor on a thread that outlives it (audit A28-PERF-03).
+
+    lxml keeps every name a thread parses for as long as the thread lives:
+    on the loop's thread, each response of new names grew it for good, and
+    blocked the loop while it parsed.
+    """
+    client = app(SAML={"okta": OKTA}, SIGNUP=True, FRONTEND_URL=FRONTEND)
+    verified = saml.verified_claims
+    seen: list[tuple[threading.Thread, bool]] = []
+
+    def recording(*arguments: Any) -> Claims:  # noqa: ANN401 - verified_claims'.
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            seen.append((threading.current_thread(), False))
+        else:
+            seen.append((threading.current_thread(), True))
+        return verified(*arguments)
+
+    monkeypatch.setattr(saml, "verified_claims", recording)
+    for _ in "ab":
+        request_id, relay = start(client)
+        assert "ticket" in acs(client, response(request_id), relay)
+
+    (first, on_a_loop), (second, again_on_a_loop) = seen
+    first.join(5)
+    second.join(5)
+    assert (on_a_loop, again_on_a_loop) == (False, False)
+    assert first is not second
+    assert first.name == second.name == "domainkit.identity.saml"
+    assert (first.is_alive(), second.is_alive()) == (False, False)
+
+
+@pytest.mark.anyio
+async def test_the_names_a_response_holds_go_with_its_thread() -> None:
+    """The loop's thread keeps none of the names lxml parsed for it."""
+    config = SamlSettings(**OKTA)
+    now = datetime.now(UTC)
+    before = etree.memory_debugger.dict_size()
+
+    with pytest.raises(saml.AssertionRefused, match="no valid signature"):
+        await saml._alone(
+            lambda: saml.verified_claims(config, unsigned(5_000), "_x", now)
+        )
+
+    assert etree.memory_debugger.dict_size() == before
+
+
+def test_a_response_past_its_bounds_is_refused_before_it_is_parsed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Characters, nodes as their bytes can make them, and a DTD; read as UTF-8.
+
+    A DTD was refused once parsed; now before. Each ``<`` counts twice and
+    each ``=`` once: a response at ``MAX_NODES`` is parsed, one past it is not.
+    """
+    config = SamlSettings(**OKTA)
+    now = datetime.now(UTC)
+    parsed: list[bytes] = []
+
+    def verify(self: XMLVerifier, data: bytes, **_: Any) -> Any:  # noqa: ANN401
+        parsed.append(data)
+        raise etree.XMLSyntaxError("stop here", 1, 1, 1)
+
+    monkeypatch.setattr(XMLVerifier, "verify", verify)
+    # 2 * (names + 2) + 1 nodes: the root's tags, and its xmlns.
+    at_the_bound = (saml.MAX_NODES - 5) // 2
+    refused = [
+        ("over 1,000,000 characters", "A" * (saml.MAX_RESPONSE + 4)),
+        ("more than 50,000 nodes", unsigned(at_the_bound + 1)),
+        ("a DTD or an entity", unsigned(1, extra="<!DOCTYPE r [<!ELEMENT r ANY>]>")),
+        ("a DTD or an entity", unsigned(1, extra='<!entity x "y">')),
+    ]
+    for reason, encoded in refused:
+        with pytest.raises(saml.AssertionRefused, match=reason):
+            saml.verified_claims(config, encoded, "_x", now)
+    with pytest.raises(saml.AssertionRefused, match="no valid signature"):
+        saml.verified_claims(config, unsigned(at_the_bound), "_x", now)
+
+    assert parsed == [base64.b64decode(unsigned(at_the_bound))]
+
+
+def test_a_response_is_read_as_utf_8(app: App) -> None:
+    """With a byte order mark too; in UTF-16, whatever it declares, refused."""
+    client = app(SAML={"okta": OKTA}, SIGNUP=True, FRONTEND_URL=FRONTEND)
+
+    def utf_8_marked(request_id: str) -> str:
+        signed = base64.b64decode(response(request_id))
+        return base64.b64encode(b"\xef\xbb\xbf" + signed).decode()
+
+    def utf_16(request_id: str) -> str:
+        signed = base64.b64decode(response(request_id)).decode()
+        declared = f'<?xml version="1.0" encoding="UTF-16"?>{signed}'
+        return base64.b64encode(declared.encode("utf-16")).decode()
+
+    sent = []
+    for encoded in (utf_8_marked, utf_16):
+        request_id, relay = start(client)
+        sent.append(acs(client, encoded(request_id), relay))
+
+    assert "ticket" in sent[0]
+    assert sent[1] == {"error": "saml_refused"}
+
+
+@pytest.mark.anyio
+async def test_parses_at_once_are_bounded_and_a_cancelled_one_keeps_its_slot() -> None:
+    """``PARSES`` at once on a loop; the others wait for a thread to end.
+
+    A request cancelled while its response is parsed holds its slot until
+    the thread ends: the thread runs on, and counts.
+    """
+    claims = Claims(subject="00u1", email=None, email_verified=False)
+    release = threading.Event()
+    started = threading.Semaphore(0)
+    running: list[int] = []
+
+    def work() -> Claims:
+        running.append(1)
+        started.release()
+        release.wait(10)
+        return claims
+
+    tasks = [asyncio.create_task(saml._alone(work)) for _ in range(saml.PARSES + 1)]
+    for _ in range(saml.PARSES):
+        assert await asyncio.to_thread(started.acquire, timeout=10)
+    await asyncio.sleep(0.05)
+    waiting = len(running)
+    tasks[0].cancel()
+    await asyncio.sleep(0.05)
+    still = len(running)
+    release.set()
+    answers = await asyncio.gather(*tasks[1:])
+
+    assert waiting == still == saml.PARSES
+    assert tasks[0].cancelled()
+    assert answers == [claims] * saml.PARSES
+    assert len(running) == saml.PARSES + 1
