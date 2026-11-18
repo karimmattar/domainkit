@@ -1,11 +1,13 @@
 """Payments: a retried request books once, and a wallet is never overdrawn."""
 
 import asyncio
+from datetime import timedelta
 from uuid import UUID, uuid4
 
 import pytest
+from domainkit.contrib.accounting import ReferenceReused
 from domainkit.money import Money
-from domainkit.testing import AsyncClientFor, ClientFor, TestClient
+from domainkit.testing import AsyncClientFor, ClientFor, FrozenClock, TestClient
 
 from domains.wallets import controllers
 from tests.money import URL, balance, key, usd
@@ -28,26 +30,30 @@ def test_a_retried_payment_books_once(customer: TestClient, wallet: str) -> None
 
 
 def test_the_books_book_a_key_once_after_its_answer_is_gone(
-    customer: TestClient, wallet: str
+    customer: TestClient, wallet: str, clock: FrozenClock
 ) -> None:
-    """Past the key's lifetime the route runs again; the entry is the first one.
+    """Eight days on, the middleware has forgotten the key and the route runs.
 
-    Its reference is the wallet and the key, so the ledger returns what it
-    booked under them instead of booking again.
+    The payment is then booked on another day, so the ledger refuses its
+    reference; ``pay`` finds the entry booked under it, which moved the
+    same amount between the same accounts, and returns it. The test calls
+    the use case as the route would, past the middleware.
     """
-    sent, amount = uuid4(), Money.of("30.00", "USD")
+    sent = uuid4()
 
-    async def pay_twice() -> list[object]:
+    async def pay(amount: str) -> object:
         account = await controllers.find_wallet(UUID(wallet))
-        return [
-            (await controllers.pay(account, amount, sent, "Order 1042")).id
-            for _ in range(2)
-        ]
+        entry = await controllers.pay(account, Money.of(amount, "USD"), sent, "Order")
+        return entry.id
 
-    first, again = customer.run(pay_twice)
+    first = customer.run(pay, "30.00")
+    clock.tick(timedelta(days=8, minutes=1))  # Past the key's 24 hours and 7 days.
+    again = customer.run(pay, "30.00")
 
-    assert first == again
+    assert again == first
     assert balance(customer, wallet)["balance"] == "70.00"
+    with pytest.raises(ReferenceReused):  # Another payment under the same key.
+        customer.run(pay, "40.00")
 
 
 def test_money_moves_only_with_a_key(customer: TestClient, wallet: str) -> None:
@@ -63,10 +69,14 @@ def test_money_moves_only_with_a_key(customer: TestClient, wallet: str) -> None:
     assert balance(customer, wallet)["balance"] == "100.00"
 
 
-async def test_two_payments_at_once_never_overdraw(
+async def test_payments_at_once_never_overdraw(
     async_client_for: AsyncClientFor, db: None
 ) -> None:
-    """Of two payments of 70.00 from 100.00 sent together, one is refused."""
+    """Five payments of 30.00 from 100.00, sent together: three are booked.
+
+    Each waits for the wallet's lock in turn, and reads the balance the
+    one before left; the fourth and the fifth find too little.
+    """
     await controllers.open_books()
     customer = await async_client_for()
     clerk = await async_client_for("accounting.add_entry")
@@ -76,21 +86,21 @@ async def test_two_payments_at_once_never_overdraw(
         json={"amount": usd("100.00")},
         headers=key(),
     )
-    body = {"amount": usd("70.00"), "description": "Order 1042"}
+    body = {"amount": usd("30.00"), "description": "Order 1042"}
 
     answers = await asyncio.gather(
-        customer.post(f"{URL}/wallets/{wallet}/payments", json=body, headers=key()),
-        customer.post(f"{URL}/wallets/{wallet}/payments", json=body, headers=key()),
+        *(
+            customer.post(f"{URL}/wallets/{wallet}/payments", json=body, headers=key())
+            for _ in range(5)
+        )
     )
 
-    assert sorted((each.status_code, each.json().get("code")) for each in answers) == [
-        (201, None),
-        (422, "insufficient_funds"),
-    ]
+    codes = sorted((each.status_code, each.json().get("code", "")) for each in answers)
+    assert codes == [(201, "")] * 3 + [(422, "insufficient_funds")] * 2
     read = (await customer.get(f"{URL}/wallets/{wallet}")).json()
     assert (read["balance"]["amount"], read["available"]["amount"]) == (
-        "30.00",
-        "30.00",
+        "10.00",
+        "10.00",
     )
 
 

@@ -7,11 +7,12 @@ source and reference. The ledger locks the accounts an entry moves in one
 order, so two payments at once from one wallet wait for each other, and
 the second is refused if the first left too little (``insufficient_funds``).
 
-No HTTP here: the routes, ``manage.py seed``, and the tests run the same
-functions.
+No HTTP here: the routes, the worker, ``manage.py seed``, and the tests
+run the same functions.
 """
 
-from datetime import date, timedelta
+from datetime import timedelta
+from decimal import Decimal
 from typing import Final
 from uuid import UUID, uuid4
 
@@ -31,7 +32,9 @@ from domainkit.contrib.accounting import (
     OpenPeriod,
     PlaceHold,
     PostEntry,
+    ReferenceReused,
     ReleaseHold,
+    Side,
     capture_hold,
     open_account,
     open_period,
@@ -39,6 +42,7 @@ from domainkit.contrib.accounting import (
     post_entry,
     release_hold,
 )
+from domainkit.contrib.messaging import periodic
 from domainkit.ddd import F
 from domainkit.money import Money
 
@@ -55,24 +59,27 @@ HOUSE: Final = (
 )
 
 
-async def open_books(today: date | None = None) -> None:
-    """Open the month's period and the business's own accounts, once.
+@periodic(every=timedelta(days=1), name="wallets.open_books")
+async def open_books() -> None:
+    """Open this month's period and the next, and the business's own accounts.
 
-    ``manage.py seed wallets`` runs it; a second run opens nothing more.
-    Run it again before each month starts, from a scheduler.
+    An entry is booked only in an open period, so the next month is opened
+    ahead of it: the worker runs this each day, and ``manage.py seed
+    wallets`` once, before the first payment. What is open stays as it is.
     """
-    day = today or clock.today()
-    first = day.replace(day=1)
-    last = (first + timedelta(days=31)).replace(day=1) - timedelta(days=1)
+    this_month = clock.today().replace(day=1)
+    for first in (this_month, (this_month + timedelta(days=31)).replace(day=1)):
+        last = (first + timedelta(days=31)).replace(day=1) - timedelta(days=1)
+        async with AccountingUnitOfWork() as uow:
+            period = await uow.periods.covering(first)
+        if period is None:
+            month = OpenPeriod(name=f"{first:%Y-%m}", starts_on=first, ends_on=last)
+            await open_period(month, AccountingUnitOfWork())
     async with AccountingUnitOfWork() as uow:
-        period = await uow.periods.covering(day)
         opened = {
             account.code
             for account in await uow.accounts.filter(F("code").in_([BANK, MERCHANTS]))
         }
-    if period is None:
-        month = OpenPeriod(name=f"{first:%Y-%m}", starts_on=first, ends_on=last)
-        await open_period(month, AccountingUnitOfWork())
     for code, name, kind in HOUSE:
         if code not in opened:
             house = OpenAccount(code=code, name=name, type=kind, currency=CURRENCY)
@@ -137,21 +144,44 @@ async def deposit(wallet: Account, amount: Money, key: UUID) -> Entry:
 async def pay(wallet: Account, amount: Money, key: UUID, description: str) -> Entry:
     """Pay ``amount`` from the wallet to the merchants, once per key.
 
-    The reference is the wallet and the request's ``Idempotency-Key``: the
-    same payment sent again, even after the key's stored answer is gone,
-    returns the entry it booked the first time.
+    The reference is the wallet and the request's ``Idempotency-Key``. The
+    ledger books one entry per reference: sent again on the day it was
+    booked, the payment returns that entry. A week later, once the
+    middleware has forgotten the key, the date differs, and the ledger
+    refuses the reference (``reference_reused``); the entry booked under it
+    is returned if it moved the same amount between the same accounts, as
+    a retry of the same payment does. Anything else under the key is
+    refused (409).
     """
     merchants = await house_account(MERCHANTS)
-    return await post_entry(
-        PostEntry(
-            source="wallets.payment",
-            reference=f"{wallet.id}:{key}",
-            booked_on=clock.today(),
-            description=description,
-            lines=(Line.debit(wallet.id, amount), Line.credit(merchants, amount)),
-        ),
-        AccountingUnitOfWork(),
+    payment = PostEntry(
+        source="wallets.payment",
+        reference=f"{wallet.id}:{key}",
+        booked_on=clock.today(),
+        description=description,
+        lines=(Line.debit(wallet.id, amount), Line.credit(merchants, amount)),
     )
+    try:
+        return await post_entry(payment, AccountingUnitOfWork())
+    except ReferenceReused:
+        async with AccountingUnitOfWork() as uow:
+            booked = await uow.entries.by_reference(payment.source, payment.reference)
+        if booked is None or moves(booked) != moves(payment):
+            raise
+        return booked
+
+
+def moves(entry: Entry | PostEntry) -> set[tuple[AccountId, Side, Decimal, str]]:
+    """What an entry moves: each account, side, amount, and currency."""
+    if isinstance(entry, PostEntry):
+        return {
+            (line.account_id, line.side, line.amount.amount, line.amount.currency.code)
+            for line in entry.lines
+        }
+    return {
+        (posting.account_id, posting.side, posting.amount, posting.currency)
+        for posting in entry.postings
+    }
 
 
 async def authorize(wallet: Account, amount: Money, key: UUID) -> Hold:

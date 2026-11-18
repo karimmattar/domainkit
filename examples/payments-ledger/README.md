@@ -38,7 +38,7 @@ wallets` its domain. These files were then changed:
 | `src/config/urls.py` | The wallets at `/api/v1`, and the accounting app's API at `/api/accounting`. |
 | `src/domains/wallets/controllers.py` | The books: wallets, deposits, payments, and holds. |
 | `src/domains/wallets/routes.py` | The HTTP API, and the `Idempotency-Key` it requires. |
-| `src/domains/wallets/apps.py` | `manage.py seed wallets` opens the books. |
+| `src/domains/wallets/apps.py` | `manage.py seed wallets` opens the books; the worker keeps the next month open. |
 | `tests/` | The tests, and the requests they send (`tests/money.py`). |
 | `pyproject.toml`, `.github/workflows/ci.yml` | mypy, strict, as `init --profile fintech` adds it. |
 
@@ -61,10 +61,12 @@ pytest
 ```
 
 The example holds no migrations: `makemigrations` writes them for the
-domainkit you installed. `init` writes a `.env` that names the settings
-module, and `.env` is never committed, so the `export` line does its job.
-To try the API, run `python manage.py seed wallets`, then `createsuperuser`
-and `runserver`, and open `http://127.0.0.1:8000/docs`.
+domainkit you installed. In a project of your own, made from this one,
+commit the migrations it writes. `init` writes a `.env` that names the
+settings module, and `.env` is never committed, so the `export` line does
+its job. To try the API, run `python manage.py seed wallets`, then
+`createsuperuser`, `runserver`, and `runworker`, and open
+`http://127.0.0.1:8000/docs`.
 
 ## The books
 
@@ -103,10 +105,13 @@ async def open_wallet(holder: str) -> Account:
     return await open_account(wallet, AccountingUnitOfWork())
 ```
 
-`open_books` opens the month's accounting period and the two accounts of
-the business, once. `manage.py seed wallets` runs it (`apps.py`), and the
-tests' `books` fixture too. An entry must be dated in an open period, and
-the trial balance is a period's report.
+An entry must be dated in an open accounting period, and the trial
+balance is a period's report. `open_books` opens the current month's
+period and the next month's, and the two accounts of the business, each
+once. `manage.py seed wallets` runs it before the first payment
+(`apps.py`), and the worker runs it every day (`@periodic`), so the next
+month is open before it starts: a payment at midnight on the 1st finds its
+period. The tests' `books` fixture runs it too.
 
 ## A payment is an entry, once per key
 
@@ -116,21 +121,31 @@ In `src/domains/wallets/controllers.py`:
 async def pay(wallet: Account, amount: Money, key: UUID, description: str) -> Entry:
     """Pay ``amount`` from the wallet to the merchants, once per key.
 
-    The reference is the wallet and the request's ``Idempotency-Key``: the
-    same payment sent again, even after the key's stored answer is gone,
-    returns the entry it booked the first time.
+    The reference is the wallet and the request's ``Idempotency-Key``. The
+    ledger books one entry per reference: sent again on the day it was
+    booked, the payment returns that entry. A week later, once the
+    middleware has forgotten the key, the date differs, and the ledger
+    refuses the reference (``reference_reused``); the entry booked under it
+    is returned if it moved the same amount between the same accounts, as
+    a retry of the same payment does. Anything else under the key is
+    refused (409).
     """
     merchants = await house_account(MERCHANTS)
-    return await post_entry(
-        PostEntry(
-            source="wallets.payment",
-            reference=f"{wallet.id}:{key}",
-            booked_on=clock.today(),
-            description=description,
-            lines=(Line.debit(wallet.id, amount), Line.credit(merchants, amount)),
-        ),
-        AccountingUnitOfWork(),
+    payment = PostEntry(
+        source="wallets.payment",
+        reference=f"{wallet.id}:{key}",
+        booked_on=clock.today(),
+        description=description,
+        lines=(Line.debit(wallet.id, amount), Line.credit(merchants, amount)),
     )
+    try:
+        return await post_entry(payment, AccountingUnitOfWork())
+    except ReferenceReused:
+        async with AccountingUnitOfWork() as uow:
+            booked = await uow.entries.by_reference(payment.source, payment.reference)
+        if booked is None or moves(booked) != moves(payment):
+            raise
+        return booked
 ```
 
 Two things stop a payment from running twice:
@@ -141,9 +156,13 @@ Two things stop a payment from running twice:
    not run. The key is kept for 24 hours, and its tombstone for 7 days
    more ([idempotency](../../docs/contrib/idempotency.md)).
 2. **The books.** The ledger books one entry per source and reference.
-   Posted again under the same wallet and key, after the middleware has
-   forgotten the key, or from a message delivered twice, it returns the
-   first entry and books nothing more.
+   Posted again the same day, as a message delivered twice is, it returns
+   the first entry. Once the middleware has forgotten the key, a week
+   later, the retry is booked on another date, so the ledger refuses the
+   reference (`409 reference_reused`). `pay` then reads the entry booked
+   under it: if it moved the same amount between the same accounts, the
+   retry was the same payment, and `pay` returns that entry. Another
+   payment under the key is refused.
 
 The route makes the key required where money moves. In
 `src/domains/wallets/routes.py`:
@@ -180,20 +199,24 @@ What each request gets:
 The ledger locks the accounts an entry moves, by ascending id, and moves
 their balances in the same transaction. Two payments from one wallet
 wait for each other, in one order, so they neither deadlock nor lose an
-update, and the second one is refused if the first left too little.
-SQLite runs postings one at a time. The test sends two payments of 70.00
+update, and a payment is refused if those before it left too little.
+SQLite runs postings one at a time. The test sends five payments of 30.00
 together, from 100.00, on both databases. In
 `tests/domains/wallets/test_payments.py`:
 
 ```python
 answers = await asyncio.gather(
-    customer.post(f"{URL}/wallets/{wallet}/payments", json=body, headers=key()),
-    customer.post(f"{URL}/wallets/{wallet}/payments", json=body, headers=key()),
+    *(
+        customer.post(f"{URL}/wallets/{wallet}/payments", json=body, headers=key())
+        for _ in range(5)
+    )
 )
 ```
 
-One is answered `201`, the other `422 insufficient_funds`, and the wallet
-keeps 30.00.
+Three are answered `201` and two `422 insufficient_funds`, and the wallet
+keeps 10.00. Five, not two, so that the payments overlap: with two, the
+second often starts after the first has committed, and a ledger that did
+not lock would pass too.
 
 ## Holds: authorize, then capture or release
 
@@ -257,12 +280,13 @@ balances and every balance is the sum of its postings.
 | Test | What it shows |
 | --- | --- |
 | `test_a_retried_payment_books_once` | The same request twice: one entry, the answer replayed. |
-| `test_the_books_book_a_key_once_after_its_answer_is_gone` | Past the middleware, the books return the first entry. |
+| `test_the_books_book_a_key_once_after_its_answer_is_gone` | Eight days on, past the middleware, the same payment returns its first entry; another under the key is refused. |
 | `test_money_moves_only_with_a_key` | A payment without a key is refused, and moves nothing. |
-| `test_two_payments_at_once_never_overdraw` | Of two payments sent together, the one that would overdraw is refused. |
+| `test_payments_at_once_never_overdraw` | Of five payments sent together, the two that would overdraw are refused. |
 | `test_a_wallet_is_its_holders_alone` | Another customer's wallet is not found. |
 | `test_a_capture_pays_part_of_a_hold_and_frees_the_rest`, `test_a_release_moves_nothing`, `test_what_is_held_cannot_be_spent` | Holds reserve, capture, and release. |
 | `test_the_trial_balance_balances` | Every currency nets to zero, and `verify_ledger()` finds no problem. |
+| `test_payments_go_on_into_the_next_month` | A payment on the 1st finds its period, opened the month before. |
 
 domainkit's CI runs them on SQLite and on PostgreSQL, with the project's
 ruff, mypy, `check`, and migrations, for every change to the framework.

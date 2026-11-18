@@ -1,9 +1,13 @@
 """The books: a refund is a reversal, and the trial balance balances."""
 
-from domainkit.contrib.accounting import verify_ledger
-from domainkit.testing import TestClient
+from datetime import timedelta
 
-from tests.money import URL, balance, key, usd
+from domainkit.contrib.accounting import verify_ledger
+from domainkit.testing import ClientFor, FrozenClock, TestClient
+
+from domains.wallets.controllers import open_books
+from tests.conftest import CLERK
+from tests.money import URL, balance, deposit, key, usd
 
 BOOKS = "/api/accounting"
 
@@ -21,7 +25,11 @@ def test_the_trial_balance_balances(
         f"{URL}/holds/{held.json()['id']}/capture", json={"amount": usd("20.00")}
     )
     refund = clerk.post(f"{BOOKS}/entries/{paid.json()['entry_id']}/reverse", json={})
-    (january,) = clerk.get(f"{BOOKS}/periods").json()["items"]
+    [january] = [
+        period
+        for period in clerk.get(f"{BOOKS}/periods").json()["items"]
+        if period["name"] == "2027-01"
+    ]
 
     report = clerk.get(f"{BOOKS}/periods/{january['id']}/trial-balance")
 
@@ -32,3 +40,35 @@ def test_the_trial_balance_balances(
     assert closing["2200"] == "-20.00"  # Owed to the merchants: the capture.
     assert [total["net"] for total in report.json()["totals"]] == ["0.00"]
     assert clerk.run(verify_ledger) == []
+
+
+def test_payments_go_on_into_the_next_month(
+    books: None, client_for: ClientFor, clock: FrozenClock
+) -> None:
+    """The books open a month ahead: a payment on the 1st finds its period.
+
+    The worker runs ``open_books`` each day, which keeps the month after
+    the current one open too.
+    """
+    clock.move_to("2027-01-31T23:59:00Z")
+    customer, clerk = client_for(), client_for(*CLERK)
+    wallet = customer.post(f"{URL}/wallets").json()["id"]
+    deposit(clerk, wallet, "100.00")
+    body = {"amount": usd("30.00"), "description": "Order 1042"}
+
+    january = customer.post(
+        f"{URL}/wallets/{wallet}/payments", json=body, headers=key()
+    )
+    clock.tick(timedelta(minutes=2))  # 1 February.
+    february = customer.post(
+        f"{URL}/wallets/{wallet}/payments", json=body, headers=key()
+    )
+    clerk.run(open_books)  # The worker's run on the 1st opens March.
+
+    assert (january.status_code, february.status_code) == (201, 201), february.json()
+    periods = clerk.get(f"{BOOKS}/periods").json()["items"]
+    assert sorted(period["name"] for period in periods) == [
+        "2027-01",
+        "2027-02",
+        "2027-03",
+    ]
