@@ -674,10 +674,13 @@ tenant, and `live_events` hands it only to the connections served as it:
 `stream`, `forward`, and `subscribe` hear the tenant the route serves
 ([live events](live.md#live-committed-events)). An event committed as
 no tenant reaches only the connections served as none. With
-`LIVE_FANOUT`, each message between processes names the tenant too. A
-route that serves every tenant on purpose, such as a back office's, says
-so with `per_tenant=False`; its `rule` alone then decides what each
-connection sees.
+`LIVE_FANOUT`, each message between processes names the tenant too;
+processes of 2.8.0 send their messages without one, so during a rolling
+deploy connections served as a tenant miss what those processes commit.
+A route that serves every tenant on purpose says so with
+`per_tenant=False`; its `rule` alone then decides what each connection
+sees, and it never sees an event's tenant: keep such routes to staff,
+such as a back office's.
 
 **Approval requests.** With `domainkit.contrib.approvals`, a request
 belongs to the tenant it was submitted in. It is listed, read, approved,
@@ -729,7 +732,10 @@ async def publish() -> None: ...
 
 `everywhere=True` asks the user's permissions as where no tenant is
 served (`HasPermissions`, `HasObjectPermissions`, `HasModelPermission`,
-`ModelActions`), as every ceiling of the admin API counts them. A guard
+`ModelActions`), as every ceiling of the admin API counts them. It
+relies on what grants per tenant reading `current_tenant()`, as
+`MembershipBackend` does: a backend of your own that grants per tenant
+reads it too, or `everywhere` counts its grants. A guard
 of approvals takes it too, for its makers and approvers
 ([guarding a use case](contrib/approvals.md#guarding-a-use-case)).
 

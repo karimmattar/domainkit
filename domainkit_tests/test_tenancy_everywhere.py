@@ -9,8 +9,10 @@ take ``everywhere=True`` for the same. The audit's finding is A28-SEC-04.
 
 from collections.abc import Iterator
 from typing import Any, Final
+from uuid import uuid4
 
 import pytest
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from starlette.requests import HTTPConnection
 
@@ -172,6 +174,53 @@ def test_a_role_in_a_tenant_reaches_no_account(limits_client: TestClient) -> Non
         == 403
     )
     assert limits_client.get("/accounting/accounts", headers=clerk).status_code == 200
+
+
+def test_every_route_of_limits_and_the_ledger_refuses_a_role(
+    limits_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A role naming every key stored is refused on each route, twins included.
+
+    Every route of the two routers, by each method, with ids that name
+    nothing: ``403`` before anything is read. The clerk, who holds the keys
+    everywhere, still lists limits.
+    """
+    monkeypatch.setattr(f"{__name__}.ROLE", every_key())
+    app: Any = limits_client.app
+    finance = {**in_b("finance"), "Content-Type": "application/json"}
+    answered: list[tuple[str, str, int]] = []
+    for route in app.routes:
+        if not isinstance(route, APIRoute) or not route.path.startswith(
+            ("/limits", "/accounting")
+        ):
+            continue
+        path = route.path
+        for name in route.param_convertors:
+            path = path.replace(f"{{{name}}}", str(uuid4()))
+        for method in sorted((route.methods or set()) - {"HEAD"}):
+            answer = limits_client.request(
+                method,
+                path,
+                json={},
+                params={"kind": "holder", "subject": "s"},
+                headers=finance,
+            )
+            answered.append((method, route.path, answer.status_code))
+
+    assert len(answered) >= 25
+    assert [each for each in answered if each[2] != 403] == []
+    assert limits_client.get("/limits/limits", headers=in_b("clerk")).is_success
+
+
+def every_key() -> frozenset[str]:
+    """Every permission key stored."""
+    from domainkit.contrib.auth import AuthUnitOfWork
+
+    async def read() -> frozenset[str]:
+        async with AuthUnitOfWork() as uow:
+            return frozenset(await uow.permissions.keys())
+
+    return run_async(read())
 
 
 # Approvals of postings ----------------------------------------------------------------
