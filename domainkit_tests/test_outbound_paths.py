@@ -55,6 +55,20 @@ def test_the_guard_path_of_2_8_imports_the_same_objects() -> None:
     assert old_guard.socket is socket  # Read through: not set here, still there.
 
 
+def test_a_name_set_on_the_old_path_is_not_the_one_the_client_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Patch where the name is looked up: ``domainkit.outbound.client``."""
+
+    def never(attempt: int, base: float, most: float) -> float:
+        raise AssertionError("not read")  # pragma: no cover - never called.
+
+    monkeypatch.setattr(old_client, "backoff", never)
+
+    assert client.backoff is not never
+    assert client.backoff(1, 0.0, 0.0) == 0.0
+
+
 async def test_a_client_made_by_either_name_is_one_of_the_process_clients() -> None:
     """One registry: ``close_all``, the circuits' reset, and metrics find it."""
     made = old_client.HttpClient(

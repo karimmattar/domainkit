@@ -384,8 +384,8 @@ No migration.
   `exception.type` or an admins' report). A test that patches a name in
   `domainkit.http.client` no longer reaches the code that calls it: the
   client reads its names from `domainkit.outbound.client`, so patch them
-  there (`monkeypatch.setattr("domainkit.outbound.client.random.random",
-  ...)`), and the guard's in `domainkit.outbound.guard`. The calls still
+  there (`monkeypatch.setattr("domainkit.outbound.client.backoff", ...)`),
+  and the guard's in `domainkit.outbound.guard`. The calls still
   log as `domainkit.http.client`. The layer rules let an infrastructure
   layer import `domainkit.outbound` with no exception, and keep it out of
   the application layer, as the old path was. `lifecycle.register("guard
