@@ -206,14 +206,15 @@ class BrokerWorkers:
             await finish(running, grace)
             # A relay running the outbox (the broker away) drains its own
             # messages: it gets what is left of the drain, then the grace. It
-            # is told by its breaker (open, or probing) as well as by what it
-            # runs: one still claiming runs nothing yet. The others, a relay
-            # still publishing among them, get the grace.
+            # is told by what it runs, and by its breaker being open: it claims
+            # only then, and one still claiming runs nothing yet. The others
+            # get the grace: a relay still publishing, and one probing the
+            # broker once the cooldown is over, which may not answer.
             left = max(drained_by - loop.time(), 0.0)
             draining = [
                 relay
                 for relay, (breaker, ran) in outboxes.items()
-                if ran or breaker.state != "closed"
+                if ran or breaker.state == "open"
             ]
             await asyncio.gather(
                 wind_down(draining, left + HELPER_GRACE),

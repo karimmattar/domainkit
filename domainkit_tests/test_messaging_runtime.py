@@ -3108,6 +3108,47 @@ async def test_a_relay_claiming_from_the_outbox_at_the_stop_gets_the_drain(
     assert row["status"] == DONE
 
 
+@pytest.mark.usefixtures("broker_tables")
+async def test_a_relay_probing_the_broker_at_the_stop_gets_the_grace_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Its cooldown over, a relay checks the broker; a check that hangs is cut short.
+
+    It runs nothing from the outbox, so it is not given the drain: a stop
+    during the check waits ``HELPER_GRACE``, not ``DRAIN_TIMEOUT`` too.
+    """
+    probing = asyncio.Event()
+
+    async def hangs() -> None:
+        probing.set()
+        await asyncio.Event().wait()  # A broker that never answers.
+
+    broker = brokers["work"]
+    monkeypatch.setattr(broker, "check", hangs)
+    monkeypatch.setattr(dispatch, "HELPER_GRACE", 0.05)
+    config = registry.settings(MessagingSettings).model_copy(
+        update={
+            "BREAKER_FAILURES": 1,
+            "BREAKER_COOLDOWN": 0.01,
+            "POLL_INTERVAL": 0.01,
+            "DRAIN_TIMEOUT": 20.0,
+            **SLOW,
+        }
+    )
+    runner = BrokerWorkers([Worker(config)], ["default"], config)
+    breaker = runner.breaker("default")
+    breaker.failed(BrokerUnavailable("connection refused"))  # Open, then cooled down.
+    await asyncio.sleep(0.02)
+    assert breaker.state == "probing"
+    stop = asyncio.Event()
+    running = asyncio.create_task(runner.run(stop))
+    await within(probing.wait())
+
+    stop.set()
+    async with asyncio.timeout(5):  # Room for a loaded runner; 20 is the drain.
+        await running
+
+
 @pytest.mark.usefixtures("tables")
 async def test_a_stopping_worker_lets_its_cleanup_finish(
     monkeypatch: pytest.MonkeyPatch,
