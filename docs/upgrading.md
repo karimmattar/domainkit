@@ -50,6 +50,13 @@ project that relied on 2.8's behaviour notices, and what to change.
   just before the deploy, while acting as a user, runs again. Rate
   limits, throttles, and live connections count the staff member, as
   before.
+- **An impersonation needs the right to change users held everywhere.**
+  Each of its requests checks the staff member's `change` permission on
+  the user model as they hold it everywhere. With `MembershipBackend`, a
+  staff member who holds it only through a role in a tenant can no
+  longer keep an impersonation going in requests served as that tenant:
+  they get `401`. Grant the permission everywhere to staff who
+  impersonate.
 - **The SAML ACS refuses a response past its bounds.** A response whose
   XML makes more than 50,000 nodes (each `<` counts twice, each `=`
   once), that has an element deeper than 64 levels, with more than 32

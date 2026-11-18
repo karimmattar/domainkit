@@ -15,7 +15,9 @@ and a status.
   (`cache_page(vary_on_user=True)`) and responses kept for an
   `Idempotency-Key` of their own for each user they act as, apart from
   their own and the user's. A response so kept is about the user too:
-  `privacy erase` drops it, and the user's export lists it, withheld. The
+  `privacy erase` drops it, and the user's export lists it, withheld.
+  Each request of an impersonation checks the staff member's right to change
+  users as they hold it everywhere, whatever tenant it is served as. The
   trail still names the staff member, and rate limits, throttles, and
   live connections still count them (audit A28-SEC-03).
 - The SAML ACS bounds a response before it checks its signature: 50,000
