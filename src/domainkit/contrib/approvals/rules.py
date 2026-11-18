@@ -106,7 +106,8 @@ class IsApprover(BasePermission):
     Whoever holds the policy's permission (as the credentials' scopes
     allow), or, for a policy of a group, an active member of it, with
     credentials not limited to scopes. The maker is refused by the
-    service, whatever their permissions.
+    service, whatever their permissions. For a guard ``everywhere``, as
+    where no tenant is served: a member's role makes no approver.
     """
 
     message: ClassVar[str] = "You are not one of the approvers of this request."
@@ -125,13 +126,14 @@ class IsApprover(BasePermission):
             PolicyRemoved: The request's guard or policy no longer exists.
         """
         assert isinstance(obj, ApprovalRequest)  # noqa: S101 - the resource's model.
-        _, policy = policy_of(obj)
+        guard, policy = policy_of(obj)
         rule = rule_instance(policy.approver_rule)
-        if obj.permission is None and obj.group is None and rule is not None:
-            return await rule.has_permission(
-                request, user
-            ) and await rule.has_object_permission(request, user, obj)
-        return await _named(request, user, obj.permission, obj.group, None)
+        with guard.checking():  # A guard of rows of no tenant: no role counts.
+            if obj.permission is None and obj.group is None and rule is not None:
+                return await rule.has_permission(
+                    request, user
+                ) and await rule.has_object_permission(request, user, obj)
+            return await _named(request, user, obj.permission, obj.group, None)
 
 
 async def names_approver(

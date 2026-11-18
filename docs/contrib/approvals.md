@@ -183,6 +183,7 @@ by action. Its arguments:
 | `maker_fields` | The command's fields that hold who acts (`invited_by`, `granted_by`). The submit route sets them to the maker's id, whatever the client sent; a command your code submits (`submit_command`, a direct call with `submit`) must name its maker there (`invalid_arguments` otherwise); and the run checks them again. A name the command has not is refused when the guard is made. |
 | `http` | `True`: makers submit the command at `POST /requests`. `False` keeps it off that route (`404 unknown_action`): only your code submits it. |
 | `by_maker` | `True`: the approved command runs in its maker's own call, never in the worker (since 2.4). See [Run by its maker](#run-by-its-maker). |
+| `everywhere` | `True`: the command acts on rows that belong to no tenant (the ledger, users). Its makers and approvers are checked as where no tenant is served: a member's role makes neither ([rows of no tenant](../tenancy.md#rows-of-no-tenant)). The guards of postings, of making superusers, and of admin changes say so. |
 | `show` | What a person deciding the command is shown of it, in place of its arguments by name (since 2.7): a function of the command that returns labelled values, each a text or a list of texts, in the request's language (`{"Pay": "2500.00 EUR to Ada Lovelace"}`). It may be `async def` and read the database (a user by name rather than by id); it runs each time a screen is built, and nothing of it is stored with the request. See [What the approver is shown](#approving-with-an-authorization). |
 | `domain` | The installed domain that the guard belongs to, when you call `guard()` outside `ready()`. |
 
@@ -403,6 +404,39 @@ service does.
 (`request_not_pending`, 409), and the worker marks it expired every
 `EXPIRE_EVERY`. `manage.py approvals expire` does it at once.
 
+### Requests and tenants
+
+With [multi-tenancy](../tenancy.md), a request belongs to the tenant it
+was submitted in (`tenant_id`), or to none, where no tenant was served.
+It is listed, read, approved, rejected, and cancelled where that tenant
+is served alone:
+
+- The requests' repository reads the tenant's requests alone, by id and
+  by query. Another tenant's request is `404
+  approval_request_not_found`, as one that does not exist, on every
+  route, its twins included, and `RequestNotFound` from the services,
+  whatever keys the caller holds there.
+- A request of no tenant is read where no tenant is served. Requests
+  stored before the tenant was recorded have none.
+- Code that works across tenants says so: inside `all_tenants()` every
+  request is read ([Outside a request](../tenancy.md#outside-a-request)).
+  Approving, rejecting, and cancelling commit as the request's tenant
+  alone, even there: what the commit publishes, the handlers it runs,
+  and the run it queues are that tenant's. A maker's call made again
+  ([Run by its maker](#run-by-its-maker)) spends a request of the tenant
+  it is served as only.
+- The approved command runs in the request's tenant alone, whichever
+  tenant the message that runs it names: the maker's check, the
+  command, and the request's end are that tenant's. Expiry reaches every
+  tenant's requests, and `privacy erase` too, each committed as its
+  request's tenant alone. `approvers_of` asks as the request's tenant.
+- The seal covers the tenant, where the request has one: a request moved
+  to another tenant in the database is neither decided nor run
+  (`request_tampered`), and expiry leaves one whose stored tenant is not
+  a tenant id as it is, logged. Do not set `tenant_id` on a stored request by
+  hand: its seal no longer holds. Decide or cancel it where no tenant is
+  served, or let it expire.
+
 ### Counting approvals once
 
 The approval that completes a request queues its command through the
@@ -423,11 +457,11 @@ approved:
 - **The request's seal**, and each decision's: an HMAC, under a key
   derived from `SECRET_KEY`, of the request's id, action, fingerprint,
   maker, policy, approvals needed, approvers (permission or group),
-  expiry, status, and run token. It is made again with each change of the
-  request's state. Each decision's seal covers its request, person,
-  verdict, and fingerprint. A row changed or added in the database by
-  someone without the key is neither decided (`request_tampered`, 409)
-  nor run (it fails with that code).
+  expiry, status, run token, and tenant, where it has one. It is made
+  again with each change of the request's state. Each decision's seal
+  covers its request, person, verdict, and fingerprint. A row changed or
+  added in the database by someone without the key is neither decided
+  (`request_tampered`, 409) nor run (it fails with that code).
 - **The run token**: a one-time key made when the request was approved,
   sealed with it, carried by the message, and spent by the run. A message
   queued again after the run, or one without the token, runs nothing. So
@@ -442,9 +476,11 @@ A request that fails a check is `failed`, with the refusal's code as its
 `reason` (`request_tampered`, `fingerprint_mismatch`,
 `invalid_arguments`, `policy_removed`, `maker_not_allowed`), and runs
 nothing. So does a request whose use case refuses it (a `DomainError`,
-such as `insufficient_funds`): the maker may submit it again. A use case
-that lost a race (`ConcurrentUpdate`) or failed in another way is tried
-again by the worker, with its backoff.
+such as `insufficient_funds`): the maker may submit it again. Failing
+makes the request's seal again only if it held, so the failed record of
+a row changed around the application still fails its seal (since 2.9).
+A use case that lost a race (`ConcurrentUpdate`) or failed in another
+way is tried again by the worker, with its backoff.
 
 Where the use case's unit of work commits to the requests' database,
 the request is marked `executed` in that same transaction, with its
@@ -972,8 +1008,10 @@ by name, in the command's order. Each value is the argument as compact
 JSON (a string as itself), printable; a list goes over as many lines as
 it takes ("added", "added (2)"), item by item, an object or a list as
 compact JSON ([What a screen shows](../auth/actions.md#what-a-screen-shows)).
-A value of a guard's `show` that JSON has not, such as a `Decimal` or a
-`UUID`, shows as its text. A screen
+An argument that is `Money`, or an item of a list that is, shows as its
+amount and currency, `1500.00 USD`, as `Money` writes itself (since
+2.9). A value of a guard's `show` that JSON has not, such as `Money`, a
+`Decimal`, or a `UUID`, shows as its text. A screen
 holds six lines of 64 characters. What does not fit is cut and counted
 (since 2.7, a list's last line says how many more items: "… and 22
 more"), and with more arguments than lines, the last line says how many
@@ -1256,8 +1294,12 @@ an account, a password reset, the reason staff act as someone. Since 2.4,
 
 Any other request is `404 approval_request_not_found`, as if it were not
 there. `approvals.view_every_approvalrequest` shows every request: give it
-to auditors. Approving, rejecting, and cancelling are not narrowed: their
-own rules answer, as before. Approval systems work the same way: an
+to auditors. With multi-tenancy, each of these is a request of the tenant
+being served ([Requests and tenants](#requests-and-tenants)), and that
+key held only through a member's role shows every request but those of a
+guard `everywhere`, which go to those who hold it everywhere. Approving,
+rejecting, and cancelling are not narrowed: their own rules answer, as
+before. Approval systems work the same way: an
 approver's list holds what is waiting for them, and administrators see
 everything (ADR 0154).
 

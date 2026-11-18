@@ -7,13 +7,14 @@ answers ``text/csv`` or ``application/x-ndjson`` by ``Accept``: every match,
 up to ``max_export``, streamed in chunks.
 """
 
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from typing import TYPE_CHECKING, Final
 
 from fastapi import Response
 from fastapi.responses import StreamingResponse
 
 from domainkit.ddd.query import Selection, as_query
+from domainkit.ddd.repository import Repository
 from domainkit.http.filters import FilterSet
 from domainkit.http.responses import BuiltJSONResponse
 
@@ -101,9 +102,12 @@ class ListRoute:
             ExportTooLarge: More than ``max_export`` match.
         """
         router = self.router
-        async with context.uow as uow:
-            total = await router.repository(uow).count(
-                query.criteria, include_deleted=query.include_deleted
+        async with context.uow as uow:  # One past the bound tells it is too many.
+            repository = router.repository(uow)
+            stops = _stops(repository.count)
+            bound = {"at_most": router.max_export + 1} if stops else {}
+            total = await repository.count(
+                query.criteria, include_deleted=query.include_deleted, **bound
             )
         if total > router.max_export:
             raise ExportTooLarge
@@ -149,3 +153,13 @@ class ListRoute:
                 f'attachment; filename="{router.plural}.csv"'
             )
         return StreamingResponse(body(), media_type=media, headers=headers)
+
+
+def _stops(count: Callable[..., object]) -> bool:
+    """Whether ``count`` is the framework's own, which takes ``at_most`` (2.9).
+
+    A project's repository may override ``count``, with 2.8's signature or
+    behind a decorator: it is asked as before, and counts every match. Its
+    signature is not read, since a wrapper's need not tell the truth.
+    """
+    return getattr(count, "__func__", None) is Repository.count

@@ -15,6 +15,7 @@ from domainkit.apps import registry
 from domainkit.contrib.auth import IsAdminUser, IsSuperuser, current_user
 from domainkit.contrib.auth.models import AbstractBaseUser, Group, Permission
 from domainkit.ddd.messages import Command, Query
+from domainkit.ddd.tenancy import TenantOwned
 from domainkit.http import CURSOR_PATTERN, MAX_CURSOR_LENGTH, error_responses
 from domainkit.http.access import AllOf, HasPermissions, IsUnscoped, Require, Rule
 from domainkit.http.filters import FilterSet
@@ -43,6 +44,9 @@ OWN_MODELS: Final = (AbstractBaseUser, Group, Permission)
 """Users (any user model), groups, and permissions: auth's admin serves them."""
 VIEW_HISTORY: Final = "audit.view_history"
 """The permission histories need, as ``contrib.audit`` names it."""
+HISTORY: Final = HasPermissions(VIEW_HISTORY, everywhere=True)
+"""Who reads histories: holders of ``audit.view_history`` everywhere, as the
+audit trail belongs to no tenant (ADR 0183)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,7 +204,11 @@ class ModelAdmin:
             repository=self.repository,
             schema=self.schema,
             present=self.present,
-            rule=ModelActions(f"{domain}.{name}", *STAFF),
+            rule=ModelActions(
+                f"{domain}.{name}",
+                *STAFF,
+                everywhere=not issubclass(self.model, TenantOwned),
+            ),
             filters=self.filters,
             pagination=self.pagination,
             policy=self.policy,
@@ -448,7 +456,7 @@ async def _describe(request: Request, admin: ModelAdmin) -> ResourceOut | None:
         operations=operations,
         history_path=(
             _path(request, _operation(resource, history))
-            if history is not None and await allowed([HasPermissions(VIEW_HISTORY)])
+            if history is not None and await allowed([HISTORY])
             else None
         ),
     )
@@ -503,7 +511,7 @@ def _add_history(resource: ResourceRouter, field: str) -> str:
     from domainkit.contrib.audit.api import HistoryPageOut, read_history
     from domainkit.contrib.audit.history import MAX_LIMIT
 
-    rules = (*rules_for(resource.rule, VIEW), HasPermissions(VIEW_HISTORY))
+    rules = (*rules_for(resource.rule, VIEW), HISTORY)
     name = f"{resource.name_prefix}{resource.basename}_history"
 
     async def history(**values: Any) -> HistoryPageOut:  # noqa: ANN401 - the parameters.

@@ -18,7 +18,8 @@ action. Only the token and the secret are sent: never the client's
 address, which is personal data.
 """
 
-from typing import Any, ClassVar, Final, get_args
+from functools import cache
+from typing import TYPE_CHECKING, Any, ClassVar, Final, get_args
 
 from fastapi import Depends, Request, status
 
@@ -26,6 +27,9 @@ from domainkit.exceptions import ImproperlyConfigured, UpstreamError
 from domainkit.http.errors import APIError
 
 from .settings import CaptchaAction, auth_settings
+
+if TYPE_CHECKING:
+    from domainkit.http.client import HttpClient
 
 __all__ = ["CaptchaUnavailable", "captcha"]
 
@@ -71,20 +75,15 @@ def captcha(action: str) -> Any:  # noqa: ANN401 - FastAPI's Depends.
         token = request.headers.get(HEADER, "")
         if not token or len(token) > MAX_TOKEN:
             raise _failed()
-        from domainkit.http.client import HttpClient
-
-        verifier = HttpClient(propagate=False)
         # The client's address is not sent: it is personal data, and optional.
         form = {"secret": config.SECRET.get_secret_value(), "response": token}
         try:
-            response = await verifier.post(
+            response = await _verifier().post(
                 VERIFY[config.PROVIDER], data=form, retry=True
             )
             verdict = response.json()
         except Exception as exc:  # The network, a timeout, or no JSON.
             raise CaptchaUnavailable from exc
-        finally:
-            await verifier.aclose()
         if not isinstance(verdict, dict) or verdict.get("success") is not True:
             raise _failed()
         score = verdict.get("score")
@@ -96,6 +95,18 @@ def captcha(action: str) -> Any:  # noqa: ANN401 - FastAPI's Depends.
             raise _failed()  # Solved for another form.
 
     return Depends(check)
+
+
+@cache
+def _verifier() -> "HttpClient":
+    """The client that checks tokens, shared by every request.
+
+    Its pool is kept, and a provider that is down opens its circuit: the
+    requests after are refused at once, 503 as before (audit A28-ARCH-02).
+    """
+    from domainkit.http.client import HttpClient
+
+    return HttpClient(propagate=False, name="captcha")
 
 
 def _failed() -> APIError:

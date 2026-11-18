@@ -27,6 +27,8 @@ from domainkit.http.access import AnonymousPrincipal
 from domainkit_tests import sample_routes
 
 ACTOR_HEADER: Final = "x-test-actor"
+IMPERSONATING_HEADER: Final = "x-test-impersonating"
+"""The user the actor acts as, as an impersonation's credentials say."""
 VERDICT_HEADER: Final = "x-test-verdict"
 """What an authentication middleware found: ``nobody``, ``someone``, or ``unsure``."""
 SCOPES_HEADER: Final = "x-test-scopes"
@@ -39,7 +41,10 @@ NEEDS_CALLER: Final = {
 
 
 class ActorFromHeader:
-    """Act as the actor ``X-Test-Actor`` names, as authentication would."""
+    """Act as the actor ``X-Test-Actor`` names, as authentication would.
+
+    ``X-Test-Impersonating`` names the user the actor acts as, if any.
+    """
 
     def __init__(self, app: ASGIApp) -> None:
         """Wrap ``app``."""
@@ -48,11 +53,13 @@ class ActorFromHeader:
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Bind the actor, if the request names one."""
         request = current_request()
-        actor = Headers(scope=scope).get(ACTOR_HEADER) if request else None
-        if actor is None or request is None:
+        headers = Headers(scope=scope) if request else None
+        actor = headers.get(ACTOR_HEADER) if headers else None
+        if actor is None or request is None or headers is None:
             await self.app(scope, receive, send)
             return
-        with bind_request(replace(request, actor=actor)):
+        acting_as = headers.get(IMPERSONATING_HEADER)
+        with bind_request(replace(request, actor=actor, impersonating=acting_as)):
             await self.app(scope, receive, send)
 
 
@@ -182,6 +189,49 @@ def test_an_export_gives_a_kept_response_to_its_caller_alone(
     assert [(each["body"], each["withheld"]) for each in ann] == [(None, True)]
     assert bob == []
     assert row["subjects"] == "\x1falice\x1f\x1f"
+
+
+def test_staff_acting_as_users_have_keys_apart_for_each_user(
+    database_url: str,
+) -> None:
+    """A response kept as one user is never replayed as another (audit A28-SEC-03).
+
+    Staff send the same key acting as ann, as bob, and as themselves: each
+    runs. Acting as ann again is replayed ann's. The response kept as ann
+    names ann among its subjects, so her erasure finds it and her export
+    lists it, withheld; the staff member, its caller, gets its body.
+    """
+    from domainkit.contrib.idempotency.operations import export_subject
+
+    async def export(subject: str) -> list[dict[str, Any]]:
+        try:
+            return await export_subject("default", subject)
+        finally:
+            await connections.close_all()
+
+    staff = {ACTOR_HEADER: "staff"}
+    as_ann = {**staff, IMPERSONATING_HEADER: "ann"}
+    with keyed_app(database_url) as client:
+        sent = [
+            post(client, {"n": 1}, **headers)
+            for headers in (as_ann, {**staff, IMPERSONATING_HEADER: "bob"}, staff)
+        ]
+        again = post(client, {"n": 1}, **as_ann)
+        rows = stored()
+        ann, staff_own = (asyncio.run(export(who)) for who in ("ann", "staff"))
+
+    assert [each.json() for each in sent] == [{"count": 1}, {"count": 2}, {"count": 3}]
+    assert again.json() == {"count": 1}
+    assert again.headers["Idempotent-Replayed"] == "true"
+    assert sorted(row["subjects"] for row in rows) == [
+        "\x1fstaff\x1f\x1f",
+        "\x1fstaff\x1f\x1fann\x1f",
+        "\x1fstaff\x1f\x1fbob\x1f",
+    ]
+    assert [(each["body"], each["withheld"]) for each in ann] == [(None, True)]
+    assert sorted(each["body"] for each in staff_own) == sorted(
+        each.text for each in sent
+    )
 
 
 def test_anonymous_callers_behind_one_address_share_keys(database_url: str) -> None:

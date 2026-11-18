@@ -53,6 +53,12 @@ written. If two features seem to do the same thing, such as idempotency
 keys and the inbox, [choosing a feature](choosing.md) says which one a
 need takes.
 
+The [examples](../examples/README.md) are whole projects for the
+features that come after the tutorial: wallets in double-entry books
+with idempotency keys, large payouts approved with each act confirmed,
+and an outbox with signed webhooks. Each opens with the problem it
+solves, and CI runs its tests.
+
 ## Words
 
 Each domainkit word has one meaning on every page. This glossary gives

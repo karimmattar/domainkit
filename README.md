@@ -224,6 +224,14 @@ Serve it with one worker process per core, each on its own event loop:
 gives the whole command with its limits, and [docs/performance.md](https://github.com/karimmattar/domainkit/blob/main/docs/performance.md)
 how many cores a load needs.
 
+## Examples
+
+[examples/](https://github.com/karimmattar/domainkit/blob/main/examples/README.md)
+holds projects made with `domainkit init`, each solving one problem, with
+a walkthrough and tests that CI runs: payments in double-entry books under
+idempotency keys, large payouts approved with each act confirmed, and an
+outbox with signed webhooks.
+
 ## Developing domainkit
 
 [CONTRIBUTING.md](https://github.com/karimmattar/domainkit/blob/main/CONTRIBUTING.md)

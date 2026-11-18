@@ -216,7 +216,8 @@ def guard_entries(config: ApprovalsSettings) -> None:
     Each refuses what is over them unapproved. The guards' services are
     the ledger's, decorated here (``approved_entry`` and the others), so
     every registered guard is decorated (DSGN-18); the ledger itself is
-    held by its hooks.
+    held by its hooks. The ledger belongs to no tenant: makers and
+    approvers count what they hold everywhere (``everywhere``, ADR 0183).
 
     Raises:
         ImproperlyConfigured: A threshold is not an amount of its currency.
@@ -254,6 +255,7 @@ def guard_entries(config: ApprovalsSettings) -> None:
             AccountingUnitOfWork,
             (policy("accounting.large_entry", when=large),),
             permission="accounting.add_entry",
+            everywhere=True,
         )
     )
     on_guard(
@@ -264,6 +266,7 @@ def guard_entries(config: ApprovalsSettings) -> None:
             AccountingUnitOfWork,
             (policy("accounting.large_capture"),),
             permission="accounting.capture_hold",
+            everywhere=True,
         )
     )
     on_guard(
@@ -274,6 +277,7 @@ def guard_entries(config: ApprovalsSettings) -> None:
             AccountingUnitOfWork,
             (policy("accounting.large_reversal"),),
             permission="accounting.reverse_entry",
+            everywhere=True,
         )
     )
 
@@ -571,16 +575,15 @@ async def _user_line(user_id: UUID) -> tuple[str, object]:
 
 
 async def _group_names(ids: Iterable[UUID]) -> dict[UUID, str]:
-    """The names of the groups ``ids`` names, as stored now; those gone are left out."""
+    """The names of the groups ``ids`` names, as stored now; those gone are left out.
+
+    In one statement, whatever their number (A28-PERF-07).
+    """
     from domainkit.contrib.auth import AuthUnitOfWork, GroupId
 
-    found: dict[UUID, str] = {}
     async with AuthUnitOfWork() as uow:
-        for each in ids:
-            group = await uow.groups.find(GroupId(each))
-            if group is not None:
-                found[each] = group.name
-    return found
+        found = await uow.groups.get_many(GroupId(each) for each in ids)
+    return {group_id: group.name for group_id, group in found.items()}
 
 
 def _counts(permissions: int, grants: int) -> str:
@@ -604,7 +607,8 @@ def guard_superusers(config: ApprovalsSettings) -> None:
     """Guard making superusers: superusers submit, others of them approve.
 
     The approvers are superusers, or the holders of ``SUPERUSER_APPROVERS``
-    where it is set; never the maker, nor the user promoted.
+    where it is set, everywhere (``everywhere``, ADR 0183); never the
+    maker, nor the user promoted.
     """
     from domainkit.contrib.auth import AuthUnitOfWork, IsSuperuser
 
@@ -629,6 +633,7 @@ def guard_superusers(config: ApprovalsSettings) -> None:
             maker_rule=IsSuperuser(),
             parties=_promoted,
             show=show_about_user,
+            everywhere=True,
         )
     )
 
@@ -858,7 +863,8 @@ def guard_admin_changes(config: ApprovalsSettings) -> None:
     """Guard the admin changes ``ADMIN_APPROVALS`` names, each with its approvals.
 
     The approvers are superusers, or the holders of ``ADMIN_APPROVERS``
-    where it is set; never the maker, nor the user the change is about.
+    where it is set, everywhere (``everywhere``, ADR 0183); never the
+    maker, nor the user the change is about.
     Only the admin API submits them (``http=False``), and its maker's call
     runs them (``by_maker``).
     """
@@ -881,6 +887,7 @@ def guard_admin_changes(config: ApprovalsSettings) -> None:
                 http=False,
                 by_maker=True,
                 show=ADMIN_SHOWS[action],
+                everywhere=True,
             )
         )
 

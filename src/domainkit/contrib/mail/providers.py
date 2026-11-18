@@ -76,7 +76,9 @@ class ProviderBackend(BaseEmailBackend):
 
         timeout = self.options.TIMEOUT
         if timeout not in _clients:
-            _clients[timeout] = HttpClient(timeout=timeout, propagate=False)
+            _clients[timeout] = HttpClient(
+                timeout=timeout, propagate=False, name="mail"
+            )
         self.client = _clients[timeout]
 
     async def send_messages(self, messages: Sequence[EmailMessage]) -> int:
