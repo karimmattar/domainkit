@@ -67,11 +67,15 @@ def check_bookable(amount: Money) -> None:
     thresholds therefore move nothing more: raise the thresholds with them.
 
     Raises:
-        TransferTooLarge: The amount is over its currency's threshold.
+        TransferTooLarge: The amount is over its currency's threshold, or
+            the thresholds name no amount for its currency.
     """
     thresholds = registry.settings(ApprovalsSettings).ENTRY_THRESHOLDS
     if thresholds and Threshold(thresholds).exceeded_by([amount]):
-        raise TransferTooLarge("The books take a transfer this large only approved.")
+        raise TransferTooLarge(
+            "The books take a transfer of this amount, in this currency, "
+            "only with their own approvals."
+        )
 
 
 def transfer_evidence(transfer: Transfer) -> Evidence:

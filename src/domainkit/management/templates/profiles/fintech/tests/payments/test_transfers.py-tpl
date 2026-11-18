@@ -6,7 +6,7 @@ from domainkit.contrib.evidence import evidence_store
 from domainkit.contrib.limits import LimitsUnitOfWork, SetLimit, set_limit
 from domainkit.contrib.messaging.testing import Outbox
 from domainkit.money import Money
-from domainkit.testing import ClientFor, TestClient, approve_request
+from domainkit.testing import ClientFor, SettingsOverrides, TestClient, approve_request
 
 from tests.people import MAKER, URL, Person, usd
 
@@ -141,6 +141,33 @@ def test_a_transfer_the_books_would_hold_is_refused_at_once(
     refused = maker.transfer(card, usd("15000.00"), authorization)
 
     assert (refused.status_code, refused.json()["code"]) == (422, "transfer_too_large")
+
+
+def test_a_transfer_approved_after_the_thresholds_fell_moves_nothing(
+    maker: Person,
+    approver: Person,
+    client_for: ClientFor,
+    outbox: Outbox,
+    settings: SettingsOverrides,
+) -> None:
+    """Checked again as it runs: the request fails, with no transfer and no entry."""
+    card = maker.register_card()
+    authorization = maker.authorize(card, usd("5000.00"))
+    pending = maker.transfer(card, usd("5000.00"), authorization)
+    request_url = f"/api/approvals/requests/{pending.json()['approval_request']}"
+    approve = {"fingerprint": approver.api.get(request_url).json()["fingerprint"]}
+    lower = {"USD": "4000.00", "EUR": "4000.00"}
+    settings.APPROVALS = {**settings.APPROVALS, "ENTRY_THRESHOLDS": lower}
+    approver.step_up()
+    approver.api.post(f"{request_url}/approve", json=approve)
+    clerk = client_for("accounting.view_entry")
+    clerk.run(outbox.arun_queued)
+
+    request = approver.api.get(request_url).json()
+    assert (request["status"], request["reason"]) == ("failed", "transfer_too_large")
+    made = maker.api.get(f"{URL}/transfers/{pending.json()['transfer_id']}")
+    assert made.status_code == 404
+    assert clerk.get("/api/accounting/entries").json()["items"] == []
 
 
 def test_a_large_transfer_runs_once_another_person_approves_it(
