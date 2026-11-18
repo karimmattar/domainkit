@@ -197,6 +197,8 @@ def test_an_offline_context_is_a_whole_call_of_its_own() -> None:
     assert not hasattr(second.state, "kept")
     assert first.app is not second.app
     assert not hasattr(first.app.state, "kept")
+    assert vars(first.app.state) == {"_state": {}}  # Empty: not the application's.
+    assert first.app.state is not second.app.state
 
 
 def test_an_offline_context_may_be_limited_to_scopes() -> None:

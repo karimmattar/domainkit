@@ -309,7 +309,7 @@ which this list does not repeat.
 - **Approvals asks maker and approver rules on an `OfflineContext`.** A
   guard's `maker_rule`, when the approved command runs, and a policy's
   `approver_rule`, in `approvers_of`, are asked on a new `OfflineContext`
-  each time, a call of their own as since 2.8.2: the query, the headers,
+  each time: a call of its own, as since 2.8.2. The query, the headers,
   and the cookies are empty, `request.user` is the user asked about,
   `request.auth` is None, and `request.state` starts empty. A rule that
   raises an error of its own refuses, is logged as a warning by its class
