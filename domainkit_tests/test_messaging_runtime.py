@@ -89,6 +89,7 @@ from domainkit.lifecycle import Budget as ShutdownBudget
 from domainkit.lifecycle import close_resources
 from domainkit.management import call_command
 from domainkit_tests import test_messaging as test_messaging_module
+from domainkit_tests.support.waiting import WAIT, within
 from domainkit_tests.test_messaging import (  # noqa: F401 - fixtures.
     ALPHA,
     BROKERED,
@@ -109,15 +110,6 @@ from domainkit_tests.test_messaging import (  # noqa: F401 - fixtures.
 from domainkit_tests.test_messaging_ordering import step
 
 pytestmark = pytest.mark.anyio
-
-WAIT: Final = 30.0
-"""The longest any test waits for something; a regression fails, never hangs."""
-
-
-async def within(awaitable: Any) -> Any:  # noqa: ANN401 - any awaitable.
-    """Await ``awaitable``, failing after ``WAIT`` seconds."""
-    async with asyncio.timeout(WAIT):
-        return await awaitable
 
 
 def postgres() -> bool:
@@ -436,21 +428,50 @@ async def test_a_stop_while_waiting_for_a_slot_still_cuts_off_running_messages()
 
 
 @pytest.mark.usefixtures("tables")
-async def test_a_running_message_may_finish_within_a_short_shutdown_timeout() -> None:
-    """A DRAIN_TIMEOUT under a second is waited for: what ends in it is done."""
+async def test_a_running_message_may_finish_within_a_short_shutdown_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A DRAIN_TIMEOUT under a second is waited for: what ends in it is done.
+
+    The worker hands its running messages to ``finish`` with the timeout as
+    set, 0.9 s; the message ends once it is handed over. ``finish`` is given
+    longer here, so the message's commit never races the timeout on a slow
+    runner; the next test holds ``finish`` to a timeout under a second
+    (A28-TEST-06).
+    """
     await enqueue(at_gate, name="ending")
     config = MessagingSettings(**{**FAST, **SLOW, "DRAIN_TIMEOUT": 0.9})
+    graces: list[float] = []
+    real = worker_module.finish
+
+    async def finishing(tasks: set[asyncio.Task[None]], grace: float) -> None:
+        graces.append(grace)
+        gate.open()
+        await real(tasks, WAIT)
+
+    monkeypatch.setattr(worker_module, "finish", finishing)
     stop = asyncio.Event()
     running = asyncio.create_task(Worker(config).run(stop))
     await gate.until(lambda: gate.started == ["ending"])
 
     stop.set()
-    await asyncio.sleep(0.01)  # The worker starts to wait; 0.89 s of slack.
-    gate.open()
     await within(running)
 
+    assert graces == [0.9]
     assert gate.finished == ["ending"]
     assert [row["status"] for row in await rows()] == [DONE]
+
+
+async def test_finish_waits_a_timeout_under_a_second() -> None:
+    """A task that ends within 0.9 s is waited for, not cancelled (A28-TEST-06)."""
+    ended = asyncio.Event()
+    task = asyncio.create_task(ended.wait())
+    asyncio.get_running_loop().call_soon(ended.set)
+
+    await worker_module.finish({task}, 0.9)  # type: ignore[arg-type]
+
+    assert task.done()
+    assert not task.cancelled()
 
 
 @pytest.mark.usefixtures("tables")

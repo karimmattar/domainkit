@@ -10,11 +10,11 @@ from sqlalchemy.orm import load_only
 from domainkit.ddd import AggregateRoot, Encrypted, F, InvalidQuery
 from domainkit_tests.sample_domains.cards.models import Cardholder, Payment
 from domainkit_tests.sample_domains.cards.uow import CardsUnitOfWork
-from domainkit_tests.test_encrypted_fields import (  # noqa: F401 - the fixture.
+from domainkit_tests.support.keys import bank  # noqa: F401 - the fixture.
+from domainkit_tests.test_encrypted_fields import (
     ANN,
     BOB,
     PAN,
-    bank,
     pay,
     raw,
     save,

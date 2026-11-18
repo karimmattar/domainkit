@@ -331,6 +331,9 @@ timeout_method = "thread"
 branch = true
 concurrency = ["thread", "greenlet"]
 source = ["src"]
+# Python processes the tests start measure themselves too, when they keep
+# the environment (A28-TEST-05): their data is combined with the run's.
+patch = ["subprocess"]
 
 [tool.coverage.report]
 show_missing = true

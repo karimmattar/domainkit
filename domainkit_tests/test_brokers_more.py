@@ -3,20 +3,25 @@
 Each is held to the port's contract: a message goes to one consumer,
 which answers it once; a requeued one comes again; an unanswered one,
 after ``REDELIVER_AFTER``, goes to another. Redis and NATS run as real
-servers the tests start (skipped where the binaries are missing); Kafka
-and SQS are fakes of their client and API.
+servers the tests start (skipped where the binaries are missing). Kafka
+and SQS are fakes of their client and API, for their failures; with
+``DOMAINKIT_TEST_KAFKA_URL`` and ``DOMAINKIT_TEST_SQS_URL`` (CI's
+integration job: Kafka, and ElasticMQ for SQS) the contract runs against
+real servers too (A28-TEST-03).
 """
 
 import asyncio
 import json
+import os
 import shutil
 import socket
 import subprocess
 import time
-from collections.abc import Iterator, Sequence
+import uuid
+from collections.abc import Callable, Iterator, Sequence
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import httpx2
 import pytest
@@ -38,8 +43,14 @@ from domainkit.broker.sqs import SqsBroker
 from domainkit.conf import BrokerConfig
 from domainkit.http import client as client_module
 from domainkit.http.client import stub
+from domainkit_tests.support.waiting import WAIT
 
 pytestmark = pytest.mark.anyio
+
+KAFKA_VARIABLE: Final = "DOMAINKIT_TEST_KAFKA_URL"
+"""A Kafka broker the tests may make topics on: ``kafka://localhost:9092``."""
+SQS_VARIABLE: Final = "DOMAINKIT_TEST_SQS_URL"
+"""An SQS server the tests may make queues on (ElasticMQ in CI)."""
 
 
 def config(url: str, **options: Any) -> BrokerConfig:  # noqa: ANN401
@@ -95,46 +106,91 @@ def free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def serve(command: list[str], port: int) -> Iterator[None]:
-    """Run a server until the test ends, once its port answers."""
-    process = subprocess.Popen(  # noqa: S603 - our own arguments.
-        command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    )
+def started(process: subprocess.Popen[bytes], ready: Callable[[], bool]) -> bool:
+    """Whether ``process`` is ready before it exits, within ``WAIT`` seconds."""
+    deadline = time.monotonic() + WAIT
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            return False  # It failed to start: its port was taken, say.
+        if ready():
+            return process.poll() is None
+        time.sleep(0.05)
+    return False
+
+
+def answers(port: int) -> bool:
+    """Whether something listens on ``port``."""
+    with socket.socket() as sock:
+        return sock.connect_ex(("127.0.0.1", port)) == 0
+
+
+def stopped(process: subprocess.Popen[bytes]) -> None:
+    """End ``process``, and wait until it has."""
+    process.terminate()
     try:
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            with socket.socket() as sock:
-                if sock.connect_ex(("127.0.0.1", port)) == 0:
-                    break
-            time.sleep(0.05)
-        yield
-    finally:
-        process.terminate()
+        process.wait(5)
+    except subprocess.TimeoutExpired:
+        process.kill()
         process.wait(5)
 
 
 @pytest.fixture
 def redis_url() -> Iterator[str]:
-    """A Redis server of the test's own."""
+    """A Redis server of the test's own.
+
+    A port found free can be taken before the server binds it, by another
+    pytest-xdist worker's server: a server that exits, or a port another
+    Redis answers on, is tried again on another port (A28-TEST-09).
+    """
+    import redis
+
     binary = shutil.which("redis-server")
     if binary is None:
         pytest.skip("redis-server is not installed")
-    port = free_port()
-    yield from (
-        f"redis://127.0.0.1:{port}/0"
-        for _ in serve([binary, "--port", str(port), "--save", ""], port)
-    )
+    for _ in range(5):
+        port = free_port()
+        process = subprocess.Popen(  # noqa: S603 - our own arguments.
+            [binary, "--port", str(port), "--save", ""],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if started(process, lambda: answers(port)):  # noqa: B023 - called at once.
+            with redis.Redis(port=port) as client:
+                ours = client.info("server")["process_id"] == process.pid
+            if ours:
+                try:
+                    yield f"redis://127.0.0.1:{port}/0"
+                finally:
+                    stopped(process)
+                return
+        stopped(process)
+    pytest.fail("redis-server did not start on any of five ports")
 
 
 @pytest.fixture
 def nats_url(tmp_path: Path) -> Iterator[str]:
-    """A NATS server with JetStream, of the test's own."""
+    """A NATS server with JetStream, of the test's own.
+
+    It picks its own port (``-p -1``) and writes it to a file named after
+    its process, so no other server can take it first (A28-TEST-09).
+    """
     binary = shutil.which("nats-server")
     if binary is None:
         pytest.skip("nats-server is not installed")
-    port = free_port()
-    command = [binary, "-js", "-p", str(port), "-sd", str(tmp_path)]
-    yield from (f"nats://127.0.0.1:{port}" for _ in serve(command, port))
+    serving = ["-js", "-a", "127.0.0.1", "-p", "-1", "-sd", str(tmp_path)]
+    process = subprocess.Popen(  # noqa: S603 - our own arguments.
+        [binary, *serving, "--ports_file_dir", str(tmp_path)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    ports = tmp_path / f"{Path(binary).name}_{process.pid}.ports"
+    try:
+        if not started(process, ports.exists):
+            pytest.fail(f"nats-server did not start (exit status {process.poll()})")
+        [url] = json.loads(ports.read_text())["nats"]
+        yield str(url)
+    finally:
+        stopped(process)
 
 
 async def test_redis_streams_hold_to_the_contract(redis_url: str) -> None:
@@ -485,6 +541,63 @@ async def test_kafka_failures_are_named() -> None:
     assert sasl.options()["security_protocol"] == "SASL_PLAINTEXT"
 
 
+def served(variable: str, what: str) -> str:
+    """The URL of a server ``variable`` names, or skip: set it to ``what``."""
+    url = os.environ.get(variable)
+    if not url:
+        pytest.skip(f"set {variable} to {what}")
+    return url
+
+
+def apart(url: str, **options: Any) -> BrokerConfig:  # noqa: ANN401
+    """A broker's settings, under a prefix of the test's own: the server is shared."""
+    return BrokerConfig(URL=url, PREFIX=f"t{uuid.uuid4().hex[:12]}", **options)
+
+
+async def handed_out(puller: Puller) -> list[Fetched]:
+    """What ``puller`` hands out first, asked until it does, ``WAIT`` at most."""
+    async with asyncio.timeout(WAIT):
+        while not (found := await puller.fetch(1)):
+            pass
+    return list(found)
+
+
+async def test_a_kafka_cluster_holds_to_the_contract() -> None:
+    """Against Kafka itself: aiokafka's group, commits and headers, not a fake.
+
+    The fake above encodes how this project reads aiokafka; the cluster
+    checks it (A28-TEST-03).
+    """
+    url = served(KAFKA_VARIABLE, "a Kafka broker, such as kafka://localhost:9092")
+    broker = KafkaBroker(apart(url, REPLICAS=1, PARTITIONS=2))
+    try:
+        assert await exercise(broker) == EXPECTED
+        await broker.check()
+    finally:
+        await broker.close()
+
+
+async def test_kafka_hands_what_a_worker_left_to_another() -> None:
+    """Taken, never answered, its consumer gone: the group's next one gets it."""
+    url = served(KAFKA_VARIABLE, "a Kafka broker, such as kafka://localhost:9092")
+    broker = KafkaBroker(apart(url, REPLICAS=1, PARTITIONS=1))
+    try:
+        await broker.declare(["q"])
+        await broker.publish("q", b"left", message_id="1")
+        first = await broker.puller(["q"])
+        taken = await handed_out(first)
+        await first.close()  # Its position was never committed.
+        second = await broker.puller(["q"])
+        again = await handed_out(second)
+        await second.ack(again[0])
+        await second.close()
+    finally:
+        await broker.close()
+
+    assert [(m.body, m.message_id) for m in taken] == [(b"left", "1")]
+    assert [(m.body, m.message_id) for m in again] == [(b"left", "1")]
+
+
 class FakeSqs:
     """SQS's JSON API, over queues in memory."""
 
@@ -558,15 +671,31 @@ def sqs(monkeypatch: pytest.MonkeyPatch) -> FakeSqs:
     return fake
 
 
-async def test_sqs_holds_to_the_contract(sqs: FakeSqs) -> None:
-    """Queues made once each; bodies in base64; delete and visibility 0."""
+async def test_sqs_holds_to_the_contract(
+    sqs: FakeSqs, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Queues made once each; bodies in base64; delete and visibility 0.
+
+    Closed, the broker closes its connections to SQS: it left them open,
+    as a real server showed (A28-TEST-03).
+    """
     broker = SqsBroker(config("sqs://AKID:secret@us-east-1", REDELIVER_AFTER=60))
+    closed: list[object] = []
+    close = type(broker.client).aclose
+
+    async def closing(client: Any) -> None:  # noqa: ANN401 - an HttpClient.
+        closed.append(client)
+        await close(client)
+
+    monkeypatch.setattr(type(broker.client), "aclose", closing)
 
     assert await exercise(broker) == EXPECTED
     assert sqs.calls.count("CreateQueue") == 2
     assert sqs.attributes["VisibilityTimeout"] == "60"
     assert all(not q for q in sqs.queues.values())
     await broker.check()
+    await broker.close()
+    assert closed == [broker.client]
 
 
 async def test_sqs_refusals_and_outages(sqs: FakeSqs) -> None:
@@ -596,6 +725,38 @@ async def test_sqs_refusals_and_outages(sqs: FakeSqs) -> None:
 
     with stub(down), pytest.raises(BrokerUnavailable, match="could not be reached"):
         await broker.check()
+
+
+async def test_an_sqs_server_holds_to_the_contract() -> None:
+    """Against an SQS server (ElasticMQ in CI): its JSON API, not a fake.
+
+    The fake above encodes how this project reads the API (A28-TEST-03).
+    """
+    url = served(SQS_VARIABLE, "an SQS server, such as ElasticMQ")
+    broker = SqsBroker(apart(url, REDELIVER_AFTER=60))
+    try:
+        assert await exercise(broker) == EXPECTED
+        await broker.check()
+    finally:
+        await broker.close()
+
+
+async def test_sqs_hands_what_a_worker_left_to_another() -> None:
+    """Taken, never answered: visible again after ``REDELIVER_AFTER``, to another."""
+    url = served(SQS_VARIABLE, "an SQS server, such as ElasticMQ")
+    broker = SqsBroker(apart(url, REDELIVER_AFTER=1))
+    try:
+        await broker.declare(["q"])
+        await broker.publish("q", b"left", message_id="1")
+        taken = await handed_out(await broker.puller(["q"]))
+        other = await broker.puller(["q"])
+        again = await handed_out(other)
+        await other.ack(again[0])
+    finally:
+        await broker.close()
+
+    assert [(m.body, m.message_id) for m in taken] == [(b"left", "1")]
+    assert [(m.body, m.message_id) for m in again] == [(b"left", "1")]
 
 
 async def test_sqs_reads_a_body_that_is_not_base64() -> None:

@@ -11,7 +11,7 @@ import io
 import json
 import logging
 import sys
-from collections.abc import Iterator, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -47,6 +47,7 @@ from domainkit.http.live_fanout import (
 from domainkit.http.sse import EventSourceResponse
 from domainkit.management import call_command
 from domainkit_tests.sample_live_routes import OwnEvents
+from domainkit_tests.support.waiting import WAIT, until
 from domainkit_tests.test_brokers_more import redis_url
 from domainkit_tests.test_live_events import Someone, connection, granted, take
 
@@ -74,17 +75,11 @@ def processes() -> tuple[EventBus, LiveEvents, EventBus, LiveEvents]:
     return here_bus, here, there_bus, there
 
 
-async def until(condition: object, message: str) -> None:
-    """Wait up to five seconds for ``condition()`` to be true."""
-    for _ in range(500):
-        if await condition():  # type: ignore[operator]
-            return
-        await asyncio.sleep(0.01)
-    raise AssertionError(message)
-
-
 async def across(
-    here_bus: EventBus, here: LiveEvents, there: LiveEvents, listening: object
+    here_bus: EventBus,
+    here: LiveEvents,
+    there: LiveEvents,
+    listening: Callable[[], Awaitable[bool]],
 ) -> None:
     """The scenario both backends pass: there hears here; here hears itself once."""
     me = Someone()
@@ -97,7 +92,7 @@ async def across(
         await here_bus.publish(first)
         await here_bus.publish(UserCreated(user_id=me.id, username="me"))  # Not shared.
         await here_bus.publish(second)
-        async with asyncio.timeout(5):
+        async with asyncio.timeout(WAIT):
             assert await take(far, 2) == [first, second]
             assert await take(near, 2) == [first, second]  # Each once.
 
@@ -227,7 +222,7 @@ async def test_an_unreadable_message_is_dropped_and_said() -> None:
             ),
             loop,
         )
-        async with asyncio.timeout(5):
+        async with asyncio.timeout(WAIT):
             assert await take(events, 1) == [event]
 
 

@@ -2,7 +2,7 @@
 
 from datetime import timedelta
 from typing import Any, Final
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,8 +11,9 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from domainkit.conf import override_settings
 from domainkit.contrib.auth import StepUp
-from domainkit.contrib.auth.authentication import Credentials
+from domainkit.contrib.auth.authentication import Credentials, may_impersonate
 from domainkit.ddd.tenancy import tenant
+from domainkit.management.base import run_async
 from domainkit_tests.conftest import MIDDLEWARE, Api
 from domainkit_tests.support.auth import audited, bearer, create_user
 from domainkit_tests.test_auth_access import request, user
@@ -104,7 +105,7 @@ async def test_impersonated_credentials_never_step_up() -> None:
 
 
 @pytest.mark.parametrize(
-    "change", ["deactivated", "deleted", "unpermitted", "outranked"]
+    "change", ["deactivated", "deleted", "unpermitted", "unstaffed", "outranked"]
 )
 def test_an_impersonation_ends_with_its_staff_members_right(
     api: Api, change: str
@@ -113,8 +114,10 @@ def test_an_impersonation_ends_with_its_staff_members_right(
 
     The audit found a token working as the user for the rest of
     ``IMPERSONATION_TTL`` after its staff member was deactivated or deleted
-    (A1-1). A user granted more than the staff member hold is out of their
-    reach too, as when the token was issued.
+    (A1-1). So does one whose staff flag is taken away, though active and
+    still holding ``change_user`` (A28-TEST-02). A user granted more than
+    the staff member hold is out of their reach too, as when the token was
+    issued.
     """
     client = api(**ON)
     root = staff("root", is_superuser=True)
@@ -131,6 +134,8 @@ def test_an_impersonation_ends_with_its_staff_members_right(
         done = client.delete(path, headers=root)
     elif change == "unpermitted":
         done = client.put(f"{path}/permissions", json={"permissions": []}, headers=root)
+    elif change == "unstaffed":
+        done = client.patch(path, json={"is_staff": False}, headers=root)
     else:
         done = client.put(
             f"/admin/auth/users/{ann}/permissions",
@@ -140,6 +145,21 @@ def test_an_impersonation_ends_with_its_staff_members_right(
     assert done.status_code < 300
 
     assert client.get("/auth/me", headers=as_ann).status_code == 401
+
+
+def test_an_impersonation_of_a_user_who_is_gone_ends(api: Api) -> None:
+    """A user deleted while their token is read: the staff member may not act as them.
+
+    A deleted user's token fails before this is asked; the check holds on
+    its own all the same (A28-TEST-02).
+    """
+    client = api(**ON)
+    clerk = staff("clerk", "auth.change_user")
+    ann = create_user("ann")
+    clerk_id = UUID(client.get("/auth/me", headers=clerk).json()["id"])
+
+    assert run_async(may_impersonate(clerk_id, ann))
+    assert not run_async(may_impersonate(clerk_id, uuid4()))
 
 
 SERVED: Final = "X-Served-Tenant"

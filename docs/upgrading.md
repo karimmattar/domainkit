@@ -341,6 +341,12 @@ No migration.
   tables keep (`auth.E011`). 2.8 started with them, and failed later, at
   a login, a search, or a list of users that read the field: name the
   fields the table stores instead.
+- **A wider fixture's factory objects start at 0.** The test plugin
+  resets every factory before a test's fixtures, as well as before the
+  test's own: objects a module-scoped or session-scoped fixture builds are
+  numbered from 0, whichever test runs first, where 2.8 went on from the
+  test before. A test that asserted the numbers such a fixture's objects
+  happened to get asserts the ones from 0 (`Product 0`, `Product 1`).
 - **`check` warns of web names a gateway takes through an allowed
   module** (`architecture.W001`). The infrastructure layer may import
   `domainkit.http.client` and `domainkit.http.uploads`, but from 2.9

@@ -23,6 +23,7 @@ from domainkit.contrib.idempotency.operations import (
 from domainkit.i18n.translation import get_language, override
 from domainkit.tasks import backoff_delay, owned, shutdown, spawn, supervise
 from domainkit.tracing import current_ids, remote_parent
+from domainkit_tests.support.waiting import WAIT
 
 pytestmark = pytest.mark.anyio
 
@@ -48,8 +49,8 @@ def seen() -> dict[str, object]:
 
 
 async def wait_for(task: asyncio.Task[Any]) -> None:
-    """Wait (at most 5 seconds) for ``task`` to end, however it ends."""
-    await asyncio.wait([task], timeout=5)
+    """Wait (at most ``WAIT`` seconds) for ``task`` to end, however it ends."""
+    await asyncio.wait([task], timeout=WAIT)
     assert task.done()
 
 

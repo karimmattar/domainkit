@@ -90,11 +90,15 @@ print([name for name in sys.modules if name.startswith({never!r})])
 
 
 def run(script: str, path: Path | None = None) -> list[str]:
-    """Run ``script`` in a fresh interpreter; the lines it printed."""
+    """Run ``script`` in a fresh interpreter; the lines it printed.
+
+    No project's settings reach it, nor coverage's: a measured interpreter
+    loads coverage's modules too (A28-TEST-05).
+    """
     environment = {
         name: value
         for name, value in os.environ.items()
-        if not name.startswith("DOMAINKIT_")
+        if not name.startswith(("DOMAINKIT_", "COVERAGE_PROCESS_"))
     }
     paths = [str(ROOT), str(ROOT / "src"), *([str(path)] if path else [])]
     environment["PYTHONPATH"] = os.pathsep.join(paths)

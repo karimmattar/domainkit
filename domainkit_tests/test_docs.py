@@ -1035,8 +1035,8 @@ def snippets(page: Path) -> list[tuple[int, str]]:
     ]
 
 
-def snippet_problems(page: Path) -> list[str]:
-    """What is wrong with ``page``'s snippets.
+def snippet_problems(page: Path, root: Path = ROOT) -> list[str]:
+    """What is wrong with ``page``'s snippets, named from ``root``.
 
     A snippet that does not parse, and a name imported from domainkit that
     is not there.
@@ -1045,7 +1045,7 @@ def snippet_problems(page: Path) -> list[str]:
     """
     problems = []
     for line, code in snippets(page):
-        where = f"{page.relative_to(ROOT)}:{line}"
+        where = f"{page.relative_to(root)}:{line}"
         try:
             tree = compile(
                 code,
@@ -1084,17 +1084,19 @@ def test_every_python_snippet_parses_and_imports_what_is_there() -> None:
 
 
 def test_a_snippet_that_does_not_parse_or_import_is_named(tmp_path: Path) -> None:
-    """The line, and what is wrong."""
-    page = ROOT / "docs" / "_snippet_probe.md"
+    """The line, and what is wrong.
+
+    The page is written under the test's own directory, never the
+    repository's ``docs/``, which the other tests read (A28-TEST-10).
+    """
+    page = tmp_path / "docs" / "_snippet_probe.md"
+    page.parent.mkdir()
     page.write_text(
         "# Probe\n\n```python\nf(...,)\nx = {..., 1: 2}\n```\n\n"
         "```python\nfrom domainkit.tenancy import nothing_here\n```\n",
         encoding="utf-8",
     )
-    try:
-        found = snippet_problems(page)
-    finally:
-        page.unlink()
+    found = snippet_problems(page, root=tmp_path)
 
     assert found == [
         "docs/_snippet_probe.md:4: invalid syntax (line 2 of the snippet)",
