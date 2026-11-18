@@ -155,7 +155,7 @@ application logs them as a warning and starts.
 | `apps.E001` | in any environment, at `setup()`: a domain whose `requires` is not installed |
 | `apps.E002` | in any environment, at `setup()`: a domain that defines a hook method 1.0 removed, in 2.0 too ([Extension points](extension-points.md)) |
 | `apps.E003` | from `check`, and as the application starts (refused in staging and production, logged elsewhere): a `MIDDLEWARE` entry of an optional app (`domainkit.contrib.<app>`) whose app is not in `INSTALLED_DOMAINS`. The middleware needs the app's settings and tables, so every request would fail. *New in 2.9* |
-| `backends.E001` | from `check`, and as the application starts (refused in staging and production, logged elsewhere): a `RATE_LIMIT_BACKEND` that does not import, or names a class without `hit(key, limit, period)`. Every counter of rate limits would fail on its first request, and the limit's refuses it then ([A backend of your own](../cache.md#a-backend-of-your-own)). *New in 2.9* |
+| `backends.E001` | from `check`, and as the application starts (refused in staging and production, logged elsewhere): a `RATE_LIMIT_BACKEND` that does not import, or names a class without `hit(key, limit, period)`. Each counter of rate limits would fail where it first counts; outside staging and production, that request is refused with the reason ([A backend of your own](../cache.md#a-backend-of-your-own)). *New in 2.9* |
 | `architecture.E001` | from `check`: an import that breaks the layer rules ([Layer rules](settings.md#layer-rules)) |
 | `migrations.E001` | from `check`: a target with more than one migration head (`makemigrations --merge` joins them) |
 

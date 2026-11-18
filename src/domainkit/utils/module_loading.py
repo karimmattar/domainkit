@@ -5,8 +5,6 @@ from collections.abc import Callable, Mapping
 from importlib import import_module
 from typing import Any
 
-from domainkit.exceptions import ImproperlyConfigured
-
 __all__ = [
     "backend_class",
     "import_string",
@@ -88,6 +86,9 @@ def backend_class(setting: str, path: str, base: type) -> type:
         ImproperlyConfigured: ``path`` cannot be imported, or names no
             class of the kind.
     """
+    # Here: a domain layer imports this module, for lazy_names, and no more.
+    from domainkit.exceptions import ImproperlyConfigured
+
     try:
         found = import_backend(path)
     except ImportError as exc:
