@@ -52,6 +52,7 @@ Enforce the dependency rules of a domain-driven package layout.
 - `Violation`: One import that breaks a rule.
 - `check_domain`: Return the rule violations in domain `package`.
 - `check_domains`: Check every domain in `installed`, under `rules` (the project's).
+- `layer_warnings`: Imports the rules let through in 2.x and 3.0 refuses (`architecture.W001`).
 
 ## `domainkit.checks`
 
@@ -130,6 +131,15 @@ Django-style settings access.
 - `reset_settings`: Forget loaded settings; the next access loads them again.
 - `settings`: Typed, lazily loaded settings for the selected module.
 - `use_settings`: Temporarily load another settings module, then restore the current one.
+
+## `domainkit.context`
+
+Per-request context shared by logging and error responses.
+
+- `SYSTEM_ACTOR`: The actor of work no caller asked for: periodic tasks, commands' messages.
+- `RequestContext`: Facts about the request or job being served; no personal data.
+- `bind_request`: Make `context` current for the duration of the block.
+- `current_request`: Return the request being served, or None outside a request.
 
 ## `domainkit.deadlines`
 
@@ -301,6 +311,7 @@ Shutting a process down, in phases, within one budget (`SHUTDOWN_TIMEOUT`).
 
 Structured logging: JSON for log pipelines, escaped text for terminals.
 
+- `SECURITY_LOGGER`: The logger of rejected requests and other security events (`domainkit.security`).
 - `WARNING_RESERVE`: Part of a logging queue only records at `WARNING` and above may fill.
 - `BackgroundHandler`: Put records on a bounded queue for `BackgroundListener` to write.
 - `BackgroundListener`: The logging thread: takes records off the queue and writes them.
@@ -452,11 +463,18 @@ OpenTelemetry spans and log correlation (`domainkit[tracing]`).
 - `span`: Run the block inside a span named `name` (a no-op without OpenTelemetry).
 - `trace_headers`: The active span's W3C trace context, as headers; empty without one.
 
+## `domainkit.utils.canonical`
+
+One text per JSON value, for digests and signatures: RFC 8785's (JCS).
+
+- `canonical_json`: `value` as RFC 8785 canonical JSON, in UTF-8.
+
 ## `domainkit.utils.decimals`
 
 One text form for a `Decimal`: fixed point, never an exponent.
 
 - `decimal_text`: `value` in fixed point (`"1000"` for `Decimal("1E+3")`), at its places.
+- `jsonable`: `value` as JSON-ready data, each `Decimal` in it as `decimal_text`.
 
 ## `domainkit.utils.loops`
 
@@ -465,12 +483,35 @@ Event loops for the framework's own entry points: uvloop when it is there.
 - `PerLoop`: One value per event loop, made on the loop's first use.
 - `loop_factory`: The factory of `kind`'s loops; None stands for asyncio's own.
 
+## `domainkit.utils.module_loading`
+
+Import objects by dotted path (`django.utils.module_loading`).
+
+- `import_string`: Return the attribute named by `package.module.attr` or `package.module:attr`.
+- `lazy_names`: A module `__getattr__` that imports `names` on first use: name to module.
+
+## `domainkit.utils.rates`
+
+Parse rates such as `"100/minute"`.
+
+- `PERIODS`: The periods a rate may name, in seconds.
+- `parse_rate`: Return `(count, period in seconds)`; raise ValueError when malformed.
+
 ## `domainkit.cloud.aws`
 
-Calls to AWS's APIs, signed with SigV4 (`domainkit.keys.aws`).
+Calls to AWS's APIs: Signature Version 4, and the credential chain.
 
+- `ALGORITHM`: SigV4's algorithm, as `Authorization` and presigned URLs name it.
+- `AwsCredentials`: An access key, its secret, and for temporary ones a session token.
+- `CredentialSource`: An async callable that gives the credentials to sign with, fresh ones when due.
+- `container_credentials`: Credentials from the container's endpoint (ECS, EKS Pod Identity).
 - `credential_source`: The key pair given, or the environment's credentials.
+- `default_credentials`: The first source the environment sets up (see the module).
+- `environment_credentials`: Credentials from the `AWS_*` variables (access key, secret, token).
+- `sign`: `headers` with SigV4's: `X-Amz-Date`, the token, `Authorization`.
 - `signed_request`: Send `body` to `url`, signed for `service` in `region`.
+- `signing_key`: SigV4's key for one day, region, and service.
+- `web_identity_credentials`: Credentials for `role_arn`, assumed with the token in `token_file`.
 
 ## `domainkit.keys.gcp`
 

@@ -16,7 +16,7 @@ from decimal import Decimal
 from typing import Any, Final
 
 from sqlalchemy import Delete, Select, Update, delete, func, literal, select, update
-from sqlalchemy.engine import Row
+from sqlalchemy.engine import CursorResult, Result, Row
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.ext.compiler import compiles
@@ -125,6 +125,24 @@ def _computed(
         )
     column = column_of(mapper, value.field)
     return _OPERATORS[value.operator](column, operand)
+
+
+def affected_rows(result: Result[Any]) -> int:
+    """How many rows the ``UPDATE`` or ``DELETE`` that gave ``result`` changed.
+
+    ``AsyncSession.execute`` is typed to return any ``Result``; the result
+    of a change is a ``CursorResult``, whose ``rowcount`` counts them
+    (since 2.9).
+
+    Raises:
+        TypeError: ``result`` counts no rows: the ORM's objects, say.
+    """
+    if not isinstance(result, CursorResult):
+        raise TypeError(
+            f"A {type(result).__name__} counts no changed rows: pass the result "
+            "of an UPDATE or DELETE."
+        )
+    return int(result.rowcount)
 
 
 LOCK_NOT_AVAILABLE: Final = "55P03"
@@ -406,7 +424,7 @@ class SqlAlchemyRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
             statement.execution_options(synchronize_session="fetch")
         )
         await reload_expired(self.session)  # The version was computed in SQL.
-        return int(result.rowcount)  # type: ignore[attr-defined]
+        return affected_rows(result)
 
     async def delete_rows(
         self, criteria: CriteriaLike | None, /, *, include_deleted: bool = False
@@ -422,7 +440,7 @@ class SqlAlchemyRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
         result = await self.session.execute(
             statement.execution_options(synchronize_session="fetch")
         )
-        return int(result.rowcount)  # type: ignore[attr-defined]
+        return affected_rows(result)
 
     def _where[StatementT: (Select[Any], Update, Delete)](
         self, statement: StatementT, criteria: Criteria | None

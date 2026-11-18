@@ -1,5 +1,6 @@
 """Layer rules for domain packages."""
 
+import io
 import json
 import os
 import subprocess
@@ -21,6 +22,7 @@ from domainkit.architecture import (
     check_domain,
     check_domains,
     iter_imports,
+    layer_warnings,
     project_rules,
 )
 from domainkit.conf import override_settings
@@ -31,6 +33,8 @@ from domainkit.http.errors import install_exception_handlers
 from domainkit_tests.conftest import MakePackage
 
 ROOT: Final = Path(__file__).parents[1]
+DOMAINS: Final = ["domainkit_tests.sample_domains.alpha"]
+"""The test settings' domains."""
 
 
 @pytest.fixture
@@ -681,6 +685,131 @@ def test_a_file_gateway_raises_the_problems_a_route_raises(
         "domainkit.http.problems.APIError",
         "domainkit.http.problems.FieldError",
     } <= forbidden
+
+
+@pytest.fixture
+def web_gateway(make_package: MakePackage) -> str:
+    """A file gateway that takes Starlette's types and responses through uploads."""
+    make_package(
+        "arch.filing",
+        {
+            "infrastructure/files.py": """
+                from domainkit.http.uploads import (
+                    CHECKED_PDF,
+                    Upload,
+                    receive_upload,
+                    save_upload,
+                )
+                from domainkit.http.uploads import UploadFile, StreamingResponse
+                from domainkit.http.uploads import serve, StoredUpload
+                from domainkit.http.client import HttpClient, httpx2
+                from domainkit.http.problems import APIError
+                import domainkit.http.uploads
+            """,
+            "application/commands.py": (
+                "from domainkit.http.uploads import UploadFile\n"
+            ),
+        },
+    )
+    make_package(
+        "arch.flatfiles", {"models.py": "from domainkit.http import uploads\n"}
+    )
+    return "arch.filing"
+
+
+def test_names_outside_client_and_uploads_all_are_warned_of(
+    web_gateway: str,
+) -> None:
+    """2.x lets them through with a warning, which 3.0 makes a refusal (ADR 0188).
+
+    A name of the module's ``__all__`` passes, but ``serve``, which builds a
+    route's response; one the module only imports (Starlette's types, the
+    client's ``httpx2``, ``StoredUpload``) is warned of. The errors stay as
+    they were: the application layer is refused, not warned.
+    """
+    installed = ["arch.filing", "arch.flatfiles"]
+    found = {
+        (v.module.removeprefix("arch.filing."), v.imported)
+        for v in layer_warnings(installed, LayerRules())
+    }
+    rules = {str(v).partition(": ")[2] for v in layer_warnings(installed, LayerRules())}
+    refused = {
+        (v.module.removeprefix("arch.filing."), v.imported)
+        for v in check_domains(installed, LayerRules())
+    }
+
+    assert found == {
+        ("infrastructure.files", "domainkit.http.uploads.UploadFile"),
+        ("infrastructure.files", "domainkit.http.uploads.StreamingResponse"),
+        ("infrastructure.files", "domainkit.http.uploads.serve"),
+        ("infrastructure.files", "domainkit.http.uploads.StoredUpload"),
+        ("infrastructure.files", "domainkit.http.client.httpx2"),
+    }
+    assert rules == {
+        (
+            "the infrastructure layer may import only the __all__ of "
+            "domainkit.http.uploads; 3.0 refuses the rest"
+        ),
+        (
+            "the infrastructure layer may import only the __all__ of "
+            "domainkit.http.client; 3.0 refuses the rest"
+        ),
+        (
+            "the infrastructure layer may not answer a request with "
+            "domainkit.http.uploads.serve, which is its route's; 3.0 refuses it"
+        ),
+    }
+    assert refused == {
+        ("application.commands", "domainkit.http.uploads"),
+        ("application.commands", "domainkit.http.uploads.UploadFile"),
+        ("arch.flatfiles.models", "domainkit.http"),
+    }
+
+
+def test_a_module_forbidden_by_name_is_refused_not_warned_of(
+    web_gateway: str,
+) -> None:
+    """A project that forbids ``domainkit.http.uploads`` gets errors, as in 2.8."""
+    extra = {"FORBIDDEN_LIBRARIES": {"infrastructure": ["domainkit.http.uploads"]}}
+    with override_settings(ARCHITECTURE=extra):
+        warned = {v.imported for v in layer_warnings(["arch.filing"])}
+        refused = {v.imported for v in check_domain("arch.filing")}
+
+    assert warned == {"domainkit.http.client.httpx2"}
+    assert "domainkit.http.uploads.UploadFile" in refused
+
+
+def test_check_lists_the_imports_3_0_refuses(make_package: MakePackage) -> None:
+    """``architecture.W001``: ``check`` passes, ``SILENCED_CHECKS`` may silence it."""
+    from domainkit.management import call_command
+
+    make_package(
+        "arch.served",
+        {
+            "infrastructure/files.py": (
+                "from domainkit.http.uploads import UploadFile, save_upload\n"
+            ),
+        },
+    )
+
+    def checked(**change: Any) -> str:  # noqa: ANN401 - settings.
+        output = io.StringIO()
+        with override_settings(INSTALLED_DOMAINS=[*DOMAINS, "arch.served"], **change):
+            call_command("check", stdout=output)
+        return output.getvalue()
+
+    listed = checked().splitlines()
+    silenced = checked(SILENCED_CHECKS=["architecture.W001"])
+
+    assert listed[0].startswith("System check identified no issues and 1 warning.")
+    assert listed[1:] == [
+        (
+            "  Warning: architecture.W001: arch.served.infrastructure.files imports "
+            "domainkit.http.uploads.UploadFile: the infrastructure layer may import "
+            "only the __all__ of domainkit.http.uploads; 3.0 refuses the rest"
+        )
+    ]
+    assert silenced.startswith("System check identified no issues (1 silenced).")
 
 
 @pytest.mark.reads_own_source

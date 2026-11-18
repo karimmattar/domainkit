@@ -18,16 +18,6 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   ([Running a command](docs/reference/commands.md#running-a-command),
   [upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-12).
 
-- `.github/workflows/docs.yml` publishes the documentation site to GitHub
-  Pages when a release tag is pushed: whatever tag starts it, the site
-  of the newest final release, once `release.yml`'s tag checks pass that
-  release, so a tag that those checks refuse publishes nothing.
-  `release_check.py --as-pushed` judges a tag as when it was pushed. The
-  workflow's one job that writes may write to Pages alone, and it reads
-  no secret. The repository's owner turns Pages on once
-  ([One-time setup](docs/versioning.md#one-time-setup), ADR 0189)
-  (audit A28-DX-02).
-
 - [Choosing a feature](docs/choosing.md): which tool a need takes where
   two look alike (idempotency keys or the inbox, money limits or rate
   limits, a step-up, an authorization, or approvals, a balance field or
@@ -72,16 +62,6 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   its query. It is asked only of a class that defines both methods, or
   neither, so a backend that overrides `object_grants` alone keeps every
   grant it adds (ADR 0185) (audit A28-PERF-05).
-
-- On PostgreSQL, `migrate` makes indexes on the user table, a project's
-  own too, where missing: `lower()` of the address and of the username,
-  where each is text, and the field the admin API lists users by, then
-  the id. It reads the table's indexes first and makes only those
-  missing, so with none to make it takes no lock. Logins by address,
-  signups, the checks for a taken address or username, and the admin
-  API's list of users each read the whole table before (30 to 60 ms at
-  300,000 users, 0.01 ms now). Revisions leave them alone, by name;
-  SQLite gets none (ADR 0185) (audit A28-PERF-02).
 
 - `per_tenant=False` on `live_events.stream`, `forward`, and
   `subscribe`: a route that serves every tenant on purpose, such as a
@@ -164,17 +144,95 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   since 2.9. The auth app warns so of `AUTH.AUTHENTICATION_EXEMPT_PATHS`
   (audit A28-ARCH-01).
 
-### Changed
+- Three parts continue the tutorial's bank, each walked by
+  `domainkit_tests/test_walkthroughs.py`: money that moves (a transfer
+  under an `Idempotency-Key`, a locked row, a daily limit, and entries in
+  double-entry books), four eyes (large transfers held for another
+  clerk's approval, confirmed as one act with a code, and the audit
+  trail), and telling others (each transfer sent as a signed webhook
+  through the outbox, and a receiver that verifies it)
+  ([the tutorial](docs/tutorial.md)) (audit A28-DX-07).
 
-- `diffsettings` shows each installed domain's settings (`AUTH`,
-  `APPROVALS`, `LIMITS`, ...) as its schema validated them, defaults
-  filled in, and marks those left at their defaults under `--all`; 2.8
-  hid a domain's settings whole. It fails closed: values typed as
-  secrets, names that suggest one (`sid` and `pin` now among them), URL
-  passwords and `password=` pairs, and all text in a mapping or a value
-  typed `Any` (a provider's options) stay hidden
-  ([diffsettings](docs/reference/commands.md#diffsettings-show-the-settings),
-  [upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-10).
+- Two recipes, walked by `domainkit_tests/test_recipes.py`:
+  organizations in the path (`PathTenant`, `TenantOwned` rows, and
+  members' permissions), and an upload with checks (a checked PDF or a
+  picture, typed by its content, of 2 MB at most)
+  ([recipes](docs/recipes.md)) (audit A28-DX-07).
+
+- `.github/workflows/docs.yml` publishes the documentation site to GitHub
+  Pages when a release tag is pushed: whatever tag starts it, the site
+  of the newest final release, once `release.yml`'s tag checks pass that
+  release with every tag of a newer version left out, pushed before the
+  release or after (`release_check.py --as-pushed`): a tag that the other
+  checks refuse publishes nothing. The workflow's one job that writes may
+  write to Pages alone, and it reads no secret. The repository's owner
+  turns Pages on once
+  ([One-time setup](docs/versioning.md#one-time-setup), ADR 0189)
+  (audit A28-DX-02).
+
+- On PostgreSQL, `migrate` makes indexes on the user table, a project's
+  own too, in its schema where it names one, where missing: `lower()` of
+  the address and of the username, where each is text, and the field the
+  admin API lists users by, then the id. It reads the table's indexes
+  first and makes only those missing, so with none to make it takes no
+  lock. Logins by address, signups, the checks for a taken address or
+  username, and the admin API's list of users each read the whole table
+  before (30 to 60 ms at 300,000 users, 0.01 ms now). Revisions leave
+  them alone, by name; SQLite gets none (ADR 0185) (audit A28-PERF-02).
+
+- [Webhook deliveries fail](docs/runbook.md#webhook-deliveries-fail)
+  says to `ANALYZE` the deliveries and the outbox tables on PostgreSQL
+  after `migrate` made them, a restore, or a bulk load: until autovacuum
+  analyses them, the hourly check for abandoned deliveries may be
+  planned as a nested loop, 15.7 s over 6,000 deliveries (found in
+  review).
+
+- `domainkit.db.protection`: one way to keep a table append-only on
+  PostgreSQL, which the audit trail and the ledger's entries now share.
+  `append_only_statements` writes the triggers of 2.8, the same function
+  names and bodies, so triggers made then still count;
+  `protect_append_only` makes them afresh after `migrate`;
+  `missing_append_only` and `unprotected` check them, in a database's own
+  schema and in each tenant's (`TENANCY.SCHEMA_DATABASES`). A table's
+  name must be lowercase letters, digits, and underscores, of at most 42
+  characters, with no schema of its own, or each refuses it with
+  `ValueError`; `contrib.audit`'s `protect` and `unprotect`, which
+  revisions call, take any table as in 2.8
+  ([Append-only tables](docs/databases.md#append-only-tables), ADR 0188)
+  (audit A28-ARCH-07).
+
+- `domainkit.db.affected_rows(result)`: the rows an `UPDATE` or `DELETE`
+  changed, without reading `rowcount` under `# type: ignore`; a
+  `TypeError` for a result that counts none
+  ([Units of work](docs/databases.md#units-of-work-and-their-repositories))
+  (audit A28-ARCH-E4).
+
+- `domainkit.utils.canonical.canonical_json(value)`: RFC 8785's canonical
+  JSON, in UTF-8, for new digests and signatures. It refuses NaN, the
+  infinities, integers past 2**53 - 1, lone surrogates, and keys that are
+  not strings. The digests the framework already stores keep their own
+  encoders ([Digests](docs/databases.md#digests), ADR 0188) (audit
+  A28-ARCH-E7).
+
+- Public names the contrib apps used before they were published:
+  `domainkit.context` (`current_request`, `bind_request`,
+  `RequestContext`, `SYSTEM_ACTOR`), `domainkit.utils.module_loading`
+  (`import_string`, `lazy_names`), `domainkit.utils.rates` (`parse_rate`,
+  `PERIODS`), `domainkit.utils.decimals.jsonable`,
+  `domainkit.db.routing.DatabaseRouter`, and
+  `domainkit.log.SECURITY_LOGGER`. `domainkit.http.errors` lists its
+  public names in `__all__`: `APIError`, `FieldError`, `ErrorResponse`,
+  `error_response`, `error_responses` (ADR 0188) (audit A28-ARCH-06,
+  A28-ARCH-E10).
+
+- `domainkit.contrib.mail.admins.reset_reports()` and
+  `domainkit.contrib.flags.declared_kept()`: public resets of the admins'
+  error reports and the declared dynamic settings, which the pytest
+  plugin calls around each test, so neither reaches the next test
+  ([What each test starts from](docs/testing.md#what-each-test-starts-from),
+  ADR 0113) (audit A28-ARCH-14).
+
+### Changed
 
 - In development and tests, each problem the application finds at its
   build or start (a route without an access rule, say) is logged as a
@@ -289,6 +347,108 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   INFO as unsupported and served every request a 500. Under Granian with
   `SERVE["EXIT_ON_FAILED_START"]`, such a lifespan is a failed start
   (audit A28-DX-04).
+
+- `domainkit init --profile fintech`: the sample transfer is booked in
+  the double-entry books once it commits, as a balanced entry posted by
+  a durable handler (`domains/payments/application/handlers.py`), which
+  opens the month's accounting period when none covers the date; and its
+  facts are recorded as evidence (`defer_evidence`). A transfer whose
+  entry the books would hold for their own approvals
+  (`APPROVALS.ENTRY_THRESHOLDS`) is refused before anything moves, `422
+  transfer_too_large`. Its tests prove each. `docs/learning.md` names the
+  profile as a complete example
+  ([fintech](docs/fintech.md)) (audit A28-DX-06).
+
+- `diffsettings` shows each installed domain's settings (`AUTH`,
+  `APPROVALS`, `LIMITS`, ...) as its schema validated them, defaults
+  filled in, and marks those left at their defaults under `--all`; 2.8
+  hid a domain's settings whole. It fails closed: values typed as
+  secrets, names that suggest one (`sid`, `pin`, and `pwd` now among
+  them), URL passwords and `password=` pairs, and all text in a mapping,
+  a value typed `Any` (a provider's options), or a value that is not a
+  model (a dataclass) stay hidden. A set's items print sorted, the same
+  in every process
+  ([diffsettings](docs/reference/commands.md#diffsettings-show-the-settings),
+  [upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-10).
+
+- `auth.E011` refuses an `AUTH.IDENTIFIERS` field that the user table has
+  no column for, `groups` or `user_permissions`, which link tables keep.
+  2.8 started with one, and failed later, at a login, a search, or a list
+  of users that read it ([upgrading.md](docs/upgrading.md#28-to-29))
+  (found in review).
+
+- CI's `coverage` job fails a pull request to `stg` with a line it adds or
+  changes under `src/` that ran in no job, or left a branch untaken
+  (`.github/scripts/changed_coverage.py`); `make cov` checks the same
+  against `origin/stg`. The package stays at 98%, as README.md and the
+  Makefile now say, and Python processes the tests start are measured too
+  (`patch = ["subprocess"]`); ADR 0191 records the gates (audit
+  A28-TEST-05).
+
+- ADR 0106, CONTRIBUTING.md, README.md and `docs/versioning.md` say that
+  mutation testing runs on request: `mutation (changed)` and the weekly
+  shards run while the repository variable `MUTATION` is `on`, which it
+  has not been since 1.5.0. `unmutated-functions.txt`, a CI output
+  committed by mistake, is removed, and git ignores what the mutation
+  jobs write (audit A28-TEST-04).
+
+- CI's integration job runs Kafka 4.4 and ElasticMQ 1.7, an SQS server,
+  and the Kafka and SQS brokers' contract and redelivery run against them
+  (`DOMAINKIT_TEST_KAFKA_URL`, `DOMAINKIT_TEST_SQS_URL`); `compose.yaml`
+  and `make integration` start and name them too. The fakes stay for the
+  failures (audit A28-TEST-03).
+
+- CI's test and integration runs list their 30 slowest tests
+  (`--durations=30`) (audit A28-TEST-07).
+
+- The `postgresql (16)` job runs on Python 3.15, while `integration` runs
+  on 3.13: each end of the Python range meets PostgreSQL (audit
+  A28-TEST-11).
+
+- CONTRIBUTING.md says where a new test goes: in its module's file, or
+  `test_<module>_<topic>.py`, naming the finding it answers in its
+  docstring rather than in the file's name. The key ring's and the
+  storages' fixtures, copied between test files, live once in
+  `domainkit_tests/support/` (audit A28-TEST-12).
+
+- AWS's Signature Version 4 and credential chain live in
+  `domainkit.cloud.aws`, which S3, SQS, SNS, SES, and KMS share, and are
+  public there: `sign`, `signing_key`, `ALGORITHM`, `AwsCredentials`,
+  `CredentialSource`, and the credential sources (`default_credentials`,
+  `environment_credentials`, `web_identity_credentials`,
+  `container_credentials`). `domainkit.keys.aws` still imports every
+  name it held, the same objects, and the chain raises the same errors
+  ([upgrading.md](docs/upgrading.md#28-to-29), ADR 0188) (audit
+  A28-ARCH-11).
+
+- `domainkit.contrib.objectpermissions` requires `domainkit.contrib.auth`:
+  without it, `setup()` refuses to start (`apps.E001`) rather than the
+  first grant failing ([What each app needs](docs/contrib.md#what-each-app-needs))
+  (audit A28-ARCH-10).
+
+- The ledger's startup check of its append-only triggers is the audit
+  trail's: a trigger given arguments counts as changed
+  (`accounting.E001`), and `migrate` makes it again (ADR 0188) (audit
+  A28-ARCH-07).
+
+- The framework's own guards: the core's packages import their own layer
+  and those below, by five layers ADR 0188 writes down; contrib apps
+  import no ring of apps of any length, and only the core names an
+  `__all__` publishes, each from a list of what 2.8 had that may only
+  shrink. CI's lint gates a function's complexity (ruff C901, over 15),
+  arguments (PLR0913, over 10), and statements (PLR0915, over 50) (audit
+  A28-ARCH-04, A28-ARCH-05, A28-ARCH-06, A28-ARCH-E1, A28-ARCH-E3).
+
+### Deprecated
+
+- A name the infrastructure layer imports from `domainkit.http.client`
+  or `domainkit.http.uploads` that their `__all__` does not list, such
+  as Starlette's `UploadFile` or `StreamingResponse`, and
+  `domainkit.http.uploads.serve`, which answers a request: `check` warns
+  of each (`architecture.W001`, `domainkit.architecture.layer_warnings`),
+  so `check --deploy` fails until the import changes or the warning is
+  silenced. 3.0 refuses them ([Layer rules](docs/reference/settings.md#layer-rules),
+  ADR 0188) (audit A28-ARCH-03).
 
 ### Fixed
 
@@ -418,6 +578,59 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   'domainkit.contrib.idempotency' in INSTALLED_DOMAINS.` (audit
   A28-DX-04).
 
+- The first examples of approvals, action authorizations, messaging,
+  keys, sign-in approvals, phones, and identity define the names they
+  use, or say where each comes from and link the tutorial part that
+  makes one (audit A28-DX-06).
+
+- `diffsettings` reads a long text in a time that grows with its length.
+  The pattern of `password=` pairs read each name again from every
+  position within it, and that of a URL's password read the rest of a
+  word again at each `://`: 10 KB of dotted names took over 100 s; 100 KB
+  of any text now takes milliseconds (audit A28-DX-10).
+
+- `SqsBroker.close()` closes its connections to SQS, which it left open
+  (audit A28-TEST-03).
+
+- The test plugin numbers a module-scoped or session-scoped fixture's
+  factory objects from 0, whichever test runs first: it resets every
+  factory before a test's fixtures, as well as before the test's own.
+  `docs/testing.md`'s example of a module's rows passed or failed by the
+  order of the tests (audit A28-TEST-08).
+
+- The upload and PDF tests no longer time their checks with a stopwatch.
+  Each says which limit stopped a check: the clock or a signal, from the
+  log; the decoder's or the cross-reference reader's count; or a clock
+  that moves a fixed step each time it is read. A slow runner failed
+  them, and a limit firing in another's place passed them (audit
+  A28-TEST-01).
+
+- Refusals and destructive paths that no test ran have tests: an
+  impersonation ends when its staff member loses the staff flag, or its
+  user is gone; an approved command that names someone other than its
+  maker fails as it is run; an act asked under a JSON Web Token is bound
+  to that login; a malformed act subject is refused; a tenant's schema
+  is downgraded alone, and a tenant database out of reach is named; a
+  failed claim gives the messaging worker's slots back (audit
+  A28-TEST-02).
+
+- Tests that waited a fixed time, or raced a short timeout, wait for what
+  they test. The waits of a sign-in or an act on the phone are approved
+  once they wait, and only hearing of the approval ends them in time; the
+  worker's due task, a sub-second drain, and a connection that does not
+  settle are checked by what happened. Tests that wait for something
+  share one bound of 30 seconds (`domainkit_tests/support/waiting.py`)
+  (audit A28-TEST-06).
+
+- The Redis and NATS servers the broker tests start are each the test's
+  own: NATS picks its port and writes it to a file, and a Redis that fails
+  to start, or a port another Redis answers on, is tried again on another
+  port (audit A28-TEST-09).
+
+- A docs test wrote its probe page into the repository's `docs/`, which
+  other tests read at the same time; it writes it under a temporary
+  directory of its own (audit A28-TEST-10).
+
 ### Security
 
 - Live events are scoped to the tenant they were committed in: an event
@@ -514,6 +727,15 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   erase` (`maker_not_allowed`), still fails its seal
   ([Approvals](docs/contrib/approvals.md),
   [upgrading.md](docs/upgrading.md#28-to-29)). Found in review.
+
+- `diffsettings` hides the value after a name like a secret's and `=` or
+  `:`, spaced or not, the name quoted or not, in any text it prints:
+  `password = ...` in a libpq connection string, `"private_key": "..."`
+  in JSON, ODBC's `PWD=...`, and a header such as
+  `Authorization: Bearer ...`, its scheme with it. 2.8 hid `password=...`
+  alone, unquoted
+  ([diffsettings](docs/reference/commands.md#diffsettings-show-the-settings),
+  [upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-10).
 
 ## [2.8.0] - 2026-11-18
 

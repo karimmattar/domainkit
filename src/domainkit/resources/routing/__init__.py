@@ -135,7 +135,7 @@ if TYPE_CHECKING:
 class ResourceRouter(APIRouter):
     """The routes of one aggregate type (see the module)."""
 
-    def __init__(
+    def __init__(  # noqa: C901, PLR0913, PLR0915
         self,
         prefix: str,
         *,
@@ -542,7 +542,7 @@ class ResourceRouter(APIRouter):
 
     # Declaring routes -----------------------------------------------------------
 
-    def command_route(
+    def command_route(  # noqa: PLR0913
         self,
         command: type[Command],
         *,
@@ -669,7 +669,7 @@ class ResourceRouter(APIRouter):
             **options,
         )
 
-    def batch_route(
+    def batch_route(  # noqa: PLR0913
         self,
         command: type[Command],
         *,
@@ -786,7 +786,7 @@ class ResourceRouter(APIRouter):
             summary=summary,
         ).declare()
 
-    def upload_route(
+    def upload_route(  # noqa: PLR0913
         self,
         command: type[Command],
         *,

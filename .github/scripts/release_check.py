@@ -22,9 +22,10 @@ Prints each reason, and exits 1 if there is any.
 
 Usage: ``python3 .github/scripts/release_check.py vX.Y.Z``, in the
 repository, with its tags fetched. With ``--as-pushed`` after the tag,
-the tag is judged as it was when it was pushed: the tags newer than it,
-such as a later line's pre-release, are left out. docs.yml judges the
-newest final release so, whatever tag started its run.
+every tag of a newer version is left out, such as a later line's
+pre-release, whether it was pushed before the tag or after: no newer tag
+refuses it. docs.yml judges the newest final release so, whatever tag
+started its run.
 """
 
 import re
@@ -129,7 +130,7 @@ def git_show(path: str) -> str | None:
 def main(argv: list[str]) -> int:
     """Print why the tag ``argv[0]`` is refused; exit 1 if it is.
 
-    ``--as-pushed`` after it leaves out the tags newer than it.
+    ``--as-pushed`` after it leaves out every tag of a newer version.
     """
     tag, *flags = argv
     version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]

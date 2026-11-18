@@ -285,8 +285,10 @@ On PostgreSQL, triggers that `migrate` makes afresh each time refuse
 every update, delete, and truncation of entries and postings, the table
 owner's too. In staging and production the application refuses to start
 without them as `migrate` makes them: enabled, firing for every row (no
-`WHEN`, no column list), running their own function with its body
-(`accounting.E001`). `flush`, `dumpdata`, and `loaddata` leave the
+`WHEN`, no column list, no arguments, since 2.9), running their own
+function with its body (`accounting.E001`). They are the audit trail's
+triggers, made and checked the same way
+([Append-only tables](../databases.md#append-only-tables)). `flush`, `dumpdata`, and `loaddata` leave the
 ledger's tables alone.
 
 ### Hooks: checks before and while booking

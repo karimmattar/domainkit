@@ -723,7 +723,7 @@ def test_sigv4_signs_in_utc_and_omits_the_schemes_port() -> None:
     """A time in another zone signs as its UTC; ``:443`` on https is the same host."""
     from datetime import timezone
 
-    from domainkit.keys.aws import _canonical_query
+    from domainkit.cloud.aws import _canonical_query
 
     local = datetime(2015, 8, 30, 14, 36, tzinfo=timezone(timedelta(hours=2)))
     base = sign(
@@ -930,7 +930,7 @@ async def test_a_full_container_uri_may_use_https_or_reach_the_agent(
     no_aws: None, monkeypatch: pytest.MonkeyPatch, full: str
 ) -> None:
     """The AWS SDKs' rule: https anywhere, http to loopback or an agent only."""
-    from domainkit.keys.aws import _container_url
+    from domainkit.cloud.aws import _container_url
 
     assert _container_url(None, full) == full
     for refused in ("http://10.0.0.1/c", "ftp://127.0.0.1/c", "http:///c"):
@@ -1007,7 +1007,7 @@ def test_missing_cryptography_is_named_in_full(
 
 def test_sigv4_encodes_a_slash_in_a_query_name() -> None:
     """Names are encoded as values are: ``/`` too."""
-    from domainkit.keys.aws import _canonical_query
+    from domainkit.cloud.aws import _canonical_query
 
     assert _canonical_query("a/b=1") == "a%2Fb=1"
 
@@ -1015,7 +1015,7 @@ def test_sigv4_encodes_a_slash_in_a_query_name() -> None:
 @pytest.mark.anyio
 async def test_aws_refusals_say_what_is_wrong(no_aws: None, tmp_path: Path) -> None:
     """Each refusal of the credentials and of KMS, in full."""
-    from domainkit.keys.aws import _container_url
+    from domainkit.cloud.aws import _container_url
 
     with pytest.raises(
         KeyProviderError,
@@ -1246,3 +1246,37 @@ async def test_vault_paths_encode_the_key_name_whole(vault: FakeVault) -> None:
     with stub(recording), pytest.raises(KeyProviderError):
         await provider.generate_data_key()
     assert seen[0].url.raw_path == b"/v1/secretX/datakey/plaintext/team%2Fpayments"
+
+
+def test_aws_signing_and_credentials_are_the_clouds() -> None:
+    """S3, SQS, SNS, SES, and KMS sign with ``domainkit.cloud.aws`` (A28-ARCH-11).
+
+    ``domainkit.keys.aws`` still imports every name it held in 2.8, the
+    same objects; nothing but the keys app's choice of provider imports it.
+    """
+    from domainkit.architecture import iter_imports
+    from domainkit.cloud import aws as cloud_aws
+    from domainkit.keys import aws as kms
+
+    names = [
+        "ALGORITHM",
+        "AwsCredentials",
+        "CredentialSource",
+        "container_credentials",
+        "default_credentials",
+        "environment_credentials",
+        "sign",
+        "signing_key",
+        "web_identity_credentials",
+    ]
+    importers = {
+        module
+        for module, imported in iter_imports("domainkit")
+        if imported == "domainkit.keys.aws"
+        or imported.startswith("domainkit.keys.aws.")
+    }
+
+    assert [
+        name for name in names if getattr(kms, name) is not getattr(cloud_aws, name)
+    ] == []
+    assert importers == {"domainkit.contrib.keys.operations"}

@@ -387,7 +387,7 @@ CONTRIB_APPS = {
     "domainkit.contrib.mail": ("domainkit.contrib.messaging",),
     "domainkit.contrib.messaging": (),
     "domainkit.contrib.notifications": ("domainkit.contrib.messaging",),
-    "domainkit.contrib.objectpermissions": (),
+    "domainkit.contrib.objectpermissions": ("domainkit.contrib.auth",),
     "domainkit.contrib.privacy": ("domainkit.contrib.audit",),
     "domainkit.contrib.webhooks": ("domainkit.contrib.messaging",),
 }

@@ -107,6 +107,14 @@ def test_rates_round_trip(count: int, period: str) -> None:
     assert parse_rate(f"{count}/{period}") == (count, PERIODS[period])
 
 
+def test_the_periods_are_read_only() -> None:
+    """``PERIODS`` is public since 2.9: no caller can change what a rate means."""
+    with pytest.raises(TypeError):
+        PERIODS["week"] = 604_800  # type: ignore[index]
+
+    assert dict(PERIODS) == {"second": 1, "minute": 60, "hour": 3600, "day": 86400}
+
+
 @given(st.text(max_size=40))
 def test_malformed_rates_raise_value_error(text: str) -> None:
     """Parsing never fails with anything but ValueError."""

@@ -119,6 +119,7 @@ names every missing app at once.
 | `domainkit.contrib.webhooks` | `domainkit.contrib.messaging` | Deliveries are tasks in the outbox. |
 | `domainkit.contrib.privacy` | `domainkit.contrib.audit` | It records every operation in the audit trail. |
 | `domainkit.contrib.approvals` | `domainkit.contrib.messaging`, `domainkit.contrib.audit` | Approved commands run in the worker, and every decision is audited. |
+| `domainkit.contrib.objectpermissions` | `domainkit.contrib.auth` | Grants are auth's permissions on one object. |
 | `domainkit.contrib.identity` | `domainkit.contrib.auth` | A provider's login becomes a user. |
 | `domainkit.contrib.devices` | `domainkit.contrib.auth` | Passkeys and devices belong to users. |
 | `domainkit.contrib.phones` | `domainkit.contrib.auth`, `domainkit.contrib.messaging`, `domainkit.contrib.notifications` | The worker sends the codes by text message. |

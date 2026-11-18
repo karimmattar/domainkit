@@ -372,6 +372,7 @@ Feature flags and dynamic settings, stored in the database and cached.
 - `SettingChanged`: A dynamic setting got a new value (JSON).
 - `SettingReset`: A dynamic setting went back to its default.
 - `UnknownSetting`: No dynamic setting is declared with that key.
+- `declared_kept`: Put the declared dynamic settings back as they were when the block ends.
 - `declared_settings`: Every declared dynamic setting, by key.
 - `dynamic_setting`: Declare a setting staff can change at runtime, typed and validated.
 - `flag_enabled`: Whether flag `name` is on for `user` (anyone without one).
@@ -715,3 +716,4 @@ Mail the site's admins (Django's `mail_admins`), and tell them of errors.
 
 - `mail_admins`: Queue a mail to `MAIL["ADMINS"]`, with `uow`'s commit or at once.
 - `report_to_admins`: Mail `exc` to the admins, unless one like it went out lately.
+- `reset_reports`: Forget which reports went out lately: the next of each type goes at once.

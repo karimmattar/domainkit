@@ -7,8 +7,11 @@
 #   (.github/scripts/newest_release.py): a pre-release, or a patch of an
 #   older line, leaves the site on the newest release;
 # - that release must pass release.yml's tag checks (the version, a commit
-#   of main, the release commit), judged as when its tag was pushed, so a
-#   tag that those checks refuse publishes nothing.
+#   of main, the release commit), with every tag of a newer version left
+#   out (release_check.py --as-pushed), whether it was pushed before the
+#   release or after: a newer tag never refuses it here, even one that
+#   refused it in release.yml. A tag that the other checks refuse
+#   publishes nothing.
 #
 # The site is built with --strict from the docs group alone, and handed to
 # Pages as an artifact. Only the deploy job may write, to Pages, with the

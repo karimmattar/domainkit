@@ -179,10 +179,12 @@ async def make_transfer(
 ) -> TransferOut | PendingOut:
     """Make a transfer its maker authorized: this amount, to this card, once.
 
-    The authorization is spent first: a transfer refused after it needs a
-    new one. Over the approval threshold, the transfer is submitted for
-    approval instead, and answered 202 with the request.
+    An amount the books would not take is refused first. Then the
+    authorization is spent: a transfer refused after it needs a new one.
+    Over the approval threshold, the transfer is submitted for approval
+    instead, and answered 202 with the request.
     """
+    services.check_bookable(body.amount)
     await consume_authorization(
         authorization,
         user_id=user.id,

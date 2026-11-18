@@ -1,10 +1,11 @@
 # The servers CI's integration job runs the suite against, for a laptop:
 # PostgreSQL, immudb with TLS and a signing key, Redis (plain and TLS),
-# Valkey, and RabbitMQ (plain, TLS, and its management API), at the images
-# and ports .github/workflows/ci.yml uses. A one-shot "certs" service first
-# writes the throwaway certificates and keys to .ci/ (git ignores it),
-# where CI's steps write them too. domainkit_tests/test_ci.py checks that
-# the images here are the ones CI starts.
+# Valkey, RabbitMQ (plain, TLS, and its management API), Kafka, and
+# ElasticMQ (SQS), at the images and ports .github/workflows/ci.yml uses. A
+# one-shot "certs" service first writes the throwaway certificates and keys
+# to .ci/ (git ignores it), where CI's steps write them too.
+# domainkit_tests/test_ci.py checks that the images here are the ones CI
+# starts.
 #
 #   docker compose up -d --wait     # or: make services
 #   make integration                # the suite against them
@@ -162,3 +163,21 @@ services:
     depends_on:
       certs:
         condition: service_completed_successfully
+
+  # Kafka, one node in KRaft mode as the image starts it: the Kafka broker's
+  # tests (DOMAINKIT_TEST_KAFKA_URL).
+  kafka:
+    image: apache/kafka:4.4.0@sha256:833b867a9585a141da455dc2b57431c65cbccb27f11c91f694444cca9f777e0f
+    ports:
+      - 127.0.0.1:9092:9092
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 9092"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+
+  # ElasticMQ, an SQS server: the SQS broker's tests (DOMAINKIT_TEST_SQS_URL).
+  elasticmq:
+    image: softwaremill/elasticmq-native:1.7.1@sha256:e4580ab9ad1bd5cd37b4ba04911bc5ccc8cd2d9ab4de56ece65acee71c24e05c
+    ports:
+      - 127.0.0.1:9324:9324

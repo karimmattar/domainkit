@@ -123,7 +123,7 @@ def _integer_bounds(digits: int) -> tuple[float, float]:
     return -bound, bound
 
 
-def _native(container: Any, low: float, high: float, depth: int) -> bool:  # noqa: ANN401 - a dict, list, or tuple.
+def _native(container: Any, low: float, high: float, depth: int) -> bool:  # noqa: ANN401, C901 - a dict, list, or tuple.
     """Whether a dict, list, or tuple holds only what ``json_native`` takes.
 
     Integers must lie between ``low`` and ``high``. The checks are written

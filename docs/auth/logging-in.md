@@ -119,7 +119,8 @@ address: a second one gets `409 email_taken`. An address that two users
 already shared before (rows written before 1.8) logs in neither of them,
 until you change one. Wrong passwords count against one account however
 its number or address is written. Startup refuses a field the user model
-does not have (`auth.E011`).
+does not have, or one its table keeps no column for, such as `groups`
+(`auth.E011`).
 
 Without `AUTH.IDENTIFIERS`, only the `USERNAME_FIELD` logs in, as in
 1.7. [Users](users.md) shows the `mobile_number` field and the optional

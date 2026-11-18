@@ -314,10 +314,10 @@ async def test_a_database_that_does_not_answer_is_named(
 ) -> None:
     """The probe's failure is a problem of its own, with no detail of the error."""
 
-    async def unreachable(database: str) -> list[str]:
+    async def unreachable(database: str, tables: object) -> dict[str, list[str]]:
         raise OperationalError("SELECT 1", {}, OSError("password=hunter2"))
 
-    monkeypatch.setattr(baseline, "missing_triggers", unreachable)
+    monkeypatch.setattr(baseline, "unprotected", unreachable)
 
     assert await protection_problems() == [
         (
@@ -332,15 +332,16 @@ async def test_every_audited_database_is_probed(
 ) -> None:
     """One that does not answer is named, and the others are still checked."""
 
-    async def probe(database: str) -> list[str]:
+    async def probe(database: str, tables: object) -> dict[str, list[str]]:
         if database == "default":
             raise TimeoutError
-        return ["first_trigger", "second_trigger"] if database == "reports" else []
+        lacking = ["first_trigger", "second_trigger"]
+        return {database: lacking} if database == "reports" else {}
 
     monkeypatch.setattr(
         baseline, "audited_databases", lambda: ["default", "reports", "x"]
     )
-    monkeypatch.setattr(baseline, "missing_triggers", probe)
+    monkeypatch.setattr(baseline, "unprotected", probe)
 
     problems = await protection_problems()
     assert [getattr(each, "id", None) for each in problems] == [
@@ -365,11 +366,11 @@ async def test_a_probe_that_hangs_is_given_up_on(
 ) -> None:
     """Past ``PROBE_TIMEOUT``, the database is named as one that did not answer."""
 
-    async def hangs(database: str) -> list[str]:
+    async def hangs(database: str, tables: object) -> dict[str, list[str]]:
         await asyncio.sleep(60)
-        return []
+        return {}
 
-    monkeypatch.setattr(baseline, "missing_triggers", hangs)
+    monkeypatch.setattr(baseline, "unprotected", hangs)
     monkeypatch.setattr(baseline, "PROBE_TIMEOUT", 0.01)
 
     assert await protection_problems() == [

@@ -3,8 +3,9 @@
 # the suite (see changes). A release tag reuses the run of its commit's push
 # to main: release.yml requires it green and publishes what its build job
 # built. Pull requests, and weekly: the tests against the newest releases
-# the ranges in pyproject.toml allow, and against their floors. Weekly (and
-# on demand): a full mutation testing run. The suite runs on every core
+# the ranges in pyproject.toml allow, and against their floors. On demand,
+# and weekly while the variable MUTATION is on: a full mutation testing run
+# (ADR 0106). The suite runs on every core
 # (pytest-xdist, -n auto). Actions are pinned to commit SHAs and images to
 # digests; Renovate updates both.
 name: CI
@@ -157,7 +158,7 @@ jobs:
       - if: needs.changes.outputs.code != 'false'
         run: >-
           poetry run pytest -n auto --dist worksteal --cov --cov-report=term
-          --cov-report=xml --junitxml=junit.xml
+          --cov-report=xml --junitxml=junit.xml --durations=30
       - if: ${{ always() && needs.changes.outputs.code != 'false' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -260,10 +261,11 @@ jobs:
   # The suite again against real servers: PostgreSQL (row locks, the audit
   # triggers, timeouts, partitions, migrations), immudb with TLS and a
   # signing key (verified ledgers, evidence), Redis (plain and TLS) and
-  # Valkey (caches, shared rate limits, a least-privilege user), and RabbitMQ
-  # (plain and TLS: brokered workers, a least-privilege user). Tests that
-  # need a server are skipped elsewhere, so a skip here means a server went
-  # unused: fail.
+  # Valkey (caches, shared rate limits, a least-privilege user), RabbitMQ
+  # (plain and TLS: brokered workers, a least-privilege user), and Kafka and
+  # ElasticMQ, an SQS server (the Kafka and SQS brokers, whose other tests
+  # use fakes). Tests that need a server are skipped elsewhere, so a skip
+  # here means a server went unused: fail.
   integration:
     needs: changes
     if: ${{ !cancelled() && !failure() && github.event_name != 'schedule' && needs.changes.outputs.code != 'false' }}
@@ -299,6 +301,8 @@ jobs:
       DOMAINKIT_TEST_RABBITMQ_CA: .ci/rabbitmq/server.crt
       DOMAINKIT_TEST_RABBITMQ_MANAGEMENT_URL: http://domainkit:domainkit@localhost:15672
       DOMAINKIT_TEST_POSTGIS_URL: postgresql+asyncpg://postgres:postgres@localhost:5434/postgres
+      DOMAINKIT_TEST_KAFKA_URL: kafka://localhost:9092
+      DOMAINKIT_TEST_SQS_URL: sqs://test:test@us-east-1?endpoint=http://localhost:9324
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -399,6 +403,25 @@ jobs:
           done
           docker logs postgis
           exit 1
+      # Kafka on 9092, one node in KRaft mode as the image starts it, and
+      # ElasticMQ, an SQS server, on 9324: the Kafka and SQS brokers' contract
+      # runs against them (A28-TEST-03).
+      - name: Start Kafka and ElasticMQ
+        run: |
+          docker run -d --name kafka -p 9092:9092 \
+            apache/kafka:4.4.0@sha256:833b867a9585a141da455dc2b57431c65cbccb27f11c91f694444cca9f777e0f
+          docker run -d --name elasticmq -p 9324:9324 \
+            softwaremill/elasticmq-native:1.7.1@sha256:e4580ab9ad1bd5cd37b4ba04911bc5ccc8cd2d9ab4de56ece65acee71c24e05c
+          for _ in $(seq 1 60); do
+            if docker logs kafka 2>&1 | grep -q "Kafka Server started" &&
+              docker logs elasticmq 2>&1 | grep -q "started in"; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs kafka
+          docker logs elasticmq
+          exit 1
       # The servers the broker and key tests start themselves.
       - run: |
           sudo apt-get update -q
@@ -407,7 +430,7 @@ jobs:
       - run: poetry sync --all-extras --with dev
       - shell: bash
         run: |
-          poetry run pytest -n auto --dist worksteal --cov -rs --junitxml=junit.xml | tee pytest.log
+          poetry run pytest -n auto --dist worksteal --cov -rs --junitxml=junit.xml --durations=30 | tee pytest.log
           ! grep -q "SKIPPED" pytest.log
       # Kept when the suite fails too: which tests failed, and the log (with
       # the stacks pytest-timeout prints for a hung test).
@@ -431,7 +454,10 @@ jobs:
   # PostgreSQL is set, so tests of the other servers skip; a test skipped for
   # want of PostgreSQL fails the job. Required, as integration is: the range
   # is a promise of 1.0, and a release must not break its floor unseen
-  # (TEST-18). No coverage: integration's run is the one that counts.
+  # (TEST-18). No coverage: integration's run is the one that counts. On the
+  # newest Python, where integration runs the oldest: asyncpg, greenlet and
+  # the database paths meet both ends of the Python range, at no runner time
+  # of their own (A28-TEST-11).
   postgresql-floor:
     name: postgresql (16)
     needs: changes
@@ -458,7 +484,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.13"
+          python-version: "3.15"
       - run: pipx install "poetry==${POETRY_VERSION}"
       - run: poetry sync --all-extras --with dev
       - shell: bash
@@ -531,16 +557,23 @@ jobs:
           retention-days: 30
 
   # Every line must run in some job: a few only run on SQLite, others only
-  # against the servers. The combined report is the coverage gate.
+  # against the servers. The combined report is the coverage gate: 98% of
+  # the package, and on a pull request to stg every line it adds or changes
+  # under src/, with each of its branches (ADR 0191). Not on the release's
+  # pull request from stg to main: its diff is the whole release, whose
+  # lines were each held to this when they reached stg.
   coverage:
     needs: [changes, test, integration]
     if: ${{ !cancelled() && !failure() && github.event_name != 'schedule' && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
+      # On a pull request, the merge commit and its first parent, the base
+      # branch the added lines are read against.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 2
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
@@ -552,6 +585,10 @@ jobs:
           merge-multiple: true
       - run: poetry run coverage combine
       - run: poetry run coverage report --fail-under=98
+      - if: github.event_name == 'pull_request' && github.base_ref == 'stg'
+        run: |
+          poetry run coverage json -q -o coverage.json --fail-under=0
+          poetry run python .github/scripts/changed_coverage.py HEAD^1 coverage.json
 
   # The wheel must carry its templates and Alembic environment, and import
   # in a clean environment with only its declared dependencies, at the
@@ -1251,7 +1288,7 @@ jobs:
               domainkit.cache.* domainkit.db.connections.* domainkit.db.errors.*
               domainkit.db.metrics.* domainkit.db.partitioning.* domainkit.db.replicas.*
               domainkit.db.routing.* domainkit.db.snapshots.*
-              domainkit.db.squashing.* domainkit.db.types.*
+              domainkit.db.squashing.* domainkit.db.types.* domainkit.db.protection.*
               domainkit.storage.* domainkit.cloud.* domainkit.money.*
               domainkit.search.* domainkit.documents.*
           - name: messaging
@@ -1291,6 +1328,7 @@ jobs:
               domainkit.management.commands.serve.* domainkit.management.operators.*
               domainkit.utils.closing.* domainkit.utils.formatting.*
               domainkit.utils.module_loading.* domainkit.utils.delivery.*
+              domainkit.utils.canonical.*
           - name: management-4
             mutants: >-
               domainkit.apps.config.* domainkit.management.base.*

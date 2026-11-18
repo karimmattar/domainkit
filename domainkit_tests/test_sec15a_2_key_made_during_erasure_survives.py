@@ -16,10 +16,10 @@ import pytest
 from domainkit.ddd import F
 from domainkit_tests.sample_domains.cards.models import Cardholder
 from domainkit_tests.sample_domains.cards.uow import CardsUnitOfWork
-from domainkit_tests.test_encrypted_fields import (  # noqa: F401 - the fixture.
+from domainkit_tests.support.keys import bank  # noqa: F401 - the fixture.
+from domainkit_tests.test_encrypted_fields import (
     ANN,
     PAN,
-    bank,
     raw,
 )
 

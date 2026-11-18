@@ -1,6 +1,6 @@
 # 0003. Layer rules enforced by `check`
 
-- Status: Accepted; amended by [0037](0037-one-clock-frozen-per-context.md), [0166](0166-let-a-domain-layer-mark-its-texts-extract-the-projects-own-and-add-a-translation-alone.md), [0167](0167-check-an-upload-whole-and-let-a-resource-take-one.md), [0182](0182-let-a-gateway-raise-a-routes-problems-and-name-users-by-the-fields-a-project-chooses.md), and 2026-10-25, 2026-11-15, 2026-11-16 and 2026-11-17 (at the end)
+- Status: Accepted; amended by [0037](0037-one-clock-frozen-per-context.md), [0166](0166-let-a-domain-layer-mark-its-texts-extract-the-projects-own-and-add-a-translation-alone.md), [0167](0167-check-an-upload-whole-and-let-a-resource-take-one.md), [0182](0182-let-a-gateway-raise-a-routes-problems-and-name-users-by-the-fields-a-project-chooses.md), [0188](0188-write-down-the-cores-layering-and-hold-the-boundaries-it-draws.md), and 2026-10-25, 2026-11-15, 2026-11-16, 2026-11-17 and 2026-11-18 (at the end)
 - Date: 2026-10-14
 
 ## Context
@@ -79,3 +79,13 @@ packages are exempt from the cross-domain rule.
   itself (Starlette's `HTTPException`). The rest of
   `domainkit.http.errors`, which reads requests and builds responses,
   stays forbidden there, and a business refusal stays a domain error.
+
+## Amendment (2026-11-18, 2.9)
+
+- `check` warns of a name the infrastructure layer takes from
+  `domainkit.http.client` or `domainkit.http.uploads` that their
+  `__all__` does not list (Starlette's `UploadFile`, `StreamingResponse`),
+  and of `uploads.serve`, which answers a request
+  ([0188](0188-write-down-the-cores-layering-and-hold-the-boundaries-it-draws.md)): `architecture.W001`, which `check --deploy` fails on. 3.0
+  refuses them, as `domainkit.http.problems` is refused today. Every
+  other name of the two modules' `__all__` stays allowed.

@@ -270,7 +270,7 @@ def subject_of(act: AdminAct) -> str:
     return f"auth.user:{act.user_id or NEW}"
 
 
-async def show(act: AdminAct) -> Shown:
+async def show(act: AdminAct) -> Shown:  # noqa: C901
     """Which user or group, and what changes, read from the stored one.
 
     The title says the kind of change; then the user or group, by its

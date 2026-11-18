@@ -7,15 +7,21 @@ __pycache__/
 .ruff_cache/
 .hypothesis/
 
-# Coverage, builds, mutation testing
+# Coverage, builds, mutation testing (and what CI's mutation jobs write)
 .coverage
 .coverage.*
 coverage.xml
+coverage.json
 junit.xml
 htmlcov/
 dist/
 mutants/
 site/
+changed-mutants.txt
+unmutated-functions.txt
+mutmut-results.txt
+mutation-summary.json
+mutation-shards.json
 
 # Local files
 .env

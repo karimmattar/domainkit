@@ -150,13 +150,14 @@ a project's `conftest.py` never needs a private name:
 | Every [factory](#factories) numbers its objects from 0, so a test sees the same `Sequence` values in any order. | `Factory.reset_sequence()` |
 | The throttled logs (`domainkit.log.ThrottledLog`) have forgotten what they held back, so a test's first line is written. | `domainkit.log.reset_throttled()` |
 | The principal cache is empty: a user is read from the database again. | `domainkit.contrib.auth.principals.invalidate_all()` |
+| The admins' error reports have forgotten what went out lately, so a test's first report is sent (*new in 2.9*). | `domainkit.contrib.mail.admins.reset_reports()` |
 | Every outgoing HTTP client's circuits are closed: a client that mail, text messages, push, search, identity, or captcha share between calls carries no open circuit into the next test (New in 2.9). | `domainkit.http.client.reset_circuits()` |
 | Memory ledgers (`memory://` in `LEDGERS`) and memory storages are empty, as the databases' ids start again after `db`. Within the test they keep what they hold when the ledgers close: after a command, `outbox.run_queued()`, or a client's shutdown (since 2.9). Ledgers that hold connections (immudb's) stay open. | `ledgers.reset()`, `storages.reset()` |
 | The databases are refused unless the test requested them ([Database access](#database-access)). | `database_blocker` |
 
 | After each test | Through |
 | --- | --- |
-| The subscriptions, hooks (`on_ready(check, domain=...)` and every other hook point), tasks, metric refreshers, and currencies that the test added are dropped, and those it removed come back. When the test's fixtures load the domains (a client, `db`), what their `ready()` registered stays and what the test's body adds is dropped. A test whose body loads the domains itself keeps what it registers, because its registrations cannot be told from theirs. | `event_bus.subscriptions_kept()`, `domainkit.apps.hooks.hooks_kept()`, `domainkit.contrib.messaging.tasks_kept()`, `domainkit.http.metrics.refreshers_kept()`, `domainkit.money.currencies_kept()` |
+| The subscriptions, hooks (`on_ready(check, domain=...)` and every other hook point), tasks, dynamic settings (*new in 2.9*), metric refreshers, and currencies that the test added are dropped, and those it removed come back. When the test's fixtures load the domains (a client, `db`), what their `ready()` registered stays and what the test's body adds is dropped. A test whose body loads the domains itself keeps what it registers, because its registrations cannot be told from theirs. | `event_bus.subscriptions_kept()`, `domainkit.apps.hooks.hooks_kept()`, `domainkit.contrib.flags.declared_kept()`, `domainkit.contrib.messaging.tasks_kept()`, `domainkit.http.metrics.refreshers_kept()`, `domainkit.money.currencies_kept()` |
 | Its error reports are sent and its logs written ([Error reports and logs](#error-reports-and-logs)). | `flush_reports()`, `flush_logs()` |
 
 What a module-scoped or session-scoped fixture sends to an outbox is gone
@@ -794,7 +795,12 @@ async def test_create_in_memory() -> None:
   sub-factory; fields that the factory does not declare pass through.
 - Each object takes its factory's next number, from 0, which all its
   `Sequence` fields share. The plugin resets every factory before each
-  test.
+  test's fixtures, and again before the test's own, so a module-scoped
+  fixture's objects start at 0 too (since 2.9; before, they started where
+  the test before had stopped). So the numbers restart at 0 in each test:
+  a test that saves rows beside those a module-scoped fixture saved
+  collides on a unique `Sequence` field, unless it passes that field or
+  starts the factory further on (`ProductFactory.reset_sequence(100)`).
 - Plain defaults are copied for each object, so a list default is never
   shared.
 

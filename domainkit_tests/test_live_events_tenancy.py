@@ -9,7 +9,7 @@ deciding. The audit's reproducer (A28-SEC-01) is the first test.
 import asyncio
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from types import SimpleNamespace
 from typing import Any, Final
 from uuid import uuid4
@@ -36,6 +36,7 @@ from domainkit.http.live_events import LiveEvents, live_events
 from domainkit.tenancy import HasMemberPermissions, InTenant, all_tenants, tenant
 from domainkit.testing import TestClient
 from domainkit_tests.conftest import FAST_HASHER
+from domainkit_tests.support.waiting import until
 from domainkit_tests.test_live_events import (
     LIVE_MIDDLEWARE,
     Hub,
@@ -49,7 +50,6 @@ from domainkit_tests.test_live_fanout import (
     processes,
     redis_url,
     stop_listening,
-    until,
 )
 
 __all__ = ["member_permissions", "redis_url", "router"]
@@ -309,7 +309,7 @@ async def test_a_process_hands_what_it_hears_to_the_tenant_named(
 
 
 async def across_tenants(
-    here_bus: EventBus, there: LiveEvents, listening: object
+    here_bus: EventBus, there: LiveEvents, listening: Callable[[], Awaitable[bool]]
 ) -> None:
     """A commit in tenant a reaches a's subscribers in the other process, not b's."""
     alice, bob = Member("alice"), Member("bob")

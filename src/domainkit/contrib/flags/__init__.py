@@ -28,6 +28,7 @@ from .models import DynamicSetting, Flag, InvalidFlag
 from .settings import FlagsSettings
 from .store import (
     DynamicSettingDefinition,
+    declared_kept,
     declared_settings,
     dynamic_setting,
     flag_enabled,
@@ -49,6 +50,7 @@ __all__ = [
     "SettingChanged",
     "SettingReset",
     "UnknownSetting",
+    "declared_kept",
     "declared_settings",
     "dynamic_setting",
     "flag_enabled",

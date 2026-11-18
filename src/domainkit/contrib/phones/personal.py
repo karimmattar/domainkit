@@ -10,6 +10,8 @@ from uuid import UUID
 
 from sqlalchemy import delete, select
 
+from domainkit.db import affected_rows
+
 from .stores import PhonesUnitOfWork
 from .tables import phone_codes, phones
 
@@ -58,5 +60,5 @@ async def erase_subject(subject: str) -> Mapping[str, int]:
             delete(phone_codes).where(phone_codes.c.user_id == user_id)
         )
         await uow.commit()
-    counts = {"phones": numbers.rowcount, "phone_codes": codes.rowcount}  # type: ignore[attr-defined]
+    counts = {"phones": affected_rows(numbers), "phone_codes": affected_rows(codes)}
     return {kind: count for kind, count in counts.items() if count}

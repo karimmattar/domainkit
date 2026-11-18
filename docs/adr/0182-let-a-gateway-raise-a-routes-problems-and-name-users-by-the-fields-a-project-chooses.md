@@ -1,6 +1,6 @@
 # 0182. Let a gateway raise a route's problems, and name users by the fields a project chooses
 
-- Status: Accepted
+- Status: Accepted; amended by [0188](0188-write-down-the-cores-layering-and-hold-the-boundaries-it-draws.md) on 2026-11-18 (at the end)
 - Date: 2026-11-17
 - Amends: [0003](0003-enforced-layer-rules.md), [0177](0177-let-a-key-reach-every-tenant-name-a-domains-own-keys-and-search-every-word-at-once.md)
 
@@ -203,3 +203,11 @@ without starting again).
    <https://owasp.org/API-Security/editions/2023/en/0xa3-broken-object-property-level-authorization/>
 7. Django, *System check framework*:
    <https://docs.djangoproject.com/en/5.2/topics/checks/>
+
+## Amendment (2026-11-18, 2.9)
+
+The step this record planned for a later 2.x is taken
+([0188](0188-write-down-the-cores-layering-and-hold-the-boundaries-it-draws.md)): `check` warns (`architecture.W001`) of a name outside the
+`__all__` of `domainkit.http.client` or `domainkit.http.uploads`
+imported in the infrastructure layer, and of `uploads.serve`. 3.0
+refuses them.

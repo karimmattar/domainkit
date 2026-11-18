@@ -17,7 +17,7 @@ import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, cast
 from uuid import UUID, uuid4
 
 import pytest
@@ -661,6 +661,29 @@ def test_binds_is_a_function_that_reads_what_json_holds_and_never_commits() -> N
     assert (shown.title, bound) == ("Publish a note", fingerprint_of("Hello"))
     assert run_async(noting().read(command)) == (Shown("Publish a note"), None)
     assert ActionRecordChanged().status_code == 409
+
+
+@pytest.mark.parametrize(
+    "subject",
+    ["bad", "notes.note:a b", f"notes.note:{'1' * 200}", None],
+    ids=["no-type", "a-space", "too-long", "not-text"],
+)
+def test_a_subject_is_a_type_and_an_id(subject: object) -> None:
+    """``subject(...)`` answers ``"<type>:<id>"``, short and plain, or is refused.
+
+    The subject is stored, shown, and audited with the act (A28-TEST-02).
+    """
+    action = Action(
+        "notes.publish",
+        command=Note,
+        # A project's function may answer anything; its type says str.
+        subject=lambda command: cast("str", subject),
+        show=lambda command: Shown("Publish a note"),
+    )
+
+    assert noting().subject_of(Note(note_id=NOTE)) == f"notes.note:{NOTE}"
+    with pytest.raises(ImproperlyConfigured, match=r"must return '<type>:<id>'"):
+        action.subject_of(Note(note_id=NOTE))
 
 
 # The table, from the release before ---------------------------------------------

@@ -40,6 +40,10 @@ class InvalidAmount(BusinessRuleViolation):
     """Amounts are more than zero, in a currency transfers are made in."""
 
 
+class TransferTooLarge(BusinessRuleViolation):
+    """A transfer the books would take only with their own approvals (422)."""
+
+
 class CardRegistered(DomainEvent):
     """A card was registered. Never its number: events are audited as they are."""
 

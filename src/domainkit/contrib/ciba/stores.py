@@ -14,6 +14,7 @@ from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domainkit.contrib.devices import DevicesUnitOfWork
+from domainkit.db import affected_rows
 
 from .tables import assertions, clients, sign_in_requests
 
@@ -272,7 +273,7 @@ class SignInRequestStore:
             )
             .values(user_id=user_id, claimed_at=now, claimed_ip=address, qr_digest=None)
         )
-        return bool(result.rowcount)  # type: ignore[attr-defined]
+        return bool(affected_rows(result))
 
     async def approve(
         self, request_id: UUID, user_id: UUID, device_id: UUID, now: datetime
@@ -288,7 +289,7 @@ class SignInRequestStore:
             )
             .values(approved_at=now, device_id=device_id)
         )
-        return bool(result.rowcount)  # type: ignore[attr-defined]
+        return bool(affected_rows(result))
 
     async def deny(
         self,
@@ -316,7 +317,7 @@ class SignInRequestStore:
             )
             .values(denied_at=now, reported=reported)
         )
-        return bool(result.rowcount)  # type: ignore[attr-defined]
+        return bool(affected_rows(result))
 
     async def deny_waiting(self, user_id: UUID, now: datetime) -> int:
         """Deny every request of the user still waiting; how many."""
@@ -329,7 +330,7 @@ class SignInRequestStore:
             )
             .values(denied_at=now)
         )
-        return int(result.rowcount or 0)  # type: ignore[attr-defined]
+        return affected_rows(result)
 
     async def end(self, request_id: UUID, now: datetime) -> None:
         """End the request at ``now``, unless scanned, answered, or ended already.
@@ -365,7 +366,7 @@ class SignInRequestStore:
             )
             .values(last_polled_at=now)
         )
-        return bool(result.rowcount)  # type: ignore[attr-defined]
+        return bool(affected_rows(result))
 
     async def slow_down(self, request_id: UUID, now: datetime, step: int) -> None:
         """Make the initiator wait ``step`` seconds more between polls, from now."""
@@ -391,21 +392,21 @@ class SignInRequestStore:
             )
             .values(redeemed_at=now)
         )
-        return bool(result.rowcount)  # type: ignore[attr-defined]
+        return bool(affected_rows(result))
 
     async def purge(self, before: datetime) -> int:
         """Forget requests that ended before ``before``; how many."""
         result = await self.session.execute(
             delete(sign_in_requests).where(sign_in_requests.c.expires_at < before)
         )
-        return int(result.rowcount or 0)  # type: ignore[attr-defined]
+        return affected_rows(result)
 
     async def forget_user(self, user_id: UUID) -> int:
         """Forget every request of a user who is gone; how many."""
         result = await self.session.execute(
             delete(sign_in_requests).where(sign_in_requests.c.user_id == user_id)
         )
-        return int(result.rowcount or 0)  # type: ignore[attr-defined]
+        return affected_rows(result)
 
 
 class ClientStore:
@@ -455,7 +456,7 @@ class ClientStore:
         result = await self.session.execute(
             delete(clients).where(clients.c.client_id == client_id)
         )
-        return bool(result.rowcount)  # type: ignore[attr-defined]
+        return bool(affected_rows(result))
 
 
 class AssertionStore:
@@ -483,7 +484,7 @@ class AssertionStore:
         result = await self.session.execute(
             delete(assertions).where(assertions.c.expires_at < before)
         )
-        return int(result.rowcount or 0)  # type: ignore[attr-defined]
+        return affected_rows(result)
 
 
 class CibaUnitOfWork(DevicesUnitOfWork):

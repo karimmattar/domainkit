@@ -47,12 +47,21 @@ project that relied on 2.8's behaviour changes, and what to run.
   `'**********'`. A script that reads the command's output sees these
   lines, and `--all` lists a domain's setting left at its defaults with
   `###`. What stays hidden: values typed `SecretStr` or bytes, names that
-  suggest a secret, URL passwords and `password=` pairs, and all text in
-  a mapping or a value typed `Any`. A project whose own domains declare
-  settings types each secret among them as `SecretStr`, as the
-  framework's schemas do: a secret in a field typed `str`, under a name
-  such as `ENDPOINT`, would print
+  suggest a secret, URL passwords, the values of `password=` and
+  `password:` pairs, and all text in a mapping, a value typed `Any`, or a
+  value that is not a model, such as a dataclass. A project whose own
+  domains declare settings types each secret among them as `SecretStr`,
+  as the framework's schemas do: a secret in a field typed `str`, under a
+  name such as `ENDPOINT`, would print
   ([diffsettings](reference/commands.md#diffsettings-show-the-settings)).
+- **`diffsettings` hides more of the text it prints**, in every setting,
+  the project's own too: the value after a name like a secret's and `:`
+  or `=`, spaced or not, the name quoted or not. `password = ...` in a
+  libpq connection string, `"private_key": "..."` in JSON, and
+  `Authorization: Bearer ...` print with `**********` for their values,
+  where 2.8 printed them: it hid only `password=...`. A script that reads
+  such a value from the command's output reads it from the settings
+  instead.
 - **The application's problems are logged one to a record.** In
   development and tests, each problem found as the application is built
   or starts (`security.E101`, a route without an access rule, say) is a
@@ -327,13 +336,53 @@ project that relied on 2.8's behaviour changes, and what to run.
   or list the id in `SILENCED_CHECKS`.
 
 No migration.
+- **`AUTH.IDENTIFIERS` names fields that the user table has a column
+  for.** Startup refuses `groups` and `user_permissions`, which link
+  tables keep (`auth.E011`). 2.8 started with them, and failed later, at
+  a login, a search, or a list of users that read the field: name the
+  fields the table stores instead.
+- **A wider fixture's factory objects start at 0.** The test plugin
+  resets every factory before a test's fixtures, as well as before the
+  test's own: objects a module-scoped or session-scoped fixture builds are
+  numbered from 0, whichever test runs first, where 2.8 went on from the
+  test before. A test that asserted the numbers such a fixture's objects
+  happened to get asserts the ones from 0 (`Product 0`, `Product 1`).
+- **`check` warns of web names a gateway takes through an allowed
+  module** (`architecture.W001`). The infrastructure layer may import
+  `domainkit.http.client` and `domainkit.http.uploads`, but from 2.9
+  only the names their `__all__` lists, and not `uploads.serve`, without
+  a warning; 3.0 refuses the rest. `check` passes, and `check --deploy`
+  fails until each import changes. `SILENCED_CHECKS` can silence the
+  warning, but only as a whole: there is no way to allow one import, so
+  silencing it also hides the next one. Change the imports instead. Type
+  a route's file as `domainkit.http.uploads.Upload`, not Starlette's
+  `UploadFile`. Import `StoredUpload` from `domainkit.storage`,
+  `UpstreamError` from `domainkit.exceptions`, and `httpx2` itself, not
+  through `domainkit.http.client`. Serve a file from its route, with
+  `serve` there ([Layer rules](reference/settings.md#layer-rules)).
+- **`domainkit.contrib.objectpermissions` needs `domainkit.contrib.auth`
+  in `INSTALLED_DOMAINS`.** It always did, at its first grant; now
+  `setup()` says so (`apps.E001`).
+- **The ledger's triggers are checked as the audit trail's are.** Where
+  deployed, a trigger on the entries or postings given arguments fails
+  the startup check (`accounting.E001`), as it did on the trail. `migrate`
+  makes the triggers again.
+- **AWS's signing and credentials are defined in `domainkit.cloud.aws`.**
+  `AwsCredentials`, `sign`, and the credential functions still import
+  from `domainkit.keys.aws`, the same objects; what prints a class by its
+  module prints the new one. A test that patches one of them in
+  `domainkit.keys.aws` no longer reaches the code that calls it:
+  `default_credentials` calls `environment_credentials` from
+  `domainkit.cloud.aws`, so patch it there
+  (`monkeypatch.setattr("domainkit.cloud.aws.environment_credentials", ...)`).
 
 ### `migrate` makes the user lookups' indexes, on PostgreSQL
 
 Logins by address, signups, the checks for a taken address or username,
 and the admin API's list of users read the whole users table in 2.8. On
 PostgreSQL, `migrate` now makes, on the user table, a project's own too
-(`AUTH.USER_TABLE`), those of these indexes that are missing:
+(`AUTH.USER_TABLE`), in the table's schema where it names one, those of
+these indexes that are missing:
 
 - `ix_<table>_<EMAIL_FIELD>_lower`, on `lower()` of the `EMAIL_FIELD`
   (`ix_domainkit_users_email_lower` on the default table);

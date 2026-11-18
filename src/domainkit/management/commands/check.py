@@ -15,7 +15,7 @@ from fastapi import FastAPI
 
 from domainkit.apps import registry
 from domainkit.apps.hooks import on_deployment_warnings, unregistered_methods
-from domainkit.architecture import check_domains
+from domainkit.architecture import check_domains, layer_warnings
 from domainkit.cache.handler import deployment_warnings as cache_deployment_warnings
 from domainkit.checks import CheckMessage, Level, describe, silence
 from domainkit.conf import settings
@@ -136,6 +136,10 @@ def _warnings(app: FastAPI) -> list[str]:
     warnings += _tagged("blocking.W001", sync_calls(app, _project_domains()))
     warnings += _tagged("blocking.W002", awaited_sync(_event_handlers()))
     warnings += _tagged("tenancy.W001", unsaid_throttles(app))
+    warnings += _tagged(
+        "architecture.W001",
+        map(str, layer_warnings(settings.INSTALLED_DOMAINS)),
+    )
     warnings += _partial_probe_lists()
     if not deployed:  # A deployment migrates as it rolls out, after its checks.
         warnings += _tagged("migrations.W001", migrations.unapplied_warnings())

@@ -9,6 +9,7 @@ from sqlalchemy import delete, func, insert, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domainkit.contrib.auth import AuthUnitOfWork
+from domainkit.db import affected_rows
 
 from .tables import phone_codes, phones
 
@@ -159,7 +160,7 @@ class PhoneCodeStore:
         result = await self.session.execute(
             delete(phone_codes).where(phone_codes.c.created_at < before)
         )
-        return int(result.rowcount or 0)  # type: ignore[attr-defined]
+        return affected_rows(result)
 
     async def forget_user(self, user_id: UUID) -> None:
         """Forget every code a deleted user asked for."""
@@ -219,7 +220,7 @@ class PhoneStore:
         result = await self.session.execute(
             delete(phones).where(phones.c.id == phone_id, phones.c.user_id == user_id)
         )
-        return bool(result.rowcount)  # type: ignore[attr-defined]
+        return bool(affected_rows(result))
 
     async def forget_user(self, user_id: UUID) -> None:
         """Forget every number of a deleted user."""
