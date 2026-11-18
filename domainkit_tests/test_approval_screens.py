@@ -20,13 +20,14 @@ from fastapi.testclient import TestClient
 from domainkit.clock import FrozenClock
 from domainkit.conf import override_settings
 from domainkit.contrib.approvals import ApprovalsUnitOfWork, Policy, requires_approval
-from domainkit.contrib.approvals.authorizing import shown_of
+from domainkit.contrib.approvals.authorizing import details_of, shown_of
 from domainkit.contrib.approvals.builtin import show_about_user
 from domainkit.contrib.approvals.guards import Guard
 from domainkit.ddd import Command
 from domainkit.http import get_asgi_application
 from domainkit.i18n import override
 from domainkit.management.base import run_async
+from domainkit.money import Money
 from domainkit_tests.conftest import Migrated, Shape
 from domainkit_tests.support.auth import create_user
 from domainkit_tests.test_admin_actions import (
@@ -334,6 +335,38 @@ def test_a_guard_names_what_its_request_shows() -> None:
         [("Pay", "10.00 to Ada")],
         [("Payee", "Ada")],
         [("payee", "Ada"), ("amount", "10.00")],
+    ]
+
+
+class Transfer(Command):
+    """Send ``amount`` to ``payee``, and ``fees`` beside it."""
+
+    payee: str
+    amount: Money
+    fees: list[Money]
+    refs: list[str]
+
+
+def test_an_amount_shows_as_people_read_it() -> None:
+    """``Money`` among a request's arguments: its amount and currency, not JSON."""
+    policy = Policy("tests.screens", approvals=1, permission="tests.approve")
+    guard = Guard("tests.screens", Transfer, act, ApprovalsUnitOfWork, (policy,))
+    command = Transfer(
+        payee="Ada",
+        amount=Money.of("1500.00", "USD"),
+        fees=[Money.of("2", "USD")],
+        refs=["inv-7"],
+    )
+
+    stored = guard.load(guard.dump(command))  # As a stored request reads.
+    shown = details_of("tests.screens", run_async(shown_of(guard, stored)))
+
+    assert shown == [
+        ("Action", "tests.screens"),
+        ("payee", "Ada"),
+        ("amount", "1500.00 USD"),
+        ("fees", "2.00 USD"),
+        ("refs", "inv-7"),
     ]
 
 

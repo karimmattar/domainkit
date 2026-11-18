@@ -965,8 +965,10 @@ by name, in the command's order. Each value is the argument as compact
 JSON (a string as itself), printable; a list goes over as many lines as
 it takes ("added", "added (2)"), item by item, an object or a list as
 compact JSON ([What a screen shows](../auth/actions.md#what-a-screen-shows)).
-A value of a guard's `show` that JSON has not, such as a `Decimal` or a
-`UUID`, shows as its text. A screen
+An argument that is `Money`, or an item of a list that is, shows as its
+amount and currency, `1500.00 USD`, as `Money` writes itself (since
+2.9). A value of a guard's `show` that JSON has not, such as `Money`, a
+`Decimal`, or a `UUID`, shows as its text. A screen
 holds six lines of 64 characters. What does not fit is cut and counted
 (since 2.7, a list's last line says how many more items: "… and 22
 more"), and with more arguments than lines, the last line says how many

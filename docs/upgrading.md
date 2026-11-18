@@ -73,6 +73,11 @@ project that relied on 2.8's behaviour changes, and what to run.
   client's shutdown is still there after it. A test that relied on the
   close to empty a `memory://` ledger calls `ledgers.reset()`; the test
   plugin calls it before each test, as before.
+- **An approval screen shows money as its amount and currency.** A
+  guard without `show` lists the command's arguments, and an argument
+  that is `Money` now reads `1500.00 USD`, where 2.8 showed
+  `{"amount":"1500.00","currency":"USD"}`. A test that compared a
+  screen's details compares the new text.
 2.9 answers the audit of 2.8. Each part below says what a project that
 relied on 2.8's behaviour changes, and what to run.
 

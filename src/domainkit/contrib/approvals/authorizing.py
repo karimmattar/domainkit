@@ -46,6 +46,7 @@ from domainkit.contrib.auth.actions import (
 from domainkit.contrib.auth.screens import Typed, fitted, laid_out, on_typed_text
 from domainkit.ddd import UnitOfWork
 from domainkit.i18n import gettext, gettext_noop, ngettext
+from domainkit.money import Money
 
 from .guards import Guard, guard_for, policy_of
 from .models import ApprovalRequest
@@ -211,9 +212,30 @@ async def _shown(request: ApprovalRequest) -> Iterable[tuple[str, object]]:
 
 
 async def shown_of(guard: Guard, command: object) -> Iterable[tuple[str, object]]:
-    """What ``command`` shows: ``guard.show``'s values, or its arguments in order."""
+    """What ``command`` shows: ``guard.show``'s values, or its arguments in order.
+
+    An argument that is ``Money``, or a list's item that is, shows as its
+    amount and currency (``1500.00 USD``), not as its JSON.
+    """
     shown = await guard.shown(command)
-    return guard.dump(command).items() if shown is None else shown
+    if shown is not None:
+        return shown
+    return [
+        (name, _readable(getattr(command, name, None), value))
+        for name, value in guard.dump(command).items()
+    ]
+
+
+def _readable(value: object, dumped: object) -> object:
+    """``dumped``, the JSON of ``value``, with each ``Money`` of it kept as itself."""
+    if isinstance(value, Money):
+        return value
+    if isinstance(value, list | tuple) and isinstance(dumped, list):
+        return [
+            each if isinstance(each, Money) else item
+            for each, item in zip(value, dumped, strict=True)
+        ]
+    return dumped
 
 
 def details_of(

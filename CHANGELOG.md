@@ -185,6 +185,15 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   the test plugin calls before each test, still empties them
   ([Ledgers](docs/databases.md#ledgers-immudb)) (audit A28-DX-06).
 
+- What a person deciding an approval request is shown of an argument
+  that is `Money`, or of a list's item that is, is its amount and
+  currency, `1500.00 USD`, as `Money` writes itself; 2.8 showed its JSON,
+  `{"amount":"1500.00","currency":"USD"}`. It holds for the approver's,
+  the maker's, and the rejecting and cancelling screens of a guard
+  without `show`
+  ([Approving with an authorization](docs/contrib/approvals.md#approving-with-an-authorization))
+  (audit A28-DX-06).
+
 ## [2.8.0] - 2026-11-18
 
 2.8 answers fourteen of a project's fifteen notes on 2.7 (the last,
