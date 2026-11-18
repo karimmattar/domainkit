@@ -5,7 +5,7 @@ customer sees only its own data. Each customer is a
 [tenant](learning.md#words): a company, a school, a shop.
 `domainkit.tenancy` gives each request its tenant. It then scopes to that
 tenant what the framework keeps: rows, databases, caches, rate limits,
-logs, and background tasks.
+logs, background tasks, and live events.
 
 On this page you learn how to:
 
@@ -28,6 +28,7 @@ On this page you learn how to:
 | Rate limits | Every count is the tenant's own. |
 | Logs | Every record names the tenant (`tenant`). |
 | Background tasks | A task runs as the tenant whose request queued it. |
+| Live events | An event reaches only the connections served as the tenant it was committed in. |
 
 ## A first example
 
@@ -659,6 +660,18 @@ tenants is two requests.
 
 Log records get a `tenant` field, `-` outside a tenant. JSON logs have
 it, and so do formats that name it (`%(tenant)s`).
+
+## Live events and approvals
+
+**Live events.** An event committed while a tenant is served keeps that
+tenant, and `live_events` hands it only to the connections served as it:
+`stream`, `forward`, and `subscribe` hear the tenant the route serves
+([live events](live.md#live-committed-events)). An event committed as
+no tenant reaches only the connections served as none. With
+`LIVE_FANOUT`, each message between processes names the tenant too. A
+route that serves every tenant on purpose, such as a back office's, says
+so with `per_tenant=False`; its `rule` alone then decides what each
+connection sees.
 
 ## Reading the tenant in code
 
