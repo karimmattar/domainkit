@@ -399,7 +399,8 @@ Before the first release:
       `test (3.14t)` leaves those tests out, and a release ignores
       `stress (3.14t)` (INFRA-14);
     - `mutation (changed)` (0.12), which runs the mutants of the
-      functions that a pull request changes, and fails when one lives. An
+      functions that a pull request changes, and fails when one lives,
+      while the repository variable `MUTATION` is `on` (off since 1.5.0). An
       equivalent mutant can live, which the author explains rather than
       kills ([ADR 0106](adr/0106-mutate-what-a-pull-request-changes.md));
       and the shards it hands a large change's mutants to,

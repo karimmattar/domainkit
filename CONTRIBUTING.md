@@ -23,9 +23,9 @@ Each `make` command runs what CI runs, the same way:
 | Command | What it runs | CI job |
 | --- | --- | --- |
 | `make lint` | `poetry check --lock`, `ruff check`, `ruff format --check`, `mypy` (strict), `deptry` | `lint` |
-| `make test` | the suite on SQLite and in-memory fakes, in random order, with coverage | `test (3.13)`, `test (3.14)` |
+| `make test` | the suite on SQLite and in-memory fakes, in random order, with coverage | `test (3.13)`, `test (3.14)`, `test (3.15)` |
 | `make integration` | the suite against PostgreSQL, PostGIS, immudb, Redis, Valkey, and RabbitMQ from `compose.yaml`, with `redis-server`, `nats-server`, and SoftHSM installed (the broker and key tests start their own); a skipped test fails | `integration` |
-| `make cov` | both runs combined, which must cover 98% | `coverage` |
+| `make cov` | both runs combined, which must cover 98%, and every line the change adds since `origin/stg` (`BASE=`) | `coverage` |
 | `make bench` | Python calls and round trips per request against `benchmarks/budgets.toml`; then the rungs under load against `benchmarks/load.toml` | `bench` |
 | `make docs` | the documentation site, with every link and public name checked | `docs-site` |
 | `make audit` | pip-audit of the lock, and gitleaks over the history | `audit` |
@@ -45,18 +45,24 @@ to `.ci/`. `make services-down` stops them and drops their data.
   error, in random order. Async tests use `@pytest.mark.anyio`. Never wait
   on the wall clock: use `domainkit.clock.freeze_time`, events, or fakes
   that block until released. New code is covered 100%, branches included,
-  by the runs with and without servers together. A helper
+  by the runs with and without servers together: CI's `coverage` job fails
+  on a line a pull request adds that no test ran
+  ([ADR 0191](docs/adr/0191-gate-the-lines-a-change-adds.md)). A helper
   more than one test file needs goes in `domainkit_tests/support/`, by
   area, not in the test file that used it first (`test_support.py`
   checks the ones that are there).
-- **Mutation testing.** For the functions you changed:
+- **Mutation testing.** Run it yourself for the functions you changed:
   `make mutants MUTANTS="domainkit.http.middleware*"`. Kill the survivors
-  that point at a missing test, and say why each one left stays. A new
-  module goes in one of the weekly shards in `.github/workflows/ci.yml`
-  (`test_ci.py` checks it). A pull request's `mutation (changed)` check
-  runs the mutants of the functions it changed and lists those that lived
-  ([ADR 0106](docs/adr/0106-mutate-what-a-pull-request-changes.md)); for
-  a release-size change, it hands what it did not reach to the shards
+  that point at a missing test, and say in the pull request why each one
+  left stays. CI runs mutation testing only on request: the jobs below run
+  while the repository variable `MUTATION` is `on`, which it has not been
+  since 1.5.0, and the weekly shards can be started by hand
+  ([ADR 0106](docs/adr/0106-mutate-what-a-pull-request-changes.md)'s 2.9
+  amendment). A new module goes in one of the weekly shards in
+  `.github/workflows/ci.yml` (`test_ci.py` checks it). When it is on, a
+  pull request's `mutation (changed)` check runs the mutants of the
+  functions it changed and lists those that lived; for a release-size
+  change, it hands what it did not reach to the shards
   `mutation (changed, N)`, and `mutation (changed, summary)` lists them. A
   test that reads domainkit's source text, or the frames of its calls,
   carries `@pytest.mark.reads_own_source`: mutmut rewrites both, and

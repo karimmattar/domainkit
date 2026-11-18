@@ -118,7 +118,7 @@ statuses, and the amendments they name.
 | [0102](0102-hold-if-match-on-the-unit-of-work-that-changes-the-aggregate.md) | Hold `If-Match` on the unit of work that changes the aggregate | Accepted; amended 2026-10-28 and 2026-10-29 (at the end) |
 | [0104](0104-import-what-a-process-uses-on-first-use-and-gate-its-modules.md) | Import what a process uses on first use, and gate the modules each rung loads | Accepted |
 | [0105](0105-fingerprint-keyed-bodies-as-they-arrive-and-spool-them-past-a-threshold.md) | Fingerprint keyed bodies as they arrive, and spool them past a threshold | Accepted; amended 2026-10-28 (at the end) |
-| [0106](0106-mutate-what-a-pull-request-changes.md) | Mutate what a pull request changes, before it merges | Accepted; amended 2026-10-29 and 2026-11-01 (at the end) |
+| [0106](0106-mutate-what-a-pull-request-changes.md) | Mutate what a pull request changes, before it merges | Accepted; amended 2026-10-29, 2026-11-01 and 2026-11-18 (at the end); amended by [0191](0191-gate-the-lines-a-change-adds.md) |
 | [0107](0107-make-test-users-through-the-domain-and-sign-in-through-a-protocol.md) | Make test users through the domain, and sign in as them through a protocol | Accepted |
 | [0108](0108-keep-the-full-domain-as-the-default-and-give-new-projects-an-image-and-ci.md) | Keep the full domain as `startdomain`'s default; give new projects an image and CI | Accepted; amended 2026-10-28 (at the end) |
 | [0111](0111-refuse-a-removed-hook-method-until-1-0-wherever-the-domain-defines-it.md) | Refuse a removed hook method until 1.0, wherever the domain defines it | Accepted; amended 2026-11-01 (at the end) by [0125](0125-freeze-the-public-api-for-1-0-renaming-what-was-never-published.md) |
@@ -193,6 +193,7 @@ statuses, and the amendments they name.
 | [0180](0180-refuse-links-a-person-typed-for-a-screen-and-a-reason-past-a-line.md) | Refuse links a person typed for a screen, and a reason past a line | Accepted |
 | [0181](0181-decide-a-body-limit-per-request-count-before-the-rules-hand-over-the-file-received-and-bound-the-xml-parsed.md) | Decide a body limit per request, count before the rules, hand over the file received, and bound the XML parsed | Accepted |
 | [0182](0182-let-a-gateway-raise-a-routes-problems-and-name-users-by-the-fields-a-project-chooses.md) | Let a gateway raise a route's problems, and name users by the fields a project chooses | Accepted |
+| [0191](0191-gate-the-lines-a-change-adds.md) | Gate the lines a change adds | Accepted |
 
 ### Decisions still without a record
 

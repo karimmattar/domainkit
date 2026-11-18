@@ -26,6 +26,9 @@ INTEGRATION_ENV := \
 	DOMAINKIT_TEST_RABBITMQ_MANAGEMENT_URL=http://domainkit:domainkit@localhost:15672 \
 	DOMAINKIT_TEST_POSTGIS_URL=postgresql+asyncpg://postgres:postgres@localhost:5434/postgres
 
+# What "make cov" reads a change's added lines against: pull requests go to stg.
+BASE ?= origin/stg
+
 .DEFAULT_GOAL := help
 .PHONY: help install lint fix test integration services services-down cov bench docs docs-serve audit mutants check
 
@@ -64,10 +67,13 @@ integration: services ## The suite against the servers; a skip fails, as in CI.
 	@! grep -q "SKIPPED" pytest.log
 
 # Into .coverage, from files of other names: coverage combine skips its
-# own output file, so a run that wrote .coverage would be dropped.
-cov: ## Combine the runs with and without servers; CI requires 100%.
+# own output file, so a run that wrote .coverage would be dropped. Then the
+# lines the change adds since $(BASE), each of which must have run (ADR 0191).
+cov: ## Combine the runs with and without servers; 98%, and every line a change adds.
 	$(RUN) coverage combine --keep .coverage.test .coverage.integration
 	$(RUN) coverage report --fail-under=98
+	$(RUN) coverage json -q -o coverage.json --fail-under=0
+	$(RUN) python .github/scripts/changed_coverage.py $(BASE) coverage.json
 
 bench: ## The benchmark ladder against its budgets (docs/performance.md).
 	$(RUN) python -m benchmarks --strict

@@ -3,8 +3,9 @@
 # the suite (see changes). A release tag reuses the run of its commit's push
 # to main: release.yml requires it green and publishes what its build job
 # built. Pull requests, and weekly: the tests against the newest releases
-# the ranges in pyproject.toml allow, and against their floors. Weekly (and
-# on demand): a full mutation testing run. The suite runs on every core
+# the ranges in pyproject.toml allow, and against their floors. On demand,
+# and weekly while the variable MUTATION is on: a full mutation testing run
+# (ADR 0106). The suite runs on every core
 # (pytest-xdist, -n auto). Actions are pinned to commit SHAs and images to
 # digests; Renovate updates both.
 name: CI
@@ -531,16 +532,21 @@ jobs:
           retention-days: 30
 
   # Every line must run in some job: a few only run on SQLite, others only
-  # against the servers. The combined report is the coverage gate.
+  # against the servers. The combined report is the coverage gate: 98% of
+  # the package, and on a pull request every line it adds or changes under
+  # src/, with each of its branches (ADR 0191).
   coverage:
     needs: [changes, test, integration]
     if: ${{ !cancelled() && !failure() && github.event_name != 'schedule' && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
+      # On a pull request, the merge commit and its first parent, the base
+      # branch the added lines are read against.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 2
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.13"
@@ -552,6 +558,10 @@ jobs:
           merge-multiple: true
       - run: poetry run coverage combine
       - run: poetry run coverage report --fail-under=98
+      - if: github.event_name == 'pull_request'
+        run: |
+          poetry run coverage json -q -o coverage.json --fail-under=0
+          poetry run python .github/scripts/changed_coverage.py HEAD^1 coverage.json
 
   # The wheel must carry its templates and Alembic environment, and import
   # in a clean environment with only its declared dependencies, at the

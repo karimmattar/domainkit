@@ -9,6 +9,22 @@ and a status.
 
 ## [Unreleased]
 
+### Changed
+
+- CI's `coverage` job fails a pull request with a line it adds or changes
+  under `src/` that ran in no job, or left a branch untaken
+  (`.github/scripts/changed_coverage.py`); `make cov` checks the same
+  against `origin/stg`. The package stays at 98%, as README.md and the
+  Makefile now say, and Python processes the tests start are measured too
+  (`patch = ["subprocess"]`); ADR 0191 records the gates (audit
+  A28-TEST-05).
+- ADR 0106, CONTRIBUTING.md, README.md and `docs/versioning.md` say that
+  mutation testing runs on request: `mutation (changed)` and the weekly
+  shards run while the repository variable `MUTATION` is `on`, which it
+  has not been since 1.5.0. `unmutated-functions.txt`, a CI output
+  committed by mistake, is removed, and git ignores what the mutation
+  jobs write (audit A28-TEST-04).
+
 ### Fixed
 
 - The upload and PDF tests no longer time their checks with a stopwatch.

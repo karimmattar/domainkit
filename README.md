@@ -237,18 +237,20 @@ throwaway certificates in `.ci/`; `make integration` sets the variables
 that point the tests at them (the `DOMAINKIT_TEST_*` names at the top of
 `domainkit_tests/test_immudb.py`, `test_redis.py`, and `test_rabbitmq.py`).
 Each run must cover 98%; CI also combines the runs with and without
-servers, which must cover 100% (`make cov`).
+servers, which must cover 98% of the package and every line a pull request
+adds (`make cov`).
 
 CI (`.github/workflows/ci.yml`) runs on every push and pull request, the
 suite on every core of the runner (`pytest -n auto`):
 
 - lint, strict typing, and deptry: every package the code imports is declared
-- the tests on Python 3.13 and 3.14
+- the tests on Python 3.13, 3.14, and 3.15
 - the tests again against PostgreSQL 18, immudb with TLS and a signing key,
   Redis 8 (plain and TLS), Valkey 9, and RabbitMQ 4 (plain and TLS); no test
   may be skipped there
 - the PostgreSQL tests on PostgreSQL 16, the oldest supported
-- coverage of both runs combined, which must be 100%
+- coverage of both runs combined: 98% of the package, and every line a
+  pull request adds or changes, its branches included
 - the benchmark ladder: Python calls and database round trips per request,
   against budgets (`python -m benchmarks`; docs/performance.md)
 - a wheel build, installed and imported in a clean environment, and its
@@ -265,9 +267,10 @@ of the repository runs lint, the audits, and the tests that read the docs,
 not the whole suite. A release reuses the run of its commit's push to
 `main` instead of running it again.
 
-A full mutation testing run happens weekly, in 17 shards that run side by
-side; each writes its score and the mutants no test caught to its job
-summary. Releases are published to PyPI
+Mutation testing runs on request: a full run, in 17 shards that run side
+by side, is started by hand, or weekly while the repository variable
+`MUTATION` is `on`; each shard writes its score and the mutants no test
+caught to its job summary. Releases are published to PyPI
 from a version tag; see [docs/versioning.md](https://github.com/karimmattar/domainkit/blob/main/docs/versioning.md).
 
 ## License
