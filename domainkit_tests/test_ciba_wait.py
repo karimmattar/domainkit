@@ -73,8 +73,10 @@ class Waits:
 def waits(monkeypatch: pytest.MonkeyPatch) -> Waits:
     """Waits that say when they wait, and read their request only when told.
 
-    Their step, which reads the request again, is longer than any test: a
-    wait that did not hear the phone's answer would not answer in time.
+    Their step, which reads the request again, is longer than any test, and
+    the tests of a wait in progress give it ``WAIT_SECONDS=55``, longer than
+    ``WAIT``: a wait that did not hear the phone's answer would not answer
+    in time.
     """
     seen = Waits()
     monkeypatch.setattr(services, "asyncio", seen)
@@ -129,7 +131,7 @@ def test_a_wait_in_progress_hears_the_approval(app: App, waits: Waits) -> None:
     The approval comes once the wait waits, not after a fixed sleep, and
     only hearing of it ends the wait in time (A28-TEST-06).
     """
-    web = app(NUMBER_MATCHING=False, WAIT_SECONDS=20)
+    web = app(NUMBER_MATCHING=False, WAIT_SECONDS=55)
     phone = Phone(app(PHONE))
     started = start_push(web)
     [waiting] = phone.waiting()
@@ -231,7 +233,7 @@ def test_an_acts_wait_in_progress_hears_the_phone_confirm(
     (A28-TEST-06).
     """
     phone = Phone(acting(PHONE))
-    session = Session(acting(WAIT_SECONDS=20))
+    session = Session(acting(WAIT_SECONDS=55))
     _, started, listed = asked_of_the_phone(session, phone)
     answers: list[Any] = []
     holding = threading.Thread(
