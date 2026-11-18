@@ -92,13 +92,13 @@ project that relied on 2.8's behaviour changes, and what to run.
   [ADR 0183](adr/0183-keep-live-events-and-approval-requests-to-their-tenant-and-rows-of-no-tenant-to-keys-held-everywhere.md)).
   With `TENANCY`, an event reaches only the connections served as the
   tenant it was committed in, and one committed as no tenant only those
-  served as none. A route that streams every tenant's events on purpose,
-  such as a back office's, passes `per_tenant=False` to `stream`,
-  `forward`, or `subscribe`
-  ([tenancy](tenancy.md#live-events-and-approvals)). With `LIVE_FANOUT`,
-  connections served as a tenant miss the events that processes of
-  2.8.0 send, until every process is upgraded. Without `TENANCY`,
-  nothing changes.
+  served as none. A route only staff reach that streams every tenant's
+  events on purpose, such as a back office's, passes `per_tenant=False`
+  to `stream`, `forward`, or `subscribe`: its rule never sees an event's
+  tenant ([tenancy](tenancy.md#live-events-and-approvals)). With
+  `LIVE_FANOUT`, processes of 2.8.0 send their events without a tenant,
+  so connections served as a tenant miss them until every process is
+  upgraded. Without `TENANCY`, nothing changes.
 - **Approval requests are each tenant's own** (security). With
   `TENANCY`, a request is listed, read, approved, rejected, and
   cancelled where the tenant it was submitted in is served alone, and
@@ -117,13 +117,16 @@ project that relied on 2.8's behaviour changes, and what to run.
   own guards of postings, superusers, and admin changes. Without
   `TENANCY`, nothing changes.
 - **Limits and the ledger count the keys held everywhere** (security).
-  With `MembershipBackend`, a member's role no longer reaches the routes
+  A key granted in the tenant served, by `MembershipBackend` or any
+  backend that grants by `current_tenant()`, no longer reaches the routes
   of `domainkit.contrib.limits` or `domainkit.contrib.accounting`
   (`403`), nor makes a maker or an approver of approvals' guards of
   postings, captures, reversals, making superusers, and admin changes.
   Grant those keys to the staff who use them, directly or through a
   group ([Rows of no tenant](tenancy.md#rows-of-no-tenant)). Routes of
-  your own over rows every tenant shares say `everywhere=True`.
+  your own over rows every tenant shares say `everywhere=True`, which
+  asks the permissions as where no tenant is served: it relies on a
+  backend that grants per tenant reading `current_tenant()`.
 - **Staff APIs count the keys held everywhere** (security). The admin
   API (users, groups, permissions), the staff APIs of flags and
   webhooks, the audit trail's history, and the admin site's models that
@@ -144,7 +147,7 @@ the tenant a request was submitted in
 ([ADR 0183](adr/0183-keep-live-events-and-approval-requests-to-their-tenant-and-rows-of-no-tenant-to-keys-held-everywhere.md)).
 Run `python manage.py makemigrations`, review the revision, then
 `migrate` it before the new code serves. Until then every read of the
-requests fails (`OperationalError`), so their routes and the worker's
+requests fails with a database error, so their routes and the worker's
 runs answer `500`. Requests stored before have no tenant.
 
 ## 2.7 to 2.8

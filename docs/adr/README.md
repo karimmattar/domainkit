@@ -193,7 +193,7 @@ statuses, and the amendments they name.
 | [0180](0180-refuse-links-a-person-typed-for-a-screen-and-a-reason-past-a-line.md) | Refuse links a person typed for a screen, and a reason past a line | Accepted; amended 2026-11-18 (at the end) |
 | [0181](0181-decide-a-body-limit-per-request-count-before-the-rules-hand-over-the-file-received-and-bound-the-xml-parsed.md) | Decide a body limit per request, count before the rules, hand over the file received, and bound the XML parsed | Accepted; amended 2026-11-18 (at the end) |
 | [0182](0182-let-a-gateway-raise-a-routes-problems-and-name-users-by-the-fields-a-project-chooses.md) | Let a gateway raise a route's problems, and name users by the fields a project chooses | Accepted |
-| [0183](0183-keep-live-events-and-approval-requests-to-their-tenant-and-rows-of-no-tenant-to-keys-held-everywhere.md) | Keep live events and approval requests to their tenant, and rows of no tenant to keys held everywhere | Accepted |
+| [0183](0183-keep-live-events-and-approval-requests-to-their-tenant-and-rows-of-no-tenant-to-keys-held-everywhere.md) | Keep live events and approval requests to their tenant, and rows of no tenant to keys held everywhere | Accepted; amended 2026-11-18 (at the end) |
 
 ### Decisions still without a record
 

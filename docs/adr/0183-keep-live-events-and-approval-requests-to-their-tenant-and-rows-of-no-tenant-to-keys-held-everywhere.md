@@ -1,6 +1,6 @@
 # 0183. Keep live events and approval requests to their tenant, and rows of no tenant to keys held everywhere
 
-- Status: Accepted
+- Status: Accepted; amended 2026-11-18 (at the end)
 - Date: 2026-11-18
 - Amends: [0057](0057-live-committed-events-in-process.md), [0121](0121-hold-guarded-commands-as-sealed-requests-and-count-approvals-under-the-requests-lock.md), [0143](0143-fan-live-events-out-through-postgresql-or-redis.md), [0150](0150-take-the-tenant-from-the-path-and-let-members-hold-permissions.md)
 
@@ -212,3 +212,44 @@ Options for rows of no tenant:
 4. Ruby on Rails Discussions, *Broadcast/broadcast_to security in a
    multitenant environment*:
    <https://discuss.rubyonrails.org/t/broadcast-broadcast-to-security-in-a-multitenant-environment/82436>
+
+## Amendment (2026-11-18): staff APIs, an everywhere guard's requests, and each request committed as its tenant alone
+
+The review of this work found three gaps of the same kind, closed before
+release:
+
+- **Staff APIs counted a staff member's role.** `staff_rules` (the admin
+  API, and the staff APIs of flags and webhooks), the audit trail's
+  history, and the admin site asked `HasPermissions`: staff holding a
+  key only through a role in the tenant served read the users of every
+  tenant, and changed flags every tenant shares. Their rows belong to no
+  tenant. `staff_rules` asks `ModelActions(..., everywhere=True)`, the
+  history asks `audit.view_history` everywhere, and the admin site asks
+  each model's permissions everywhere unless the model is `TenantOwned`,
+  whose rows are the tenant's served. `is_staff` is held everywhere
+  already; the admin API's ceilings counted keys held everywhere before
+  (ADR 0150).
+- **A role's `view_every` read an everywhere guard's requests.** The
+  approvals list counted `approvals.view_every_approvalrequest` through a
+  role, so a role read the postings and admin changes submitted in its
+  tenant. The key held everywhere shows every request; held only through
+  a role, it shows the requests of guards that are not `everywhere`. So
+  the consequence "a tenant's role reaches ... no guarded posting" holds.
+- **Code across tenants committed inside `all_tenants()`.** Expiry
+  served each request's tenant inside `all_tenants()`, which stayed on:
+  the handlers its commit ran read every tenant's rows. A helper of the
+  core's tenancy module, `tenant_alone(tenant_id)`, internal for now,
+  serves one tenant (or none) with `all_tenants()` off inside it. Expiry
+  reads each request's tenant, then locks, expires and commits it as
+  that tenant alone;
+  `privacy erase` commits each tenant's requests as that tenant alone;
+  approving, rejecting and cancelling commit as the request's tenant
+  alone, so a decision made inside `all_tenants()` publishes and queues
+  as that tenant. A run checks the seal before it serves the request's
+  tenant, so a tenant changed around the application fails the request
+  (`request_tampered`) rather than raise; the failure commits as no
+  tenant. `approvers_of` asks as the request's tenant.
+
+`everywhere` asks as where no tenant is served: it relies on a backend
+that grants per tenant reading `current_tenant()`, as
+`MembershipBackend` does.

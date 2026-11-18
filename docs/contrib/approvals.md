@@ -430,11 +430,11 @@ approved:
 - **The request's seal**, and each decision's: an HMAC, under a key
   derived from `SECRET_KEY`, of the request's id, action, fingerprint,
   maker, policy, approvals needed, approvers (permission or group),
-  expiry, status, run token, and tenant, where it has one. It is made again with each change of the
-  request's state. Each decision's seal covers its request, person,
-  verdict, and fingerprint. A row changed or added in the database by
-  someone without the key is neither decided (`request_tampered`, 409)
-  nor run (it fails with that code).
+  expiry, status, run token, and tenant, where it has one. It is made
+  again with each change of the request's state. Each decision's seal
+  covers its request, person, verdict, and fingerprint. A row changed or
+  added in the database by someone without the key is neither decided
+  (`request_tampered`, 409) nor run (it fails with that code).
 - **The run token**: a one-time key made when the request was approved,
   sealed with it, carried by the message, and spent by the run. A message
   queued again after the run, or one without the token, runs nothing. So

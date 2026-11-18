@@ -428,8 +428,9 @@ the same `data`. The `address` is not sent.
   as no tenant reaches only the connections served as none. Another
   tenant's events never count against a connection's buffers.
   `per_tenant=False` on `stream`, `forward`, or `subscribe` hears every
-  tenant's events, and `rule` alone decides: for a route that serves
-  every tenant on purpose, such as a back office's.
+  tenant's events, and `rule` alone decides. The rule never sees an
+  event's tenant, so keep it to routes only staff reach, such as a back
+  office's: a member's rule there lets through every tenant's events.
 - **Scopes.** The user is read as `current_user` reads it. Credentials
   limited to scopes need a route that declares a rule that checks scopes,
   a `Public` one included
