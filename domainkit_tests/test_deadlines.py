@@ -500,6 +500,33 @@ async def test_a_commit_in_a_task_that_shares_the_deadline_lifts_it() -> None:
     assert not bound.expired()
 
 
+async def test_a_commit_in_doubt_is_noted_on_the_deadlines_around_it() -> None:
+    """In a task that shares the deadline, within a block of its own: noted.
+
+    The commit's error is that task's; the deadline it shares says so to
+    the task that answers, and so does each block around the commit's,
+    though cleared as they end. A deadline outside the work is not told.
+    """
+    elsewhere = deadlines.timeout(60.0)
+    async with elsewhere:
+        pass
+
+    async def commits() -> None:
+        async with deadlines.timeout(30.0) as inner:
+            deadlines.commit_in_doubt()
+        assert inner.deadline is not None
+        assert inner.deadline.in_doubt is True
+
+    async with deadlines.timeout(60.0, until_commit=True) as bound:
+        assert bound.deadline is not None
+        assert bound.deadline.in_doubt is False
+        await asyncio.gather(commits())
+    assert (bound.deadline.in_doubt, bound.deadline.remaining()) == (True, None)
+    assert elsewhere.deadline is not None
+    assert elsewhere.deadline.in_doubt is False
+    deadlines.commit_in_doubt()  # No deadline: nothing to note.
+
+
 async def test_a_commit_lifts_the_blocks_its_deadline_bounds_in_other_tasks() -> None:
     """A sibling's block, with a timer of its own, is lifted with the deadline.
 

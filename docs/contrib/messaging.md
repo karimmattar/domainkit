@@ -109,7 +109,11 @@ two ways:
   `delay=` (a `timedelta` before it runs), `dedupe_key=` (a second
   message with the same key is not queued), and `ordering_key=`.
 - **Outside one**: `await enqueue(task, **arguments)` queues it now, in
-  its own transaction, in the home outbox (`MESSAGING.DATABASE`).
+  its own transaction, in the home outbox (`MESSAGING.DATABASE`). A
+  commit the deadline cuts off, or whose connection is lost, may have
+  queued it: its error is in doubt, as a unit of work's, and the request
+  answers 503 without `Retry-After`
+  ([The request flow](../request-flow.md#8-commit)).
 
 ```python
 from domainkit.contrib.messaging import enqueue

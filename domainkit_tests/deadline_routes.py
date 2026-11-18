@@ -16,7 +16,7 @@ from sqlalchemy.exc import DBAPIError
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 from domainkit import clock, deadlines
-from domainkit.ddd import AggregateRoot, DomainEvent, EventBus
+from domainkit.ddd import AggregateRoot, DomainEvent, EventBus, UnitOfWork
 from domainkit.http.deadlines import RequestTimeout
 from domainkit.http.health import router as health_router
 from domainkit_tests.sample_routes import PaymentsUnitOfWork, payments
@@ -304,6 +304,36 @@ async def pay_unanswered(lost: bool = True) -> dict[str, bool]:
         await uow.session.execute(insert(payments))
         await uow.commit()
     return {"paid": True}  # pragma: no cover - the commit raised.
+
+
+class CommitsInMemoryForEver(UnitOfWork):
+    """Sends its commit, whose answer never comes; it holds no connection."""
+
+    async def _commit(self) -> None:
+        await forever()
+
+    async def _rollback(self) -> None:
+        """Nothing to undo."""
+
+
+@router.post("/commit-unanswered", status_code=201)
+async def commit_unanswered(in_task: bool = False) -> dict[str, bool]:
+    """Commit until the deadline cuts the commit off: in doubt.
+
+    ``in_task`` commits in a task group's task, which shares the request's
+    deadline without enforcing it.
+    """
+
+    async def commit() -> None:
+        async with CommitsInMemoryForEver() as uow:
+            await uow.commit()
+
+    if in_task:
+        async with asyncio.TaskGroup() as group:
+            group.create_task(commit())
+    else:
+        await commit()
+    return {"paid": True}  # pragma: no cover - the commit never returns.
 
 
 class InATask(BaseHTTPMiddleware):

@@ -128,6 +128,13 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   `after_commit` listener can raise once the `COMMIT` landed, are in
   doubt (audit A28-REL-04).
 
+- `domainkit.ddd.mark_in_doubt(exc)` and `failed_in_doubt(exc)`, and
+  `domainkit.db.refused_commit(exc)`, for a commit made outside a unit of
+  work, as `enqueue`'s is: `refused_commit` says whether the database
+  refused it; `mark_in_doubt` marks its error, and the work's deadlines,
+  when it may have been applied; `failed_in_doubt` says so of an error,
+  or of one raised from it (audit A28-REL-04).
+
 - `apps.E003`: `check` refuses an optional app's middleware in
   `MIDDLEWARE` without the app in `INSTALLED_DOMAINS`, and names the app;
   staging and production refuse to start with it (audit A28-DX-04).
@@ -141,7 +148,10 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 
 - `probes.W001`: `check` warns of a list of exempt paths that names some of
   `PROBE_PATHS`, not all: the probes it leaves out are exempt from it
-  since 2.9 (audit A28-ARCH-01).
+  since 2.9. The auth app warns so of `AUTH.AUTHENTICATION_EXEMPT_PATHS`,
+  and an app of a list of its own with
+  `domainkit.checks.probes_left_out(name, listed, probes)` (audit
+  A28-ARCH-01).
 
 - Three parts continue the tutorial's bank, each walked by
   `domainkit_tests/test_walkthroughs.py`: money that moves (a transfer
@@ -196,7 +206,9 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   name must be lowercase letters, digits, and underscores, of at most 42
   characters, with no schema of its own, or each refuses it with
   `ValueError`; `contrib.audit`'s `protect` and `unprotect`, which
-  revisions call, take any table as in 2.8
+  revisions call, take any table as in 2.8. A name that PostgreSQL 16
+  reserves is quoted: SQLAlchemy's list, and `collation`, `concurrently`,
+  `lateral`, `system_user`, and `tablesample`, which it lacks
   ([Append-only tables](docs/databases.md#append-only-tables), ADR 0188)
   (audit A28-ARCH-07).
 
@@ -279,9 +291,14 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   of the ordering (`>=` ascending, `<=` descending, a money field's
   currency), so a database reads an index from the position instead of
   from its first row. It selects the same rows. A middle page of 300,000
-  rows took 13 to 20 ms on PostgreSQL, and now 0.03 to 0.1 ms. Ascending
-  on a field that may be missing still reads from the start (ADR 0185)
-  (audit A28-PERF-01).
+  rows took 13 to 20 ms on PostgreSQL, and now 0.03 to 0.1 ms. On a field
+  that may be missing, a page whose position's group is followed by the
+  other group (past a value ascending, past a missing one descending)
+  reads the rest of its group, then the other one in a second statement
+  while the page is not full, each from its own start; `explain` shows
+  one plan per part. With an index in the ordering's directions, such a
+  page of 300,000 rows took 12 to 39 ms on PostgreSQL and 10 to 22 ms on
+  SQLite, and now 0.02 to 0.4 ms (ADR 0185) (audit A28-PERF-01).
 
 - The admin API's bound on grants on objects reads only the grants that
   count: none for a superuser, and for staff none of a permission they
@@ -590,8 +607,13 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 
 - A request whose commit is in doubt (the deadline passed, or the
   connection was lost, as its `COMMIT` was sent) answers 503 without
-  `Retry-After`, with a detail that says the change may have been made
-  (audit A28-REL-01, A28-REL-03).
+  `Retry-After`, with a detail that says the change may have been made.
+  A request cut off by its deadline while a task it started committed
+  (a task group's, the one a `BaseHTTPMiddleware` serves the route in)
+  answers so too (`Deadline.in_doubt`), and so does one whose `enqueue`
+  was cut off as it committed. Only that commit's error is in doubt, not
+  another equal to it ([The request flow](docs/request-flow.md#8-commit))
+  (audit A28-REL-01, A28-REL-03, A28-REL-04).
 
 - A database that cannot be reached, or cannot serve now (class `08`,
   `57P01` to `57P03`, `53300`, or a connection refused as the pool opens

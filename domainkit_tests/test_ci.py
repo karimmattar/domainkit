@@ -561,18 +561,20 @@ def test_mutmut_copies_every_file_the_tests_read() -> None:
 
 
 def test_a_hung_test_ends_the_suite_well_within_its_jobs_time() -> None:
-    """Two minutes a test, thirty a job, forty-five for integration's suite.
+    """Two minutes a test; thirty a job, forty-five for a suite under coverage.
 
-    Integration keeps its results on failure.
+    The suites of test and integration run under coverage, which follows the
+    processes the tests start. Integration keeps its results on failure.
     """
     config = tomllib.loads((ROOT / "pyproject.toml").read_text())
     options = config["tool"]["pytest"]["ini_options"]
     assert (options["timeout"], options["timeout_method"]) == (120, "thread")
     dev = config["dependency-groups"]["dev"]
     assert any(each.startswith("pytest-timeout ") for each in dev)
-    for name in ("test", "newest", "oldest"):
+    for name in ("newest", "oldest"):
         assert jobs()[name]["timeout-minutes"] == 30
-    assert jobs()["integration"]["timeout-minutes"] == 45
+    for name in ("test", "integration"):
+        assert jobs()[name]["timeout-minutes"] == 45
     steps = jobs()["integration"]["steps"]
     assert any(
         "--cov -rs --junitxml=junit.xml" in step.get("run", "") for step in steps

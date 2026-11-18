@@ -73,7 +73,14 @@ from domainkit.ddd.repository import (
     SoftDeletable,
 )
 from domainkit.ddd.stores import in_memory
-from domainkit.ddd.uow import DeferredTask, ReadOnlyError, Retry, UnitOfWork
+from domainkit.ddd.uow import (
+    DeferredTask,
+    ReadOnlyError,
+    Retry,
+    UnitOfWork,
+    failed_in_doubt,
+    mark_in_doubt,
+)
 from domainkit.ddd.usecases import UseCase, use_case
 
 __all__ = [
@@ -149,9 +156,11 @@ __all__ = [
     "UseCase",
     "ValueObject",
     "event_bus",
+    "failed_in_doubt",
     "fields_about",
     "fingerprint",
     "handles",
     "in_memory",
+    "mark_in_doubt",
     "use_case",
 ]

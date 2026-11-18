@@ -7,11 +7,14 @@ import math
 import re
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any, ClassVar
+from types import TracebackType
+from typing import Any, ClassVar, Final
 
 import pytest
 from prometheus_client import REGISTRY
 from sqlalchemy import text, update
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import AsyncTransaction
 
 from domainkit import deadlines
 from domainkit.broker import MemoryBroker
@@ -47,8 +50,9 @@ from domainkit.contrib.messaging.tables import (
     messages,
 )
 from domainkit.db import connections
-from domainkit.db.hooks import on_transaction_committed
+from domainkit.db.hooks import on_stage_transaction, on_transaction_committed
 from domainkit.ddd import EventBus, HandlerTimedOut
+from domainkit.ddd.uow import failed_in_doubt
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.ratelimit import Decision
 from domainkit.management import CommandError
@@ -525,6 +529,74 @@ async def test_an_after_commit_hook_of_enqueue_that_hangs_is_cut_off(
         {"domain": "messaging"},
     )
     assert [row["target"] for row in await rows()] == ["tests.low"]
+
+
+async def never_answers(
+    transaction: AsyncTransaction,
+    kind: type[BaseException] | None,
+    error: BaseException | None,
+    traceback: TracebackType | None,
+) -> None:
+    """End a transaction's block: its ``COMMIT`` never answers; else as before."""
+    if kind is not None:
+        await TRANSACTION_EXIT(transaction, kind, error, traceback)
+        return
+    try:
+        await asyncio.Event().wait()
+    except asyncio.CancelledError as cut:  # Rolled back: nothing was sent.
+        await TRANSACTION_EXIT(transaction, type(cut), cut, cut.__traceback__)
+        raise
+
+
+async def refused(
+    transaction: AsyncTransaction,
+    kind: type[BaseException] | None,
+    error: BaseException | None,
+    traceback: TracebackType | None,
+) -> None:
+    """End a transaction's block: the database refuses its ``COMMIT``."""
+    refusal = DBAPIError("COMMIT", {}, Exception("deferred constraint"))
+    await TRANSACTION_EXIT(transaction, type(refusal), refusal, None)
+    raise refusal
+
+
+TRANSACTION_EXIT: Final = AsyncTransaction.__aexit__
+"""How SQLAlchemy ends a transaction's block: it commits, or rolls back."""
+
+
+@pytest.mark.usefixtures("tables")
+async def test_enqueue_cut_off_as_it_commits_is_in_doubt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``enqueue`` commits on its own: a cut ``COMMIT`` may have queued the task.
+
+    Its error is marked as a unit of work's is, and so is the deadline of
+    the work: a request is not told to retry. A ``COMMIT`` the database
+    refused, and a failure before it, are not in doubt.
+    """
+    monkeypatch.setattr(AsyncTransaction, "__aexit__", never_answers)
+    bound = deadlines.timeout(0.1, until_commit=True)
+    with pytest.raises(TimeoutError) as cut:
+        async with bound:
+            await enqueue(low, label="queued")
+    assert bound.deadline is not None
+    assert (failed_in_doubt(cut.value), bound.deadline.in_doubt) == (True, True)
+
+    monkeypatch.setattr(AsyncTransaction, "__aexit__", refused)
+    with pytest.raises(DBAPIError) as refusal:
+        await enqueue(low, label="refused")
+    assert failed_in_doubt(refusal.value) is False
+
+    monkeypatch.setattr(AsyncTransaction, "__aexit__", TRANSACTION_EXIT)
+
+    async def fails(connection: object, database: str) -> None:
+        raise ConnectionError("before the commit")
+
+    on_stage_transaction(fails, domain="messaging")
+    with pytest.raises(ConnectionError) as before:
+        await enqueue(low, label="never")
+    assert failed_in_doubt(before.value) is False
+    assert await rows() == []
 
 
 @pytest.mark.usefixtures("tables")

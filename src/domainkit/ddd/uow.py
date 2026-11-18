@@ -66,7 +66,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from types import TracebackType
 from typing import Any, Final, Self
-from weakref import WeakSet
+from weakref import WeakValueDictionary
 
 from domainkit import clock, deadlines
 from domainkit.ddd.events import DomainEvent, EventBus, event_bus
@@ -87,8 +87,9 @@ logger = logging.getLogger(__name__)
 _random = secrets.SystemRandom()
 _IN_DOUBT: Final = "domainkit_commit_in_doubt"
 """The attribute that marks the error of a commit in doubt (``failed_in_doubt``)."""
-_MARKED: Final[WeakSet[BaseException]] = WeakSet()
-"""Errors of commits in doubt that take no attribute (a frozen dataclass's)."""
+_MARKED: Final[WeakValueDictionary[int, BaseException]] = WeakValueDictionary()
+"""Errors of commits in doubt that take no attribute (a frozen dataclass's),
+by their ``id``: an error equal to one of them is not it, and not marked."""
 _CAUSES: Final = 16
 """How far ``failed_in_doubt`` follows the errors an error was raised from."""
 
@@ -389,7 +390,7 @@ class UnitOfWork(ABC):
         except BaseException as exc:
             if not self._refused(exc):
                 self.in_doubt += 1
-                _mark_in_doubt(exc)  # What answers the request reads it.
+                mark_in_doubt(exc)  # What answers the request reads it.
             raise
         self.committed += 1
         if self._commits is not None:
@@ -627,26 +628,32 @@ def failed_in_doubt(exc: BaseException) -> bool:
     return False
 
 
-def _mark_in_doubt(exc: BaseException) -> None:
-    """Mark ``exc`` for ``failed_in_doubt``; never raise in its place.
+def mark_in_doubt(exc: BaseException) -> None:
+    """Mark ``exc`` as the error of a commit that may have been applied.
+
+    ``failed_in_doubt`` then says so of it, and of the errors raised from
+    it. The work's deadlines note it too (``Deadline.in_doubt``),
+    for the task that answers the request when another one committed (a
+    ``BaseHTTPMiddleware``'s, a task group's). ``UnitOfWork.commit`` marks
+    the errors it counts in ``in_doubt``; a commit made outside a unit of
+    work (``enqueue``'s) marks its own. It never raises in its place.
 
     By an attribute, or, for an error that takes none (a frozen
-    dataclass's), in ``_MARKED``. One that is neither hashable nor takes an
-    attribute stays unmarked: the commit still counts in ``in_doubt``.
+    dataclass's), in ``_MARKED``, by the error's identity, so an equal
+    error is not taken for it. One that takes neither an attribute nor a
+    weak reference (a frozen dataclass's with ``slots``) stays unmarked.
     """
     try:
         setattr(exc, _IN_DOUBT, True)
     except (AttributeError, TypeError):
         with suppress(TypeError):
-            _MARKED.add(exc)
+            _MARKED[id(exc)] = exc
+    deadlines.commit_in_doubt()
 
 
 def _marked(exc: BaseException) -> bool:
-    """Whether ``_MARKED`` holds ``exc``; False for an error that is not hashable."""
-    try:
-        return exc in _MARKED
-    except TypeError:
-        return False
+    """Whether ``_MARKED`` holds ``exc`` itself."""
+    return _MARKED.get(id(exc)) is exc
 
 
 def expectations_of(uow: UnitOfWork) -> tuple[Expectation, ...]:
