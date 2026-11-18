@@ -181,7 +181,10 @@ _FENCE = re.compile(r"^```.*?^```$", re.DOTALL | re.MULTILINE)
 
 
 def pages() -> list[Path]:
-    """Every page whose links are checked: docs/, the README, and its neighbours."""
+    """Every page whose links are checked: docs/, the README, and its neighbours.
+
+    The examples' walkthroughs too (ADR 0190): they link the docs' pages.
+    """
     return [
         ROOT / "README.md",
         ROOT / "SECURITY.md",
@@ -190,6 +193,8 @@ def pages() -> list[Path]:
         ROOT / ".github" / "PULL_REQUEST_TEMPLATE.md",
         # The ADR template's links are placeholders.
         *sorted(set(DOCS.rglob("*.md")) - {DOCS / "adr" / "template.md"}),
+        ROOT / "examples" / "README.md",
+        *sorted((ROOT / "examples").glob("*/README.md")),
     ]
 
 

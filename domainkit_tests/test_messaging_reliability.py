@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
-from sqlalchemy import event, select, update
+from sqlalchemy import event, func, select, update
 
 from domainkit import clock as clock_module
 from domainkit.clock import freeze_time
@@ -815,10 +815,13 @@ async def test_the_grace_is_measured_by_the_databases_clock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A worker whose host runs two hours ahead does not end an hour's grace."""
-    settings = config(RETRY_BASE_SECONDS=0.05, RETRY_MAX_SECONDS=10)
+    # A wait long enough that the row never comes due again inside a run,
+    # however slow the machine: run_once claims until nothing is due.
+    settings = config(RETRY_BASE_SECONDS=60, RETRY_MAX_SECONDS=600)
     await queue_for_new_code()
     assert await Worker(settings).run_once() == 1  # Found unknown, by the database.
-    await asyncio.sleep(0.2)  # Due again.
+    async with connections.engine().begin() as connection:  # Due again.
+        await connection.execute(update(messages).values(available_at=func.now()))
 
     real = clock_module.now
     monkeypatch.setattr(clock_module, "now", lambda: real() + timedelta(hours=2))
