@@ -368,6 +368,13 @@ PROBES = {
     "empty_yaml_value": f"password:\ntoken: {PASSWORD}",
     "next_line_indented": f"password:\n  {PASSWORD}\nregion: eu",
     "odbc": f"DRIVER={{ODBC Driver 18}};SERVER=db;UID=app;PWD={PASSWORD};",
+    "after_at": f"x@password={PASSWORD}",
+    "after_slashes": f"//token={PASSWORD}",
+    "after_at_colon": f"a@api_key: {PASSWORD}",
+    "quoted_then_dot": f"password='x {PASSWORD}'.",
+    "quoted_then_comma": f'password="a",{PASSWORD}',
+    "no_break_space": f"token=\xa0{PASSWORD}",
+    "no_break_space_colon": f"password:\xa0{PASSWORD}",
 }
 """Secrets in text, which the patterns find even in a field typed ``str``."""
 UNTYPED = {
@@ -426,9 +433,10 @@ def test_diffsettings_hides_the_value_of_a_secret_pair_and_keeps_the_rest(
 
     A name and its value, with ``=`` or ``:`` between, spaced or not, the
     name quoted or not; a header's scheme is hidden with its token. A value
-    is on the name's line, or the next one indented; a quoted one ends where
-    a delimiter follows the quote. What follows the value stays, and a URL's
-    host is no name, whatever its words (audit A28-DX-10).
+    is on the name's line, or the next one indented; a quoted one is read on
+    after ``=``, and after ``:`` ends where a delimiter follows the quote.
+    What follows the value stays, and a URL's host and port are no pair,
+    whatever the host's words (audit A28-DX-10).
     """
     make_package("typed_probe", TYPED)
     urls = [
@@ -444,6 +452,9 @@ def test_diffsettings_hides_the_value_of_a_secret_pair_and_keeps_the_rest(
         f"https://app:{PASSWORD}@keycloak.example.com:8443/ redis://cache-key:6379/0",
         f"/password={PASSWORD} ODBC: UID=app;PWD={PASSWORD};",
         "cwd=/srv pwdless=1",
+        f"x@password={PASSWORD} postgresql://app:{PASSWORD}@pgbouncer-auth:6432/db",
+        f'password="a",{PASSWORD} next=1',
+        f'{{"private_key": "{PASSWORD}", "url": "https://auth.example.com:8443"}}',
     ]
     with override_settings(
         INSTALLED_DOMAINS=["typed_probe"], ALPHA=UNSET, TYPED_PROBE={"URLS": urls}
@@ -463,6 +474,9 @@ def test_diffsettings_hides_the_value_of_a_secret_pair_and_keeps_the_rest(
         "https://app:**********@keycloak.example.com:8443/ redis://cache-key:6379/0",
         "/password=********** ODBC: UID=app;PWD=**********;",
         "cwd=/srv pwdless=1",
+        "x@password=********** postgresql://app:**********@pgbouncer-auth:6432/db",
+        "password=********** next=1",
+        '{"private_key": **********, "url": "https://auth.example.com:8443"}',
     ]
     (line,) = [line for line in lines if line.startswith("TYPED_PROBE")]
     assert line.startswith(f"TYPED_PROBE = {{'URLS': {shown!r}, 'MODE': ")

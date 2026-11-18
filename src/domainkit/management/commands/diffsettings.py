@@ -36,12 +36,13 @@ read in a time that grows with its length, as ``SECRET_PAIR`` reads it.
 """
 SECRET_PAIR: Final = re.compile(
     rf"""
-    (?<![\w.-])(?<!//)(?<!@)  # From the start of a name, not a URL's host:
-    (["']?+(?=[\w.-]*?(?:{SECRET_KEY.pattern}))[\w.-]++["']?+\s*+[:=]
-    [ \t]*+(?:\r?\n[ \t]++)?+)  # the name, quoted or not, and its value:
-    (  # on its line, or the next one indented,
-        "(?:[^"\\]|\\.)*+"(?![^\s&;#,)\]}}])  # quoted, up to a delimiter,
-        | '(?:[^'\\]|\\.)*+'(?![^\s&;#,)\]}}])
+    (?<![\w.-])  # From the start of a name, but a host and port after // or @:
+    (?!(?:(?<=//)|(?<=@))[\w.-]++:\d++(?![^/?#\s"',)\]}}>]))
+    (["']?+(?=[\w.-]*?(?:{SECRET_KEY.pattern}))[\w.-]++["']?+\s*+(?:(=)|:)
+    [^\S\r\n]*+(?:\r?\n[^\S\r\n]++)?+)  # the name, quoted or not; its value
+    (  # on its line, or the next one indented: quoted, and read on after =,
+        (?:"(?:[^"\\]|\\.)*+"|'(?:[^'\\]|\\.)*+')  # and after : unless a
+        (?(2)[^\s&;#]*+|(?:(?![^\s&;#,)\]}}])|[^\s&;#]*+))  # delimiter follows;
         | (?:[a-z][\w-]*+[ \t]++(?=[\w.~+/-]++=*+(?![\w.~+/=-])(?!\s*+[:=])))?+
         [^\s&;#]*+  # or up to a space, &, ;, or #, a scheme first (Bearer x).
     )
@@ -52,9 +53,11 @@ SECRET_PAIR: Final = re.compile(
 
 As in a URL's query, a libpq connection string (``password = x``), JSON
 (``"private_key": "..."``), or a header (``Authorization: Bearer x``).
-A value starts on the name's line, or on the next one indented. A quoted
-value is one only where a delimiter follows its closing quote: ``"a"x`` is
-read whole, unquoted. A host after ``//`` or ``@`` is no name, so
+A value starts on the name's line, or on the next one indented. After
+``=``, a quoted value is read on past its closing quote, to a space, ``&``,
+``;``, or ``#``, so ``password="a",x`` is hidden whole; after ``:``, as in
+JSON, it ends at its closing quote where a delimiter follows. A host that a
+port follows, after ``//`` or ``@``, is no name, so
 ``https://auth.example.com:8443`` keeps its port. Each name and each value
 is matched from its start once, never again from within it, so a long text
 is read in a time that grows with its length.
