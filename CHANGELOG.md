@@ -118,10 +118,11 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   live connections still count them (audit A28-SEC-03).
 
 - The SAML ACS bounds a response before it checks its signature: 50,000
-  nodes, counted on its bytes, no DTD or entity, 32 namespaces in scope
-  and 32 attributes on an element, and 32 elements and 16 KiB in a
-  `SignedInfo`; it reads the XML as UTF-8. It parses each response in a thread of its own, which ends with
-  it, never on the event loop's thread, and at most 4 at once on a loop;
+  nodes, counted on its bytes, no DTD or entity, 64 levels, 32 namespace
+  declarations on the path to an element and 32 attributes on it, and 32
+  elements and 16 KiB in a `SignedInfo`; it reads the XML as UTF-8. It
+  parses each response in a thread of its own, which ends with it, never
+  on the event loop's thread, and at most 4 at once on a loop;
   a response that waits more than 5 seconds for one is refused. The
   names lxml keeps for a thread go with it, and the loop serves other
   requests meanwhile. What lxml or signxml raise of a response refuses
