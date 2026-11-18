@@ -240,7 +240,7 @@ unique, and acts on a delivery the first time only.
 ## Tests without a network
 
 Nothing leaves the machine. The bank is a function that every call of
-`domainkit.http.client` reaches instead (`stub`). The receiver is served
+`domainkit.outbound.client` reaches instead (`stub`). The receiver is served
 on a port of the test process (`LiveServer`), where the worker, run in
 the test by `drain`, delivers over HTTP. In `tests/conftest.py`:
 

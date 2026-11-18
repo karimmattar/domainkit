@@ -2,8 +2,8 @@
 
 `domainkit.http` and its modules: the application, access rules,
 middleware, responses, routing, live connections, uploads, and the 2.8
-path of the outgoing client ([outgoing calls](outbound.md)). Part of the [public API](../api.md), under its compatibility
-policy.
+path of the outgoing client ([outgoing calls](outbound.md)). Part of the
+[public API](../api.md), under its compatibility policy.
 
 ## `domainkit.http`
 

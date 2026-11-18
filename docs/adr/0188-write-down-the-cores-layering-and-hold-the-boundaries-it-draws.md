@@ -280,5 +280,6 @@ Options weighed:
   `domainkit.architecture` imports. 4 edges are left.
 - `ALLOWED_CORE` loses `DEPLOYED_ENVIRONMENTS` (from `domainkit.conf`),
   `CURSOR_PATTERN` (from `domainkit.http`), `client_group` (from
-  `domainkit.context`), and the guard's eight names, which
-  `domainkit.outbound.guard` publishes.
+  `domainkit.context`), and its eight entries for the guard's names:
+  `domainkit.outbound.guard` publishes ten names (ADR 0195), and webhooks
+  no longer imports the bare lookup.

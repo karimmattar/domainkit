@@ -82,14 +82,18 @@ process that calls no service needs no `httpclient` extra.
 - **The guard's public names**, decided anew in the new package: its
   `__all__` lists what an app that takes URLs from its users needs, as
   webhooks does: `checked_url`, `checked_host`, `checked_address`,
-  `lookup`, `lookups_for`, `tls_context`, `UnsafeURL`, `MAX_URL_LENGTH`,
-  and the `Address` and `Network` types. This reverses 1.0's choice,
+  `lookups_for`, `tls_context`, `UnsafeURL`, `MAX_URL_LENGTH`, and the
+  `Address`, `Network`, and `Resolver` types (`checked_host` takes a
+  `Resolver`). The bare lookup is not among them: its addresses are
+  unchecked, which in a guard against forged requests is a trap, and
+  `checked_host` resolves with it by default. This reverses 1.0's choice,
   which took the guard's names out of the API because no page used them.
   Now an app uses them: webhooks checks a subscription's URL when it is
   saved and resolves it as it is called, and a project's own outbound
   calls to URLs its users chose need the same checks without writing
   them again. The resolver, its bounds, and the address tables stay
-  internal, and `domainkit.http.guard` stays internal as it was.
+  internal, and `domainkit.http.guard` stays internal as it was. Webhooks
+  no longer passes the lookup as `resolve=`, which was the default.
 - **The logger keeps its name**, `domainkit.http.client`: logging
   settings and alerts name it, and a new name would end them without a
   word.
@@ -106,10 +110,15 @@ warning, before 3.0 removes them. `domainkit.http.client` keeps its
 `__all__` and its section of the API pages; `domainkit.http.guard` stays
 without one, internal as it was.
 
-A name set on an old path (a test's `monkeypatch.setattr`) is not one the
-code reads: patch `domainkit.outbound.client` or
-`domainkit.outbound.guard`. What prints a class by its module prints the
-new one.
+Each old module is a view of its new one (a `ModuleType` subclass set as
+its class, in a private module of `domainkit.http`): it keeps no name of
+its own, and a name set or deleted on it, by a 2.8 test's
+`monkeypatch.setattr` or `mock.patch`, is set or deleted on the new
+module, where the client, the guard, and the adapters read it. A 2.8 test
+that faked the adapters by replacing `domainkit.http.client.HttpClient`
+still fakes them, and undoing the patch leaves no copy on either module.
+New code patches the new path. What prints a class by its module prints
+the new one.
 
 Every import the framework makes is of the new package, its tests'
 included, but for the tests of the old paths themselves. The plugin
@@ -120,7 +129,13 @@ the adapters do now, gets both.
 ### The layer rules
 
 A project's infrastructure layer imports `domainkit.outbound` with no
-exception: no rule names it. The application layer may not
+exception: no rule names it. A project's own rule
+(`ARCHITECTURE.FORBIDDEN_LIBRARIES`) that names `domainkit.http.client`
+or `domainkit.http.guard`, or a name under one, names the same under
+`domainkit.outbound` too; one that names `domainkit.http` names both new
+modules, unless, in that layer, the exception for `domainkit.http.client`
+lifted it from the client in 2.8, as it does in the infrastructure
+layer. The rule keeps covering the code it covered. The application layer may not
 (`FORBIDDEN_LIBRARIES["application"]` adds `domainkit.outbound`): it could
 not call out through `domainkit.http.client`, and it cannot by the new
 path either. The domain layer's allowlist leaves it out. The exception for
@@ -156,7 +171,15 @@ piece is in `RESETS`, with the public name that resets or restores it, or
 in `UNRESET`, the 54 pieces of 2.9 without one, grouped by why: kept for
 a live object and gone with it, worked out once from what does not
 change, the process's counts and locks, and registrations no test undoes
-yet. `UNRESET` only shrinks.
+yet. `UNRESET` only shrinks. Module-level functions behind
+`functools.cache` or `lru_cache` are listed apart (`CACHED`, 66 in 2.9,
+by what they keep), and that list only shrinks too.
+
+Reading the source sees only what the source shows. Not found: a class
+attribute changed later, a `ContextVar` whose default is a container, a
+container changed through another name (an alias, `globals()[...]`,
+`operator.setitem`, `__setitem__`), one made by a call the scan does not
+name (`dict.fromkeys`), and a cache made inside a function or a class.
 
 Two resets are new, both public:
 
@@ -173,8 +196,13 @@ Options weighed:
 - **Make the old path the new module** (`sys.modules[__name__] =`). A
   patch at either path would reach the code. But type checkers and the
   API pages read the file, not what replaced it, and the old module's
-  `__name__` would name the new one. Two modules, and the note on where
-  to patch, are plainer.
+  `__name__` would name the new one.
+- **Re-export modules that keep their own copies**, with a note on where
+  to patch. A 2.8 test that replaced `domainkit.http.client.HttpClient`
+  to fake an adapter would build a real client and call the service, and
+  a patch undone would leave a copy that hides the client's later value.
+  2.9 must not break 2.8's tests, so the old modules forward sets and
+  deletes instead.
 - **Move only the client.** It imports the guard at its top, so the
   adapters would reach the serving package through it.
 - **Layer 1 for the package.** Its imports allow it, but settings, logs,

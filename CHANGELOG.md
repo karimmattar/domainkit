@@ -235,10 +235,10 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   (`domainkit.outbound.client`) and its guard (`domainkit.outbound.guard`),
   in a package of their own below the adapters that call through them.
   The guard's checks are public, for an app that takes URLs from its
-  users: `checked_url`, `checked_host`, `checked_address`, `lookup`,
-  `lookups_for`, `tls_context`, `UnsafeURL`, `MAX_URL_LENGTH`, `Address`,
-  and `Network` ([Outgoing calls](docs/api/outbound.md), ADR 0195) (audit
-  A28-ARCH-04, A28-ARCH-06).
+  users: `checked_url`, `checked_host`, `checked_address`, `lookups_for`,
+  `tls_context`, `UnsafeURL`, `MAX_URL_LENGTH`, and the `Address`,
+  `Network`, and `Resolver` types ([Outgoing calls](docs/api/outbound.md),
+  ADR 0195) (audit A28-ARCH-04, A28-ARCH-06).
 
 - Public names the contrib apps used before they were published:
   `domainkit.conf.DEPLOYED_ENVIRONMENTS`, `domainkit.http.CURSOR_PATTERN`,
@@ -457,16 +457,19 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   arguments (PLR0913, over 10), and statements (PLR0915, over 50) (audit
   A28-ARCH-04, A28-ARCH-05, A28-ARCH-06, A28-ARCH-E1, A28-ARCH-E3).
 
-- `domainkit.http.client` and `domainkit.http.guard` import every name of
-  `domainkit.outbound.client` and `domainkit.outbound.guard`, the same
-  objects, with one set of clients, circuits, metrics, and lookup
-  threads; the framework imports the new paths. A test that patches a
-  name of the client patches it at the new path; the calls still log as
-  `domainkit.http.client`. Shutdown closes the guard's lookup threads as
-  one of the framework's kinds, `guard lookups`. The layer rules keep
-  `domainkit.outbound` out of the application layer, and let the
-  infrastructure layer import it with no exception
-  ([upgrading.md](docs/upgrading.md#28-to-29), ADR 0195) (audit
+- `domainkit.http.client` and `domainkit.http.guard` are views of
+  `domainkit.outbound.client` and `domainkit.outbound.guard`: every name
+  reads from the new module, the same object, with one set of clients,
+  circuits, metrics, and lookup threads, and a name a test sets or
+  deletes on an old path (`monkeypatch.setattr`, `mock.patch`) is set or
+  deleted where the code reads it. The framework imports the new paths;
+  the calls still log as `domainkit.http.client`. Shutdown closes the
+  guard's lookup threads as one of the framework's kinds, `guard
+  lookups`. The layer rules keep `domainkit.outbound` out of the
+  application layer, let the infrastructure layer import it with no
+  exception, and read a project's rule that names `domainkit.http`,
+  `domainkit.http.client`, or `domainkit.http.guard` as naming the new
+  path too ([upgrading.md](docs/upgrading.md#28-to-29), ADR 0195) (audit
   A28-ARCH-04).
 
 - Loading the settings no longer imports the layer checker,
@@ -479,7 +482,8 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   from 21, and the apps use 90 unpublished core names, from 101.
   `domainkit_tests/test_module_state.py` fails on module state a test can
   leave behind that has no public reset, beside a list of 2.9's that may
-  only shrink (ADR 0195) (audit A28-ARCH-04, A28-ARCH-06, A28-ARCH-14).
+  only shrink, and on a new module-level function behind a cache, beside
+  another (ADR 0195) (audit A28-ARCH-04, A28-ARCH-06, A28-ARCH-14).
 
 ### Deprecated
 
