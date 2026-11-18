@@ -16,8 +16,8 @@ and a status.
   matches; a repository of one's own counts all and stops
   (`_count_at_most`), as does a subclass that overrides `_count`. An
   export now counts at most `max_export + 1`: refusing one of 1,000,000
-  rows took 35 to 57 ms, and now 1 to 7 ms. A repository whose `count`
-  keeps 2.8's signature is asked as before (ADR 0185)
+  rows took 35 to 57 ms, and now 1 to 7 ms. A repository that overrides
+  `count` is asked as before, and counts every match (ADR 0185)
   (audit A28-PERF-08).
 - `BaseBackend.object_grants_beyond(holder, permissions)`, and
   `object_grants(holder, beyond=...)`: a holder's grants on objects, less

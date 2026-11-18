@@ -80,26 +80,21 @@ CREATE INDEX CONCURRENTLY ix_domainkit_users_email_id ON domainkit_users (email,
 A concurrent build that fails leaves an invalid index of that name, which
 `migrate` takes as made: drop it, and build it again.
 
-### A repository that overrides `count` may take `at_most`
+### A repository that overrides `count` counts every match in an export
 
 An export now asks its repository's `count` for at most `max_export + 1`
 matches: `count(criteria, include_deleted=..., at_most=...)`. A
-repository of the project's that overrides `count` with 2.8's signature
-keeps working: the export sees that it takes no `at_most`, asks it as
-2.8 did, and it counts every match. To count less, take the new
-argument and hand it on:
+repository of the project's that overrides `count` keeps working: the
+export asks it as 2.8 did, without `at_most`, and it counts every match.
+The export does not read the override's signature, since a decorator's
+need not tell the truth.
 
-```python
-async def count(self, criteria=None, *, include_deleted=False, at_most=None):
-    return await super().count(
-        criteria, include_deleted=include_deleted, at_most=at_most
-    )
-```
-
-A call of the project's own that passes `at_most` to such an override
-fails with a `TypeError` until it does. A repository that overrides
-`_count` instead needs nothing: a count that stops is asked of it, and
-its answer stops at `at_most`.
+To count less, leave `count` alone and override the hooks under it.
+`_count(criteria)` counts every match. `_count_at_most(criteria, limit)`
+counts no more than `limit`, and by default answers the smaller of
+`_count` and `limit`. A repository that overrides only `_count` needs
+nothing more: a count that stops is asked of it, and its answer stops
+at `at_most`.
 
 ### Keyset pages, admin changes, and exports read less
 

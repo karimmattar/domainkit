@@ -7,7 +7,7 @@ from uuid import UUID
 
 import pytest
 
-from domainkit.ddd.query import F
+from domainkit.ddd.query import Criteria, F
 from domainkit.resources import FieldPolicy
 from domainkit.resources.renderers import (
     CSV,
@@ -151,14 +151,14 @@ def test_an_export_counts_no_further_than_one_past_its_bound(
 ) -> None:
     """The count stops at ``max_export + 1``: enough to refuse (A28-PERF-08)."""
     use_auth()
-    asked: list[object] = []
-    counted = store.count
+    asked: list[int] = []
+    counted = store._count_at_most
 
-    async def recording(*args: object, **options: object) -> int:
-        asked.append(options.get("at_most"))
-        return await counted(*args, **options)  # type: ignore[arg-type]
+    async def recording(criteria: Criteria | None, limit: int) -> int:
+        asked.append(limit)
+        return await counted(criteria, limit)
 
-    monkeypatch.setattr(store, "count", recording)
+    monkeypatch.setattr(store, "_count_at_most", recording)
     small = client_of(gadgets(store, exports=("csv",), max_export=2))
     roomy = client_of(gadgets(store, exports=("csv",), max_export=3))
 
@@ -181,6 +181,29 @@ def test_an_export_counts_all_where_count_keeps_its_2_8_signature(
         return await counted(criteria, include_deleted=include_deleted)  # type: ignore[arg-type]
 
     monkeypatch.setattr(store, "count", count)
+    small = client_of(gadgets(store, exports=("csv",), max_export=2))
+    roomy = client_of(gadgets(store, exports=("csv",), max_export=3))
+
+    too_many = small.get("/gadgets", headers=as_("viewer", Accept=CSV))
+    fits = roomy.get("/gadgets", headers=as_("viewer", Accept=CSV))
+
+    assert (too_many.status_code, fits.status_code) == (422, 200)
+
+
+def test_an_export_asks_a_decorated_count_as_2_8_did(
+    store: InMemoryGadgets, use_auth: UseAuth, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A wrapper's signature is not read: ``*args, **kwargs`` may hide 2.8's."""
+    use_auth()
+    counted = store.count
+
+    async def count(criteria: object = None, *, include_deleted: bool = False) -> int:
+        return await counted(criteria, include_deleted=include_deleted)  # type: ignore[arg-type]
+
+    async def logged(*args: object, **options: object) -> int:  # No functools.wraps.
+        return await count(*args, **options)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(store, "count", logged)
     small = client_of(gadgets(store, exports=("csv",), max_export=2))
     roomy = client_of(gadgets(store, exports=("csv",), max_export=3))
 

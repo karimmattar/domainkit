@@ -128,8 +128,11 @@ Options weighed:
   one's own counts all and stops (`_count_at_most`, whose default takes
   the smaller of `_count` and `n`), and so does a `SqlAlchemyRepository`
   whose subclass overrides `_count`. An export counts at most
-  `max_export + 1`; a repository whose `count` keeps 2.8's signature is
-  asked as before, and counts every match.
+  `max_export + 1` when the repository keeps the framework's `count`; a
+  repository that overrides `count` is asked as before, and counts every
+  match. The export does not read an override's signature: a decorator
+  without `functools.wraps` shows `*args, **kwargs`, and one with it can
+  show the wrapped function's.
 - Flags' `GET /settings` reads the stored values with one `get_many`
   (A28-PERF-07), not one `find` per declared setting.
 

@@ -7,7 +7,6 @@ answers ``text/csv`` or ``application/x-ndjson`` by ``Accept``: every match,
 up to ``max_export``, streamed in chunks.
 """
 
-import inspect
 from collections.abc import AsyncIterator, Callable, Sequence
 from typing import TYPE_CHECKING, Final
 
@@ -15,6 +14,7 @@ from fastapi import Response
 from fastapi.responses import StreamingResponse
 
 from domainkit.ddd.query import Selection, as_query
+from domainkit.ddd.repository import Repository
 from domainkit.http.filters import FilterSet
 from domainkit.http.responses import BuiltJSONResponse
 
@@ -156,12 +156,10 @@ class ListRoute:
 
 
 def _stops(count: Callable[..., object]) -> bool:
-    """Whether a repository's ``count`` takes ``at_most`` (since 2.9).
+    """Whether ``count`` is the framework's own, which takes ``at_most`` (2.9).
 
-    A project's repository may override ``count`` with 2.8's signature: it
-    is still asked, and counts every match, as before.
+    A project's repository may override ``count``, with 2.8's signature or
+    behind a decorator: it is asked as before, and counts every match. Its
+    signature is not read, since a wrapper's need not tell the truth.
     """
-    parameters = inspect.signature(count).parameters.values()
-    return any(
-        each.name == "at_most" or each.kind is each.VAR_KEYWORD for each in parameters
-    )
+    return getattr(count, "__func__", None) is Repository.count
