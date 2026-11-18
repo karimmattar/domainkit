@@ -773,23 +773,36 @@ async def fail_abandoned() -> int:
     outcome: its worker was killed, its last attempt ran out of time, or
     the outcome could not be written.
     """
-    tasks = unfinished_arguments(DELIVER, "delivery_id").subquery()
-    # Text with dashes in a task's arguments; 32 hex digits on SQLite. Not
-    # correlated: the waiting tasks' ids are read once, not per delivery.
-    # NOT IN finds nothing once the list holds a NULL: none goes in it.
-    waiting = select(func.replace(tasks.c.argument, "-", "")).where(
-        tasks.c.argument.is_not(None)
-    )
     async with connections.engine(webhooks_alias()).begin() as connection:
         failed = await connection.execute(
             update(deliveries)
             .where(
                 deliveries.c.status == PENDING,
-                func.replace(cast(deliveries.c.id, Text), "-", "").not_in(waiting),
+                _without_task(connection.dialect.name),
             )
             .values(status=FAILED, last_error=ABANDONED, finished_at=_now())
         )
     return int(failed.rowcount)
+
+
+def _without_task(dialect: str) -> ColumnElement[bool]:
+    """Whether a delivery has no task waiting to run, as ``dialect`` runs it best.
+
+    PostgreSQL hash anti-joins a correlated ``NOT EXISTS`` at any size; a
+    ``NOT IN`` over a subquery it hashes only while the subquery fits in
+    ``work_mem``, and past that it compares each pair. SQLite runs a
+    ``NOT EXISTS`` once per delivery, and reads a ``NOT IN``'s subquery
+    once. Both forms say the same.
+    """
+    tasks = unfinished_arguments(DELIVER, "delivery_id").subquery()
+    # Text with dashes in a task's arguments; 32 hex digits on SQLite.
+    task_key = func.replace(tasks.c.argument, "-", "")
+    key = func.replace(cast(deliveries.c.id, Text), "-", "")
+    if dialect == "postgresql":
+        waiting = select(tasks.c.argument).where(task_key == key).correlate(deliveries)
+        return ~waiting.exists()
+    # NOT IN finds nothing once the list holds a NULL: none goes in it.
+    return key.not_in(select(task_key).where(tasks.c.argument.is_not(None)))
 
 
 async def fail_abandoned_deliveries() -> None:

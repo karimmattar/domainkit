@@ -558,6 +558,14 @@ async def test_an_hourly_task_fails_deliveries_whose_task_ended(
     await drain()
     assert {row.id: row.status for row in await rows(messages)}[killed] == "dead"
     assert len(hooks.requests) == 0
+    abandoned_ids = {by_key[key] for key in ("killed", "cancelled", "dropped")}
+    async with connections.engine().connect() as connection:
+        for dialect in ("postgresql", "sqlite"):  # Each form, on either database.
+            chosen = select(deliveries.c.id).where(
+                deliveries.c.status == PENDING,
+                delivery_module._without_task(dialect),
+            )
+            assert set((await connection.execute(chosen)).scalars()) == abandoned_ids
     spec = tasks.get_task(delivery_module.FAIL_ABANDONED)
     assert spec is not None
     assert spec.every == timedelta(hours=1)

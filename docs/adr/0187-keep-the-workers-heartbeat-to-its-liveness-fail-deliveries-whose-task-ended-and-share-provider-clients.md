@@ -131,11 +131,13 @@ For the clients:
    how many. A delivery and its task are written in one transaction, and
    so are a replay and its task, so a pending delivery without one has
    no attempt to come. The task matches a task to its delivery by the id
-   in its arguments, in one statement on PostgreSQL and SQLite: an
-   uncorrelated `NOT IN` over the waiting tasks' ids, NULLs left out,
-   read through `messaging.admin.unfinished_arguments`, so webhooks
-   reads the outbox through messaging's public names. A task that finds
-   its delivery no longer pending logs that it sent nothing.
+   in its arguments, in one statement, in the form each database runs
+   best: a correlated `NOT EXISTS` on PostgreSQL, which it hash
+   anti-joins at any size, and on SQLite an uncorrelated `NOT IN` over
+   the waiting tasks' ids, NULLs left out. Both read the outbox through
+   `messaging.admin.unfinished_arguments`, messaging's public names. A
+   task that finds its delivery no longer pending logs that it sent
+   nothing.
 5. **An outcome stays.** An attempt's outcome is written only to a
    delivery still `pending`. A late duplicate run counts and logs its
    attempt, and leaves `succeeded` or `failed` as it was.
@@ -171,9 +173,13 @@ For the clients:
   nothing, since the task finds the delivery finished, and it says so.
   Deliveries stuck `pending` by an earlier release are marked failed by
   the new task's first run after the upgrade.
-- The sweep reads every pending delivery and every waiting `deliver`
-  task once an hour, each once. On SQLite, 6,000 pending deliveries took
-  0.07 s, against 11 s for a correlated `NOT EXISTS`.
+- The sweep compares every pending delivery with every waiting
+  `deliver` task once an hour. On PostgreSQL, 200,000 of each took
+  0.38 s as a `NOT EXISTS` (a hash anti-join); a `NOT IN` was still
+  running at a 60-second statement timeout, since PostgreSQL hashes its
+  subquery only while it fits in `work_mem` times `hash_mem_multiplier`.
+  On SQLite, 6,000 took 0.07 s as a `NOT IN`, against 11 s as a
+  `NOT EXISTS`, which it runs once per delivery.
 - A provider that is down now fails fast after `BREAKER_FAILURES`
   failures, with `CircuitOpen` in the error's text (`Twilio could not be
   reached (CircuitOpen).`), for `BREAKER_COOLDOWN` seconds. Text
