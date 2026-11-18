@@ -240,8 +240,9 @@ class SqlAlchemyRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
         runs the query and adds what it cost), ``EXPLAIN QUERY PLAN`` on
         SQLite. The values stay bound parameters. Nothing is loaded or
         tracked; a locking query is planned without its lock. A page that
-        ``filter`` reads in two statements (``following_parts``) gets the
-        plan of each, in turn.
+        ``filter`` reads in two parts (``following_parts``) gets the plan
+        of each, in turn: the second's too, which ``filter`` reads only
+        while the first leaves the page short.
 
         Raises:
             ValueError: ``analyze`` on a database that cannot.

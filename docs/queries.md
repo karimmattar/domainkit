@@ -409,13 +409,20 @@ With an index whose first column is that field, a page deep in a list
 reads the index from the position, not from its first row.
 
 On a field that may be missing, rows without a value sort last
-ascending, and first descending. Where they follow the position's group
-(past a value ascending, past a missing one descending), no one range
-holds what follows: a page reads the rest of its group, then, only if
-it is not full, the other group, in a second statement. Each starts the
-index at its own first row. On PostgreSQL, a descending list needs its
-index descending too, `(field DESC, id)`: on `(field, id)` it reads the
-missing values past the position, as a tie group's. Two cases read more:
+ascending, and first descending. Where the other group follows the
+position's group (past a value ascending, past a missing one
+descending), no one range holds what follows: a page reads the rest of
+its group, then, only if it is not full, the other group, in a second
+statement. Each starts the index at its own first row. Such a page costs
+one more statement for the page, plus one more for each child
+relationship it loads. The second part leaves out the rows the first
+read. Between the two parts, as between pages, a row that changes its
+ordering field can be missed; `FOR UPDATE` ([row locks](#row-locks))
+holds the rows read. With `nowait`, if the second part cannot take its
+locks, the rows the first part locked stay locked until the unit of
+work ends. On PostgreSQL, a descending list needs its index descending
+too, `(field DESC, id)`: on `(field, id)` it reads the missing values
+past the position, as a tie group's. Two cases read more:
 
 - **Ties on the first field.** A page reads the rows of its tie group that
   come before the position, as the bound covers only the first field.

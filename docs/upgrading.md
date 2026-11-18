@@ -393,8 +393,9 @@ Nothing to change; plans and costs change.
   may be missing, a page whose position's group is followed by the other
   group (past a value ascending, past a missing one descending) reads
   the rest of its group, then the other group in a second statement if
-  it is not full yet: a test that counts that page's statements
-  (`assert_num_queries`) counts one more ([Pages](queries.md#pages)).
+  it is not full yet. A test that counts that page's statements
+  (`assert_num_queries`) counts one more statement for the page, plus
+  one more for each child relationship it loads ([Pages](queries.md#pages)).
 - **The admin API reads only the grants on objects that count.** A
   backend that reads its grants from a table can answer
   `object_grants_beyond(holder, permissions)` to leave out, in its query,
