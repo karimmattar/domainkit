@@ -58,7 +58,7 @@ By the end, your project has:
 
 ## Before you start
 
-You need Python 3.13 or 3.14, and `curl`. You do not need a database
+You need Python 3.13, 3.14, or 3.15, and `curl`. You do not need a database
 server: the tutorial keeps its data in a SQLite file.
 
 The commands are written for a POSIX shell, such as bash or zsh on Linux

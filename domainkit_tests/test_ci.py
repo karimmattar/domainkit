@@ -1290,12 +1290,17 @@ def test_as_pushed_leaves_out_a_newer_tag_pushed_before_the_release(
     )
     assert scripted(tmp_path, "release_check.py", "v1.0.0", "--as-pushed") == (0, "")
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    unreleased = changelog.split("\n## [Unreleased]\n", 1)[1].split("\n## [", 1)[0]
+    # The entry that added docs.yml, under [Unreleased] or the release since.
+    [entry] = [
+        each
+        for each in re.split(r"^- ", changelog, flags=re.MULTILINE)
+        if each.startswith("`.github/workflows/docs.yml` publishes")
+    ]
     told = {
         "docs.yml": flat(WORKFLOWS / "docs.yml"),
         "ADR 0189": flat(ADR_0189),
         "versioning.md": flat(ROOT / "docs" / "versioning.md"),
-        "CHANGELOG.md": " ".join(unreleased.split()),
+        "CHANGELOG.md": " ".join(entry.split()),
         "release_check.py": flat(RELEASE_CHECK),
     }
     assert [name for name, text in told.items() if "when it was pushed" in text] == []

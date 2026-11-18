@@ -1,6 +1,6 @@
 # 0190. Keep runnable examples as projects that domainkit's tests run
 
-- Status: Accepted
+- Status: Accepted; amended 2026-11-18 (at the end)
 - Date: 2026-11-18
 
 ## Context
@@ -134,6 +134,16 @@ The questions, and the options weighed for each:
   steps, not its pins. Refresh them with the templates' when they move.
 - A new example needs its line in `PASSED` (its settings' prefix and
   how many tests pass) and in the index.
+
+## Amendment (2026-11-18): an example's floor is the release it needs
+
+2.9.0 moves the outgoing client to `domainkit.outbound` (ADR 0195), and
+`outbox-webhooks` imports it from there, so 2.8 cannot run it: its range
+is `>=2.9.0,<3`. `payments-ledger` and `maker-checker` keep
+`>=2.8.0,<3`, as their workflows' steps pass on 2.8.2 too. An example's
+floor is the oldest release it runs on: the release that gives it a name
+it imports raises it by hand, and `test_examples.py` still checks that
+each range holds this version.
 
 [1]: https://github.com/fastapi/fastapi/tree/master/tests/test_tutorial
 [2]: https://docs.sqlalchemy.org/en/20/orm/examples.html

@@ -10,6 +10,31 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 
 ## [Unreleased]
 
+## [2.9.0] - 2026-11-18
+
+2.9 follows up the audit of 2.8: with 2.8.1 and 2.8.2, it fixes 58 of
+the audit's 63 findings, and part of four of the other five
+([docs/audit/2.8.0.md](docs/audit/2.8.0.md)). A request that committed
+is answered as committed, a commit in doubt says so, and a database out
+of reach answers 503; the probes are named once, in `PROBE_PATHS`, a new
+setting (ADR 0186). The worker's heartbeat is its liveness and
+`--ready-file` its readiness, a webhook delivery whose task ended is
+marked failed, and providers share their clients and circuits (ADR
+0187). Keyset pages start at their position, the user lookups are
+indexed, and grants and exports read less (ADR 0185). The core's layers
+are written down and held, append-only tables are protected one way, and
+`check` warns of a web name a gateway imports, which 3.0 refuses (ADR
+0188); the outgoing client moves to `domainkit.outbound` (ADR 0195);
+rules asked outside a request get a call of their own, and backend
+settings load one way (ADR 0196). The documentation site is
+published (ADR 0189), three runnable examples are tested as their CI
+runs them (ADR 0190), the tutorial gains three parts, and the contrib
+routers that serve a project's records name their routes after their
+app (ADR 0192). With `domainkit.contrib.approvals`
+installed, one migration, an index; on PostgreSQL, `migrate` makes the
+user table's lookup indexes: read
+[upgrading.md](docs/upgrading.md#28-to-29) before you deploy.
+
 ### Added
 
 - `--version` prints domainkit's version (`python manage.py --version`,
@@ -748,7 +773,7 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   application, failed by its run (`request_tampered`) or by `privacy
   erase` (`maker_not_allowed`), still fails its seal
   ([Approvals](docs/contrib/approvals.md),
-  [upgrading.md](docs/upgrading.md#28-to-29)). Found in review.
+  [upgrading.md](docs/upgrading.md#28-to-29)) (found in review).
 
 - `diffsettings` hides the value after a name like a secret's and `=` or
   `:`, spaced or not, the name quoted or not, in any text it prints:
@@ -9691,7 +9716,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.8.2...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.9.0...HEAD
+[2.9.0]: https://github.com/karimmattar/domainkit/compare/v2.8.2...v2.9.0
 [2.8.2]: https://github.com/karimmattar/domainkit/compare/v2.8.1...v2.8.2
 [2.8.1]: https://github.com/karimmattar/domainkit/compare/v2.8.0...v2.8.1
 [2.8.0]: https://github.com/karimmattar/domainkit/compare/v2.7.0...v2.8.0

@@ -13,7 +13,7 @@ works, and the next part starts from it.
 - One route, `GET /rates`, that answers the bank's interest rates.
 - One test that calls the route and passes.
 
-You need Python 3.13 or 3.14, and `curl`. The part takes about 15
+You need Python 3.13, 3.14, or 3.15, and `curl`. The part takes about 15
 minutes.
 
 ## Step 1: install domainkit

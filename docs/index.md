@@ -105,7 +105,7 @@ pip install "domainkit[postgres,redis,sqlite,testing]"
 domainkit init bankAPI bank
 ```
 
-You need Python 3.13 or 3.14. [Part 0 of the tutorial](tutorial/0-first-route.md)
+You need Python 3.13, 3.14, or 3.15. [Part 0 of the tutorial](tutorial/0-first-route.md)
 explains each extra and what `init` makes.
 
 ## Where to go next

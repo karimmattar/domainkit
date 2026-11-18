@@ -39,10 +39,17 @@ never published), with each section below.
 ## 2.8 to 2.9
 
 2.9 follows up the audit of 2.8. Each item of this list says what a
-project that relied on 2.8's behaviour changes, and what to run. A
-project on 2.8.0 or 2.8.1 first reads the patch releases' sections
-below, [2.8.0 to 2.8.1](#280-to-281) and [2.8.1 to 2.8.2](#281-to-282),
-which this list does not repeat.
+project that relied on 2.8's behaviour changes, and what to run. With
+`domainkit.contrib.approvals` installed, make and apply its index's
+migration ([below](#make-and-apply-approvals-index)) before the new code
+serves. On PostgreSQL, `migrate` makes indexes on the user table, with
+no migration to make ([below](#migrate-makes-the-user-lookups-indexes-on-postgresql)).
+One setting is new, `PROBE_PATHS`, which `RATE_LIMIT_EXEMPT_PATHS`,
+`CONCURRENCY_EXEMPT_PATHS`, `ACCESS_LOG_QUIET_PATHS`, and
+`AUTH.AUTHENTICATION_EXEMPT_PATHS` now add to, each defaulting to `()`
+(below). A project on 2.8.0 or 2.8.1 first reads the patch releases'
+sections below, [2.8.0 to 2.8.1](#280-to-281) and
+[2.8.1 to 2.8.2](#281-to-282), which this list does not repeat.
 
 - **`diffsettings` shows each domain's settings.** `AUTH`, `APPROVALS`,
   `LIMITS`, and every other installed domain's setting print as the

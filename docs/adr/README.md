@@ -12,11 +12,11 @@ repeats it: `Accepted; amended 2026-10-25 (at the end)`,
 `Accepted; amended by` and a link to the new record, or `Superseded by` and
 that link. The `(Amended YYYY-MM-DD.)` marks inside 0023, 0056, 0057, 0061,
 and 0062 are earlier corrections made in place, before this rule; their
-status says `amended in place`. Eleven numbers were never used: 0067,
-0073, 0074, 0081, 0083, 0088, 0091, 0093, 0103, 0109, and 0110. Numbers
-were handed out ahead to work done side by side, and a piece of work that
-needed no record left its number unused; none was withdrawn, and no
-record cites them.
+status says `amended in place`. Fourteen numbers were never used: 0067,
+0073, 0074, 0081, 0083, 0088, 0091, 0093, 0103, 0109, 0110, 0184, 0193,
+and 0194. Numbers were handed out ahead to work done side by side, and a
+piece of work that needed no record left its number unused; none was
+withdrawn, and no record cites them.
 `domainkit_tests/test_docs.py` checks the order of this index, its
 statuses, and the amendments they name.
 
@@ -199,7 +199,7 @@ statuses, and the amendments they name.
 | [0187](0187-keep-the-workers-heartbeat-to-its-liveness-fail-deliveries-whose-task-ended-and-share-provider-clients.md) | Keep the worker's heartbeat to its liveness, fail deliveries whose task ended, and share provider clients | Accepted |
 | [0188](0188-write-down-the-cores-layering-and-hold-the-boundaries-it-draws.md) | Write down the core's layering, and hold the boundaries it draws | Accepted; amended by [0195](0195-move-the-outgoing-client-below-the-adapters-and-hold-module-state-to-its-resets.md) on 2026-11-18 (at the end) |
 | [0189](0189-publish-the-documentation-site-from-the-newest-releases-tag.md) | Publish the documentation site from the newest release's tag | Accepted |
-| [0190](0190-keep-runnable-examples-as-projects-that-domainkits-tests-run.md) | Keep runnable examples as projects that domainkit's tests run | Accepted |
+| [0190](0190-keep-runnable-examples-as-projects-that-domainkits-tests-run.md) | Keep runnable examples as projects that domainkit's tests run | Accepted; amended 2026-11-18 (at the end) |
 | [0191](0191-gate-the-lines-a-change-adds.md) | Gate the lines a change adds | Accepted |
 | [0192](0192-start-a-contrib-routers-route-names-with-its-app.md) | Start a contrib router's route names with its app | Accepted |
 | [0195](0195-move-the-outgoing-client-below-the-adapters-and-hold-module-state-to-its-resets.md) | Move the outgoing client below the adapters, and hold module state to its resets | Accepted |
