@@ -19,6 +19,15 @@ The solution has three parts
 - it locks both rows in id order, so two payments never deadlock;
 - it runs again, whole, when the database says it lost a race.
 
+The balance here is a field of the wallet, which suits a balance with a
+rule or two and no reports. A service that holds customers' money, and
+must balance, report, and reconcile it, books each payment as an entry in
+[the double-entry ledger](../contrib/accounting.md) instead. Its
+concurrent postings neither deadlock nor lose an update, and a retried
+request books once, as this recipe makes sure by hand; it adds holds,
+periods, and a trial balance
+([choosing a feature](../choosing.md#keeping-money)).
+
 You need a project with `domainkit[sqlite,testing]` installed. Every step
 here is run as written by `domainkit_tests/test_recipes.py`.
 
@@ -27,7 +36,10 @@ here is run as written by `domainkit_tests/test_recipes.py`.
 ### Step 1: make a wallet with two commands
 
 Make a project, a `wallets` domain, and two commands: a deposit, and a
-payment to another wallet:
+payment to another wallet. The domain is layered (`--minimal` is a small
+layered domain): `addcommand` writes a reference to another aggregate
+(`to:ref:Wallet`) only in a layered domain, not in the tutorial's four
+files:
 
 ```bash
 domainkit init payAPI pay
@@ -45,8 +57,9 @@ write.
 ### Step 2: give the wallet a balance and its rules
 
 An amount is `Money` ([money.md](../money.md)): an exact amount and its
-currency, `{"amount": "5.00", "currency": "USD"}` in JSON. Give the
-wallet a balance, and write the methods:
+currency, `{"amount": "5.00", "currency": "USD"}` in JSON. In
+`src/domains/wallets/domain/model.py`, give the wallet a balance, and
+write the methods:
 
 ```python title="src/domains/wallets/domain/model.py"
 from domainkit.ddd import Digits
@@ -101,7 +114,8 @@ from a wallet of dollars raises `CurrencyMismatch`, which answers 422
 The use case changes two aggregates. It locks both rows in one statement,
 by ascending id (`get_many_for_update`). So two payments between the same
 wallets take the locks in the same order, and cannot deadlock. `uow.run`
-runs the whole function again when its transaction loses a race:
+runs the whole function again when its transaction loses a race. Write
+it in `src/domains/wallets/application/services.py`:
 
 ```python title="src/domains/wallets/application/services.py"
 from domainkit.ddd import ConcurrentUpdate, Retry
@@ -133,7 +147,8 @@ The work enters the unit of work itself: `run` never runs part of an
 On PostgreSQL, a `SERIALIZABLE` transaction fails when it could not have
 run one after the other with the payments around it; the payment then
 runs again, instead of breaking a rule across rows. On SQLite, such units
-of work begin with `BEGIN IMMEDIATE`, and run one at a time:
+of work begin with `BEGIN IMMEDIATE`, and run one at a time. Set the
+isolation in `src/domains/wallets/infrastructure/unit_of_work.py`:
 
 ```python title="src/domains/wallets/infrastructure/unit_of_work.py"
 from domainkit.db import Isolation
@@ -153,8 +168,9 @@ python manage.py migrate
 
 ### Step 6: test the payment, and a lost race
 
-Replace the tests that `addcommand` wrote for the payment, and add one in
-which the first commit loses a race:
+Replace the tests that `addcommand` wrote for the payment, in
+`tests/domains/wallets/test_pay_wallet.py`, and add one in which the
+first commit loses a race:
 
 ```python title="tests/domains/wallets/test_pay_wallet.py"
 from domainkit.ddd import ConcurrentUpdate

@@ -50,7 +50,7 @@ The base class runs the pump that hands the fetched messages to
 handlers, at most `prefetch` at once. A message taken and never answered
 (its worker died) comes back after `REDELIVER_AFTER` seconds. The broker
 is made as `Broker(config)` from its `BROKERS` entry, whose `URL` is the
-broker's to read:
+broker's to read. Make a new file, `src/config/broker.py`:
 
 ```python title="src/config/broker.py (new file)"
 """Work queues in a SQLite file, for one machine."""
@@ -171,7 +171,8 @@ class SqlitePuller(Puller):
 ### Step 3: name it as the default broker
 
 `BACKEND` makes the broker. The `URL` says where its file is. `PREFIX`,
-as for every broker, keeps this service's queues apart from another's:
+as for every broker, keeps this service's queues apart from another's.
+Add it to `src/config/settings/base.py`:
 
 ```python title="src/config/settings/base.py"
 BROKERS = {
@@ -190,7 +191,7 @@ from it.
 
 The test publishes two messages, consumes them, requeues the first one
 once, and checks that each message reaches the handler and is gone once
-acknowledged:
+acknowledged. Make a new file, `tests/test_broker.py`:
 
 ```python title="tests/test_broker.py (new file)"
 """Messages go in the file, out to one handler, and are forgotten once done."""

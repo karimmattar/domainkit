@@ -5,11 +5,43 @@ All notable changes to domainkit. The format follows
 [Semantic Versioning](https://semver.org/); see `docs/versioning.md`.
 Entries end with the ids of the review findings they answer, such as
 `(FIN-77)`: [docs/audit/0.9.0.md](docs/audit/0.9.0.md) gives each a title
-and a status.
+and a status. Ids that start with `A28-` name the 2.8 audit's findings,
+listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 
 ## [Unreleased]
 
 ### Added
+
+- `--version` prints domainkit's version (`python manage.py --version`,
+  `domainkit --version`), and `help <command>` prints the command's
+  options, as `<command> --help` does
+  ([Running a command](docs/reference/commands.md#running-a-command),
+  [upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-12).
+
+- `.github/workflows/docs.yml` publishes the documentation site to GitHub
+  Pages when a release tag is pushed: whatever tag starts it, the site
+  of the newest final release, once `release.yml`'s tag checks pass that
+  release, so a tag that those checks refuse publishes nothing.
+  `release_check.py --as-pushed` judges a tag as when it was pushed. The
+  workflow's one job that writes may write to Pages alone, and it reads
+  no secret. The repository's owner turns Pages on once
+  ([One-time setup](docs/versioning.md#one-time-setup), ADR 0189)
+  (audit A28-DX-02).
+
+- [Choosing a feature](docs/choosing.md): which tool a need takes where
+  two look alike (idempotency keys or the inbox, money limits or rate
+  limits, a step-up, an authorization, or approvals, a balance field or
+  the ledger, rows, databases, or schemas per tenant), and which to
+  leave alone. Sixteen feature pages open with "When to use it, and when
+  not to", and link the tool to use instead (audit A28-DX-05).
+
+- Runbook entries for a write that ran past its deadline, a retry that
+  finds the request ran (`409 idempotency_response_unavailable`), webhook
+  deliveries that fail, codes and mail that do not arrive, and requests
+  that fail during a rollout; the request flow, request deadlines, and
+  the rollout checklist say what a deadline answer tells about a commit,
+  and how a stopping process keeps serving
+  ([Runbook](docs/runbook.md#find-the-entry)) (audit A28-REL-06).
 
 - `Repository.count(criteria, at_most=n)`: a count that stops at `n`.
   SQL counts a subquery with `LIMIT n`, so a database reads no further
@@ -19,6 +51,7 @@ and a status.
   rows took 35 to 57 ms, and now 1 to 7 ms. A repository that overrides
   `count` is asked as before, and counts every match (ADR 0185)
   (audit A28-PERF-08).
+
 - `BaseBackend.object_grants_beyond(holder, permissions)`, and
   `object_grants(holder, beyond=...)`: a holder's grants on objects, less
   those of the permissions given. The default filters what
@@ -26,6 +59,7 @@ and a status.
   its query. It is asked only of a class that defines both methods, or
   neither, so a backend that overrides `object_grants` alone keeps every
   grant it adds (ADR 0185) (audit A28-PERF-05).
+
 - On PostgreSQL, `migrate` makes indexes on the user table, a project's
   own too, where missing: `lower()` of the address and of the username,
   where each is text, and the field the admin API lists users by, then
@@ -38,6 +72,34 @@ and a status.
 
 ### Changed
 
+- `diffsettings` shows each installed domain's settings (`AUTH`,
+  `APPROVALS`, `LIMITS`, ...) as its schema validated them, defaults
+  filled in, and marks those left at their defaults under `--all`; 2.8
+  hid a domain's settings whole. It fails closed: values typed as
+  secrets, names that suggest one (`sid` and `pin` now among them), URL
+  passwords and `password=` pairs, and all text in a mapping or a value
+  typed `Any` (a provider's options) stay hidden
+  ([diffsettings](docs/reference/commands.md#diffsettings-show-the-settings),
+  [upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-10).
+
+- In development and tests, each problem the application finds at its
+  build or start (a route without an access rule, say) is logged as a
+  warning of its own, on one line; 2.8 logged them in one record, which
+  the log escaped onto one line with `\n` between them
+  ([upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-12).
+
+- `createsuperuser`'s note on a superuser that no code can reach says
+  "no verification code can be sent to the superuser ... until its email
+  address is verified" (audit A28-DX-12).
+
+- PyPI's "Documentation" link opens the first page, `docs/index.md`, not
+  `docs/reference.md` (audit A28-DX-02).
+
+- The site's navigation keeps the pages for those who make domainkit
+  (decisions, the style guide, the roadmap, the audits) under "Project",
+  apart from the reference; their addresses do not change. The feature
+  inventory says that it records the review of 1.5 (audit A28-DX-13).
+
 - What follows a keyset position starts with a bound on the first field
   of the ordering (`>=` ascending, `<=` descending, a money field's
   currency), so a database reads an index from the position instead of
@@ -45,6 +107,7 @@ and a status.
   rows took 13 to 20 ms on PostgreSQL, and now 0.03 to 0.1 ms. Ascending
   on a field that may be missing still reads from the start (ADR 0185)
   (audit A28-PERF-01).
+
 - The admin API's bound on grants on objects reads only the grants that
   count: none for a superuser, and for staff none of a permission they
   hold on the whole model; their own are read only when some remain.
@@ -52,9 +115,44 @@ and a status.
   them. An admin change, or an impersonated request, for a user of
   10,000 grants cost 117 to 138 ms of CPU, and now 0.5 to 17 ms; the
   refusal and its count are as before (ADR 0185) (audit A28-PERF-05).
+
 - Flags' `GET /settings` reads every stored value in one statement, not
   one per declared setting: 100 settings took 76 ms, now 9 ms
   (audit A28-PERF-07).
+
+### Fixed
+
+- The tutorial and the recipes name the file each block makes or
+  changes in the text above it, which GitHub shows; a block's title, the
+  only place that named it, is shown by the site alone. `test_docs.py`
+  fails on a titled block whose file the text does not name (audit
+  A28-DX-01).
+
+- The README's quick start makes the four-file domain that `startdomain`
+  makes by default, and that the tutorial starts from, and describes
+  `--layered` and `--minimal` as they are. It counts the tutorial's six
+  parts, and says when a route answers 401, 403, or 404. The recipes
+  that make a layered domain say why (audit A28-DX-03).
+
+- The first example of [Authenticating requests](docs/auth/authentication.md#a-first-example)
+  runs in a project made by `init`: it logs in by email address, and
+  sends a host the local settings accept. `test_walkthroughs.py` runs it
+  (audit A28-DX-09).
+
+- The tutorial says that its commands need a POSIX shell, and to use WSL
+  or Git Bash on Windows
+  ([Before you start](docs/tutorial.md#before-you-start)) (audit
+  A28-DX-11).
+
+- [Free-threaded Python](docs/runtime.md#free-threaded-python) names
+  the `documents` (`fill_docx`, `placeholders`) and `saml` extras, whose
+  lxml turns the GIL back on for the rest of the process, beside
+  `immudb` (audit A28-PERF-06).
+
+- [What a request costs](docs/performance.md#what-a-request-costs) shows
+  each rung's calls, round trips, and modules as `benchmarks/budgets.toml`
+  holds them, and `test_docs.py` fails when the two differ (audit
+  A28-PERF-09).
 
 ## [2.8.0] - 2026-11-18
 
