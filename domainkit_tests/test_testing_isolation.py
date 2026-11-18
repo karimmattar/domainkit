@@ -197,6 +197,49 @@ def test_the_principal_cache_starts_empty_in_every_test(
     run_plugin(pytester).assert_outcomes(passed=2)
 
 
+def test_dynamic_settings_and_admin_reports_end_with_their_test(
+    prefix: str, pytester: pytest.Pytester
+) -> None:
+    """A setting one test declares is gone in the next; reports start afresh.
+
+    New in 2.9: ``declared_kept()`` and ``reset_reports()``, public, as
+    ADR 0113 asks of module state a test can leave behind.
+    """
+    pytester.makepyfile(
+        test_reset="""
+        from domainkit import setup
+        from domainkit.contrib.flags import declared_settings, dynamic_setting
+        from domainkit.contrib.mail import admins
+
+        resets = []
+        reset_reports = admins.reset_reports
+
+        def counted():
+            resets.append(1)
+            reset_reports()
+
+        admins.reset_reports = counted
+
+        def keys():
+            return [each.key for each in declared_settings()]
+
+        def test_loads_the_domains():
+            setup()
+            assert resets == [1]
+
+        def test_declares():
+            dynamic_setting("shop.limit", int, default=1)
+            assert "shop.limit" in keys()
+
+        def test_sees_none():
+            assert "shop.limit" not in keys()
+            assert resets == [1, 1, 1]
+        """
+    )
+
+    run_plugin(pytester).assert_outcomes(passed=3)
+
+
 def test_modules_never_imported_are_passed_over(
     prefix: str, pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -30,7 +30,7 @@ from .message import EmailMessage
 if TYPE_CHECKING:
     from domainkit.ddd import UnitOfWork
 
-__all__ = ["mail_admins", "report_to_admins"]
+__all__ = ["mail_admins", "report_to_admins", "reset_reports"]
 
 MAX_FRAMES: Final = 30
 """Frames of a traceback a report lists, the innermost ones."""
@@ -89,6 +89,16 @@ def report_to_admins(exc: BaseException, context: Mapping[str, object]) -> None:
         to=config.ADMINS,
     )
     asyncio.run(deliver([message]))
+
+
+def reset_reports() -> None:
+    """Forget which reports went out lately: the next of each type goes at once.
+
+    The pytest plugin calls it before each test (ADR 0113), so a report one
+    test sent does not hold back an identical one in the next.
+    """
+    with _lock:
+        _last_sent.clear()
 
 
 def _due(key: tuple[str, str], every: float) -> bool:

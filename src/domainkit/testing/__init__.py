@@ -195,6 +195,7 @@ OUTBOXES: Final = (
 """Where the memory backends keep what they sent: (module, list)."""
 RESETS: Final = (
     ("domainkit.contrib.auth.principals", "invalidate_all"),
+    ("domainkit.contrib.mail.admins", "reset_reports"),
     ("domainkit.ledger.handler", "ledgers.reset"),
     ("domainkit.storage.handler", "storages.reset"),
 )
@@ -203,6 +204,7 @@ _KEPT: Final = pytest.StashKey["Kept"]()
 """The registrations a test's run keeps, put back after its teardown."""
 KEPT: Final = (
     ("domainkit.apps.hooks", "hooks_kept"),
+    ("domainkit.contrib.flags.store", "declared_kept"),
     ("domainkit.contrib.messaging.registry", "tasks_kept"),
     ("domainkit.http.metrics", "refreshers_kept"),
     ("domainkit.money", "currencies_kept"),
