@@ -27,13 +27,28 @@ application as audience and recipient, answer this request
 to ``FRONTEND_URL`` with a one-time ``ticket``, which the page trades
 for tokens at ``/identity/ticket``, or with an ``error`` code.
 Encrypted assertions are not read.
+
+Anyone may post to the ACS, so its response is bounded before it is
+parsed (since 2.9): ``MAX_RESPONSE`` base64 characters, and
+``MAX_NODES`` nodes, counted on its bytes as ``domainkit.documents``
+counts a Word document's (each ``<`` twice, each ``=`` once). A DTD or
+an entity is refused before parsing, and it is read as UTF-8 only, so
+the count sees what is parsed. It is parsed in a thread of its own,
+which ends with it and takes with it the names lxml keeps for the
+thread, never on the event loop's; ``PARSES`` at most at once on a loop.
 """
 
+import asyncio
 import base64
+import contextlib
+import contextvars
 import logging
+import re
+import threading
 import zlib
+from collections.abc import Callable
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Form, Request, Response, status
@@ -42,6 +57,7 @@ from fastapi.responses import RedirectResponse
 from domainkit.contrib.auth.integration import utc_now
 from domainkit.exceptions import DomainkitError
 from domainkit.http.access import Public
+from domainkit.utils.loops import PerLoop
 
 from .binding import COOKIE, TICKET_SEPARATOR, binding, bound
 from .exceptions import EmailTaken, NoAccount, UnknownProvider
@@ -67,6 +83,16 @@ EMAIL_FORMAT: Final = "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"
 SKEW: Final = timedelta(seconds=60)
 MAX_RESPONSE: Final = 1_000_000
 """The largest SAMLResponse read, in base64 characters."""
+MAX_NODES: Final = 50_000
+"""The most nodes a SAMLResponse's XML may make, counted before it is parsed.
+
+A thousand group values make some 7,000. At the bound, XML written to
+cost the most (an element of 50,000 attributes, each of another name) took
+14 MiB and 19 ms to parse."""
+PARSES: Final = 4
+"""The most responses parsed at once on one event loop; the others wait."""
+DECLARATION: Final = re.compile(rb"<!(?:DOCTYPE|ENTITY)", re.IGNORECASE)
+"""What declares a DTD or an entity: refused before the XML is parsed."""
 NS: Final = {"samlp": PROTOCOL, "saml": ASSERTION}
 
 
@@ -142,7 +168,10 @@ async def saml_acs(
             raise AssertionRefused("an unknown, used, or expired RelayState")
         if not bound(flow.id, request.cookies.get(COOKIE)):
             raise AssertionRefused("a RelayState another browser started")
-        claims = verified_claims(config, saml_response, f"_{flow.nonce}", utc_now())
+        request_id, now = f"_{flow.nonce}", utc_now()
+        claims = await _alone(
+            lambda: verified_claims(config, saml_response, request_id, now)
+        )
         user = await account_for(provider_key(name), claims)
     except AssertionRefused as exc:
         # A configured provider's name; line breaks dropped all the same.
@@ -193,6 +222,11 @@ def verified_claims(
 ) -> Claims:
     """Who the signed assertion of ``encoded`` says logged in.
 
+    Bounded before it is parsed: ``MAX_RESPONSE`` characters, ``MAX_NODES``
+    nodes, no DTD or entity; read as UTF-8. CPU-bound, and lxml keeps each
+    name it parses for the thread's life: the ACS calls it in a thread of
+    its own.
+
     Raises:
         AssertionRefused: The response does not prove a login for this request.
     """
@@ -200,13 +234,23 @@ def verified_claims(
     from signxml.exceptions import InvalidInput, InvalidSignature
     from signxml.verifier import XMLVerifier
 
+    if len(encoded) > MAX_RESPONSE:
+        raise AssertionRefused(f"a SAMLResponse over {MAX_RESPONSE:,} characters")
     try:
         document = base64.b64decode(encoded, validate=True)
     except ValueError:
         raise AssertionRefused("a SAMLResponse that is not base64") from None
+    if DECLARATION.search(document):
+        raise AssertionRefused("a SAMLResponse that declares a DTD or an entity")
+    if 2 * document.count(b"<") + document.count(b"=") > MAX_NODES:
+        raise AssertionRefused(f"a SAMLResponse of more than {MAX_NODES:,} nodes")
     try:
         verified = XMLVerifier().verify(
-            document, x509_cert=config.IDP_CERTIFICATE, expect_config=_expected()
+            document,
+            x509_cert=config.IDP_CERTIFICATE,
+            expect_config=_expected(),
+            # signxml's own parser, read as UTF-8 whatever the XML declares.
+            parser=etree.XMLParser(resolve_entities=False, encoding="utf-8"),
         )
     except (InvalidSignature, InvalidInput, etree.XMLSyntaxError) as exc:
         raise AssertionRefused(f"no valid signature ({type(exc).__name__})") from None
@@ -271,6 +315,54 @@ def _claims(
     elif name_id.get("Format") == EMAIL_FORMAT:
         email = nameid
     return Claims(subject=nameid, email=email, email_verified=email is not None)
+
+
+_parsing: Final[PerLoop[asyncio.Semaphore]] = PerLoop()
+"""Each loop's slots for responses parsed at once (``PARSES``)."""
+
+
+async def _alone(work: Callable[[], Claims]) -> Claims:
+    """``work()``, in a thread of its own that ends with it; ``PARSES`` at once.
+
+    lxml keeps every name a thread parses for the thread's life: on the
+    event loop's thread, each response of new names would grow it for good,
+    and block every other request while it parsed (ADR 0181 did the same
+    for Word documents). A slot is held until the thread ends, even if the
+    request is cancelled meanwhile. ``work`` runs in a copy of the context.
+
+    Raises:
+        AssertionRefused: What ``work`` raised, raised again here.
+    """
+    loop = asyncio.get_running_loop()
+    slots = _parsing.get(lambda: asyncio.Semaphore(PARSES))
+    await slots.acquire()
+    done: asyncio.Future[Claims] = loop.create_future()
+    context = contextvars.copy_context()
+
+    def settle(result: Claims | None, error: BaseException | None) -> None:
+        slots.release()
+        if done.done():  # The request was cancelled meanwhile.
+            return
+        if error is not None:
+            done.set_exception(error)
+        else:
+            done.set_result(cast("Claims", result))
+
+    def run() -> None:
+        result, error = None, None
+        try:
+            result = context.run(work)
+        except BaseException as raised:  # noqa: BLE001 - raised again in the caller.
+            error = raised
+        with contextlib.suppress(RuntimeError):  # The loop closed meanwhile.
+            loop.call_soon_threadsafe(settle, result, error)
+
+    try:
+        threading.Thread(target=run, name="domainkit.identity.saml").start()
+    except BaseException:  # pragma: no cover - no thread could start.
+        slots.release()
+        raise
+    return await done
 
 
 def _expected() -> "SignatureConfiguration":
