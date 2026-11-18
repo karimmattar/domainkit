@@ -22,7 +22,12 @@ from domainkit.db import SqlAlchemyRepository, SqlAlchemyUnitOfWork
 from domainkit.db.routing import router
 from domainkit.ddd import Criteria, F, NotFound, Selection
 from domainkit.ddd.query import CriteriaLike, as_criteria
-from domainkit.ddd.tenancy import TenantRequired, row_tenant
+from domainkit.ddd.tenancy import (
+    TenantRequired,
+    check_tenant_id,
+    current_tenant,
+    row_tenant,
+)
 
 from .exceptions import RequestNotFound
 from .models import ApprovalRequest, RequestId, RequestStatus
@@ -49,6 +54,22 @@ def served_tenant() -> object:
     except TenantRequired:
         return None
     return EVERY if owner is None else owner
+
+
+def servable(tenant_id: str | None) -> bool:
+    """Whether a request's stored tenant can be served: none, or a tenant id.
+
+    One that is not a tenant id was changed around the application: the
+    request is held as tampered, never served (``tenant_alone`` would
+    refuse it).
+    """
+    if tenant_id is None:
+        return True
+    try:
+        check_tenant_id(tenant_id)
+    except ValueError:
+        return False
+    return True
 
 
 class RequestRepository(SqlAlchemyRepository[ApprovalRequest, RequestId]):
@@ -119,7 +140,9 @@ class RequestRepository(SqlAlchemyRepository[ApprovalRequest, RequestId]):
     ) -> list[ApprovalRequest]:
         """The pending and approved requests of ``maker`` holding that command.
 
-        Those of ``action`` whose fingerprint is ``digest``, oldest first.
+        Those of ``action`` whose fingerprint is ``digest``, oldest first,
+        of the tenant served (none: of none), inside ``all_tenants()`` too:
+        a maker's call spends a request of its own tenant only (ADR 0183).
         """
         waiting = (F("status") == RequestStatus.PENDING) | (
             F("status") == RequestStatus.APPROVED
@@ -129,6 +152,7 @@ class RequestRepository(SqlAlchemyRepository[ApprovalRequest, RequestId]):
                 (F("maker") == maker)
                 & (F("action") == action)
                 & (F("fingerprint") == digest)
+                & (F("tenant_id") == current_tenant())
                 & waiting,
                 ordering=["submitted_at"],
             )
