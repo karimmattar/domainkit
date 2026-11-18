@@ -99,6 +99,31 @@ project that relied on 2.8's behaviour changes, and what to run.
   connections served as a tenant miss the events that processes of
   2.8.0 send, until every process is upgraded. Without `TENANCY`,
   nothing changes.
+- **Approval requests are each tenant's own** (security). With
+  `TENANCY`, a request is listed, read, approved, rejected, and
+  cancelled where the tenant it was submitted in is served alone, and
+  its command runs in that tenant. Approvers who decided for a tenant
+  while served as another, or as none, are served as the request's
+  tenant now; code that decides across tenants does it inside
+  `all_tenants()`
+  ([Requests and tenants](contrib/approvals.md#requests-and-tenants)).
+  Requests stored by 2.8.0 have no tenant: they are read where no tenant
+  is served. Do not set their `tenant_id` by hand, which breaks their
+  seal: decide or cancel them where no tenant is served, or let them
+  expire. Before you deploy, let the worker run the requests already
+  approved: once deployed, such a request runs as no tenant. Without
+  `TENANCY`, nothing changes.
+
+### Make and apply approvals' migration
+
+With `domainkit.contrib.approvals` installed, the requests table
+(`domainkit_approval_requests`) gains a nullable column, `tenant_id`,
+the tenant a request was submitted in
+([ADR 0183](adr/0183-keep-live-events-and-approval-requests-to-their-tenant-and-rows-of-no-tenant-to-keys-held-everywhere.md)).
+Run `python manage.py makemigrations`, review the revision, then
+`migrate` it before the new code serves. Until then every read of the
+requests fails (`OperationalError`), so their routes and the worker's
+runs answer `500`. Requests stored before have no tenant.
 
 ## 2.7 to 2.8
 
