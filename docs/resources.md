@@ -23,6 +23,19 @@ On this page you learn how to:
 If you know Django REST framework: a `ResourceRouter` does the work of a
 viewset, a router, and a serializer, for task-based commands.
 
+## When to use it, and when not to
+
+- **Use it when** clients list, read, and change one kind of aggregate.
+  One declaration gives pages, filters, `ETag`s, conditional writes,
+  access rules, and the OpenAPI document.
+- **Do not use it when** a route serves no aggregate, such as a health
+  page or the rates of [tutorial part 0](tutorial/0-first-route.md):
+  write a FastAPI route with an access rule. For one more route on a
+  resource's aggregate, use [`fetch`](#routes-of-your-own-on-a-resource),
+  which keeps the resource's reach and rules.
+- [Choosing a feature](choosing.md#serving-a-route) compares the ways to
+  serve a route.
+
 ## A first example
 
 A product, two use cases, and the resource that serves them:

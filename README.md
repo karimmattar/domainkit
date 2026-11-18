@@ -61,9 +61,12 @@ the pages of that release's tag; on GitHub, `main` describes the next
 release, and a release's pages are under its tag
 (`https://github.com/karimmattar/domainkit/tree/vX.Y.Z/docs`).
 
-- [docs/tutorial.md](https://github.com/karimmattar/domainkit/blob/main/docs/tutorial.md): getting started, in five
-  parts: a first resource, rules, permissions, events and the worker, and
-  tests and production; every command and code change run in CI
+- [docs/tutorial.md](https://github.com/karimmattar/domainkit/blob/main/docs/tutorial.md): getting started, in six
+  parts: a first route, a first resource, rules, permissions, events and
+  the worker, and tests and production; every command and code change run
+  in CI
+- [docs/choosing.md](https://github.com/karimmattar/domainkit/blob/main/docs/choosing.md): which feature to use for a
+  need, and when not to use it
 - [docs/operations.md](https://github.com/karimmattar/domainkit/blob/main/docs/operations.md): running in production:
   processes, configuration, sizing, migrations in a rollout, the worker,
   sealing, backups, and what to alert on; [docs/runbook.md](https://github.com/karimmattar/domainkit/blob/main/docs/runbook.md)
@@ -136,7 +139,7 @@ domainkit init billingAPI billing     # the name sets the variable prefix: BILLI
 cd billing
 pip install --group dev
 python manage.py check
-python manage.py startdomain invoices --aggregate Invoice --minimal   # installs and mounts it
+python manage.py startdomain invoices --aggregate Invoice   # installs and mounts it
 python manage.py makemigrations -m "create invoices" && python manage.py migrate
 read -rsp "Password: " PASSWORD && export PASSWORD    # admin's, typed, not echoed
 BILLING_API_SUPERUSER_PASSWORD="$PASSWORD" \
@@ -163,17 +166,20 @@ curl http://127.0.0.1:8000/api/v1/invoices/invoices -H "Authorization: Bearer $T
 The answer is the first page, empty: `{"items":[],"next_cursor":null}`. The
 domain's router is mounted at `/api/v1/invoices`, and its resource is
 `/invoices` within it; `startdomain` prints both commands for the domain it
-made. `--minimal` keeps the domain small: an `Invoice` with a name that
-must not be blank, a command to create one and one to rename it, its
-table, its resource, and two tests, in 13 files and the four layers `check`
-holds apart. `startaggregate`, `addcommand`, `addquery`, and `addevent`
-grow it. Without `--minimal`, `startdomain` writes a fuller example (notes
-as child entities, an owner, events and a handler, filters); the tutorial
-starts from that one. A route the caller may not reach answers 404, as an unknown path does,
-so check the path first (`/docs` lists every route). `createsuperuser`
-without options asks for each value instead. [docs/tutorial.md](https://github.com/karimmattar/domainkit/blob/main/docs/tutorial.md)
-goes on from here, in six parts from a first route: rules written by
-hand, permissions, events run by the worker, and tests.
+made. The domain is four files, one per layer, which `check` holds
+apart: `domain.py` (an `Invoice` with a name that must not be blank),
+`controllers.py` (a use case to create one and one to rename it),
+`models.py` (its table), and `routes.py` (its resource), with five tests.
+The tutorial starts from the same layout. `startdomain --layered` makes a
+package per layer instead (`domain/`, `application/`, `infrastructure/`,
+`api/`), which `startaggregate`, `addcommand`, `addquery`, and `addevent`
+grow; `--minimal` makes a smaller layered one. Without a login, a route
+answers 401, and without the permission 403 `permission_denied`. A 404
+means an unknown path, or an item outside the caller's scope: `/docs`
+lists every route. `createsuperuser` without options asks for each value
+instead. [docs/tutorial.md](https://github.com/karimmattar/domainkit/blob/main/docs/tutorial.md)
+goes on from here, in six parts from a first route: a first resource,
+rules written by hand, permissions, events run by the worker, and tests.
 
 `domainkit init` creates a project that passes `check` and its tests as it is.
 Users, groups, and permissions are installed, requests are authenticated,

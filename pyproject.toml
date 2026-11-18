@@ -160,7 +160,7 @@ domainkit = "domainkit.management:execute_from_command_line"
 
 [project.urls]
 Homepage = "https://github.com/karimmattar/domainkit"
-Documentation = "https://github.com/karimmattar/domainkit/blob/main/docs/reference.md"
+Documentation = "https://github.com/karimmattar/domainkit/blob/main/docs/index.md"
 Changelog = "https://github.com/karimmattar/domainkit/blob/main/CHANGELOG.md"
 Issues = "https://github.com/karimmattar/domainkit/issues"
 

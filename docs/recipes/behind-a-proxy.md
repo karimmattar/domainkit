@@ -70,6 +70,9 @@ only.
 
 ### Step 4: trust a proxy network in the tests
 
+The tests' requests come from addresses you choose. Trust a private
+network in `src/config/settings/test.py`:
+
 ```python title="src/config/settings/test.py"
 TRUSTED_PROXIES = ["10.0.0.0/8"]
 ```
@@ -77,7 +80,8 @@ TRUSTED_PROXIES = ["10.0.0.0/8"]
 ### Step 5: test whom the application believes
 
 The test sends the same headers from a proxy's address, then from a
-caller's, and checks what the application records:
+caller's, and checks what the application records. Make a new file,
+`tests/test_proxies.py`:
 
 ```python title="tests/test_proxies.py (new file)"
 """Request ids and addresses come from trusted proxies only."""

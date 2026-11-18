@@ -2,7 +2,9 @@
 
 What an application needs from a framework, Django's features first and
 then the platform around them, checked against domainkit's code as of
-1.5. Each row says what exists and which step of the
+1.5. It is kept as the record of that review, and was not checked again
+since: the guides describe the current release. Each row says what
+exists and which step of the
 [roadmap](roadmap.md) closes the gap. A step named **C** is part of the
 core revamp, which comes first; one named **A** is an adapter, built on
 the core once it is done.
