@@ -65,6 +65,7 @@ from domainkit.http.errors import install_exception_handlers
 from domainkit.http.filters import Filter, FilterSet
 from domainkit.money import Money
 from domainkit.testing import AsyncTestClient, assert_num_queries
+from domainkit.testing.queries import CapturedQueries
 from domainkit_tests.conftest import POSTGRES_VARIABLE
 from domainkit_tests.gadgets import (
     MADE,
@@ -873,6 +874,26 @@ async def test_a_page_after_a_position_reads_an_index_from_there(
     else:
         assert f"USING INDEX ix_test_keyset ({start[0]})" in plan
         assert "MULTI-INDEX OR" not in plan
+
+
+async def test_a_count_stops_where_it_is_told(tables: None) -> None:
+    """``count(at_most=n)``: never more than ``n``, and SQL reads no further.
+
+    The matches are counted in a subquery with ``LIMIT n``, so a large
+    table is read only so far (A28-PERF-08); in memory, alike.
+    """
+    items = dataset()
+    await store(*items)
+    fake = InMemoryGadgets(items)
+    cases = [(None, 3, 3), (None, 9, 5), (F("stock") >= 0, 9, 3), (None, 0, 0)]
+    async with GadgetsUnitOfWork() as uow:
+        for criteria, at_most, expected in cases:
+            with CapturedQueries() as queries:
+                assert await uow.gadgets.count(criteria, at_most=at_most) == expected
+            assert "LIMIT" in queries.statements[0]
+            assert await fake.count(criteria, at_most=at_most) == expected
+        with pytest.raises(ValueError, match="0 or more, not -1"):
+            await uow.gadgets.count(at_most=-1)
 
 
 async def test_get_or_create_reads_or_stores_one(tables: None) -> None:

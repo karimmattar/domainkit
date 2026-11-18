@@ -101,9 +101,11 @@ class ListRoute:
             ExportTooLarge: More than ``max_export`` match.
         """
         router = self.router
-        async with context.uow as uow:
+        async with context.uow as uow:  # One past the bound tells it is too many.
             total = await router.repository(uow).count(
-                query.criteria, include_deleted=query.include_deleted
+                query.criteria,
+                include_deleted=query.include_deleted,
+                at_most=router.max_export + 1,
             )
         if total > router.max_export:
             raise ExportTooLarge

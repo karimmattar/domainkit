@@ -146,6 +146,30 @@ def test_exports_stop_at_their_bound_even_if_more_arrive(
     assert len(lines.splitlines()) == 2
 
 
+def test_an_export_counts_no_further_than_one_past_its_bound(
+    store: InMemoryGadgets, use_auth: UseAuth, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The count stops at ``max_export + 1``: enough to refuse (A28-PERF-08)."""
+    use_auth()
+    asked: list[object] = []
+    counted = store.count
+
+    async def recording(*args: object, **options: object) -> int:
+        asked.append(options.get("at_most"))
+        return await counted(*args, **options)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(store, "count", recording)
+    small = client_of(gadgets(store, exports=("csv",), max_export=2))
+    roomy = client_of(gadgets(store, exports=("csv",), max_export=3))
+
+    too_many = small.get("/gadgets", headers=as_("viewer", Accept=CSV))
+    fits = roomy.get("/gadgets", headers=as_("viewer", Accept=CSV))
+
+    assert asked == [3, 4]
+    assert (too_many.status_code, fits.status_code) == (422, 200)
+    assert len(rows(fits.text)) == 4
+
+
 def test_exports_are_declared_and_documented(store: InMemoryGadgets) -> None:
     """Unknown formats are refused; OpenAPI lists the media types and 406."""
     with pytest.raises(TypeError, match="not pdf"):
