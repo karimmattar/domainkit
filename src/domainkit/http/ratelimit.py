@@ -461,7 +461,9 @@ class RateLimitMiddleware:
         """Read the rate, the exempt paths, and the backend from settings."""
         self.app = app
         self.rate = parse_rate(settings.RATE_LIMIT) if settings.RATE_LIMIT else None
-        self.exempt = frozenset(settings.RATE_LIMIT_EXEMPT_PATHS)
+        self.exempt = frozenset(
+            (*settings.PROBE_PATHS, *settings.RATE_LIMIT_EXEMPT_PATHS)
+        )
         self.backend = load_backend()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:

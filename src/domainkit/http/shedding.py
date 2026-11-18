@@ -23,9 +23,9 @@ never, hold no slot; ``REQUEST_BODY_TIMEOUT`` answers them 408 (see
 ``RequestBodyLimitMiddleware``). A chunk that finds no slot free in time is
 answered 503 ``overloaded``, as a new request would be (``Overloaded``).
 
-Paths in ``CONCURRENCY_EXEMPT_PATHS`` (the health and readiness probes, and
-the metrics scrape) are neither counted nor refused, behind a root path
-(``--root-path``) too. WebSocket connections are not counted: their limits
+The probes and the metrics scrape (``PROBE_PATHS``), and the paths in
+``CONCURRENCY_EXEMPT_PATHS``, are neither counted nor refused, behind a
+root path (``--root-path``) too. WebSocket connections are not counted: their limits
 are their own.
 
 List it after ``DeadlineMiddleware``, so the wait counts against the
@@ -225,7 +225,9 @@ class ConcurrencyLimitMiddleware:
         self.limit = settings.MAX_CONCURRENT_REQUESTS
         self.queue = settings.MAX_QUEUED_REQUESTS
         self.wait = settings.REQUEST_QUEUE_TIMEOUT
-        self.exempt = frozenset(settings.CONCURRENCY_EXEMPT_PATHS)
+        self.exempt = frozenset(
+            (*settings.PROBE_PATHS, *settings.CONCURRENCY_EXEMPT_PATHS)
+        )
         self.report = ShedReport(self.limit)
         self._slots: PerLoop[Slots] = PerLoop()
         """Each event loop's slots (loops on several threads share the middleware)."""

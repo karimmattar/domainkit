@@ -342,10 +342,15 @@ System check identified no issues. Domains: messaging, contenttypes, auth.
 ```
 
 `check` validates the settings, the installed domains, the routes and
-their access rules, the middleware, the layer rules between a domain's
-layers, and the migration history (one head per target). It also warns
-about:
+their access rules, the middleware (an optional app's needs the app,
+`apps.E003`), the layer rules between a domain's layers, and the
+migration history (one head per target). It also warns about:
 
+- outside staging and production, migrations a database does not have
+  yet (`migrations.W001`): run `migrate`. It asks each database, unless
+  it is in memory, and waits 2 seconds at most for it to answer;
+- a list of exempt paths that names some of `PROBE_PATHS`, not all
+  (`probes.W001`);
 - route handlers and dependencies of your domains written as `def`, which
   run on FastAPI's thread pool ([runtime.md](../runtime.md#finding-blocking-code));
 - event handlers and tasks written as `def`, which block the event loop;
@@ -519,6 +524,12 @@ python manage.py runserver 0.0.0.0:8000 --server granian
 uvicorn or Granian (the `granian` extra). It restarts when your code
 changes. `RUNSERVER_SERVER = "granian"` in the development settings
 serves with Granian without `--server`. In production, run `serve`.
+
+Before it serves, it says which databases lack migrations
+(`migrations.W001`), on stderr. Under uvicorn it runs the application's
+lifespan with `--lifespan on`: a lifespan that raises, such as an
+optional app's middleware without the app, stops the server with the
+error, instead of serving every request a 500. *New in 2.9*.
 
 | Option | What it does |
 | --- | --- |

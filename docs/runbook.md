@@ -16,6 +16,7 @@ settings. Commands that change data take `--operator NAME` (or read
 | You see | Entry |
 | --- | --- |
 | `503 overloaded`, `503 database_busy`, `503 deadline_exceeded` | [Requests are shed](#requests-are-shed) |
+| `503 database_unavailable`, `/ready` answers 503 | [The database is unavailable](#the-database-is-unavailable) |
 | A client asks whether a write that got `503 deadline_exceeded` happened | [A write ran past its deadline](#a-write-ran-past-its-deadline) |
 | `409 idempotency_response_unavailable` | [A retry finds that the request ran](#a-retry-finds-that-the-request-ran) |
 | `messaging_outbox_lag_seconds` grows | [The outbox backs up](#the-outbox-backs-up) |
@@ -77,12 +78,61 @@ settings. Commands that change data take `--operator NAME` (or read
   then queue for connections instead, and time out after they have held
   memory.
 
+## The database is unavailable
+
+**You see** these, while a database is down, restarting, or failing over:
+
+- requests that use it answer `503 database_unavailable`, with
+  `Retry-After: 5`. Requests that do not use it are served. A request
+  whose connection was lost as it committed gets no `Retry-After`, and a
+  detail that says its change may have been made;
+- one warning per reason every 10 seconds, with a count of the requests
+  since:
+  `The database is unavailable (ConnectionRefusedError): GET /orders
+  answered 503 database_unavailable`. The reason is the socket's error,
+  or a SQLSTATE: class `08` (the connection failed or was lost), `57P01`
+  (shutting down), `57P03` (starting up, or a failover), `53300` (too
+  many connections). None of it is sent to the error reporters. It is
+  told from asyncpg's errors and SQLAlchemy's; through psycopg, a
+  connection that cannot be opened may still answer `500
+  internal_error`;
+- `/ready` answers 503, so the load balancer takes the replicas out.
+  With `READINESS_DETAILS` it names `database:<alias>`;
+- the worker logs `Could not reach the outbox of '<alias>' (N failures in
+  a row); trying again in Ns`, and backs off.
+
+**Check:**
+
+1. The database's own state: is it up, and is it the primary? A failover
+   takes from seconds to a couple of minutes.
+2. The network and the address: can a replica reach the host and port in
+   `DATABASES[alias]["URL"]` (or PgBouncer's)?
+3. `53300`: the connections in use against `max_connections`. Processes x
+   replicas x (`POOL_SIZE` + `MAX_OVERFLOW`) must stay below it
+   ([operations.md](operations.md#sizing)).
+
+**Do:**
+
+- Wait out a restart or a failover: requests answer again by themselves.
+  Nothing needs a restart: each pool opens new connections.
+- Too many connections: lower the pools, or put PgBouncer in front.
+- Tell client developers that `Retry-After` is safe for reads and for
+  writes sent with an `Idempotency-Key`. A 503 without it, for a write
+  whose connection was lost as it committed, means the write may have
+  been applied: look it up before sending it again. Without a key, a
+  retry may apply it twice ([idempotency](contrib/idempotency.md)).
+
 ## A write ran past its deadline
 
-**You see** a `503 deadline_exceeded` answer, with `Retry-After: 1`, to
-a `POST`, `PUT`, `PATCH`, or `DELETE`, and the warning `POST /payments
-ran past its deadline of 30s`. The client asks whether the change was
-made.
+**You see** a `503 deadline_exceeded` answer to a `POST`, `PUT`,
+`PATCH`, or `DELETE`, and the warning `POST /payments ran past its
+deadline of 30s`. The client asks whether the change was made:
+
+- with `Retry-After: 1`, the deadline passed before the `COMMIT`: the
+  work was rolled back, and nothing was saved;
+- without `Retry-After`, and with a detail that says the change may have
+  been made, the deadline passed while the `COMMIT` was on the way: the
+  database may have applied it ([commit](request-flow.md#8-commit)).
 
 **Check:**
 
@@ -95,12 +145,10 @@ made.
 
 **Do:**
 
-- Tell the client that a `503 deadline_exceeded` on a write does not say
-  that nothing was saved. The deadline can end the request while its
-  `COMMIT` is on the way, after the database applied it
-  ([commit](request-flow.md#8-commit)).
-- A client may follow `Retry-After` on a write only with the same
-  `Idempotency-Key`. Its retry then gets the stored response, or
+- Tell the client what the answer says: with `Retry-After`, nothing was
+  saved; without it, the change may have been made.
+- A client sends a write again only with the same `Idempotency-Key`. Its
+  retry then gets the stored response, or
   `409 idempotency_response_unavailable` if the first request committed
   ([idempotency](contrib/idempotency.md#what-a-retry-gets)). Without a
   key, the client reads the result before it sends the write again.

@@ -116,7 +116,9 @@ class AuthenticationMiddleware:
         """Wrap ``app`` with the configured authentication classes."""
         self.app = app
         self.authenticators = get_authenticators()
-        self.exempt = frozenset(auth_settings().AUTHENTICATION_EXEMPT_PATHS)
+        self.exempt = frozenset(
+            (*settings.PROBE_PATHS, *auth_settings().AUTHENTICATION_EXEMPT_PATHS)
+        )
         self.rate = parse_rate(settings.RATE_LIMIT) if settings.RATE_LIMIT else None
         self.limiter: Backend | None = (
             import_string(settings.RATE_LIMIT_BACKEND)() if self.rate else None

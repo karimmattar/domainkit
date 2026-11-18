@@ -181,9 +181,14 @@ serves two probes. For `/metrics`, install `domainkit[metrics]`, list
 | `/ready` | `200 {"status": "ready"}` when the databases (other than read replicas with `MAX_LAG`), ledgers, caches marked `READINESS`, and domains answer; else `503 {"status": "unavailable"}` | Readiness: take a replica out of rotation |
 | `/metrics` | Prometheus text (`domainkit[metrics]`) | Scraping |
 
-- None of the three is counted against the concurrency cap
-  (`CONCURRENCY_EXEMPT_PATHS`), so a busy replica is not taken for a
-  dead one.
+- `PROBE_PATHS` names the three, at these paths by default. None of
+  them is counted against the concurrency cap or the rate limit, so a
+  busy replica is not taken for a dead one. They are served without
+  reading credentials, and without a tenant under `TenantMiddleware`,
+  and their successful requests are logged at `DEBUG`. Mount them
+  elsewhere, and set `PROBE_PATHS` to where they are
+  ([reference](reference/http.md#probe-paths)). *New in 2.9*: before,
+  five lists each named them, and tenancy exempted only `/health`.
 - `/health` checks nothing but the process. Do not point liveness at
   `/ready`: a database outage would then restart every replica.
 - `/ready` runs its checks at most once per `READINESS_CACHE_SECONDS`,

@@ -6,7 +6,7 @@ import math
 import os
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Final
 
 import pytest
 from sqlalchemy import insert, select, text, update
@@ -19,7 +19,10 @@ from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.contrib.idempotency.tables import idempotency_keys
 from domainkit.db import connections
+from domainkit.db import uow as uow_module
 from domainkit.db.connections import INTERNAL, SETTLE_TIMEOUT
+from domainkit.db.hooks import on_committed
+from domainkit.ddd import HandlerTimedOut
 from domainkit.http import get_asgi_application
 from domainkit.http.deadlines import DeadlineMiddleware, RequestTimeout, lift
 from domainkit.testing import AsyncTestClient, assert_num_queries
@@ -44,9 +47,11 @@ LOGGER = "domainkit.http.deadlines"
 def fresh_routes() -> Iterator[None]:
     """Start each test with the routes' records empty."""
     deadline_routes.seen.clear()
+    deadline_routes.told.clear()
     deadline_routes.hang_payments[:] = [True]
     yield
     deadline_routes.seen.clear()
+    deadline_routes.told.clear()
 
 
 @asynccontextmanager
@@ -254,11 +259,13 @@ async def test_a_route_that_catches_the_cancellation_answers_itself() -> None:
 async def paying(
     database_url: str,
     database: dict[str, Any] | None = None,
+    middleware: tuple[str, ...] = (),
     **changes: Any,  # noqa: ANN401 - settings.
 ) -> AsyncIterator[AsyncTestClient]:
     """Idempotency keys and payments on a fresh database, with a deadline.
 
-    ``database`` adds options to its ``DATABASES`` entry.
+    ``database`` adds options to its ``DATABASES`` entry; ``middleware``
+    goes innermost.
     """
     registry.clear()
     with override_settings(
@@ -271,6 +278,7 @@ async def paying(
         MIDDLEWARE=[
             *MIDDLEWARE,
             "domainkit.contrib.idempotency.middleware.IdempotencyMiddleware",
+            *middleware,
         ],
         **changes,
     ):
@@ -341,6 +349,121 @@ async def test_cancellation_leaves_no_transaction_key_or_connection(
         assert len(await rows(payments)) == 1
         [stored] = await rows(idempotency_keys)
         assert stored.status_code == 201
+
+
+@pytest.mark.parametrize(
+    ("where", "middleware"),
+    [
+        ("false", ()),
+        ("true", ()),  # In a task of its own: asyncio.gather.
+        ("false", ("domainkit_tests.deadline_routes.InATask",)),
+    ],
+    ids=["in-the-request", "in-a-task", "under-base-http-middleware"],
+)
+async def test_a_request_that_committed_is_answered_as_committed(
+    database_url: str,
+    caplog: pytest.LogCaptureFixture,
+    where: str,
+    middleware: tuple[str, ...],
+) -> None:
+    """Its deadline passes as its handlers run, and after: still 201.
+
+    The commit lifts the deadline for good: the slow handler and the one
+    after it run, see no deadline, and the request answers what it
+    committed, past its deadline. The keyed response kept is that 201 too.
+    So it is when the commit is made in a task that only shares the
+    deadline: one the route started, or the one ``BaseHTTPMiddleware``
+    serves the route in.
+    """
+    caplog.set_level(logging.WARNING, LOGGER)
+    key = {"Idempotency-Key": "tell-once", "X-API-Key": "payer"}
+    async with paying(
+        database_url, middleware=middleware, REQUEST_TIMEOUT=0.5
+    ) as client:
+        answer = await client.post(
+            f"/pay-and-tell?after=0.1&in_task={where}", json={}, headers=key
+        )
+        assert answer.status_code == 201
+        assert answer.json() == {"paid": True, "remaining": None}
+        assert deadline_routes.told == [
+            "slow started",
+            ("slow finished", None),
+            "next",
+        ]
+        assert len(await rows(payments)) == 1
+        [stored] = await rows(idempotency_keys)
+        assert stored.status_code == 201
+    assert warnings_from(caplog) == []
+
+
+LOST: Final = (
+    "The database was lost as the change was committed, so it may have been "
+    "made; check before you send it again."
+)
+CUT: Final = (
+    "The request ran out of time as the change was committed, so it may have "
+    "been made; check before you send it again."
+)
+
+
+@pytest.mark.parametrize(
+    ("lost", "code", "detail"),
+    [("true", "database_unavailable", LOST), ("false", "deadline_exceeded", CUT)],
+    ids=["connection-lost", "deadline-in-commit"],
+)
+async def test_a_commit_in_doubt_is_answered_without_retry_after(
+    database_url: str, lost: str, code: str, detail: str
+) -> None:
+    """A 503 for a change that may have been made does not invite a retry.
+
+    Its answer was lost with the connection, or the deadline cut the
+    ``COMMIT`` off: no ``Retry-After``, and the detail says to check.
+    """
+    async with paying(database_url, REQUEST_TIMEOUT=0.5) as client:
+        answer = await client.post(f"/pay-unanswered?lost={lost}", json={})
+    assert answer.status_code == 503
+    assert "Retry-After" not in answer.headers
+    assert (answer.json()["code"], answer.json()["detail"]) == (code, detail)
+
+
+async def test_an_after_commit_hook_that_hangs_is_cut_off(
+    database_url: str,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A domain's ``on_committed`` hook gets ``EVENT_HANDLER_TIMEOUT``, then is cut off.
+
+    The commit lifted the request's deadline, which bounded the hook
+    before 2.9: without a bound of its own, a hook that hangs would hold
+    the request for ever. It is logged and reported as ``HandlerTimedOut``,
+    and the request answers what it committed.
+    """
+    reports: list[tuple[BaseException, dict[str, object]]] = []
+    monkeypatch.setattr(
+        uow_module,
+        "report_error",
+        lambda exc, **context: reports.append((exc, context)),
+    )
+
+    async def hangs(uow: object) -> None:
+        await asyncio.Event().wait()
+
+    deadline_routes.hang_payments[:] = [False]
+    async with paying(
+        database_url, REQUEST_TIMEOUT=0.5, EVENT_HANDLER_TIMEOUT=0.1
+    ) as client:
+        on_committed(hangs, domain="alpha")
+        with caplog.at_level(logging.ERROR, "domainkit.db.uow"):
+            async with asyncio.timeout(5):
+                answer = await client.post("/slow-pay", json={})
+        assert answer.status_code == 201
+        assert len(await rows(payments)) == 1
+
+    cut = "After-commit work of 'alpha' took more than 0.1s"
+    said = [r.getMessage() for r in caplog.records if r.name == "domainkit.db.uow"]
+    assert said == [f"{cut}; cut off"]
+    [(exc, context)] = reports
+    assert (type(exc), str(exc), context) == (HandlerTimedOut, cut, {"domain": "alpha"})
 
 
 async def test_a_short_deadline_sets_nothing_outside_postgresql(

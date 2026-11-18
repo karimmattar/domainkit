@@ -169,7 +169,8 @@ def test_serve_starts_uvicorn_with_the_limits_of_the_reference(
     """With ``SERVE["SERVER"] = "uvicorn"``, uvicorn, with those options too.
 
     It reads WebSocket messages up to ``MAX_REQUEST_BODY_SIZE``, no proxy
-    header, and writes no ``Server`` header and no access line.
+    header, and writes no ``Server`` header and no access line. It runs the
+    lifespan, and a lifespan that raises stops it (``lifespan="on"``).
     """
     with override_settings(
         ASGI_APPLICATION=APPLICATION,
@@ -199,6 +200,7 @@ def test_serve_starts_uvicorn_with_the_limits_of_the_reference(
             "log_config": written,
             "access_log": False,
             "reload": False,
+            "lifespan": "on",
         }
     ]
 
@@ -509,6 +511,50 @@ async def test_a_worker_whose_startup_fails_tells_the_main_process(
     ]
     assert answer.cr_code is Lifespan.__call__.__code__  # type: ignore[attr-defined]
     assert working.application.served == ["http"]  # type: ignore[attr-defined]
+
+
+class Raising:
+    """An ASGI application whose lifespan raises, as a misconfigured middleware does."""
+
+    def __init__(self, after: str | None = None) -> None:
+        """Raise at once, or once the startup sent ``lifespan.startup.<after>``."""
+        self.after = after
+
+    async def __call__(
+        self,
+        scope: MutableMapping[str, Any],
+        receive: Any,  # noqa: ANN401 - the server's.
+        send: Any,  # noqa: ANN401 - the server's.
+    ) -> None:
+        """Raise, in the lifespan."""
+        if self.after is not None:
+            await send({"type": f"lifespan.startup.{self.after}"})
+        raise ImproperlyConfigured("No installed domain declares IdempotencySettings.")
+
+
+@pytest.mark.anyio
+async def test_a_lifespan_that_raises_before_it_starts_is_a_failed_start(
+    signalled: list[tuple[int, int]],
+) -> None:
+    """The main process is told once: not again after a startup said it failed.
+
+    A lifespan that raises once its startup is complete (at shutdown) is
+    no failed start.
+    """
+
+    async def send(message: MutableMapping[str, Any]) -> None:
+        """Take what the lifespan says."""
+
+    async def receive() -> MutableMapping[str, Any]:
+        return {"type": "lifespan.startup"}
+
+    for after in (None, "failed", "complete"):
+        with pytest.raises(ImproperlyConfigured):
+            await serve._Starting(Raising(after), 4321)(
+                {"type": "lifespan"}, receive, send
+            )
+
+    assert signalled == [(4321, signal.SIGUSR1)] * 2
 
 
 def test_a_worker_that_cannot_import_the_application_tells_the_main_process(
