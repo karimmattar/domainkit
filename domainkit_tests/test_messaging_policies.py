@@ -333,8 +333,8 @@ def test_periodic_tasks_need_one_schedule() -> None:
         assert schedules["tests.utc_hourly"].tz.key == "UTC"
         assert "tests.nightly" not in [spec.key for spec, _ in tasks.periodic_tasks()]
     finally:
-        tasks._tasks.pop("tests.nightly")
-        tasks._tasks.pop("tests.utc_hourly")
+        tasks.unregister_task("tests.nightly")
+        tasks.unregister_task("tests.utc_hourly")
 
 
 @pytest.mark.usefixtures("messaging")
@@ -350,7 +350,7 @@ def test_contrib_cron_tasks_follow_their_app() -> None:
     try:
         assert "tests.contrib_cron" not in [spec.key for spec, _ in tasks.cron_tasks()]
     finally:
-        tasks._tasks.pop("tests.contrib_cron")
+        tasks.unregister_task("tests.contrib_cron")
 
 
 # The worker's use of per-task policies ----------------------------------------
@@ -568,7 +568,7 @@ async def test_task_timeouts_must_stay_under_the_visibility_timeout() -> None:
             Worker()
         Worker(MessagingSettings(**{**FAST, "VISIBILITY_TIMEOUT": 1.5}))
     finally:
-        tasks._tasks.pop("tests.too_long")
+        tasks.unregister_task("tests.too_long")
 
 
 @pytest.mark.usefixtures("tables")
@@ -617,7 +617,7 @@ async def test_scheduled_runs_keep_their_priority() -> None:
     try:
         await Worker()._schedule_periodic()
     finally:
-        tasks._tasks.pop("tests.urgent_hourly")
+        tasks.unregister_task("tests.urgent_hourly")
 
     (row,) = [row for row in await rows() if row["target"] == "tests.urgent_hourly"]
     assert row["priority"] == 9
@@ -873,7 +873,7 @@ async def test_cron_runs_are_queued_ahead_once(monkeypatch: pytest.MonkeyPatch) 
         clock[0] = run_at
         await first._schedule_periodic()  # Due now: the next one is queued.
     finally:
-        tasks._tasks.pop("tests.cairo")
+        tasks.unregister_task("tests.cairo")
 
     assert [row["available_at"] for row in await rows()] == [
         run_at,
@@ -908,7 +908,7 @@ async def test_cron_runs_survive_a_failed_write_and_a_schedule_without_runs(
         monkeypatch.setattr(Cron, "next_after", lambda self, instant: None)
         await Worker()._schedule_periodic()
     finally:
-        tasks._tasks.pop("tests.five")
+        tasks.unregister_task("tests.five")
     assert len(await rows()) == 1
 
 

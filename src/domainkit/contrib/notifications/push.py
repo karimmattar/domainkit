@@ -17,7 +17,7 @@ settings in ``PUSH_OPTIONS`` under its ``name``::
         },
     }
 
-Each calls its service's HTTP API through ``domainkit.http.client`` (the
+Each calls its service's HTTP API through ``domainkit.outbound.client`` (the
 ``push`` extra): FCM's HTTP v1 with a Google service account's token (or
 the metadata server's), APNs over HTTP/2 with a provider token (ES256)
 kept 50 minutes, Push Kit with its app's OAuth token.
@@ -67,7 +67,13 @@ from .sms import TIMEOUT, json_of, reached, shared_client
 if TYPE_CHECKING:
     import httpx2
 
-__all__ = ["ApnsPushBackend", "FcmPushBackend", "HuaweiPushBackend", "Refusal"]
+__all__ = [
+    "ApnsPushBackend",
+    "FcmPushBackend",
+    "HuaweiPushBackend",
+    "Refusal",
+    "reset_tokens",
+]
 
 FCM_SCOPE: Final = "https://www.googleapis.com/auth/firebase.messaging"
 APNS_TOKEN_LIFETIME: Final = 50 * 60
@@ -515,6 +521,19 @@ class HuaweiPushBackend(ProviderPushBackend):
             gone=code == HUAWEI_GONE,
             lasting=code in HUAWEI_LASTING or response.status_code == 400,
         )
+
+
+def reset_tokens() -> None:
+    """Forget the services' tokens kept between sends (*new in 2.9*).
+
+    FCM's service accounts, APNs' signed tokens, and Push Kit's apps are
+    kept by the process, so a send asks for no new token while one is
+    good. The test plugin calls it before each test: a token one test's
+    stub answered never reaches the next test's.
+    """
+    _google_accounts.clear()
+    _apns_tokens.clear()
+    _huawei_apps.clear()
 
 
 def _sent(response: "httpx2.Response") -> bool:

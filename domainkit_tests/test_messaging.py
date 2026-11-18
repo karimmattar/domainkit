@@ -646,7 +646,7 @@ async def test_work_no_request_queued_runs_as_the_system(tables: None) -> None:
     try:
         await Worker().run_once()
     finally:
-        tasks._tasks.pop("tests.hourly_actor")
+        tasks.unregister_task("tests.hourly_actor")
 
     actors = {key: context.actor for key, _, context in ran}
     assert actors == {first: SYSTEM_ACTOR, second: None, "hourly": SYSTEM_ACTOR}
@@ -665,7 +665,7 @@ async def test_periodic_tasks_run_once_per_interval(tables: None) -> None:
         await worker.run_once()
         await Worker().run_once()
     finally:
-        tasks._tasks.pop("tests.hourly")
+        tasks.unregister_task("tests.hourly")
 
     (row,) = await outbox()
     assert (row["target"], row["status"], ran) == ("tests.hourly", DONE, ["hourly"])
@@ -691,7 +691,7 @@ async def test_each_periodic_task_has_its_own_slot(tables: None) -> None:
         await worker.run_once()
     finally:
         for name in intervals:
-            tasks._tasks.pop(name)
+            tasks.unregister_task(name)
 
     rows = await outbox()
     assert sorted(ran) == ["hourly", "ten_minutes"]

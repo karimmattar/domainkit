@@ -470,7 +470,7 @@ async def test_fcm_sends_with_the_service_accounts_token(
         "data": {"order": "7"},
     }
     assert len(calls.requests) == 6  # One token for the four sends and a dry run.
-    push_module._google_accounts.clear()
+    push_module.reset_tokens()
 
 
 async def test_fcm_on_google_cloud_asks_the_metadata_server(provider: Any) -> None:  # noqa: ANN401
@@ -485,7 +485,7 @@ async def test_fcm_on_google_cloud_asks_the_metadata_server(provider: Any) -> No
 
     assert calls.requests[0].url.host == "metadata.google.internal"
     assert "data" not in calls.json(1)["message"]
-    push_module._google_accounts.clear()
+    push_module.reset_tokens()
 
 
 P8 = (
@@ -535,7 +535,7 @@ async def test_apns_sends_with_a_provider_token(provider: Any) -> None:  # noqa:
     tokens = {r.headers["authorization"] for r in calls.requests}
     assert len(tokens) == 1
     assert "apns-id" not in calls.requests[-1].headers
-    push_module._apns_tokens.clear()
+    push_module.reset_tokens()
 
 
 async def test_apns_refuses_tokens_that_are_not_apples(provider: Any) -> None:  # noqa: ANN401
@@ -548,7 +548,7 @@ async def test_apns_refuses_tokens_that_are_not_apples(provider: Any) -> None:  
     await backend.send_messages([PUSH])
 
     assert [r.url.host for r in calls.requests] == ["api.sandbox.push.apple.com"]
-    push_module._apns_tokens.clear()
+    push_module.reset_tokens()
 
 
 async def test_huawei_push_sends_with_the_apps_token(provider: Any) -> None:  # noqa: ANN401
@@ -576,12 +576,12 @@ async def test_huawei_push_sends_with_the_apps_token(provider: Any) -> None:  # 
         {"order": "7"},
     )
     assert "data" not in calls.json(3)["message"]
-    push_module._huawei_apps.clear()
+    push_module.reset_tokens()
     with pytest.raises(NotificationFailed, match="could not be reached"):
         await HuaweiPushBackend({"APP_ID": "1234", "APP_SECRET": "s"}).send_messages(
             [PUSH]
         )
-    push_module._huawei_apps.clear()
+    push_module.reset_tokens()
 
 
 MAIL = EmailMessage(

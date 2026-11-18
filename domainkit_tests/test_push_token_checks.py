@@ -74,9 +74,7 @@ CHECKED = "domainkit_tests.test_push_token_checks.Service"
 def fresh_accounts() -> Iterator[None]:
     """Forget the provider tokens a test's backends kept."""
     yield
-    push_module._google_accounts.clear()
-    push_module._huawei_apps.clear()
-    push_module._apns_tokens.clear()
+    push_module.reset_tokens()
 
 
 def metadata_token() -> httpx2.Response:

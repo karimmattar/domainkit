@@ -64,7 +64,7 @@ async def test_a_schedule_that_cannot_be_written_does_not_stop_other_messages() 
         async with asyncio.timeout(10):
             await running
     finally:
-        tasks._tasks.pop(NAME)
+        tasks.unregister_task(NAME)
 
     # Safe behaviour: the due task ran; on d126394 nothing ever is claimed.
     assert [entry[0] for entry in ran] == [value]

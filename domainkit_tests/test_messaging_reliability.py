@@ -85,14 +85,14 @@ def nothing_ran() -> Iterator[None]:
     """Start each test with nothing run."""
     ran.clear()
     yield
-    tasks._tasks.pop(NEW_TASK, None)
+    tasks.unregister_task(NEW_TASK)
 
 
 async def queue_for_new_code(label: str = "a", key: str | None = None) -> None:
     """Queue ``NEW_TASK`` as the new code does, then forget it as an old worker."""
     task(name=NEW_TASK)(added_by_the_deploy)
     await enqueue(added_by_the_deploy, ordering_key=key, label=label)
-    tasks._tasks.pop(NEW_TASK)
+    tasks.unregister_task(NEW_TASK)
 
 
 async def row_of(target: str = NEW_TASK) -> dict[str, Any]:
@@ -217,7 +217,7 @@ async def test_an_unknown_keyed_task_keeps_its_place_in_the_key() -> None:
             task(name=NEW_TASK)(added_by_the_deploy)
             await Worker(config()).run_once()
     finally:
-        tasks._tasks.pop("tests.reliability.known")
+        tasks.unregister_task("tests.reliability.known")
 
     assert ran == ["first", "second"]
 
@@ -306,9 +306,9 @@ def test_unnamed_tasks_are_warned_about_where_deployed(
         found = config_.unnamed_tasks()
     finally:
         for name in ("tests.reliability.named", "tests.reliability.named_periodic"):
-            tasks._tasks.pop(name)
+            tasks.unregister_task(name)
         key = tasks.qualified_name(unnamed)
-        tasks._tasks.pop(key)
+        tasks.unregister_task(key)
 
     mine = [each for each in found if key in each.message]
     assert [each.id for each in mine] == ["messaging.W001"]
@@ -336,7 +336,7 @@ async def test_a_handlers_own_cancellation_is_recorded_as_handler_cancelled() ->
         await enqueue(cancelled)
         await Worker(config()).run_once()
     finally:
-        tasks._tasks.pop("tests.reliability.cancelled")
+        tasks.unregister_task("tests.reliability.cancelled")
 
     row = await row_of("tests.reliability.cancelled")
     assert (row["status"], row["last_error"]) == (
@@ -368,7 +368,7 @@ async def test_a_stop_still_gives_the_message_back() -> None:
         with pytest.raises(asyncio.CancelledError):
             await running
     finally:
-        tasks._tasks.pop("tests.reliability.slow")
+        tasks.unregister_task("tests.reliability.slow")
 
     row = await row_of("tests.reliability.slow")
     assert (row["status"], row["attempts"], row["lock_id"]) == (PENDING, 0, None)
@@ -466,7 +466,7 @@ async def test_a_take_over_cut_off_as_it_commits_gives_the_message_back() -> Non
 def test_a_task_name_longer_than_the_outbox_column_is_refused() -> None:
     """The outbox stores 255 characters of a task's name."""
     task(name="x" * 255)(added_by_the_deploy)
-    tasks._tasks.pop("x" * 255)
+    tasks.unregister_task("x" * 255)
     with pytest.raises(ImproperlyConfigured) as refused:
         task(name="x" * 256)(added_by_the_deploy)
     assert str(refused.value) == (
@@ -561,7 +561,7 @@ async def test_a_long_slots_row_is_deleted_once_the_slot_is_over() -> None:
             assert await worker.cleanup() == 1
     finally:
         for name in ("tests.reliability.monthly", "tests.reliability.hourly"):
-            tasks._tasks.pop(name)
+            tasks.unregister_task(name)
 
 
 @pytest.mark.usefixtures("tables")
@@ -580,7 +580,7 @@ async def test_rows_without_a_dedupe_key_are_cleaned_up_beside_long_slots() -> N
             clock.tick(timedelta(days=2))
             assert await worker.cleanup() == 1
     finally:
-        tasks._tasks.pop("tests.reliability.monthly_too")
+        tasks.unregister_task("tests.reliability.monthly_too")
 
 
 # CONC-18: the lag by the database's clock.
@@ -696,7 +696,7 @@ async def test_a_long_slots_name_is_matched_exactly() -> None:
             assert kept["target"] == "tests.reliability.long_x"
     finally:
         for name in ("tests.reliability.long_x", "tests.reliability.longXx"):
-            tasks._tasks.pop(name)
+            tasks.unregister_task(name)
 
 
 @pytest.mark.usefixtures("tables")
@@ -791,14 +791,14 @@ async def test_a_dead_letter_forgets_its_sighting() -> None:
 
             secret_task(secret)
             await enqueue(secret, code="123456")
-            tasks._tasks.pop("tests.reliability.secret")
+            tasks.unregister_task("tests.reliability.secret")
             clock.tick(5)
             await Worker(config()).run_once()  # Found unknown.
             secret_task(secret)
             clock.tick(5)
             await Worker(config()).run_once()  # It fails: dead, and blanked.
     finally:
-        tasks._tasks.pop("tests.reliability.secret", None)
+        tasks.unregister_task("tests.reliability.secret")
 
     unknown, blanked = await row_of(), await row_of("tests.reliability.secret")
     assert (unknown["status"], blanked["status"]) == (DEAD, DEAD)

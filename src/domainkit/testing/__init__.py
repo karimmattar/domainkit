@@ -196,6 +196,7 @@ OUTBOXES: Final = (
 RESETS: Final = (
     ("domainkit.contrib.auth.principals", "invalidate_all"),
     ("domainkit.contrib.mail.admins", "reset_reports"),
+    ("domainkit.contrib.notifications.push", "reset_tokens"),
     ("domainkit.outbound.client", "reset_circuits"),
     ("domainkit.ledger.handler", "ledgers.reset"),
     ("domainkit.storage.handler", "storages.reset"),
