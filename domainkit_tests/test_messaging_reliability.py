@@ -242,11 +242,12 @@ async def test_the_wait_is_logged_and_counted_as_its_own_outcome(
         await Worker(config()).run_once()
 
     assert observed == [UNKNOWN]
+    row = await row_of()
     assert caplog.messages == [
         (
-            f"task {NEW_TASK}: No task {NEW_TASK!r}. Waiting for a worker that "
-            "knows it (a deploy rolling out?); trying again in 0.0s, dead-lettered "
-            "after 2026-11-01T10:00:00+00:00"
+            f"task {NEW_TASK} (message {row['id']}): No task {NEW_TASK!r}. Waiting "
+            "for a worker that knows it (a deploy rolling out?); trying again in "
+            "0.0s, dead-lettered after 2026-11-01T10:00:00+00:00"
         )
     ]
 

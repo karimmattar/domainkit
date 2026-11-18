@@ -34,6 +34,7 @@ from domainkit.contrib.messaging.tables import (
     CANCELLED,
     DEAD,
     DONE,
+    HELD,
     PENDING,
     messages,
 )
@@ -198,6 +199,27 @@ async def test_dead_letters_are_the_newest_dead_messages(outbox: None) -> None:
     assert [each.target for each in listed] == ["newest", "new"]
 
 
+async def test_unfinished_arguments_are_those_of_messages_still_to_run(
+    outbox: None,
+) -> None:
+    """Pending (running too) and held messages of the target; not finished ones."""
+    await store(
+        row("t", payload={"item": "waiting"}),
+        row("t", payload={"item": "running"}, started_at=NOW, locked_until=NOW),
+        row("t", payload={"item": "held"}, status=HELD),
+        row("t", payload={"item": "dead"}, status=DEAD, finished_at=NOW),
+        row("t", payload={}, status=DONE, finished_at=NOW),
+        row("t", payload={}, status=CANCELLED, finished_at=NOW),
+        row("other", payload={"item": "another task's"}),
+    )
+    statement = outbox_admin.unfinished_arguments("t", "item")
+
+    async with connections.engine().connect() as connection:
+        found = set((await connection.execute(statement)).scalars())
+
+    assert found == {"waiting", "running", "held"}
+
+
 async def test_listings_keep_to_the_queue_named(outbox: None) -> None:
     """``queue`` leaves the other queues' messages out."""
     await store(row("mail", queue="emails"), row("task"))
@@ -271,8 +293,9 @@ def test_runworker_says_what_each_option_does() -> None:
     assert usage(RunWorker, "runworker") == (
         "usage: manage.py runworker [-h] [--once] [--metrics-port METRICS_PORT] "
         "[--metrics-address METRICS_ADDRESS] [--database DATABASE] [--queue "
-        "QUEUE] [--no-relay] [--heartbeat-file PATH] [--heartbeat-interval "
-        "SECONDS] Run the messaging worker (durable event handlers, background "
+        "QUEUE] [--no-relay] [--heartbeat-file PATH] [--ready-file PATH] "
+        "[--heartbeat-interval SECONDS] Run the messaging worker (durable event "
+        "handlers, background "
         "tasks). options: -h, --help show this help message and exit --once run "
         "the messages that are due now, then exit (cron, tests) --metrics-port "
         "METRICS_PORT serve Prometheus metrics on this port (needs "
@@ -282,9 +305,12 @@ def test_runworker_says_what_each_option_does() -> None:
         "every database that hosts domains --queue QUEUE run only this queue's "
         "messages (repeatable); default: every queue --no-relay with a broker: "
         "only consume, never poll the outbox --heartbeat-file PATH rewrite this "
-        "file while the worker's checks hold, from its own event loop: what a "
-        "container's health check reads (removed on stop) --heartbeat-interval "
-        "SECONDS seconds between checks for --heartbeat-file (default: 15.0)"
+        "file while the worker's event loop runs, whatever its checks find: what "
+        "a container's health check reads (removed on stop) --ready-file PATH "
+        "rewrite this file while the worker's checks hold (/ready's and the "
+        "broker's), remove it when one fails: its readiness (removed on stop) "
+        "--heartbeat-interval SECONDS seconds between beats and checks for "
+        "--heartbeat-file and --ready-file (default: 15.0)"
     )
 
 

@@ -143,13 +143,24 @@ followed. A failed attempt is tried again after a delay that starts at
 `RETRY_BASE_SECONDS` and doubles, with jitter, up to `RETRY_MAX_SECONDS`.
 After `MAX_ATTEMPTS`, the delivery is marked failed.
 
+A last attempt can also end without an outcome: its worker is killed,
+it runs past its time limit, or the database fails as the outcome is
+written. Its task then dies, and the delivery is marked failed all the
+same: by the attempt, if the database lets it, else by an hourly task
+of its own (`domainkit.contrib.webhooks.fail_abandoned`), which marks
+failed each pending delivery whose task no longer waits to run (dead,
+cancelled, or dropped), and logs how many. `last_error` says so, and
+`webhooks replay` sends it again. Retrying the dead task with
+`messages retry` sends nothing, and the worker logs that the delivery
+is not pending: replay the delivery instead.
+
 A delivery is in one of four states:
 
 | State | Meaning |
 | --- | --- |
 | `pending` | Waiting for its next attempt. |
 | `succeeded` | A receiver answered 2xx. |
-| `failed` | Every attempt failed, the URL was refused, or no key decrypts the secret. |
+| `failed` | Every attempt failed, the URL was refused, no key decrypts the secret, or the last attempt ended without an outcome. |
 | `cancelled` | The subscription was deleted or made inactive, or the people the delivery was about were erased. |
 
 Delivery is at least once. A receiver must accept the same delivery

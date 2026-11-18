@@ -150,6 +150,7 @@ a project's `conftest.py` never needs a private name:
 | Every [factory](#factories) numbers its objects from 0, so a test sees the same `Sequence` values in any order. | `Factory.reset_sequence()` |
 | The throttled logs (`domainkit.log.ThrottledLog`) have forgotten what they held back, so a test's first line is written. | `domainkit.log.reset_throttled()` |
 | The principal cache is empty: a user is read from the database again. | `domainkit.contrib.auth.principals.invalidate_all()` |
+| Every outgoing HTTP client's circuits are closed: a client that mail, text messages, push, search, identity, or captcha share between calls carries no open circuit into the next test (New in 2.9). | `domainkit.http.client.reset_circuits()` |
 | Memory ledgers (`memory://` in `LEDGERS`) and memory storages are empty, as the databases' ids start again after `db`. Within the test they keep what they hold when the ledgers close: after a command, `outbox.run_queued()`, or a client's shutdown (since 2.9). Ledgers that hold connections (immudb's) stay open. | `ledgers.reset()`, `storages.reset()` |
 | The databases are refused unless the test requested them ([Database access](#database-access)). | `database_blocker` |
 

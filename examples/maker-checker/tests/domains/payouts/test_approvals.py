@@ -1,19 +1,26 @@
 """Payouts over the threshold: another person approves the exact request."""
 
+from itertools import groupby
+
 from domainkit.contrib.audit.testing import audit_entries
 from domainkit.contrib.messaging.testing import Outbox
-from domainkit.testing import TestClient
+from domainkit.testing import FrozenClock, TestClient
 
 from tests.people import APPROVER, MAKER, REQUESTS, URL, Person
 
 
 def test_a_large_payout_runs_once_another_person_approves_it(
-    client: TestClient, maker: Person, approver: Person, outbox: Outbox
+    client: TestClient,
+    maker: Person,
+    approver: Person,
+    outbox: Outbox,
+    clock: FrozenClock,
 ) -> None:
     """Submitted and approved, each act confirmed; the worker sends it as the maker."""
     request = maker.submit("25000.00")
-
+    clock.tick(60)  # Each step at a moment of its own, for the trail below.
     approved = approver.approve(request)
+    clock.tick(60)
     outbox.run_queued()  # The worker, here: it runs the approved command.
 
     assert request["status"] == "pending"
@@ -24,21 +31,32 @@ def test_a_large_payout_runs_once_another_person_approves_it(
     assert [item["payee"] for item in maker.api.get(URL).json()["items"]] == [
         "Acme Supplies Ltd"
     ]
-    trail = [
-        (entry.action, entry.actor)
+    entries = [
+        entry
         for entry in client.run(audit_entries)
         if entry.action.startswith(("approvals.", "payouts.", "auth.action"))
     ]
+    # The entries of one moment share it: the trail keeps no order among them.
+    trail = [
+        {(entry.action, entry.actor) for entry in moment}
+        for _, moment in groupby(entries, key=lambda entry: entry.occurred_at)
+    ]
     assert trail == [
-        ("auth.action_authorized", maker.id),  # The maker confirmed the request,
-        ("approvals.request_submitted", maker.id),  # submitted it,
-        ("auth.action_authorization_used", maker.id),  # and so spent the act.
-        ("auth.action_authorized", approver.id),  # The approver confirmed,
-        ("approvals.approval_given", approver.id),
-        ("approvals.request_approved", approver.id),  # the one approval needed,
-        ("auth.action_authorization_used", approver.id),
-        ("payouts.payout_sent", maker.id),  # and the worker sent it, as the maker.
-        ("approvals.request_executed", maker.id),
+        {
+            ("auth.action_authorized", maker.id),  # The maker confirmed the request,
+            ("approvals.request_submitted", maker.id),  # submitted it,
+            ("auth.action_authorization_used", maker.id),  # and so spent the act.
+        },
+        {
+            ("auth.action_authorized", approver.id),  # The approver confirmed,
+            ("approvals.approval_given", approver.id),
+            ("approvals.request_approved", approver.id),  # the one approval needed,
+            ("auth.action_authorization_used", approver.id),
+        },
+        {
+            ("payouts.payout_sent", maker.id),  # And the worker sent it, as the maker.
+            ("approvals.request_executed", maker.id),
+        },
     ]
 
 

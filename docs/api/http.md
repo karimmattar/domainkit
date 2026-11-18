@@ -99,6 +99,7 @@ Outgoing HTTP calls, bounded by the request's deadline (`domainkit[httpclient]`)
 - `UnsafeURL`: A URL that may not be called; the message never quotes it.
 - `client`: A client with `HTTP_CLIENT`'s options, for calls that need no others.
 - `close_all`: Close every client's connections on the running event loop.
+- `reset_circuits`: Close every client's circuits, forgetting their failures (New in 2.9).
 - `stub`: Send every call made in the block (and tasks it starts) to `handler`.
 
 ## `domainkit.http.compression`
