@@ -17,6 +17,19 @@ On this page you learn how to:
 - choose whose key it is when the caller is not logged in;
 - keep the keys on the right database.
 
+## When to use it, and when not to
+
+- **Use it when** a client may send an unsafe request (`POST`, `PATCH`)
+  again because it got no answer: a payment, a transfer, an order.
+- **Do not use it** for a message that the worker runs twice: mark the
+  task or handler [`@inbox`](messaging.md#once-in-the-database-the-inbox).
+  Do not use it to refuse a duplicate for good, such as a payment's
+  reference: keys are forgotten after their TTL, so add a
+  [unique column](../databases.md#unique-values).
+- **A key protects what commits through a unit of work**
+  ([what a key protects](#what-a-key-protects)). Call a provider from a
+  deferred task, not from the route.
+
 ## Install
 
 Add the app, and add `IdempotencyMiddleware` last in `MIDDLEWARE`. It

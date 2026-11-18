@@ -34,7 +34,8 @@ The keys are never stored. A setting of the project's own, `API_KEYS`,
 holds each key's SHA-256 digest and the username it logs in as. A name
 that the framework does not declare belongs to the project's settings
 schema, which startup validates with the rest
-([settings](../reference/settings.md#how-the-settings-are-validated)):
+([settings](../reference/settings.md#how-the-settings-are-validated)).
+Make a new file, `src/config/schema.py`:
 
 ```python title="src/config/schema.py (new file)"
 """The project's own settings, validated with the framework's."""
@@ -49,8 +50,9 @@ class ProjectSettings(Settings):
     """Each API key's SHA-256 digest, and the username it logs in as."""
 ```
 
-Name the schema in the base settings, and read the pairs from the
-environment, as `SERVICE_API_API_KEYS=<digest>=billing,...`:
+Name the schema in the base settings, `src/config/settings/base.py`, and
+read the pairs from the environment, as
+`SERVICE_API_API_KEYS=<digest>=billing,...`:
 
 ```python title="src/config/settings/base.py"
 SETTINGS_CLASS = "config.schema.ProjectSettings"
@@ -61,7 +63,7 @@ API_KEYS = dict(pair.split("=", 1) for pair in env.list("API_KEYS", []))
 
 An authentication class reads the header, finds the key's user, and
 returns its credentials. It returns `None` when the header is missing, so
-the other classes try:
+the other classes try. Make a new file, `src/config/api_keys.py`:
 
 ```python title="src/config/api_keys.py (new file)"
 """Service accounts: ``X-API-Key: <key>`` logs in as the key's user."""
@@ -105,7 +107,8 @@ class ApiKeyAuthentication(BaseAuthentication):
 
 ### Step 4: list the class after the token class
 
-The class that checks logins' tokens stays first:
+In `src/config/settings/base.py`, the class that checks logins' tokens
+stays first:
 
 ```python title="src/config/settings/base.py"
 AUTH: dict[str, object] = {
@@ -123,7 +126,8 @@ grant it.
 ### Step 5: test the key
 
 The test makes the user, sets `API_KEYS` to the key's digest, and calls
-`GET /auth/me` with the key, then with a key that nobody was given:
+`GET /auth/me` with the key, then with a key that nobody was given. Make
+a new file, `tests/test_api_keys.py`:
 
 ```python title="tests/test_api_keys.py (new file)"
 """A service calls with its key; a key nobody was given is refused."""

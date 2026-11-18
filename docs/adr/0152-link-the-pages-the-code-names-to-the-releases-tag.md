@@ -1,6 +1,6 @@
 # 0152. Link the pages the code names to the release's tag
 
-- Status: Accepted
+- Status: Accepted; amended by [0189](0189-publish-the-documentation-site-from-the-newest-releases-tag.md)
 - Date: 2026-11-16
 
 ## Context

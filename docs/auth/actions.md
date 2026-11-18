@@ -21,6 +21,16 @@ On this page you learn how to:
 - confirm another way, from an app of your own;
 - authorize an act in a test.
 
+## When to use it, and when not to
+
+- **Use it when** the user confirms one act, with the arguments shown,
+  once: ending a membership, closing an account, deciding a request.
+- **Do not use it** when any guarded act may go ahead for a few minutes:
+  a [step-up](step-up.md#stepping-up) asks for one code for all of them.
+  Do not use it to get another person's agreement: that is
+  [approvals](../contrib/approvals.md), whose steps an authorization can
+  guard ([held for approval](#held-for-approval)).
+
 ## A first example
 
 Declare the act: its purpose, the command its service takes, what it is

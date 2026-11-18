@@ -202,8 +202,7 @@ application starts in development and tests, and refused in staging and
 production, where the application does not start:
 
 ```text
-The application has problems:
-  security.E101: GET /reports declares no access rule: add Depends(Require(...)), or dependencies=[Public] if anyone may call it.
+The application has problems: security.E101: GET /reports declares no access rule: add Depends(Require(...)), or dependencies=[Public] if anyone may call it.
 ```
 
 The application is checked when it is built, and again when it starts

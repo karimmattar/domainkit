@@ -716,7 +716,10 @@ shutdown call.
 `RATE_LIMIT` limits the requests of each caller to the whole service. A
 caller is the authenticated actor, or else the client address. Staff
 acting as a user ([impersonation](auth/routes.md#impersonation)) count as
-themselves, whomever they act as: one person, one budget.
+themselves, whomever they act as: one person, one budget. Rate limits
+count requests; to bound how much money moves, per payment or per day,
+use [limits](contrib/limits.md), which count movements in the use case's
+transaction:
 
 ```python
 RATE_LIMIT = "300/minute"

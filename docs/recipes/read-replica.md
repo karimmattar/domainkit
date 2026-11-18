@@ -23,6 +23,10 @@ Every step here is run as written by `domainkit_tests/test_recipes.py`.
 
 ### Step 1: make a project with a resource
 
+The domain is layered (`--minimal` is a small layered domain), as a
+service large enough for a replica often is. In the tutorial's four-file
+layout, the same change goes in `routes.py`:
+
 ```bash
 domainkit init shopAPI shop
 cd shop
@@ -33,8 +37,9 @@ python manage.py migrate
 
 ### Step 2: give reads a read-only unit of work
 
-The resource's unit of work is a dependency. Give `GET` and `HEAD` a
-read-only one, and the commands a writable one:
+The resource's unit of work is a dependency. In
+`src/domains/orders/api/routes.py`, give `GET` and `HEAD` a read-only
+one, and the commands a writable one:
 
 ```python title="src/domains/orders/api/routes.py"
 from fastapi import Request
@@ -47,8 +52,9 @@ async def get_unit_of_work(request: Request) -> SqlAlchemyOrdersUnitOfWork:
 
 ### Step 3: name the replica in production
 
-The production database names its replica: an alias of its own, with its
-own pool, TLS, and readiness check:
+In `src/config/settings/production.py`, the production database names
+its replica: an alias of its own, with its own pool, TLS, and readiness
+check:
 
 ```python title="src/config/settings/production.py"
 DATABASES["default"]["REPLICAS"] = ["replica"]
@@ -77,6 +83,10 @@ replica: two SQLite databases do not replicate, so the tests read the
 primary.
 
 ### Step 4: test the reads
+
+The test creates an order and lists it, then checks that the read-only
+unit of work refuses to commit. Make a new file,
+`tests/domains/orders/test_reads.py`:
 
 ```python title="tests/domains/orders/test_reads.py (new file)"
 """Reads take a read-only unit of work; it never writes."""

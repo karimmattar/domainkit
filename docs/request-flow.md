@@ -218,6 +218,13 @@ and returns it.
 4. After the commit, the events are published in the process, to their
    handlers. Nothing is published for work that did not commit.
 
+An error answer does not always mean that nothing committed. A request
+cut off by its deadline (`503 deadline_exceeded`), or a connection lost,
+while its `COMMIT` is on the way may find that the database applied it.
+So a client retries a write only with an `Idempotency-Key`, which makes
+the retry get the first answer, or `409 idempotency_response_unavailable`
+once the first committed ([idempotency](contrib/idempotency.md)).
+
 ## 9. The answer
 
 `presenting.answer` shows the aggregate through the resource's schema. It
