@@ -89,6 +89,10 @@ Run `python manage.py makemigrations`, review the revision, then
 requests fails (`OperationalError`), so their routes and the worker's
 runs answer `500`. Requests stored before have no tenant.
 
+The same table gains an index, `ix_domainkit_approval_requests_scope`, of
+`(tenant_id, action, policy, submitted_at)`, which an approver's list
+reads through. The same `makemigrations` makes it.
+
 ## 2.7 to 2.8
 
 2.8 follows up 2.7. Each item of this list says what a project that

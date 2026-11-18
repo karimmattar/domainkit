@@ -31,6 +31,15 @@ and a status.
   ([Rows of no tenant](docs/tenancy.md#rows-of-no-tenant), ADR 0183)
   (audit A28-SEC-04).
 
+### Changed
+
+- An approver's list of approval requests reads through an index of the
+  tenant, the action, the policy, and the time submitted
+  (`ix_domainkit_approval_requests_scope`). An approver of a rare policy
+  read the whole table on every page: 29 ms a page at 300,000 requests on
+  PostgreSQL, 0.08 ms with the index. Run `makemigrations` and `migrate`
+  (audit A28-PERF-04).
+
 ### Security
 
 - Live events are scoped to the tenant they were committed in: an event
