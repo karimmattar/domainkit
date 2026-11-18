@@ -13,23 +13,23 @@ and docs/tenancy.md listed what is scoped: rows, databases, caches,
 limits, logs, tasks. These three were not on the list, and nothing said
 so:
 
-- **Live events** (ADR 0057, ADR 0143). `live_events` handed each
-  committed event to every subscriber of its type whose rule allowed it.
-  An event carried no tenant, nor did the message between processes, so
-  a rule could not tell. The framework's own rules ask about the
-  connection's tenant only: `InTenant()` allows every object while a
-  tenant is served, and `HasMemberPermissions` counts the connection's
-  role.
-- **Approval requests** (ADR 0121). A request carried no tenant. Listing
-  and deciding asked `HasPermissions`, which counts `MembershipBackend`'s
-  keys for the tenant served: a role in one tenant read and decided
-  another's requests. The approval queued the command with the
-  approver's tenant (the outbox's headers), and the worker ran it there.
+- **Live events** (ADR 0057, ADR 0143). An event recorded no tenant,
+  nor did the message between processes, so delivery could not keep a
+  tenant's events to that tenant's connections. The framework's own
+  rules ask about the connection's tenant only: `InTenant()` allows
+  every object while a tenant is served, and `HasMemberPermissions`
+  counts the connection's role.
+- **Approval requests** (ADR 0121). A request recorded no tenant, so
+  listing and deciding could not keep it to the tenant it was submitted
+  in; they asked `HasPermissions`, which counts `MembershipBackend`'s
+  keys for the tenant served. The approved command was queued with the
+  tenant the approval was served as (the outbox's headers), not the
+  request's.
 - **Limits and the ledger.** Their rows belong to no tenant by design.
-  Their routes asked `ModelActions`, so a role in one tenant that names
-  `limits.change_limit` or `accounting.view_account` reached every
-  tenant's rows. Approvals' guards of postings, of making superusers and
-  of admin changes asked the same keys of makers and approvers.
+  Their routes asked `ModelActions`, which counts a member's keys in the
+  tenant served, where keys held everywhere are what such rows need.
+  Approvals' guards of postings, of making superusers and of admin
+  changes asked makers and approvers the same way.
 
 Constraints:
 
@@ -215,39 +215,36 @@ Options for rows of no tenant:
 
 ## Amendment (2026-11-18): staff APIs, an everywhere guard's requests, and each request committed as its tenant alone
 
-The review of this work found three gaps of the same kind, closed before
-release:
+The review of this work extended the decision before release:
 
-- **Staff APIs counted a staff member's role.** `staff_rules` (the admin
-  API, and the staff APIs of flags and webhooks), the audit trail's
-  history, and the admin site asked `HasPermissions`: staff holding a
-  key only through a role in the tenant served read the users of every
-  tenant, and changed flags every tenant shares. Their rows belong to no
-  tenant. `staff_rules` asks `ModelActions(..., everywhere=True)`, the
-  history asks `audit.view_history` everywhere, and the admin site asks
-  each model's permissions everywhere unless the model is `TenantOwned`,
-  whose rows are the tenant's served. `is_staff` is held everywhere
-  already; the admin API's ceilings counted keys held everywhere before
-  (ADR 0150).
-- **A role's `view_every` read an everywhere guard's requests.** The
-  approvals list counted `approvals.view_every_approvalrequest` through a
-  role, so a role read the postings and admin changes submitted in its
-  tenant. The key held everywhere shows every request; held only through
-  a role, it shows the requests of guards that are not `everywhere`. So
-  the consequence "a tenant's role reaches ... no guarded posting" holds.
-- **Code across tenants committed inside `all_tenants()`.** Expiry
-  served each request's tenant inside `all_tenants()`, which stayed on:
-  the handlers its commit ran read every tenant's rows. A helper of the
+- **Staff APIs count keys held everywhere.** `staff_rules` (the admin
+  API, and the staff APIs of flags and webhooks) asks
+  `ModelActions(..., everywhere=True)`, the audit trail's history asks
+  `audit.view_history` everywhere, and the admin site asks each model's
+  permissions everywhere unless the model is `TenantOwned`, whose rows
+  are the tenant's served. Users, groups, flags and the trail belong to
+  no tenant. `is_staff` is held everywhere already, and the admin API's
+  ceilings count keys held everywhere (ADR 0150).
+- **An everywhere guard's requests go to keys held everywhere.**
+  `approvals.view_every_approvalrequest` held everywhere shows every
+  request; held only through a member's role, it shows the requests of
+  guards that are not `everywhere`. So a tenant's role reaches no
+  guarded posting, as the consequences say.
+- **Each request's work commits as its tenant alone.** A helper of the
   core's tenancy module, `tenant_alone(tenant_id)`, internal for now,
   serves one tenant (or none) with `all_tenants()` off inside it. Expiry
   reads each request's tenant, then locks, expires and commits it as
-  that tenant alone;
-  `privacy erase` commits each tenant's requests as that tenant alone;
-  approving, rejecting and cancelling commit as the request's tenant
-  alone, so a decision made inside `all_tenants()` publishes and queues
-  as that tenant. A run checks the seal before it serves the request's
-  tenant, so a tenant changed around the application fails the request
-  (`request_tampered`) rather than raise; the failure commits as no
+  that tenant alone; `privacy erase` commits each tenant's requests as
+  that tenant alone; approving, rejecting and cancelling commit as the
+  request's tenant alone, so a decision made inside `all_tenants()`
+  publishes and queues as that tenant, and its handlers read that
+  tenant's rows. A maker's call finds the requests of the tenant it is
+  served as, inside `all_tenants()` too. A run checks the seal before it
+  serves the request's tenant: a tenant changed around the application
+  fails the request (`request_tampered`), committed as no tenant.
+  Expiry leaves a request whose stored tenant is not a tenant id as it
+  is, as it leaves one whose seal does not hold, and `privacy erase`
+  pseudonymises such a request among every tenant's, committed as no
   tenant. `approvers_of` asks as the request's tenant.
 
 `everywhere` asks as where no tenant is served: it relies on a backend

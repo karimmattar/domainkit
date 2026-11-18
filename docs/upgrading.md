@@ -111,16 +111,16 @@ project that relied on 2.8's behaviour changes, and what to run.
   is served. Do not set their `tenant_id` by hand, which breaks their
   seal: decide or cancel them where no tenant is served, or let them
   expire. Before you deploy, let the worker run the requests already
-  approved: once deployed, such a request runs as no tenant. A member who
-  holds `approvals.view_every_approvalrequest` only through a role no
-  longer reads the requests of a guard `everywhere`, such as approvals'
-  own guards of postings, superusers, and admin changes. Without
-  `TENANCY`, nothing changes.
+  approved: once deployed, such a request runs as no tenant.
+  `approvals.view_every_approvalrequest` shows the requests of a guard
+  `everywhere`, such as approvals' own guards of postings, superusers,
+  and admin changes, to those who hold it everywhere: grant it so to the
+  staff who read them. Without `TENANCY`, nothing changes.
 - **Limits and the ledger count the keys held everywhere** (security).
   A key granted in the tenant served, by `MembershipBackend` or any
-  backend that grants by `current_tenant()`, no longer reaches the routes
+  backend that grants by `current_tenant()`, does not count on the routes
   of `domainkit.contrib.limits` or `domainkit.contrib.accounting`
-  (`403`), nor makes a maker or an approver of approvals' guards of
+  (`403`), nor for the makers and approvers of approvals' guards of
   postings, captures, reversals, making superusers, and admin changes.
   Grant those keys to the staff who use them, directly or through a
   group ([Rows of no tenant](tenancy.md#rows-of-no-tenant)). Routes of
