@@ -1,6 +1,6 @@
 # 0121. Hold guarded commands as sealed requests, and count approvals under the request's lock
 
-- Status: Accepted; amended 2026-10-31, 2026-11-01, and 2026-11-16 (at the end); amended by [0154](0154-hold-admin-changes-for-approval-and-show-requests-to-those-they-concern.md)
+- Status: Accepted; amended 2026-10-31, 2026-11-01, and 2026-11-16 (at the end); amended by [0154](0154-hold-admin-changes-for-approval-and-show-requests-to-those-they-concern.md) and [0183](0183-keep-live-events-and-approval-requests-to-their-tenant-and-rows-of-no-tenant-to-keys-held-everywhere.md)
 - Date: 2026-10-31
 
 ## Context
