@@ -231,8 +231,9 @@ async def receive(self, request: Request) -> Response:
 
 `verify` compares the signature in constant time, and refuses a
 timestamp more than 5 minutes away: a delivery captured and sent again
-later fails. A `Receiver` cannot be made without its secret: signed with
-an empty one, anyone's delivery would hold. The same delivery tried twice has one `webhook-id`, so the
+later fails. A `Receiver` cannot be made without its secret: `verify`
+refuses an empty one, so every delivery would fail instead of being
+verified. The same delivery tried twice has one `webhook-id`, so the
 receiver keeps it once. A real receiver keeps the ids in its database,
 unique, and acts on a delivery the first time only.
 

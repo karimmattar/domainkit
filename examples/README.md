@@ -23,9 +23,9 @@ Each example runs against the domainkit of this checkout. Its README's
 from `../..` with the extras the example needs, its migrations made, and
 its tests. An example holds no migrations: they are written for the
 domainkit installed, as a project's are after an upgrade. A project made
-from an example commits the migrations it writes, as every project does. Nor does it
-hold the `.env` that `init` writes, which names the settings module: each
-README exports the variable instead.
+from an example commits the migrations it writes, as every project does.
+Nor does an example hold the `.env` that `init` writes, which names the
+settings module: each README exports the variable instead.
 
 ## How they stay working
 

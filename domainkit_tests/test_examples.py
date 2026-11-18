@@ -33,7 +33,7 @@ from domainkit_tests.test_init_fintech import Project
 
 EXAMPLES = ROOT / "examples"
 PASSED = {
-    "payments-ledger": ("LEDGER_API_", 13),
+    "payments-ledger": ("LEDGER_API_", 14),
     "maker-checker": ("PAYOUTS_API_", 17),
     "outbox-webhooks": ("TRANSFERS_API_", 13),
 }
@@ -207,7 +207,11 @@ def test_an_examples_walkthrough_quotes_its_code(name: str) -> None:
     code = [
         f"\n{unindented(path.read_text(encoding='utf-8'))}\n"
         for path in (EXAMPLES / name).rglob("*.py")
-        if not any(fnmatch(part, pattern) for part in path.parts for pattern in LEFT)
+        if not any(
+            fnmatch(part, pattern)
+            for part in path.relative_to(EXAMPLES / name).parts
+            for pattern in LEFT
+        )
     ]
     blocks = [textwrap.dedent(block) for block in _PYTHON.findall(readme)]
 

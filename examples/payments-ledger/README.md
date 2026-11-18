@@ -111,7 +111,9 @@ period and the next month's, and the two accounts of the business, each
 once. `manage.py seed wallets` runs it before the first payment
 (`apps.py`), and the worker runs it every day (`@periodic`), so the next
 month is open before it starts: a payment at midnight on the 1st finds its
-period. The tests' `books` fixture runs it too.
+period. A month that a period of the operator's already reaches (from the
+15th to the 14th, say) is left to that period. The tests' `books` fixture
+runs it too.
 
 ## A payment is an entry, once per key
 
@@ -287,6 +289,7 @@ balances and every balance is the sum of its postings.
 | `test_a_capture_pays_part_of_a_hold_and_frees_the_rest`, `test_a_release_moves_nothing`, `test_what_is_held_cannot_be_spent` | Holds reserve, capture, and release. |
 | `test_the_trial_balance_balances` | Every currency nets to zero, and `verify_ledger()` finds no problem. |
 | `test_payments_go_on_into_the_next_month` | A payment on the 1st finds its period, opened the month before. |
+| `test_the_books_open_beside_a_period_of_the_operators` | A period from the 15th to the 14th is left as it is, and the accounts still open. |
 
 domainkit's CI runs them on SQLite and on PostgreSQL, with the project's
 ruff, mypy, `check`, and migrations, for every change to the framework.

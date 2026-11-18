@@ -9,7 +9,11 @@ from domains.wallets import controllers
 class WalletsConfig(DomainConfig):
     """Open the books with ``manage.py seed``."""
 
-    requires = ("domainkit.contrib.accounting", "domainkit.contrib.idempotency")
+    requires = (
+        "domainkit.contrib.accounting",
+        "domainkit.contrib.idempotency",
+        "domainkit.contrib.messaging",  # The worker runs open_books each day.
+    )
 
     def ready(self) -> None:
         """Register the seed of the periods and the business's accounts.

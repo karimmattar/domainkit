@@ -11,6 +11,7 @@ No HTTP here: the routes, the worker, ``manage.py seed``, and the tests
 run the same functions.
 """
 
+from contextlib import suppress
 from datetime import timedelta
 from decimal import Decimal
 from typing import Final
@@ -30,6 +31,8 @@ from domainkit.contrib.accounting import (
     Line,
     OpenAccount,
     OpenPeriod,
+    PeriodNameTaken,
+    PeriodsOverlap,
     PlaceHold,
     PostEntry,
     ReferenceReused,
@@ -61,20 +64,14 @@ HOUSE: Final = (
 
 @periodic(every=timedelta(days=1), name="wallets.open_books")
 async def open_books() -> None:
-    """Open this month's period and the next, and the business's own accounts.
+    """Open the business's own accounts, and this month's period and the next.
 
     An entry is booked only in an open period, so the next month is opened
     ahead of it: the worker runs this each day, and ``manage.py seed
-    wallets`` once, before the first payment. What is open stays as it is.
+    wallets`` once, before the first payment. What is open stays as it is,
+    and a month that a period of the operator's already reaches (one from
+    the 15th to the 14th) is left to that period.
     """
-    this_month = clock.today().replace(day=1)
-    for first in (this_month, (this_month + timedelta(days=31)).replace(day=1)):
-        last = (first + timedelta(days=31)).replace(day=1) - timedelta(days=1)
-        async with AccountingUnitOfWork() as uow:
-            period = await uow.periods.covering(first)
-        if period is None:
-            month = OpenPeriod(name=f"{first:%Y-%m}", starts_on=first, ends_on=last)
-            await open_period(month, AccountingUnitOfWork())
     async with AccountingUnitOfWork() as uow:
         opened = {
             account.code
@@ -84,6 +81,15 @@ async def open_books() -> None:
         if code not in opened:
             house = OpenAccount(code=code, name=name, type=kind, currency=CURRENCY)
             await open_account(house, AccountingUnitOfWork())
+    this_month = clock.today().replace(day=1)
+    for first in (this_month, (this_month + timedelta(days=31)).replace(day=1)):
+        last = (first + timedelta(days=31)).replace(day=1) - timedelta(days=1)
+        async with AccountingUnitOfWork() as uow:
+            taken = await uow.periods.overlapping(first, last)
+        if not taken:
+            month = OpenPeriod(name=f"{first:%Y-%m}", starts_on=first, ends_on=last)
+            with suppress(PeriodNameTaken, PeriodsOverlap):  # Opened meanwhile.
+                await open_period(month, AccountingUnitOfWork())
 
 
 async def house_account(code: str) -> AccountId:

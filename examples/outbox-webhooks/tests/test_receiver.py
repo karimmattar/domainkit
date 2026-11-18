@@ -64,6 +64,6 @@ def test_a_delivery_that_does_not_hold_is_refused(
 
 
 def test_a_receiver_needs_its_secret() -> None:
-    """With no secret, anyone could sign a delivery it would take."""
+    """Without one it would verify no delivery: it is refused when it is made."""
     with pytest.raises(ValueError, match="secret"):
         Receiver("")

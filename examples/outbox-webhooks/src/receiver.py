@@ -28,7 +28,8 @@ class Receiver:
         """An endpoint that verifies with ``secret``.
 
         Raises:
-            ValueError: ``secret`` is empty: anyone could sign with it.
+            ValueError: ``secret`` is empty. It would verify no delivery:
+                ``verify`` refuses it, and every delivery would fail.
         """
         if not secret:
             raise ValueError("A receiver needs its subscription's secret.")

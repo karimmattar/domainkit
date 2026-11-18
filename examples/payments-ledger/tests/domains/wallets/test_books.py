@@ -1,11 +1,16 @@
 """The books: a refund is a reversal, and the trial balance balances."""
 
-from datetime import timedelta
+from datetime import date, timedelta
 
-from domainkit.contrib.accounting import verify_ledger
+from domainkit.contrib.accounting import (
+    AccountingUnitOfWork,
+    OpenPeriod,
+    open_period,
+    verify_ledger,
+)
 from domainkit.testing import ClientFor, FrozenClock, TestClient
 
-from domains.wallets.controllers import open_books
+from domains.wallets.controllers import BANK, MERCHANTS, house_account, open_books
 from tests.conftest import CLERK
 from tests.money import URL, balance, deposit, key, usd
 
@@ -72,3 +77,24 @@ def test_payments_go_on_into_the_next_month(
         "2027-02",
         "2027-03",
     ]
+
+
+def test_the_books_open_beside_a_period_of_the_operators(
+    client: TestClient, clerk: TestClient
+) -> None:
+    """A period from the 15th to the 14th reaches both months: it is left.
+
+    The daily run opens no period over it, fails nothing, and still opens
+    the business's accounts.
+    """
+    mid_month = OpenPeriod(
+        name="2027-01-15", starts_on=date(2027, 1, 15), ends_on=date(2027, 2, 14)
+    )
+    client.run(open_period, mid_month, AccountingUnitOfWork())
+
+    client.run(open_books)
+    client.run(open_books)  # The next day's run.
+
+    periods = clerk.get(f"{BOOKS}/periods").json()["items"]
+    assert [period["name"] for period in periods] == ["2027-01-15"]
+    assert client.run(house_account, BANK) != client.run(house_account, MERCHANTS)
