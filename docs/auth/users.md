@@ -428,6 +428,19 @@ AUTH = {
 }
 ```
 
+On PostgreSQL, `migrate` makes indexes on the user table, a project's
+own too, where they are missing (*new in 2.9*): `lower()` of the
+`EMAIL_FIELD` and of the `USERNAME_FIELD`, which logins, signups, and the
+checks for a taken address or username compare, and the field the admin
+API lists users by, then the id. They are named
+`ix_<table>_<EMAIL_FIELD>_lower`, `ix_<table>_<USERNAME_FIELD>_lower`,
+and `ix_<table>_<field>_id`. A column kept as anything but text gets no
+`lower()` index, an encrypted one none, and a unique one no order index:
+its own serves. `migrate` reads the table's indexes first and makes only
+those missing, so with none to make it takes no lock on the table.
+Revisions leave them alone, and SQLite gets none: it cannot reflect an
+index on `lower()` ([ADR 0185](../adr/0185-bound-keyset-pages-index-the-user-lookups-and-read-fewer-grants.md)).
+
 Keep the model and the table in `models.py` (or `infrastructure/`). They
 build on `domainkit.contrib.auth`, which the domain layer may not import.
 Settings files other than the base one extend `AUTH`
@@ -580,6 +593,7 @@ method is async:
 | `get_all_permissions(user, obj=None)` | The permission keys it grants. |
 | `has_perm(user, perm, obj=None)` | Whether it grants `perm` (on `obj`). |
 | `object_grants(holder)` | The grants it holds on single objects for a user or a group (below). |
+| `object_grants_beyond(holder, permissions)` | The same, less the grants of `permissions` (*new in 2.9*, below). |
 
 A backend that grants on objects:
 
@@ -624,6 +638,17 @@ groups' grants, active or not) or for a group. `object_grants(holder)` in
 
 So the `OwnerBackend` above should leave `object_grants` out, unless the
 invoices it guards can never change owner through the admin API.
+
+The admin API reads a user's or a group's grants only where they count
+(since 2.9): a superuser's change reads none, and for staff it leaves out
+the grants of the permissions they hold on whole models, which they hold
+on every object already. It asks `object_grants_beyond(holder,
+permissions)` with those keys. `BaseBackend`'s filters what
+`object_grants` answers; a backend that reads its grants from a table
+can leave them out in its query instead, as `ObjectPermissionBackend`
+does. It is asked only where the same class defines both methods, so a
+subclass that overrides `object_grants` alone keeps every grant it adds
+([ADR 0185](../adr/0185-bound-keyset-pages-index-the-user-lookups-and-read-fewer-grants.md)).
 
 A backend whose answers come from the database, and not from the
 object's fields, can keep them for the request

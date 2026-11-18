@@ -181,13 +181,14 @@ async def delete_flag(
 async def list_settings(
     actor: Annotated[AnyUser, staff("view", lambda: DynamicSetting)],
 ) -> list[SettingOut]:
-    """Every declared dynamic setting, with its stored value or default."""
+    """Every declared dynamic setting, with its stored value or default.
+
+    The stored values are read in one statement, not one per setting.
+    """
+    definitions = declared_settings()
     async with FlagsUnitOfWork() as uow:
-        found = []
-        for definition in declared_settings():
-            stored = await uow.settings.find(definition.key)
-            found.append(SettingOut.of(definition, stored))
-    return found
+        stored = await uow.settings.get_many(each.key for each in definitions)
+        return [SettingOut.of(each, stored.get(each.key)) for each in definitions]
 
 
 @router.put("/settings/{key}", responses=_errors(*CHANGE))

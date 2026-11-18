@@ -173,6 +173,24 @@ class BaseBackend:
         """
         return frozenset()
 
+    async def object_grants_beyond(
+        self, holder: AbstractBaseUser | Group, permissions: frozenset[str]
+    ) -> frozenset[ObjectGrant]:
+        """``object_grants(holder)``, less the grants of ``permissions`` (since 2.9).
+
+        The admin API asks it with the keys staff hold on whole models,
+        whose grants they hold on every object already. This default
+        filters what ``object_grants`` answers; a backend that reads its
+        grants from a table can leave those out in its query instead. It
+        is asked only of a class that overrides both methods, or neither,
+        so a subclass that lists more grants is never cut short.
+        """
+        return frozenset(
+            grant
+            for grant in await self.object_grants(holder)
+            if grant.permission not in permissions
+        )
+
 
 class ModelBackend(BaseBackend):
     """Passwords from the user table; permissions of users and their groups.
@@ -486,12 +504,39 @@ def backends_without_object_grants() -> list[str]:
     ]
 
 
-async def object_grants(holder: AbstractBaseUser | Group) -> frozenset[ObjectGrant]:
-    """What every backend grants ``holder`` (a user or a group) on single objects."""
+async def object_grants(
+    holder: AbstractBaseUser | Group, *, beyond: frozenset[str] = frozenset()
+) -> frozenset[ObjectGrant]:
+    """What every backend grants ``holder`` (a user or a group) on single objects.
+
+    ``beyond`` leaves out the grants of those permission keys (since 2.9):
+    a backend leaves them out itself (``object_grants_beyond``) where the
+    class that lists its grants does, else they are dropped here.
+    """
     granted: list[ObjectGrant] = []
     for backend in get_backends():
-        granted.extend(await backend.object_grants(holder))
+        if not beyond:
+            granted.extend(await backend.object_grants(holder))
+        elif _leaves_out(type(backend)):
+            granted.extend(await backend.object_grants_beyond(holder, beyond))
+        else:
+            listed = await backend.object_grants(holder)
+            granted.extend(each for each in listed if each.permission not in beyond)
     return ObjectGrant.lasting(granted)
+
+
+def _leaves_out(kind: type[BaseBackend]) -> bool:
+    """Whether ``kind`` takes both its grant methods from one class.
+
+    Then ``object_grants_beyond`` leaves out only what ``object_grants``
+    lists: a subclass that overrides ``object_grants`` alone is filtered
+    as it lists, so no grant it adds is lost.
+    """
+
+    def owner(name: str) -> type:
+        return next(each for each in kind.__mro__ if name in vars(each))
+
+    return owner("object_grants_beyond") is owner("object_grants")
 
 
 async def has_perm(user: AnyUser, perm: str, obj: object | None = None) -> bool:

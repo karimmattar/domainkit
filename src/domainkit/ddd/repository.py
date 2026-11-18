@@ -296,10 +296,27 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
         return found[0] if found else None
 
     async def count(
-        self, criteria: CriteriaLike | None = None, *, include_deleted: bool = False
+        self,
+        criteria: CriteriaLike | None = None,
+        *,
+        include_deleted: bool = False,
+        at_most: int | None = None,
     ) -> int:
-        """How many aggregates meet ``criteria`` (all, if None)."""
-        return await self._count(self._scope(criteria, include_deleted=include_deleted))
+        """How many aggregates meet ``criteria`` (all, if None).
+
+        ``at_most`` stops counting there (since 2.9): the answer is never
+        more, and a database reads no more matches than that, as an export
+        does to tell whether it holds too many.
+
+        Raises:
+            ValueError: ``at_most`` is below 0.
+        """
+        scope = self._scope(criteria, include_deleted=include_deleted)
+        if at_most is None:
+            return await self._count(scope)
+        if at_most < 0:
+            raise ValueError(f"A count stops at 0 or more, not {at_most}.")
+        return await self._count_at_most(scope, at_most)
 
     async def exists(
         self, criteria: CriteriaLike | None = None, *, include_deleted: bool = False
@@ -706,6 +723,10 @@ class Repository[AggregateT: AggregateRoot[Any], IdT: Hashable](ABC):
     async def _count(self, criteria: Criteria | None) -> int:
         """Count what the bound ``criteria`` select."""
         raise NotImplementedError(f"{type(self).__name__} cannot count.")
+
+    async def _count_at_most(self, criteria: Criteria | None, limit: int) -> int:
+        """Count what the bound ``criteria`` select, up to ``limit``."""
+        return min(await self._count(criteria), limit)
 
     async def _exists(self, criteria: Criteria | None) -> bool:
         """Whether the bound ``criteria`` select anything."""

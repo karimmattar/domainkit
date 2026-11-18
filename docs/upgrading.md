@@ -68,6 +68,56 @@ project that relied on 2.8's behaviour changes, and what to run.
   can be sent to the superuser (to reset its password or enroll a phone)
   until its email address is verified: run ...". A script that matched
   2.8's wording matches this one instead.
+- **Live events are each tenant's own** (security,
+  [ADR 0183](adr/0183-keep-live-events-and-approval-requests-to-their-tenant-and-rows-of-no-tenant-to-keys-held-everywhere.md)).
+  With `TENANCY`, an event reaches only the connections served as the
+  tenant it was committed in, and one committed as no tenant only those
+  served as none. A route only staff reach that streams every tenant's
+  events on purpose, such as a back office's, passes `per_tenant=False`
+  to `stream`, `forward`, or `subscribe`: its rule never sees an event's
+  tenant ([tenancy](tenancy.md#live-events-and-approvals)). With
+  `LIVE_FANOUT`, processes of 2.8.0 send their events without a tenant,
+  so connections served as a tenant miss them until every process is
+  upgraded. Without `TENANCY`, nothing changes.
+- **Approval requests are each tenant's own** (security). With
+  `TENANCY`, a request is listed, read, approved, rejected, and
+  cancelled where the tenant it was submitted in is served alone, and
+  its command runs in that tenant. Approvers who decided for a tenant
+  while served as another, or as none, are served as the request's
+  tenant now; code that decides across tenants does it inside
+  `all_tenants()`
+  ([Requests and tenants](contrib/approvals.md#requests-and-tenants)).
+  Requests stored by 2.8.0 have no tenant: they are read where no tenant
+  is served. Do not set their `tenant_id` by hand, which breaks their
+  seal: decide or cancel them where no tenant is served, or let them
+  expire. Before you deploy, let the worker run the requests already
+  approved: once deployed, such a request runs as no tenant.
+  `approvals.view_every_approvalrequest` shows the requests of a guard
+  `everywhere`, such as approvals' own guards of postings, superusers,
+  and admin changes, to those who hold it everywhere: grant it so to the
+  staff who read them. Without `TENANCY`, nothing changes.
+- **Limits and the ledger count the keys held everywhere** (security).
+  A key granted in the tenant served, by `MembershipBackend` or any
+  backend that grants by `current_tenant()`, does not count on the routes
+  of `domainkit.contrib.limits` or `domainkit.contrib.accounting`
+  (`403`), nor for the makers and approvers of approvals' guards of
+  postings, captures, reversals, making superusers, and admin changes.
+  Grant those keys to the staff who use them, directly or through a
+  group ([Rows of no tenant](tenancy.md#rows-of-no-tenant)). Routes of
+  your own over rows every tenant shares say `everywhere=True`, which
+  asks the permissions as where no tenant is served: it relies on a
+  backend that grants per tenant reading `current_tenant()`.
+- **Staff APIs count the keys held everywhere** (security). The admin
+  API (users, groups, permissions), the staff APIs of flags and
+  webhooks, the audit trail's history, and the admin site's models that
+  are not `TenantOwned` count a staff member's model permission, and
+  `audit.view_history`, as they hold it everywhere: a role in the tenant
+  served opens none of them (`403`). Staff who used them through a role
+  are granted the keys everywhere, directly or through a group
+  ([Rows of no tenant](tenancy.md#rows-of-no-tenant)).
+- **`check` names the apps whose rows every tenant shares**
+  (`tenancy.I001`). It is an info: nothing to change, and
+  `check --deploy` never refuses it.
 - **Staff acting as a user get answers kept for that user alone.** Under
   an impersonation, a page cached with `vary_on_user=True` and a
   response kept for an `Idempotency-Key` are kept for the staff member
@@ -112,6 +162,96 @@ project that relied on 2.8's behaviour changes, and what to run.
   with a left-to-right mark before its `+`, as right-to-left pages write
   it, is exported with an apostrophe first, as `+1 555 0100` already
   was. Numbers stay numbers.
+
+### `migrate` makes the user lookups' indexes, on PostgreSQL
+
+Logins by address, signups, the checks for a taken address or username,
+and the admin API's list of users read the whole users table in 2.8. On
+PostgreSQL, `migrate` now makes, on the user table, a project's own too
+(`AUTH.USER_TABLE`), those of these indexes that are missing:
+
+- `ix_<table>_<EMAIL_FIELD>_lower`, on `lower()` of the `EMAIL_FIELD`
+  (`ix_domainkit_users_email_lower` on the default table);
+- `ix_<table>_<USERNAME_FIELD>_lower`, on `lower()` of the
+  `USERNAME_FIELD` (`ix_domainkit_users_username_lower`);
+- `ix_<table>_<field>_id`, on the field the admin API lists users by,
+  then the id: the first of `AUTH.IDENTIFIERS` the table does not
+  encrypt, else the `USERNAME_FIELD` (`ix_domainkit_users_email_id` where
+  addresses come first). None where that column is unique, as its own
+  index serves the order, or the table has no `id`.
+
+A column kept as anything but text, such as bytes of a type of your
+own, gets no `lower()` index; an encrypted one gets none. No
+`makemigrations`: they are not declared on the table, and revisions
+leave them alone, by name. SQLite gets none, as it cannot reflect an
+index on `lower()` ([ADR 0185](adr/0185-bound-keyset-pages-index-the-user-lookups-and-read-fewer-grants.md)).
+
+`migrate` reads the table's indexes from the catalog first, and makes
+only those missing: with none to make, it takes no lock on the table.
+Building one holds writes to the table while it runs. On a large users
+table, make them before you deploy, without holding writes, under the
+same names; `migrate` then finds them and builds none. For the default
+table, with addresses first in `AUTH.IDENTIFIERS`:
+
+```sql
+CREATE INDEX CONCURRENTLY ix_domainkit_users_email_lower ON domainkit_users (lower(email));
+CREATE INDEX CONCURRENTLY ix_domainkit_users_username_lower ON domainkit_users (lower(username));
+CREATE INDEX CONCURRENTLY ix_domainkit_users_email_id ON domainkit_users (email, id);
+```
+
+A concurrent build that fails leaves an invalid index of that name, which
+`migrate` takes as made: drop it, and build it again.
+
+### A repository that overrides `count` counts every match in an export
+
+An export now asks its repository's `count` for at most `max_export + 1`
+matches: `count(criteria, include_deleted=..., at_most=...)`. A
+repository of the project's that overrides `count` keeps working: the
+export asks it as 2.8 did, without `at_most`, and it counts every match.
+The export does not read the override's signature, since a decorator's
+need not tell the truth.
+
+To count less, leave `count` alone and override the hooks under it.
+`_count(criteria)` counts every match. `_count_at_most(criteria, limit)`
+counts no more than `limit`, and by default answers the smaller of
+`_count` and `limit`. A repository that overrides only `_count` needs
+nothing more: a count that stops is asked of it, and its answer stops
+at `at_most`.
+
+### Keyset pages, admin changes, and exports read less
+
+Nothing to change; plans and costs change.
+
+- **A keyset page starts at its position.** What follows a position
+  begins with a bound on the ordering's first field, so an index whose
+  first column is that field is read from the position. A list ordered
+  ascending by a field that may be missing still reads from the start:
+  order it descending, or put a field that is never missing first
+  ([Pages](queries.md#pages)).
+- **The admin API reads only the grants on objects that count.** A
+  backend that reads its grants from a table can answer
+  `object_grants_beyond(holder, permissions)` to leave out, in its query,
+  the grants of the permissions staff hold on whole models
+  ([Backends](auth/users.md#backends)). One that does not keeps working:
+  its `object_grants` is filtered.
+- **An export counts at most `max_export + 1` matches**
+  (`count(at_most=...)`), and flags' `GET /settings` reads its values in
+  one statement.
+
+### Make and apply approvals' migration
+
+With `domainkit.contrib.approvals` installed, the requests table
+(`domainkit_approval_requests`) gains a nullable column, `tenant_id`,
+the tenant a request was submitted in
+([ADR 0183](adr/0183-keep-live-events-and-approval-requests-to-their-tenant-and-rows-of-no-tenant-to-keys-held-everywhere.md)).
+Run `python manage.py makemigrations`, review the revision, then
+`migrate` it before the new code serves. Until then every read of the
+requests fails with a database error, so their routes and the worker's
+runs answer `500`. Requests stored before have no tenant.
+
+The same table gains an index, `ix_domainkit_approval_requests_scope`, of
+`(tenant_id, action, policy, submitted_at)`, which an approver's list
+reads through. The same `makemigrations` makes it.
 
 ## 2.7 to 2.8
 

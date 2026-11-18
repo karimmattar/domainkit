@@ -55,7 +55,18 @@ from domainkit.ddd import (
     MaxLength,
     UnknownField,
 )
-from domainkit.ddd.query import Count, Criteria, F, Ordering, Selection, Sum
+from domainkit.ddd.query import (
+    And,
+    Count,
+    Criteria,
+    F,
+    Ordering,
+    Selection,
+    Sum,
+    following,
+    position_of,
+    total_ordering,
+)
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import call_command
 from domainkit.money import (
@@ -500,6 +511,31 @@ async def test_pages_follow_money_orderings(tables: None, ordering: tuple[str]) 
 
     assert walked == walked_in_memory == whole
     assert len(whole) == len(items)
+
+
+@pytest.mark.parametrize(
+    "ordering", [("balance",), ("-balance",), ("limit",), ("-limit",)]
+)
+async def test_what_follows_each_money_position_is_the_rest(
+    tables: None, ordering: tuple[str]
+) -> None:
+    """After each wallet's position come the wallets ordered after it.
+
+    The keyset criteria bound the currency first, where one range holds the
+    rest: ascending ``balance`` past 10 USD starts at USD (ADR 0185).
+    """
+    await store(*dataset())
+    total = total_ordering(map(Ordering.parse, ordering))
+    async with WalletsUnitOfWork() as uow:
+        whole = await uow.wallets.filter(Selection(ordering=total))
+        for index, item in enumerate(whole):
+            after = position_of(item, total)
+            rest = await uow.wallets.filter(Selection(ordering=total, after=after))
+            assert names(rest) == names(whole[index + 1 :])
+    usd = money("10.00", "USD")
+    criteria = following(Wallet, total_ordering([Ordering("balance")]), (usd, uuid4()))
+    assert isinstance(criteria, And)
+    assert criteria.parts[0] == (F("balance.currency") >= currency("USD"))
 
 
 async def test_update_rows_sets_money(tables: None) -> None:
