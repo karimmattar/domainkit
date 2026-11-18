@@ -34,6 +34,11 @@ and a status.
 - The `postgresql (16)` job runs on Python 3.15, while `integration` runs
   on 3.13: each end of the Python range meets PostgreSQL (audit
   A28-TEST-11).
+- CONTRIBUTING.md says where a new test goes: in its module's file, or
+  `test_<module>_<topic>.py`, naming the finding it answers in its
+  docstring rather than in the file's name. The key ring's and the
+  storages' fixtures, copied between test files, live once in
+  `domainkit_tests/support/` (audit A28-TEST-12).
 
 ### Fixed
 

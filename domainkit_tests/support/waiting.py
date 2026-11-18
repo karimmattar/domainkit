@@ -3,7 +3,7 @@
 Long enough never to fail on a slow runner, short enough that a regression
 fails instead of hanging: ``WAIT`` seconds, for every test that waits.
 ``until`` asks a condition again until it holds; ``within`` awaits what it
-is given (TEST-06).
+is given (A28-TEST-06).
 """
 
 import asyncio

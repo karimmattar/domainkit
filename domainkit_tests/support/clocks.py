@@ -5,7 +5,7 @@ deadline, then now and then as it works, and refuses the file once a
 reading is past the deadline. ``Stepped`` stands in for that module's
 ``time``: each reading is ``step`` seconds after the one before, however
 fast the runner is. A deadline is then reached after a known number of
-readings, and the readings say whether it was reached (TEST-01).
+readings, and the readings say whether it was reached (A28-TEST-01).
 """
 
 from dataclasses import dataclass, field

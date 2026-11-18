@@ -1,4 +1,4 @@
-"""Each line a change adds under ``src/`` runs in a test (ADR 0191, TEST-05).
+"""Each line a change adds under ``src/`` runs in a test (ADR 0191, A28-TEST-05).
 
 CI's coverage job, and ``make cov``, hold the runs combined to 98% of the
 package, and every line a pull request adds or changes to 100%, its

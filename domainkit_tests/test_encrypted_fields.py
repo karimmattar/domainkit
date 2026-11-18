@@ -62,9 +62,10 @@ from domainkit_tests.sample_domains.cards import tables
 from domainkit_tests.sample_domains.cards.models import Cardholder, CardNumber, Payment
 from domainkit_tests.sample_domains.cards.tables import start_mappers
 from domainkit_tests.sample_domains.cards.uow import CardsUnitOfWork
+from domainkit_tests.support.keys import CARDS, KEYS, bank
 
-KEYS: Final = "domainkit.contrib.keys"
-CARDS: Final = "domainkit_tests.sample_domains.cards"
+__all__ = ["bank"]  # The fixture the tests take.
+
 PAN: Final = "4111111111111111"
 OTHER_PAN: Final = "5500000000000004"
 ANN: Final = uuid.UUID("00000000-0000-4000-8000-00000000000a")
@@ -78,22 +79,6 @@ def pay(
     return Payment(
         id=uuid.UUID(int=number), holder_id=holder, pan=CardNumber(pan), note=note
     )
-
-
-@pytest.fixture
-def bank(database_url: str, tmp_path: Path) -> Iterator[str]:
-    """The cards domain and the key ring, migrated."""
-    registry.clear()
-    with override_settings(
-        INSTALLED_DOMAINS=[KEYS, CARDS, ALPHA],
-        DATABASES={"default": {"URL": database_url}},
-        MIGRATIONS_DIR=tmp_path / "migrations",
-    ):
-        setup()
-        call_command("makemigrations", "-m", "bank", stdout=io.StringIO())
-        call_command("migrate", stdout=io.StringIO())
-        yield database_url
-    registry.clear()
 
 
 async def raw(query: str) -> list[dict[str, Any]]:

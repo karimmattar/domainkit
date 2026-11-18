@@ -5,7 +5,7 @@ import errno
 import os
 import re
 import stat
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -28,6 +28,9 @@ from domainkit.storage import (
 from domainkit.storage.base import CHUNK_SIZE
 from domainkit.storage.handler import StorageHandler
 from domainkit_tests.settings import SECRET_KEY
+from domainkit_tests.support.storage import fresh_storages
+
+__all__ = ["fresh_storages"]  # The fixture the tests take.
 
 pytestmark = pytest.mark.anyio
 
@@ -434,14 +437,6 @@ def test_urls_point_where_a_web_server_serves_files(tmp_path: Path) -> None:
 
 
 # Settings and the handler ------------------------------------------------------------
-
-
-@pytest.fixture
-def fresh_storages() -> Iterator[None]:
-    """Forget the storages made."""
-    storages.reset()
-    yield
-    storages.reset()
 
 
 def test_storages_are_made_from_settings(tmp_path: Path, fresh_storages: None) -> None:

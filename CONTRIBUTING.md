@@ -50,7 +50,13 @@ to `.ci/`. `make services-down` stops them and drops their data.
   ([ADR 0191](docs/adr/0191-gate-the-lines-a-change-adds.md)). A helper
   more than one test file needs goes in `domainkit_tests/support/`, by
   area, not in the test file that used it first (`test_support.py`
-  checks the ones that are there).
+  checks the ones that are there); so does a fixture two files need.
+- **Test files.** A test goes in the file of the module it tests,
+  `domainkit_tests/test_<module>.py`, or `test_<module>_<topic>.py` once
+  that file is long. A regression test names the finding or the report it
+  answers in its docstring (`(A28-TEST-02)`), not in the file's name: the
+  files named after findings (`test_sec16b_8_*`, `test_audit15_*`) are
+  folded into their module's file when that file is next changed.
 - **Mutation testing.** Run it yourself for the functions you changed:
   `make mutants MUTANTS="domainkit.http.middleware*"`. Kill the survivors
   that point at a missing test, and say in the pull request why each one

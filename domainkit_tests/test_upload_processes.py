@@ -262,7 +262,7 @@ async def test_what_pypdf_does_unbounded_is_stopped_by_the_system(
     the decoding policy refuses it first: each stream decodes to 8 bytes
     an entry at most (ADR 0176). pypdf's loops are ended by the clock or
     the CPU limit, whichever comes first. What ended the process is read
-    from the log, not from a stopwatch (TEST-01).
+    from the log, not from a stopwatch (A28-TEST-01).
     """
     with limited(seconds):
         status, code, said = await refusal(data, CHECKED_PDF)
@@ -290,7 +290,7 @@ async def test_a_check_past_its_limits_is_a_refusal(
     """The clock, the memory, the CPU: each ends the process, and refuses the file.
 
     Which limit ended it is read from the log, not from a stopwatch
-    (TEST-01). The clock's check sleeps, so its CPU limit cannot come
+    (A28-TEST-01). The clock's check sleeps, so its CPU limit cannot come
     first.
     """
     with limited(seconds):
@@ -1018,7 +1018,7 @@ async def test_a_check_costs_a_process_start(
 ) -> None:
     """What isolation costs an upload: one process for its checks.
 
-    Counted, not timed: a runner's clock says nothing of the cost (TEST-01).
+    Counted, not timed: a runner's clock says nothing of the cost (A28-TEST-01).
     """
     started: list[object] = []
     start = asyncio.create_subprocess_exec

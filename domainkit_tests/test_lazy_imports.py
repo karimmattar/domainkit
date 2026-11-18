@@ -93,7 +93,7 @@ def run(script: str, path: Path | None = None) -> list[str]:
     """Run ``script`` in a fresh interpreter; the lines it printed.
 
     No project's settings reach it, nor coverage's: a measured interpreter
-    loads coverage's modules too (TEST-05).
+    loads coverage's modules too (A28-TEST-05).
     """
     environment = {
         name: value

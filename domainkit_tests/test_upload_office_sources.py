@@ -549,7 +549,7 @@ def test_an_expensive_svg_is_refused_within_the_deadline(
     check ran three seconds past a deadline of 0.3. With a clock that moves
     a second a look, a deadline of 100 seconds is the 101st look, which a
     check that looked once an element would never make; that look refuses,
-    and none comes after it (TEST-01). The whole check looks about 800
+    and none comes after it (A28-TEST-01). The whole check looks about 800
     times.
     """
     numbers = random.Random(3)  # noqa: S311 - a style's bulk, not a secret.

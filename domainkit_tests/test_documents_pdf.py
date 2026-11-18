@@ -674,7 +674,7 @@ def test_many_small_streams_decoded_in_python_are_refused_fast(
 
     Each fits; together they took 5 seconds a call, LZW 17. Refused once
     they pass 1 MiB in all: two are decoded, the rest never. pypdf's
-    decoder counts them, not a stopwatch (TEST-01).
+    decoder counts them, not a stopwatch (A28-TEST-01).
     """
     one = base64.a85encode(bytes(range(256)) * 1600) + b"~>"
     document = streamed(extras=((b"/ASCII85Decode", one),) * 64)
@@ -771,7 +771,7 @@ def test_a_chain_of_cross_reference_sections_is_bounded(
     where pypdf reads them, so a name escaped, a comment, or a string that
     looks like a keyword hides none. Of the 500, the reader reads the 33rd,
     which refuses, and no more: the tally counts them, not a stopwatch
-    (TEST-01).
+    (A28-TEST-01).
     """
     assert page_sizes(chained(32, link=link)) == [(300.0, 400.0)]
     assert page_sizes(chained(32, streams=True, link=link)) == [(300.0, 400.0)]

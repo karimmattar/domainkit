@@ -324,7 +324,7 @@ def test_page_content_is_decoded_as_overlay_pdf_decodes_it(
     runs in Python after deflate (60 KB of ASCII85 made 5.7 GB); more
     stored for Python's filters than their share; an image's filter;
     content a page names more often than the check reads values. Each is
-    refused by the policy, never by the clock (TEST-01). The clock moves
+    refused by the policy, never by the clock (A28-TEST-01). The clock moves
     0.1 ms a look, so the check's 10 seconds are 100,000 looks, of which
     these take 6,200 at most: a slow runner cannot reach the deadline.
     """
