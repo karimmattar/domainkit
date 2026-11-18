@@ -220,18 +220,54 @@ extend-exclude = ["src/domainkit/management/templates", "**/mutants"]
 [tool.ruff.lint]
 # S: security (bandit), ASYNC: blocking calls in async code, BLE: blind except,
 # G/LOG: logging misuse, DTZ: naive datetimes, T20: stray prints.
+# C901/PLR0913/PLR0915: how complex a function, its arguments, its statements.
 select = [
     "E", "F", "I", "UP", "B", "SIM", "D", "ANN", "RUF",
     "S", "ASYNC", "BLE", "G", "LOG", "DTZ", "T20",
     "PT", "C4", "RET", "PIE", "PERF", "PTH", "ERA", "ISC",
+    "C901", "PLR0913", "PLR0915",
 ]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.ruff.lint.pylint]
+# Keyword-only arguments count too: past ten, take an options object.
+max-args = 10
+max-statements = 50
+
 [tool.ruff.lint.per-file-ignores]
 # Tests assert, and use throwaway credentials and server-side identifiers.
 "domainkit_tests/**" = ["S101", "S105", "S106"]
+# The functions over the complexity gates when it came (2.9, audit A28 E3):
+# they may only leave this list, as they are split.
+"domainkit_tests/fake_smtp.py" = ["C901", "PLR0915"]
+"domainkit_tests/test_brokers_more.py" = ["C901"]
+"src/domainkit/contrib/admin/sites.py" = ["PLR0913"]
+"src/domainkit/contrib/approvals/guards.py" = ["PLR0913"]
+"src/domainkit/contrib/auth/actions.py" = ["PLR0913"]
+"src/domainkit/contrib/auth/admin_actions.py" = ["C901"]
+"src/domainkit/contrib/ciba/services.py" = ["PLR0913"]
+"src/domainkit/contrib/devices/webauthn.py" = ["C901"]
+"src/domainkit/contrib/limits/management/commands/limits.py" = ["PLR0913"]
+"src/domainkit/contrib/limits/models.py" = ["PLR0913"]
+"src/domainkit/contrib/messaging/management/commands/runworker.py" = ["PLR0915"]
+"src/domainkit/contrib/messaging/outbox.py" = ["PLR0913"]
+"src/domainkit/contrib/messaging/registry.py" = ["PLR0913"]
+"src/domainkit/contrib/webhooks/owned.py" = ["C901", "PLR0915"]
+"src/domainkit/http/client.py" = ["PLR0913"]
+"src/domainkit/http/middleware.py" = ["C901", "PLR0915"]
+"src/domainkit/http/responses.py" = ["C901"]
+"src/domainkit/inspection.py" = ["C901"]
+"src/domainkit/management/commands/migrate.py" = ["C901"]
+"src/domainkit/resources/routing/__init__.py" = ["C901", "PLR0913", "PLR0915"]
+"src/domainkit/resources/routing/batching.py" = ["PLR0913"]
+"src/domainkit/resources/routing/commands.py" = ["PLR0913"]
+"src/domainkit/resources/routing/uploading.py" = ["PLR0913"]
+"src/domainkit/storage/s3.py" = ["PLR0913"]
 
 [tool.mypy]
 python_version = "3.13"
