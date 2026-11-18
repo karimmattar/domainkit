@@ -8,6 +8,8 @@ import copy
 from argparse import ArgumentParser
 from typing import Final
 
+from domainkit import setup
+from domainkit.checks import CheckMessage, describe, silence
 from domainkit.conf import settings
 from domainkit.management.base import BaseCommand, CommandError
 from domainkit.utils.loops import loop_factory
@@ -63,11 +65,26 @@ class Command(BaseCommand):
         server: str | None = None,
         **options: object,
     ) -> None:
-        """Start the server; framework logging replaces the server's own."""
+        """Start the server; framework logging replaces the server's own.
+
+        It first says which databases lack migrations (``migrations.W001``),
+        as a request that uses their tables would fail. The server runs the
+        application's lifespan, and stops if it fails: a domain that cannot
+        start, or a middleware that refuses the configuration.
+        """
         if not settings.ASGI_APPLICATION:
             raise CommandError("Set ASGI_APPLICATION, e.g. 'config.asgi:application'.")
         host, port = parse_address(address)
         loop_factory(settings.EVENT_LOOP)  # Refuse a loop that is not installed.
+        setup()
+        from domainkit.db import migrations  # Alembic, for this check alone.
+
+        found = [
+            CheckMessage("migrations.W001", warning)
+            for warning in migrations.unapplied_warnings()
+        ]
+        for warning in silence(found, settings.SILENCED_CHECKS):
+            self.note(describe(warning, indent="", label="Warning: "))
         if (server or settings.RUNSERVER_SERVER) == "granian":
             serve_with_granian(settings.ASGI_APPLICATION, host, port, reload=reload)
             return
@@ -79,6 +96,9 @@ class Command(BaseCommand):
             port=port,
             reload=reload,
             loop=settings.EVENT_LOOP,
+            # A lifespan that raises stops the server; "auto" logged it at
+            # INFO as unsupported and served every request a 500.
+            lifespan="on",
             log_config=None,
             access_log=False,
             # ProxyHeadersMiddleware and TRUSTED_PROXIES handle forwarding.

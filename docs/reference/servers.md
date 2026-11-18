@@ -95,6 +95,10 @@ What `serve` sets itself:
 - no proxy header read, and, under uvicorn, no `Server` header
   ([Proxy headers](#proxy-headers), [`SERVER_HEADER`](http.md#the-server-header));
 - no access log: `domainkit.access` writes one line per request;
+- under uvicorn, `--lifespan on`: a lifespan that raises stops the
+  worker, as a startup that fails does. uvicorn's own default, `auto`,
+  logs the error at `INFO` as "lifespan unsupported", then serves every
+  request a 500. `runserver` passes it too. *New in 2.9*;
 - `LOGGING` for the server's own lines, in its main process too, as
   `manage.py logconfig` writes it ([The server's own lines](../runtime.md#the-servers-own-lines));
 - under Granian, a worker that dies is started again
@@ -119,7 +123,7 @@ uvicorn config.asgi:application --workers 4 --loop uvloop \
   --limit-concurrency 1200 --backlog 2048 --timeout-keep-alive 5 \
   --timeout-graceful-shutdown 10 \
   --h11-max-incomplete-event-size 16384 --ws-max-size 1048576 \
-  --no-proxy-headers --no-server-header
+  --no-proxy-headers --no-server-header --lifespan on
 ```
 
 Granian, the same, with `LOGGING` written for its own process first:

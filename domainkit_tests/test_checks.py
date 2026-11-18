@@ -354,3 +354,30 @@ def test_check_says_where_https_ends_and_whose_word_the_scheme_is(
     assert printed[2] == f"    Hint: {statement.hint}"
     with override_settings(**change):  # Locally, nothing is said of it.
         assert "security.I001" not in run("check")
+
+
+def test_check_names_the_app_an_optional_middleware_needs() -> None:
+    """``apps.E003``: an optional app's middleware without the app, by name.
+
+    It passed ``check`` before 2.9, and every request then answered 500.
+    Staging and production refuse to start with it, as with any problem of
+    the application.
+    """
+    from domainkit.checks import CheckFailed
+    from domainkit.conf.global_settings import DEFAULT_MIDDLEWARE
+    from domainkit.http import get_asgi_application
+
+    keyed = "domainkit.contrib.idempotency.middleware.IdempotencyMiddleware"
+    with override_settings(MIDDLEWARE=[*DEFAULT_MIDDLEWARE, keyed]):
+        with pytest.raises(CommandError) as refused:
+            run("check")
+        with override_settings(**DEPLOYED), pytest.raises(CheckFailed) as stopped:
+            get_asgi_application()
+
+    said = (
+        f"apps.E003: MIDDLEWARE lists {keyed!r}, but 'domainkit.contrib.idempotency' "
+        "is not in INSTALLED_DOMAINS: every request would fail. Install "
+        "'domainkit.contrib.idempotency', or remove the middleware."
+    )
+    assert str(refused.value) == f"System check found problems:\n  {said}"
+    assert said in str(stopped.value)

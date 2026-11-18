@@ -228,6 +228,66 @@ def status(database: str = DEFAULT_DB_ALIAS) -> list[RevisionStatus]:
     ]
 
 
+def unapplied(database: str = DEFAULT_DB_ALIAS) -> list[str]:
+    """The revisions of ``database``'s target it does not have, oldest first.
+
+    A SQLite file that does not exist yet has none, and is not made by
+    asking. ``database`` is an alias, not a shard group.
+
+    Raises:
+        DatabaseUnreachable: The database cannot be reached.
+    """
+    config = alembic_config(_single_alias(database))
+    scripts = list(reversed(list(ScriptDirectory.from_config(config).walk_revisions())))
+    if not scripts:
+        return []
+    url = make_url(connections.config(database).URL.get_secret_value())
+    if url.get_backend_name() == "sqlite" and not Path(url.database or "").exists():
+        return [script.revision for script in scripts]
+    return [each.revision for each in status(database) if not each.applied]
+
+
+def unapplied_warnings() -> list[str]:
+    """``migrations.W001``: each database with revisions it does not have yet.
+
+    A request that reads a table they make fails with a raw SQL error, so
+    ``check`` and ``runserver`` say so in development. A database that
+    cannot be reached, one in memory (each connection its own), and
+    databases refused to the caller (a test that did not ask for them)
+    are passed over: they say nothing either way.
+    """
+    if connections.refusal is not None:
+        return []
+    found: list[str] = []
+    for target in migration_targets():
+        for alias in router.aliases_of(target):
+            url = make_url(connections.config(alias).URL.get_secret_value())
+            if url.get_backend_name() == "sqlite" and url.database in {
+                None,
+                "",
+                ":memory:",
+            }:
+                continue
+            try:
+                missing = unapplied(alias)
+            except DatabaseUnreachable:
+                continue
+            if missing:
+                found.append(_unapplied_message(alias, missing))
+    return found
+
+
+def _unapplied_message(alias: str, missing: list[str]) -> str:
+    """What ``migrations.W001`` says of ``alias`` and the revisions it lacks."""
+    count = len(missing)
+    named = missing[0] if count == 1 else f"{missing[0]} to {missing[-1]}"
+    plural = "" if count == 1 else "s"
+    return (
+        f"{count} unapplied migration{plural} on {alias!r} ({named}): "
+        "requests that use their tables will fail. Run 'python manage.py migrate'."
+    )
+
+
 def check_message(message: str) -> None:
     """Refuse a revision message that would break out of the file's docstring.
 

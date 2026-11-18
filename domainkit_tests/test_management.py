@@ -791,6 +791,62 @@ def test_branches_must_be_merged(migration_project: Path) -> None:
     assert "Notes." in applied[0]
 
 
+def test_check_and_runserver_say_which_migrations_a_database_lacks(
+    migration_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``migrations.W001`` until ``migrate``; ``runserver`` says it before it serves.
+
+    Without it, the first request that reads the table failed with a raw
+    SQL error, while both said nothing.
+    """
+    run("makemigrations", "-m", "notes")
+    run("makemigrations", "--empty", "-m", "fill")
+    first, second = (each.revision for each in migrations_module.status())
+    said = (
+        f"migrations.W001: 2 unapplied migrations on 'default' ({first} to "
+        f"{second}): requests that use their tables will fail. Run 'python "
+        "manage.py migrate'."
+    )
+    monkeypatch.setattr("uvicorn.run", lambda *args, **kwargs: None)
+    errors = io.StringIO()
+    with override_settings(ASGI_APPLICATION="config.asgi:application"):
+        call_command("runserver", "8001", reload=False, stderr=errors)
+        checked = run("check")
+
+    assert errors.getvalue() == f"Warning: {said}\n"
+    assert f"  Warning: {said}" in checked.splitlines()
+    run("migrate")
+    assert "migrations.W001" not in run("check")
+
+
+def test_unapplied_migrations_say_nothing_where_they_cannot_tell(
+    migration_project: Path, tmp_path: Path
+) -> None:
+    """A database out of reach, or in memory; a SQLite file not made yet lacks all.
+
+    Asking makes no file.
+    """
+    run("makemigrations", "-m", "notes")
+    unmade = tmp_path / "unmade.sqlite3"
+    away = "postgresql+asyncpg://postgres@127.0.0.1:1/postgres"
+    for url, said in (
+        (f"sqlite+aiosqlite:///{unmade}", ["1 unapplied migration on 'default'"]),
+        ("sqlite+aiosqlite:///:memory:", []),
+        (away, []),
+    ):
+        with override_settings(DATABASES={"default": {"URL": url}}):
+            found = [
+                each.split(" (")[0] for each in migrations_module.unapplied_warnings()
+            ]
+        assert found == said
+    assert not unmade.exists()
+
+
+def test_unapplied_migrations_are_not_asked_of_databases_refused() -> None:
+    """A test that did not ask for the databases: nothing is said, nothing reached."""
+    assert migrations_module.unapplied_warnings() == []
+
+
 def test_downgrades_need_consent_in_deployments(
     migration_project: Path, tmp_path: Path
 ) -> None:

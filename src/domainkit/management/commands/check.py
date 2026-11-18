@@ -44,7 +44,8 @@ class Command(BaseCommand):
     help = (
         "Validate settings, installed domains, routes and their access rules, "
         "middleware, the dependency rules between domain layers, and the "
-        "migration history; warn about route handlers and dependencies that "
+        "migration history; warn about migrations a database does not have yet "
+        "(outside staging and production), route handlers and dependencies that "
         "run on the thread pool, and event handlers and tasks that would "
         "block the event loop, and about weak choices in staging and "
         "production, and say how HTTPS reaches the application there. With "
@@ -135,6 +136,8 @@ def _warnings(app: FastAPI) -> list[str]:
     warnings += _tagged("blocking.W001", sync_calls(app, _project_domains()))
     warnings += _tagged("blocking.W002", awaited_sync(_event_handlers()))
     warnings += _tagged("tenancy.W001", unsaid_throttles(app))
+    if not deployed:  # A deployment migrates as it rolls out, after its checks.
+        warnings += _tagged("migrations.W001", migrations.unapplied_warnings())
     return warnings
 
 

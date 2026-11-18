@@ -154,6 +154,7 @@ application logs them as a warning and starts.
 | `limits.E002` | in any environment, at `setup()`: a default of `LIMITS.DEFAULTS` that is not a limit |
 | `apps.E001` | in any environment, at `setup()`: a domain whose `requires` is not installed |
 | `apps.E002` | in any environment, at `setup()`: a domain that defines a hook method 1.0 removed, in 2.0 too ([Extension points](extension-points.md)) |
+| `apps.E003` | from `check`, and as the application starts (refused in staging and production, logged elsewhere): a `MIDDLEWARE` entry of an optional app (`domainkit.contrib.<app>`) whose app is not in `INSTALLED_DOMAINS`. The middleware needs the app's settings and tables, so every request would fail. *New in 2.9* |
 | `architecture.E001` | from `check`: an import that breaks the layer rules ([Layer rules](settings.md#layer-rules)) |
 | `migrations.E001` | from `check`: a target with more than one migration head (`makemigrations --merge` joins them) |
 
@@ -169,6 +170,7 @@ everywhere.
 | Id | Warned |
 | --- | --- |
 | `apps.W001` | in every environment: a `start` or `stop` coroutine method of a `DomainConfig` that no hook point holds. Only registered functions run, so nothing calls it: register it in `ready()` with `on_startup(self.start)` or `on_shutdown(self.stop)` ([Extension points](extension-points.md)) |
+| `migrations.W001` | outside staging and production, from `check`, and from `runserver` as it starts: a database that lacks revisions of its target, with how many and which. A request that uses their tables would fail with a raw SQL error. Run `migrate`. A database that cannot be reached, or one in memory, says nothing. *New in 2.9* |
 | `security.W001` | `API_DOCS = True`: anyone can read `/docs`, `/redoc`, and `/openapi.json` |
 | `security.W002` | `SECURE_HSTS_SECONDS = 0`: browsers are not told to keep to HTTPS |
 | `security.W003` | no `RATE_LIMIT`, or `RateLimitMiddleware` missing from `MIDDLEWARE` |
