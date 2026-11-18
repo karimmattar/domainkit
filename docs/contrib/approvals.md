@@ -190,8 +190,10 @@ returns the approved command being run here, if any, and
 `approved(action, command)` says whether `command` is it.
 
 `maker_rule` is asked again when the approved command runs, on the maker
-as a user, with no credentials. So a rule about the submitting request's
-own scopes or step-up passes at submission only, and refuses at the run.
+as a user, with no credentials, on a request context of its own each
+time (since 2.8.2): nothing the rule keeps on it, in `request.state`
+say, reaches another call. So a rule about the submitting request's own
+scopes or step-up passes at submission only, and refuses at the run.
 
 ### Run by its maker
 
@@ -1330,7 +1332,8 @@ users who may decide it now:
   group of theirs; superusers hold every permission);
 - the members of its group;
 - for an approver rule, the superusers and staff the rule lets through,
-  asked about the user alone, on a connection without credentials;
+  asked about the user alone, each on a connection without credentials
+  of its own (since 2.8.2);
 - never its maker, a party to its command, or someone who decided it
   already.
 

@@ -43,10 +43,12 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import fields, replace
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Any, Final
 from uuid import UUID
 
 from pydantic import ValidationError
+from starlette.datastructures import State
 from starlette.requests import HTTPConnection
 
 from domainkit import clock
@@ -92,10 +94,27 @@ STAFF_FLAGS: Final = ("is_superuser", "is_staff")
 """The flags of the users an approver rule is asked about (``approvers_of``)."""
 MAKER: Final = "A maker's id has 1 to 255 characters."
 APPROVER: Final = "An approver's id has 1 to 255 characters."
-_RUN: Final = HTTPConnection(
-    {"type": "http", "method": "POST", "path": f"/{EXECUTE}", "headers": []}
-)
-"""The connection a run checks a guard's ``maker_rule`` on: no credentials."""
+
+
+def _run_connection() -> HTTPConnection:
+    """A connection of no credentials to ask one maker or approver rule once.
+
+    Each call gets its own, with its own ``state``, so nothing a rule keeps
+    on it reaches another call. Its scope is complete: a rule may read its
+    query parameters, which are none, and ``request.app.state``, a fresh,
+    empty ``State`` of its own, not the application's.
+    """
+    return HTTPConnection(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": f"/{EXECUTE}",
+            "headers": [],
+            "query_string": b"",
+            "app": SimpleNamespace(state=State()),
+            "state": {},
+        }
+    )
 
 
 def config() -> ApprovalsSettings:
@@ -862,11 +881,11 @@ async def _check_maker(guard: Guard, maker: str) -> None:
     a clerk dismissed, a customer frozen, or staff demoted after
     submitting runs nothing. It is asked in the request's tenant, where
     the run is (a guard ``everywhere``: as where no tenant is served).
-    The rule sees the user on a connection of no credentials (``_RUN``):
-    a rule about the submitting request itself (its scopes, a step-up)
-    was checked when the request was submitted, and one that needs such
-    credentials refuses here. A maker that names
-    no user (a principal of the project's own) is left to the project.
+    The rule sees the user on a connection of no credentials of its own
+    (``_run_connection``): a rule about the submitting request itself (its
+    scopes, a step-up) was checked when the request was submitted, and one
+    that needs such credentials refuses here. A maker that names no user
+    (a principal of the project's own) is left to the project.
 
     Raises:
         MakerNotAllowed: The user is gone, inactive, lacks the permission,
@@ -885,7 +904,7 @@ async def _check_maker(guard: Guard, maker: str) -> None:
     with guard.checking():  # A guard of rows of no tenant: no role counts.
         allowed = user is not None and (
             (guard.permission is None or await has_perm(user, guard.permission))
-            and (rule is None or await rule.has_permission(_RUN, user))
+            and (rule is None or await rule.has_permission(_run_connection(), user))
         )
     if not allowed:
         raise MakerNotAllowed("Whoever submitted this command may no longer make it.")
@@ -898,8 +917,9 @@ async def approvers_of(request: ApprovalRequest) -> list[Any]:
     the users who hold its permission (``has_perm``: granted to them or to
     a group of theirs, and superusers), the members of its group, or the
     superusers and staff its approver rule lets through, asked about the
-    user alone, on a connection without credentials (``_RUN``). Never its
-    maker, a party to its command, or someone who decided it already. A
+    user alone, each on a connection without credentials of its own
+    (``_run_connection``). Never its maker, a party to its command, or
+    someone who decided it already. A
     permission only a backend of the project's grants is not looked for:
     such holders are not found (user report P3). They are asked as the
     request's tenant, where it is decided (ADR 0183).
@@ -952,7 +972,7 @@ async def _approvers(request: ApprovalRequest) -> list[Any]:
                 if not await has_perm(user, request.permission):
                     continue
             elif request.group is None and (
-                rule is None or not await rule.has_permission(_RUN, user)
+                rule is None or not await rule.has_permission(_run_connection(), user)
             ):
                 continue
             approvers.append(user)

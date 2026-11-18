@@ -9,6 +9,32 @@ and a status.
 
 ## [Unreleased]
 
+## [2.8.2] - 2026-11-18
+
+2.8.2 is a security release of 2.8. A unit of work cut off by a
+cancellation gives its database connection back to the pool, with
+asyncpg and aiosqlite, however it was cancelled. Approvals asks each
+maker and approver rule on a request context of its own. No migration
+and no setting: read [upgrading.md](docs/upgrading.md#281-to-282) before
+you deploy.
+
+### Security
+
+- A unit of work cut off by a cancellation gives its database connection
+  back to the pool as it closes, within `SETTLE_TIMEOUT` (2 seconds),
+  with asyncpg and aiosqlite, however it was cancelled: once, by a
+  deadline, or at every wait, by an anyio cancel scope, during its work
+  or its close; with asyncpg, the statement it cut is cancelled on the
+  server. A connection the pool discards on those drivers gives
+  its slot back at once; an asyncpg one closes in a task of its own,
+  within the same 2 seconds
+  ([Request deadlines](docs/runtime.md#request-deadlines),
+  [upgrading.md](docs/upgrading.md#281-to-282), ADR 0048) (audit
+  A28-SEC-06).
+- Approvals asks each maker and approver rule on a request context of its
+  own when an approved command runs, so nothing a rule keeps on it
+  reaches another call (audit A28-SEC-07).
+
 ## [2.8.1] - 2026-11-18
 
 2.8.1 is a security release of 2.8. With `TENANCY`, live events and
@@ -8915,7 +8941,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.8.1...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.8.2...HEAD
+[2.8.2]: https://github.com/karimmattar/domainkit/compare/v2.8.1...v2.8.2
 [2.8.1]: https://github.com/karimmattar/domainkit/compare/v2.8.0...v2.8.1
 [2.8.0]: https://github.com/karimmattar/domainkit/compare/v2.7.0...v2.8.0
 [2.7.0]: https://github.com/karimmattar/domainkit/compare/v2.6.0...v2.7.0

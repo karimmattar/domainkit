@@ -32,27 +32,36 @@ first and run one at a time, never failing on each other.
 and deadlocks (``40P01``); SQLite reports neither. ``lock(name)`` is
 ``pg_advisory_xact_lock`` on a 64-bit key (``lock_key``), and on SQLite
 the database's write lock.
+
+Leaving the block gives the session's connection back to the pool however
+a cancellation reaches the close, once or at every wait, within
+``SETTLE_TIMEOUT`` when the work is being cancelled (``_close``,
+``_close_cut_off``).
 """
 
+import asyncio
 import hashlib
 import logging
 import re
 import threading
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from enum import StrEnum
 from functools import partial
 from types import TracebackType
-from typing import Any, Final, Self
+from typing import Any, Final, Self, cast
 from weakref import WeakKeyDictionary
 
+import anyio
 from sqlalchemy import BigInteger, Connection, bindparam, event, func, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, AsyncSessionTransaction
+from sqlalchemy.orm import SessionTransaction
 from sqlalchemy.orm.exc import StaleDataError
 
+from domainkit import tasks
 from domainkit.apps import registry
 from domainkit.conf import settings
-from domainkit.db.connections import INTERNAL, Reads, connections
+from domainkit.db.connections import INTERNAL, SETTLE_TIMEOUT, Reads, connections
 from domainkit.db.errors import duplicate_value
 from domainkit.db.hooks import on_committed, on_stage
 from domainkit.db.orm import mapper_registry, metadata
@@ -86,6 +95,9 @@ ADVISORY_LOCK: Final = select(
 TRY_ADVISORY_LOCK: Final = select(
     func.pg_try_advisory_xact_lock(bindparam("key", type_=BigInteger))
 )
+CLOSE_TASK: Final = "domainkit.db.close"
+"""The name of the task that closes the session of cancelled work
+(``_close_cut_off``), as logs and ``tasks_failed_total`` show it."""
 logger = logging.getLogger(__name__)
 
 
@@ -291,9 +303,18 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         Unlike ``rollback()``, closing detaches loaded aggregates without
         expiring them, so a use case can return what it read. A unique
         violation from a flush inside the block becomes ``DuplicateValue``.
+        The connection goes back to the pool however a cancellation reaches
+        the close (``_close``); work already being cancelled closes in a task
+        of its own (``_close_cut_off``).
         """
         self._deferred.clear()
-        await self.session.close()
+        task = asyncio.current_task()
+        if isinstance(exc, asyncio.CancelledError) or (
+            task is not None and task.cancelling()
+        ):
+            await _close_cut_off(self.session)
+        else:
+            await _close(self.session)
         if isinstance(exc, StaleDataError):
             raise concurrent_update(exc) from exc
         if isinstance(exc, IntegrityError):
@@ -423,6 +444,105 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         if isinstance(exc, IntegrityError):
             return duplicate_value(exc, metadata)
         return None
+
+
+async def _close(session: AsyncSession) -> None:
+    """Close ``session``; if anything ends the close early, discard its connections.
+
+    A cancellation can reach the close of work that ended normally, or
+    with an error: an anyio cancel scope cancels every wait until it
+    exits, and a deadline can pass as the ``ROLLBACK`` runs. SQLAlchemy
+    then stops closing before it gives the connection back to the pool.
+    So whatever ends the close early, the connections the session held are
+    invalidated at once, without I/O (``_discard``): the pool has them
+    back, and opens new ones in their place. A close that ends normally
+    costs one more read, of the session's transaction.
+    """
+    transaction = session.sync_session.get_transaction()
+    try:
+        await session.close()
+    except BaseException:
+        _discard(_open_connections(transaction))
+        raise
+
+
+async def _close_cut_off(session: AsyncSession) -> None:
+    """Close the session of cancelled work; its connections are back within the bound.
+
+    Work already being cancelled cannot close in its own task: an anyio
+    cancel scope would cut the close at once. So the close runs in a task
+    of its own (``domainkit.tasks``), which no cancellation of the work
+    reaches, and the work waits for it, shielded from such a scope, for at
+    most ``SETTLE_TIMEOUT``. The task bounds itself by the same moment
+    (``_close_within``), so a second cancellation of the work, which ends
+    its wait, leaves no unbounded close behind. The work's cancellation
+    goes on either way, and a failed close is logged.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + SETTLE_TIMEOUT
+    held = _open_connections(session.sync_session.get_transaction())
+    closing = tasks.spawn(_close_within(session, held, deadline), name=CLOSE_TASK)
+    with anyio.CancelScope(shield=True):
+        await asyncio.wait([closing], timeout=SETTLE_TIMEOUT)
+
+
+async def _close_within(
+    session: AsyncSession, held: list[Connection], deadline: float
+) -> None:
+    """Close ``session``; at ``deadline``, discard ``held`` and cut the close off.
+
+    A close still running at the deadline is one the database does not
+    answer. Its connections are invalidated first, without I/O, so the pool
+    has them back at the deadline, before the work that waits is answered;
+    then the close is cancelled. In that order, ``connections._keep_cut_off``
+    finds the connection invalidated and does not settle and keep it.
+    """
+    closing = cast("asyncio.Task[None]", asyncio.current_task())
+    timer = asyncio.get_running_loop().call_at(deadline, _give_up, held, closing)
+    try:
+        await session.close()
+    except BaseException:
+        _discard(held)
+        raise
+    finally:
+        timer.cancel()
+
+
+def _give_up(held: list[Connection], closing: "asyncio.Task[None]") -> None:
+    """Discard ``held`` and cancel the close that did not end in time."""
+    logger.warning(
+        "Closing the session of work cut off took over %gs; its connections "
+        "are discarded",
+        SETTLE_TIMEOUT,
+    )
+    _discard(held)
+    closing.cancel()
+
+
+def _open_connections(transaction: SessionTransaction | None) -> list[Connection]:
+    """The sync connections ``transaction`` has checked out, read before it closes.
+
+    SQLAlchemy keeps them on the session's transaction (``_connections``),
+    and its close leaves them there while it detaches the transaction from
+    the session; the close's callers read it first. Without a transaction
+    there are none.
+    """
+    if transaction is None:
+        return []
+    held = transaction._connections.values()
+    return list({id(connection): connection for (connection, *_rest) in held}.values())
+
+
+def _discard(connections: Iterable[Connection]) -> None:
+    """Invalidate each connection not closed: the pool has it back, without I/O.
+
+    ``Connection.invalidate`` terminates the driver connection and returns
+    its pool slot; it does nothing to one already invalidated, and refuses
+    one closed, which is back in the pool already.
+    """
+    for connection in connections:
+        if not connection.closed:
+            connection.invalidate()
 
 
 STALE_TABLE: Final = re.compile(r"\bstatement on table '([^']+)'")
