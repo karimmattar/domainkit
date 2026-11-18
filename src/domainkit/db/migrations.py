@@ -329,8 +329,9 @@ def _unreadable_message(alias: str, exc: Exception) -> str:
     if isinstance(exc, DBAPIError) and exc.orig is not None:
         reason = exc.orig
     return (
-        f"The migrations {alias!r} has cannot be read ({type(reason).__name__}: "
-        f"{reason}): check the database, then run 'python manage.py migrate'."
+        f"The migrations applied to {alias!r} cannot be read "
+        f"({type(reason).__name__}: {reason}): check the database, then run "
+        "'python manage.py migrate'."
     )
 
 

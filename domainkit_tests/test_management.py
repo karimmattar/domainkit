@@ -1,5 +1,6 @@
 """Management commands: discovery, dispatch, and the built-in commands."""
 
+import asyncio
 import io
 import logging
 import os
@@ -12,6 +13,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from domainkit import setup
 from domainkit.apps import registry
@@ -858,12 +861,52 @@ def test_a_database_whose_migrations_cannot_be_read_is_said_so(
         checked = run("check")
 
     said = (
-        "The migrations 'default' has cannot be read (DatabaseError: file is not "
-        "a database): check the database, then run 'python manage.py migrate'."
+        "The migrations applied to 'default' cannot be read (DatabaseError: file "
+        "is not a database): check the database, then run 'python manage.py "
+        "migrate'."
     )
     assert found == [said]
     assert f"  Warning: migrations.W001: {said}" in checked.splitlines()
     assert [r for r in caplog.records if r.name.startswith("alembic")] == []
+
+
+def test_unapplied_lists_what_a_database_lacks_until_migrate(
+    migration_project: Path,
+) -> None:
+    """``unapplied`` alone, with the database's own ``CONNECT_TIMEOUT``."""
+    run("makemigrations", "-m", "notes")
+    (revision,) = migrations_module.heads()
+
+    assert migrations_module.unapplied() == [revision]
+    run("migrate")
+    assert migrations_module.unapplied() == []
+
+
+def test_a_database_at_a_revision_the_project_lacks_is_said_so(
+    migration_project: Path, database_url: str
+) -> None:
+    """A revision the project does not have (another branch's): read, not raised."""
+    run("makemigrations", "-m", "notes")
+    run("migrate")
+
+    async def stamp() -> None:
+        engine = create_async_engine(database_url)
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text("UPDATE alembic_version SET version_num = '9999_dead'")
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(stamp())
+    (said,) = migrations_module.unapplied_warnings()
+
+    assert said.startswith(
+        "The migrations applied to 'default' cannot be read (ResolutionError: "
+        "No such revision or branch '9999_dead'"
+    )
+    assert said.endswith("check the database, then run 'python manage.py migrate'.")
 
 
 def test_a_database_that_never_answers_costs_the_check_little(
