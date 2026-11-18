@@ -51,9 +51,12 @@ def statements(table: Table) -> tuple[tuple[str, ...], tuple[str, ...]]:
 
     ``domainkit.db.protection``'s, which the ledger's entries share: the
     function names and bodies are those of 2.8, so triggers made then
-    still count as made.
+    still count as made. Written from the table's name as it is,
+    unchecked, as in 2.8 (``checked=False``): ``protect`` and
+    ``unprotect`` take a project's own tables too, from revisions already
+    written.
     """
-    return append_only_statements(table)
+    return append_only_statements(table, checked=False)
 
 
 PROTECT, UNPROTECT = statements(audit_log)

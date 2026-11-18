@@ -175,6 +175,10 @@ another table with `ValueError`, on every database, before it makes or
 asks anything; a reserved word (`order`) is quoted. Quoting every name
 instead would have let any name through, but a mixed-case table would
 then get mixed-case triggers, and 2.8's statements would change.
+`contrib.audit`'s `protect(op, table)` and `unprotect(op, table)` are not
+checked: a project's revisions, already written, call them with tables of
+their own, which 2.8 took whatever their names, so they write 2.8's
+statements (`append_only_statements(table, checked=False)`).
 
 Audit and accounting keep their own names (`protect`, `missing_triggers`,
 `accounting.protection.missing`) on top of it. The ledger's check now

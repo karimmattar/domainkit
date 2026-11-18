@@ -9,6 +9,9 @@ audit trail's did not (A28-ARCH-07). The ledger is never kept per tenant
 tenant's audit trail is checked in ``test_audit_tenants.py``.
 """
 
+from types import SimpleNamespace
+from typing import Any
+
 import pytest
 from sqlalchemy import Column, Integer, MetaData, Table
 
@@ -254,3 +257,69 @@ async def test_the_longest_name_and_a_reserved_word_are_protected(
     assert append_only_statements(table("order"))[0][1] == (
         'DROP TRIGGER IF EXISTS order_append_only ON "order"'
     )
+
+
+class Revision:
+    """The part of ``alembic.op`` that audit's ``protect`` uses; it records."""
+
+    def __init__(self, dialect: str) -> None:
+        """A revision run on ``dialect``."""
+        self.dialect = dialect
+        self.statements: list[str] = []
+
+    def get_bind(self) -> Any:  # noqa: ANN401 - only its dialect is read.
+        """A connection of the dialect."""
+        return SimpleNamespace(dialect=SimpleNamespace(name=self.dialect))
+
+    def execute(self, sqltext: str) -> None:
+        """Record ``sqltext``."""
+        self.statements.append(sqltext)
+
+
+def written_by_2_8(name: str) -> list[str]:
+    """What 2.8's ``protect`` then ``unprotect`` wrote for the table ``name``."""
+    function = f"{name}_append_only"
+    return [
+        f"""
+    CREATE OR REPLACE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql
+    AS $${BODY_2_8.format(name)}$$
+    """,
+        f"DROP TRIGGER IF EXISTS {function} ON {name}",
+        (
+            f"CREATE TRIGGER {function} BEFORE UPDATE OR DELETE ON {name} "
+            f"FOR EACH ROW EXECUTE FUNCTION {function}()"
+        ),
+        f"DROP TRIGGER IF EXISTS {function}_truncate ON {name}",
+        (
+            f"CREATE TRIGGER {function}_truncate BEFORE TRUNCATE ON {name} "
+            f"FOR EACH STATEMENT EXECUTE FUNCTION {function}()"
+        ),
+        f"DROP TRIGGER IF EXISTS {function}_truncate ON {name}",
+        f"DROP TRIGGER IF EXISTS {function} ON {name}",
+        f"DROP FUNCTION IF EXISTS {function}()",
+    ]
+
+
+def test_audits_protect_takes_a_projects_tables_as_2_8_did() -> None:
+    """A revision's ``protect(op, table)`` and ``unprotect`` are not checked.
+
+    A project's revisions call them with tables of their own, which 2.8
+    took whatever their names (PostgreSQL cuts a long trigger name, with a
+    notice, and the trigger still refuses) or schema (nothing is run on
+    SQLite). The new API checks; these keep 2.8's statements, so an
+    upgrade's ``migrate`` runs the revisions it ran (review of A28-ARCH-07).
+    """
+    long, kept = table("x" * 45), table("price_history", schema="billing")
+    postgres, sqlite = Revision("postgresql"), Revision("sqlite")
+    for op in (postgres, sqlite):
+        for each in (long, kept):
+            trail.protect(op, each)
+            trail.unprotect(op, each)
+
+    assert postgres.statements == written_by_2_8(long.name) + written_by_2_8(
+        "price_history"
+    )
+    assert sqlite.statements == []
+    assert trail.statements(audit_log) == append_only_statements(audit_log)
+    with pytest.raises(ValueError, match="45 characters"):
+        append_only_statements(long)

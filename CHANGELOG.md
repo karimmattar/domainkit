@@ -20,8 +20,10 @@ and a status.
   schema and in each tenant's (`TENANCY.SCHEMA_DATABASES`). A table's
   name must be lowercase letters, digits, and underscores, of at most 42
   characters, with no schema of its own, or each refuses it with
-  `ValueError` ([Append-only tables](docs/databases.md#append-only-tables),
-  ADR 0188) (audit A28-ARCH-07).
+  `ValueError`; `contrib.audit`'s `protect` and `unprotect`, which
+  revisions call, take any table as in 2.8
+  ([Append-only tables](docs/databases.md#append-only-tables), ADR 0188)
+  (audit A28-ARCH-07).
 - `domainkit.db.affected_rows(result)`: the rows an `UPDATE` or `DELETE`
   changed, without reading `rowcount` under `# type: ignore`; a
   `TypeError` for a result that counts none

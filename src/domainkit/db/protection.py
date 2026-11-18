@@ -125,16 +125,22 @@ def append_only_body(table: Table) -> str:
     Raises:
         ValueError: As ``trigger_names``.
     """
-    _checked(table)
+    return _body(_checked(table))
+
+
+def _body(name: str) -> str:
+    """The function's body for the table ``name``, as 2.8 wrote it."""
     return f"""
     BEGIN
-        RAISE EXCEPTION '{table.name} is append-only'
+        RAISE EXCEPTION '{name} is append-only'
             USING ERRCODE = 'insufficient_privilege';
     END
     """
 
 
-def append_only_statements(table: Table) -> tuple[tuple[str, ...], tuple[str, ...]]:
+def append_only_statements(
+    table: Table, *, checked: bool = True
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """The statements that protect ``table``, and those that undo them.
 
     Protecting replaces what is there: the function, and each trigger
@@ -144,12 +150,23 @@ def append_only_statements(table: Table) -> tuple[tuple[str, ...], tuple[str, ..
     A table named by a reserved word (``order``) is quoted; the others are
     written as 2.8 wrote them.
 
+    ``checked=False`` writes them from the table's name as it is, neither
+    checked nor quoted, as ``contrib.audit``'s ``protect()`` and
+    ``unprotect()`` have since 2.8: a project's revisions call those with
+    tables of their own. For the framework's tables both give the same text.
+
     Raises:
-        ValueError: As ``trigger_names``.
+        ValueError: As ``trigger_names``, unless ``checked`` is False.
     """
-    function, truncate = trigger_names(table)
-    body = append_only_body(table)
-    name = f'"{table.name}"' if table.name in RESERVED_WORDS else table.name
+    if checked:
+        function, truncate = trigger_names(table)
+        body = append_only_body(table)
+        name = f'"{table.name}"' if table.name in RESERVED_WORDS else table.name
+    else:
+        name = table.name
+        function = f"{name}_append_only"
+        truncate = f"{function}_truncate"
+        body = _body(name)
     protect = (
         f"""
     CREATE OR REPLACE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql
