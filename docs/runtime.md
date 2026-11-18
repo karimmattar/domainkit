@@ -1215,6 +1215,14 @@ of work rolls back and gives its connection back. An `Idempotency-Key`
 that committed nothing is released, so the client can try again with
 the same key.
 
+A unit of work rolls back only what has not committed. When the deadline
+comes while the `COMMIT` is on its way, the database may have applied
+it, and the client still gets the 503. So the answer to a write does not
+tell the client whether it happened: `Retry-After` is safe on a write
+only with an `Idempotency-Key`, whose retry gets the stored answer or
+`409 idempotency_response_unavailable`
+([A write ran past its deadline](runbook.md#a-write-ran-past-its-deadline)).
+
 A route that needs more time, or less, says so with `RequestTimeout`.
 The time counts from when the request arrived, and `None` removes the
 deadline:

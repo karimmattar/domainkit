@@ -16,9 +16,13 @@ settings. Commands that change data take `--operator NAME` (or read
 | You see | Entry |
 | --- | --- |
 | `503 overloaded`, `503 database_busy`, `503 deadline_exceeded` | [Requests are shed](#requests-are-shed) |
+| A client asks whether a write that got `503 deadline_exceeded` happened | [A write ran past its deadline](#a-write-ran-past-its-deadline) |
+| `409 idempotency_response_unavailable` | [A retry finds that the request ran](#a-retry-finds-that-the-request-ran) |
 | `messaging_outbox_lag_seconds` grows | [The outbox backs up](#the-outbox-backs-up) |
 | `messaging_outbox_messages{status="dead"}` above zero | [Messages are dead-lettered](#messages-are-dead-lettered) |
 | `messaging_outbox_messages{status="held"}` does not fall | [A key's messages stall](#a-keys-messages-stall) |
+| A subscriber misses events, or `webhooks deliveries --status failed` lists some | [Webhook deliveries fail](#webhook-deliveries-fail) |
+| Login codes, reset links, or notices do not arrive | [Codes and mail do not arrive](#codes-and-mail-do-not-arrive) |
 | New processes fail with `KeyProviderError` | [The key service is unreachable](#the-key-service-is-unreachable) |
 | `accounting verify` exits 1, or `accounting.E001`/`E002` | [The ledger does not verify](#the-ledger-does-not-verify) |
 | A restore is planned | [A backup is restored](#a-backup-is-restored) |
@@ -31,6 +35,7 @@ settings. Commands that change data take `--operator NAME` (or read
 | `503 throttle_unavailable` on logins | [Logins are refused while Redis is down](#logins-are-refused-while-redis-is-down) |
 | `tasks_restarted_total` grows | [A background task restarts](#a-background-task-restarts) |
 | A new release does not start | [A process refuses to start](#a-process-refuses-to-start) |
+| `502` or refused connections while a release rolls out | [Requests fail during a rollout](#requests-fail-during-a-rollout) |
 | The migration job fails | [The migration job fails](#the-migration-job-fails) |
 
 ## Requests are shed
@@ -71,6 +76,54 @@ settings. Commands that change data take `--operator NAME` (or read
 - Do not raise `MAX_CONCURRENT_REQUESTS` to stop the 503s. The requests
   then queue for connections instead, and time out after they have held
   memory.
+
+## A write ran past its deadline
+
+**You see** a `503 deadline_exceeded` answer, with `Retry-After: 1`, to
+a `POST`, `PUT`, `PATCH`, or `DELETE`, and the warning `POST /payments
+ran past its deadline of 30s`. The client asks whether the change was
+made.
+
+**Check:**
+
+1. The answer's request id (its `X-Request-ID` header, and
+   `request_id` in its body) in the logs: what the request did before
+   the deadline.
+2. The resource itself, or the audit trail's rows of that request id:
+   did the change commit?
+3. Whether the request carried an `Idempotency-Key`.
+
+**Do:**
+
+- Tell the client that a `503 deadline_exceeded` on a write does not say
+  that nothing was saved. The deadline can end the request while its
+  `COMMIT` is on the way, after the database applied it
+  ([commit](request-flow.md#8-commit)).
+- A client may follow `Retry-After` on a write only with the same
+  `Idempotency-Key`. Its retry then gets the stored response, or
+  `409 idempotency_response_unavailable` if the first request committed
+  ([idempotency](contrib/idempotency.md#what-a-retry-gets)). Without a
+  key, the client reads the result before it sends the write again.
+- Find out why the request was slow, as for
+  [requests that are shed](#requests-are-shed). A route that needs more
+  time says so with `RequestTimeout`
+  ([request deadlines](runtime.md#request-deadlines)).
+
+## A retry finds that the request ran
+
+**You see** `409 idempotency_response_unavailable` answers to requests
+with an `Idempotency-Key`, and a client that reports it as an error.
+
+**Check** what the first request with that key did: the audit trail's
+rows of its request id, or the resource. The 409 means that the first
+request committed, and that its response is not kept: it failed or died
+after the commit, its response was too large to keep, or the key's TTL
+has passed ([what a retry gets](contrib/idempotency.md#what-a-retry-gets)).
+
+**Do** nothing on the service: the 409 keeps the write from running
+twice. Tell the client to look the result up instead of retrying, and
+give it a resource where it can. A client that sends a new request for
+the same intent sends it with a new key.
 
 ## The outbox backs up
 
@@ -158,6 +211,75 @@ of their ordering key
 - No message of the key pending at all: `messages release` makes the
   first held message of each such key pending now, audited with your
   name, instead of waiting for a cleanup round.
+
+## Webhook deliveries fail
+
+**You see** a subscriber report events it never got, deliveries in
+`webhooks deliveries --status failed`, or
+`messaging_outbox_lag_seconds{queue="webhooks"}` growing. Webhook
+deliveries are tasks on the `webhooks` queue (`WEBHOOKS.QUEUE`): each
+attempt that fails is tried again, until `MAX_ATTEMPTS`
+([how a delivery runs](contrib/webhooks.md#how-a-delivery-runs)).
+
+**Check:**
+
+1. `webhooks deliveries --status failed --subscription ID`: each
+   delivery's last status code and last error. A `4xx` or `5xx` is the
+   receiver's answer; a timeout or a refused connection is the network
+   or the receiver being down; "no key decrypts" is the subscription's
+   secret ([secrets at rest](contrib/webhooks.md#secrets-at-rest)).
+2. `webhooks deliveries --status pending`, and the lag of the `webhooks`
+   queue: does a worker serve that queue (`runworker --queue webhooks`,
+   or a worker without `--queue`)?
+3. `messages list dead`: a delivery's task that died outside its own
+   attempt (its worker killed, or the database lost, on the last attempt)
+   is a dead letter, while its delivery may still say `pending`.
+
+**Do:**
+
+- The receiver was down or refused: once it answers, run
+  `webhooks replay --failed --subscription ID`. It sends the failed
+  deliveries again under the same `webhook-id`, which the receiver uses
+  to drop a delivery it already has.
+- No worker serves the queue: start one.
+- A dead delivery task: fix the cause, then `messages retry ID`.
+
+## Codes and mail do not arrive
+
+**You see** users report that login codes, password reset links,
+verification codes, or notices do not arrive. The worker logs
+`MailDeliveryFailed` or `NotificationFailed`, and the messages are tried
+again until `MAX_ATTEMPTS` (5). Then they are dead-lettered:
+`messaging_outbox_messages{status="dead"}` grows with the tasks
+`domainkit.mail.send`, `domainkit.notifications.send_sms`, or
+`domainkit.notifications.send_push`. A provider called over HTTP also
+shows in `http_client_requests_total` and `http_client_circuits_open`
+([a circuit breaker opens](#a-circuit-breaker-opens)).
+
+**Check:**
+
+1. `messages list pending` and `messages list dead`: are these tasks
+   waiting, retrying, or dead?
+2. The worker's log: the provider's error, and whether it refused the
+   message for good (`MailRefused`, `NotificationRefused`, dead-lettered
+   at once with the provider's code) or failed for a while.
+3. The provider's status page, and its credentials and quota.
+4. `messaging_outbox_lag_seconds` for the mail and notification queues
+   (`MAIL.QUEUE`, `NOTIFICATIONS.QUEUE`, `default` when unset): does a
+   worker serve them?
+
+**Do:**
+
+- The provider is down: messages are retried with backoff while it
+  recovers. A code a user waits for expires in minutes, so tell users to
+  ask for a new one once it is back, rather than wait.
+- These tasks are `sensitive`: their dead letters keep no arguments, so
+  `messages retry` leaves them. Users ask again for a code; send a notice
+  again from where it came from. Then drop the letters with
+  `messages drop all --blanked`
+  ([messages are dead-lettered](#messages-are-dead-lettered)).
+- A refusal for good: fix the address, the number, or the template, as
+  its code says ([mail.md](mail.md#errors-and-refusals)).
 
 ## The key service is unreachable
 
@@ -449,6 +571,31 @@ setting or route, and `CheckFailed` lists every problem at once.
 - Fix each listed check ([reference/checks.md](reference/checks.md)). Run
   `check --deploy` with the production settings in CI, so the next
   release finds these before it rolls out.
+
+## Requests fail during a rollout
+
+**You see** `502` answers from the load balancer, or refused
+connections, while a release rolls out, and none once it is done.
+
+When a process gets `SIGTERM`, the server stops taking new connections
+at once, then finishes the requests in flight within
+`SERVE["GRACEFUL_TIMEOUT"]`. The load balancer learns that the process
+is gone a few seconds later. Meanwhile it still sends it requests, which
+find nobody listening.
+
+**Check** the times: when the process got `SIGTERM`, when it stopped
+listening, and when the load balancer took it out of its targets.
+
+**Do** keep serving until the load balancer has let the process go:
+
+- On Kubernetes, give the container a `preStop` hook that waits, so
+  `SIGTERM` comes after the endpoints are updated
+  ([deploying.md](deploying.md#each-rollout)).
+- Keep the grace period above the hook's wait, plus
+  `SERVE["GRACEFUL_TIMEOUT"]`, plus `SHUTDOWN_TIMEOUT`: the wait counts
+  against it.
+- Behind another load balancer, delay the stop in the same way, by the
+  time it takes to stop sending a target requests.
 
 ## The migration job fails
 
