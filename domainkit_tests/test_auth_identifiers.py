@@ -139,6 +139,24 @@ def test_identifiers_name_fields_of_the_user_model(use_auth: UseAuth) -> None:
     )
 
 
+def test_identifiers_name_fields_the_user_table_stores(use_auth: UseAuth) -> None:
+    """``auth.E011`` names each field kept in a link table, with no column.
+
+    Users are found by a column, and listed by the first identifier, whose
+    lookup indexes are worked out at the start: ``groups`` stopped it with
+    a ``KeyError`` (found in review).
+    """
+    with pytest.raises(CheckFailed) as refused:
+        use_auth(IDENTIFIERS=("groups", "email", "user_permissions"))
+
+    [problem] = refused.value.messages
+    assert getattr(problem, "id", None) == "auth.E011"
+    assert str(problem).startswith(
+        "AUTH.IDENTIFIERS names 'groups', 'user_permissions', which the user "
+        "table 'domainkit_users' has no column for; name fields that it stores"
+    )
+
+
 def test_identifiers_name_each_field_once(use_auth: UseAuth) -> None:
     """``auth.E011`` refuses a field named twice."""
     with pytest.raises(CheckFailed) as refused:

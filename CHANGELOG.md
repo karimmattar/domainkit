@@ -75,14 +75,14 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   grant it adds (ADR 0185) (audit A28-PERF-05).
 
 - On PostgreSQL, `migrate` makes indexes on the user table, a project's
-  own too, where missing: `lower()` of the address and of the username,
-  where each is text, and the field the admin API lists users by, then
-  the id. It reads the table's indexes first and makes only those
-  missing, so with none to make it takes no lock. Logins by address,
-  signups, the checks for a taken address or username, and the admin
-  API's list of users each read the whole table before (30 to 60 ms at
-  300,000 users, 0.01 ms now). Revisions leave them alone, by name;
-  SQLite gets none (ADR 0185) (audit A28-PERF-02).
+  own too, in its schema where it names one, where missing: `lower()` of
+  the address and of the username, where each is text, and the field the
+  admin API lists users by, then the id. It reads the table's indexes
+  first and makes only those missing, so with none to make it takes no
+  lock. Logins by address, signups, the checks for a taken address or
+  username, and the admin API's list of users each read the whole table
+  before (30 to 60 ms at 300,000 users, 0.01 ms now). Revisions leave
+  them alone, by name; SQLite gets none (ADR 0185) (audit A28-PERF-02).
 
 ### Changed
 
@@ -134,6 +134,12 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 - Flags' `GET /settings` reads every stored value in one statement, not
   one per declared setting: 100 settings took 76 ms, now 9 ms
   (audit A28-PERF-07).
+
+- `auth.E011` refuses an `AUTH.IDENTIFIERS` field that the user table has
+  no column for, `groups` or `user_permissions`, which link tables keep.
+  2.8 started with one, and failed later, at a login, a search, or a list
+  of users that read it ([upgrading.md](docs/upgrading.md#28-to-29))
+  (found in review).
 
 ### Fixed
 

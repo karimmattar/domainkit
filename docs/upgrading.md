@@ -85,7 +85,8 @@ relied on 2.8's behaviour changes, and what to run.
 Logins by address, signups, the checks for a taken address or username,
 and the admin API's list of users read the whole users table in 2.8. On
 PostgreSQL, `migrate` now makes, on the user table, a project's own too
-(`AUTH.USER_TABLE`), those of these indexes that are missing:
+(`AUTH.USER_TABLE`), in the table's schema where it names one, those of
+these indexes that are missing:
 
 - `ix_<table>_<EMAIL_FIELD>_lower`, on `lower()` of the `EMAIL_FIELD`
   (`ix_domainkit_users_email_lower` on the default table);
@@ -118,6 +119,11 @@ CREATE INDEX CONCURRENTLY ix_domainkit_users_email_id ON domainkit_users (email,
 
 A concurrent build that fails leaves an invalid index of that name, which
 `migrate` takes as made: drop it, and build it again.
+
+`AUTH.IDENTIFIERS` must name fields that the user table has a column for:
+startup refuses `groups` and `user_permissions`, which link tables keep
+(`auth.E011`). 2.8 started with them, and failed later, at a login, a
+search, or a list of users that read the field.
 
 ### A repository that overrides `count` counts every match in an export
 
