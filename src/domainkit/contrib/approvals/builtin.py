@@ -575,16 +575,15 @@ async def _user_line(user_id: UUID) -> tuple[str, object]:
 
 
 async def _group_names(ids: Iterable[UUID]) -> dict[UUID, str]:
-    """The names of the groups ``ids`` names, as stored now; those gone are left out."""
+    """The names of the groups ``ids`` names, as stored now; those gone are left out.
+
+    In one statement, whatever their number (A28-PERF-07).
+    """
     from domainkit.contrib.auth import AuthUnitOfWork, GroupId
 
-    found: dict[UUID, str] = {}
     async with AuthUnitOfWork() as uow:
-        for each in ids:
-            group = await uow.groups.find(GroupId(each))
-            if group is not None:
-                found[each] = group.name
-    return found
+        found = await uow.groups.get_many(GroupId(each) for each in ids)
+    return {group_id: group.name for group_id, group in found.items()}
 
 
 def _counts(permissions: int, grants: int) -> str:

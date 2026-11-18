@@ -39,6 +39,9 @@ and a status.
   read the whole table on every page: 29 ms a page at 300,000 requests on
   PostgreSQL, 0.08 ms with the index. Run `makemigrations` and `migrate`
   (audit A28-PERF-04).
+- An approval screen reads the names of the groups a change holds in one
+  statement, where it read one per group, up to 1,000 of them (audit
+  A28-PERF-07).
 
 ### Security
 
