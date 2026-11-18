@@ -71,7 +71,8 @@ and a status.
   `domainkit.contrib.accounting`, and approvals' guards of postings,
   captures, reversals, making superusers, and admin changes, count only
   the permissions a user holds everywhere: a member's role in the tenant
-  served reaches none of their rows
+  served reaches none of their rows, nor reads those guards' requests
+  through `approvals.view_every_approvalrequest`
   ([Rows of no tenant](docs/tenancy.md#rows-of-no-tenant),
   [upgrading.md](docs/upgrading.md#28-to-29), ADR 0183) (audit
   A28-SEC-04).

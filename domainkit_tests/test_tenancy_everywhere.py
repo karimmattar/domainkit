@@ -204,9 +204,11 @@ def test_a_role_neither_makes_nor_checks_a_posting(
 ) -> None:
     """The guard of postings counts keys held everywhere: b's role is no maker.
 
-    Nor is it a checker: a posting the clerk submitted in b is not listed
-    to the role as one it may decide, and its approval is refused, while
-    the checkers, who hold the key everywhere, approve it, and it runs.
+    Nor is it a checker or a reader: the role holds every request's view
+    key in b, yet a posting the clerk submitted in b is neither listed to
+    it nor read by id, and its approval is refused; a checker who holds
+    that key everywhere lists it, and the checkers, who hold the posting's
+    key everywhere, approve it, and it runs.
     """
     assert guards()[POST_ENTRY].everywhere
     entry = posting(approvals_client)
@@ -221,6 +223,19 @@ def test_a_role_neither_makes_nor_checks_a_posting(
     )
     assert made.status_code == 201, made.json()
     request = made.json()
+    grant("checker2", "approvals.view_every_approvalrequest")
+
+    def listed(name: str) -> list[str]:
+        found = approvals_client.get("/approvals/requests", headers=in_b(name))
+        assert found.status_code == 200, found.json()
+        return [each["id"] for each in found.json()["items"]]
+
+    assert listed("finance") == []
+    read = approvals_client.get(
+        f"/approvals/requests/{request['id']}", headers=in_b("finance")
+    )
+    assert read.status_code == 404
+    assert listed("checker2") == [request["id"]]
 
     def approve(name: str) -> Any:  # noqa: ANN401 - a response.
         return approvals_client.post(
