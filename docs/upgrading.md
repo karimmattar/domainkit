@@ -59,10 +59,14 @@ migration comes with these items.
   deployed, a trigger on the entries or postings given arguments fails
   the startup check (`accounting.E001`), as it did on the trail. `migrate`
   makes the triggers again.
-- **`AwsCredentials` is defined in `domainkit.cloud.aws`.** It and the
-  signing and credential functions still import from
-  `domainkit.keys.aws`, the same objects; what prints a class by its
-  module prints the new one.
+- **AWS's signing and credentials are defined in `domainkit.cloud.aws`.**
+  `AwsCredentials`, `sign`, and the credential functions still import
+  from `domainkit.keys.aws`, the same objects; what prints a class by its
+  module prints the new one. A test that patches one of them in
+  `domainkit.keys.aws` no longer reaches the code that calls it:
+  `default_credentials` calls `environment_credentials` from
+  `domainkit.cloud.aws`, so patch it there
+  (`monkeypatch.setattr("domainkit.cloud.aws.environment_credentials", ...)`).
 
 ## 2.7 to 2.8
 

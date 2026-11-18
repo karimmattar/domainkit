@@ -499,8 +499,17 @@ Parse rates such as `"100/minute"`.
 
 Calls to AWS's APIs: Signature Version 4, and the credential chain.
 
+- `ALGORITHM`: SigV4's algorithm, as `Authorization` and presigned URLs name it.
+- `AwsCredentials`: An access key, its secret, and for temporary ones a session token.
+- `CredentialSource`: An async callable that gives the credentials to sign with, fresh ones when due.
+- `container_credentials`: Credentials from the container's endpoint (ECS, EKS Pod Identity).
 - `credential_source`: The key pair given, or the environment's credentials.
+- `default_credentials`: The first source the environment sets up (see the module).
+- `environment_credentials`: Credentials from the `AWS_*` variables (access key, secret, token).
+- `sign`: `headers` with SigV4's: `X-Amz-Date`, the token, `Authorization`.
 - `signed_request`: Send `body` to `url`, signed for `service` in `region`.
+- `signing_key`: SigV4's key for one day, region, and service.
+- `web_identity_credentials`: Credentials for `role_arn`, assumed with the token in `token_file`.
 
 ## `domainkit.keys.gcp`
 

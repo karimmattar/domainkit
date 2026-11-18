@@ -9,7 +9,7 @@ identity (EKS's IAM roles for service accounts: ``AWS_ROLE_ARN`` and
 Identity: ``AWS_CONTAINER_CREDENTIALS_RELATIVE_URI`` or ``_FULL_URI``).
 Temporary credentials are kept until five minutes before they expire.
 Until 2.9 these lived in ``domainkit.keys.aws``, which still imports
-them (ADR 0188).
+them, the same objects; they are public here since 2.9 (ADR 0188).
 """
 
 import asyncio
@@ -34,9 +34,22 @@ if TYPE_CHECKING:
 
     from domainkit.http.client import HttpClient
 
-__all__ = ["credential_source", "signed_request"]
+__all__ = [
+    "ALGORITHM",
+    "AwsCredentials",
+    "CredentialSource",
+    "container_credentials",
+    "credential_source",
+    "default_credentials",
+    "environment_credentials",
+    "sign",
+    "signed_request",
+    "signing_key",
+    "web_identity_credentials",
+]
 
 ALGORITHM: Final = "AWS4-HMAC-SHA256"
+"""SigV4's algorithm, as ``Authorization`` and presigned URLs name it."""
 REFRESH_BEFORE: Final = timedelta(minutes=5)
 """How long before temporary credentials expire they are fetched again."""
 ECS_HOST: Final = "http://169.254.170.2"
@@ -66,6 +79,7 @@ class AwsCredentials:
 
 
 type CredentialSource = Callable[[], Awaitable[AwsCredentials]]
+"""An async callable that gives the credentials to sign with, fresh ones when due."""
 
 
 def sign(

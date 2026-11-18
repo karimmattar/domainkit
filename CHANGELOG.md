@@ -53,9 +53,13 @@ and a status.
 ### Changed
 
 - AWS's Signature Version 4 and credential chain live in
-  `domainkit.cloud.aws`, which S3, SQS, SNS, SES, and KMS share.
-  `domainkit.keys.aws` still imports every name it held, the same
-  objects, and the chain raises the same errors (ADR 0188) (audit
+  `domainkit.cloud.aws`, which S3, SQS, SNS, SES, and KMS share, and are
+  public there: `sign`, `signing_key`, `ALGORITHM`, `AwsCredentials`,
+  `CredentialSource`, and the credential sources (`default_credentials`,
+  `environment_credentials`, `web_identity_credentials`,
+  `container_credentials`). `domainkit.keys.aws` still imports every
+  name it held, the same objects, and the chain raises the same errors
+  ([upgrading.md](docs/upgrading.md#28-to-29), ADR 0188) (audit
   A28-ARCH-11).
 - `domainkit.contrib.objectpermissions` requires `domainkit.contrib.auth`:
   without it, `setup()` refuses to start (`apps.E001`) rather than the
