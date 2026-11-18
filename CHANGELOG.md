@@ -57,6 +57,13 @@ and a status.
   By default a subscription hears the tenant it is served as
   ([Live committed events](docs/live.md#live-committed-events), ADR 0183)
   (audit A28-SEC-01).
+- `everywhere=True` on `HasPermissions` (and `HasObjectPermissions`),
+  `HasModelPermission`, `ModelActions`, and approvals' `guard()`
+  (`Guard.everywhere`): only the permissions a user holds where no
+  tenant is served count, never a member's role, for routes and guarded
+  commands over rows every tenant shares. Unset, nothing changes
+  ([Rows of no tenant](docs/tenancy.md#rows-of-no-tenant), ADR 0183)
+  (audit A28-SEC-04).
 
 ### Security
 
@@ -79,6 +86,14 @@ and a status.
   ([Requests and tenants](docs/contrib/approvals.md#requests-and-tenants),
   [upgrading.md](docs/upgrading.md#28-to-29), ADR 0183) (audit
   A28-SEC-02).
+- The routes of `domainkit.contrib.limits` and
+  `domainkit.contrib.accounting`, and approvals' guards of postings,
+  captures, reversals, making superusers, and admin changes, count only
+  the permissions a user holds everywhere: a member's role in the tenant
+  served reaches none of their rows
+  ([Rows of no tenant](docs/tenancy.md#rows-of-no-tenant),
+  [upgrading.md](docs/upgrading.md#28-to-29), ADR 0183) (audit
+  A28-SEC-04).
 
 ## [2.8.0] - 2026-11-18
 

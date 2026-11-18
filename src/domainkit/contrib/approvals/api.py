@@ -201,9 +201,11 @@ async def visible(connection: HTTPConnection) -> Criteria | None:
     """What a caller reads of the requests: theirs, and those they may decide.
 
     The requests they made, and those of a policy that names them among its
-    approvers (by its permission, its group, or its approver rule); every
-    request with ``approvals.view_every_approvalrequest``. Only reads are
-    narrowed: approving, rejecting, and cancelling ask their own rules.
+    approvers (by its permission, its group, or its approver rule; as where
+    no tenant is served for a guard ``everywhere``); every request with
+    ``approvals.view_every_approvalrequest``. Only reads are narrowed:
+    approving, rejecting, and cancelling ask their own rules. Each is of
+    the tenant being served: the repository reads no other's (ADR 0183).
     """
     if connection.scope.get("method") not in READS:
         return None
@@ -213,7 +215,9 @@ async def visible(connection: HTTPConnection) -> Criteria | None:
     shown: Criteria = F("maker") == str(user.id)
     for action, registered in guards().items():
         for policy in registered.policies:
-            if await names_approver(connection, user, policy):
+            with registered.checking():
+                named = await names_approver(connection, user, policy)
+            if named:
                 shown |= (F("action") == action) & (F("policy") == policy.name)
     return shown
 
@@ -339,9 +343,10 @@ async def _submission(
         HasPermissions(guard.permission) if guard.permission else None,
         rule_instance(guard.maker_rule),
     ]
-    for rule in rules:
-        if rule is not None and not await rule.has_permission(request, user):
-            raise PermissionDenied("You may not submit this command.")
+    with guard.checking():  # A guard of rows of no tenant: no role counts.
+        for rule in rules:
+            if rule is not None and not await rule.has_permission(request, user):
+                raise PermissionDenied("You may not submit this command.")
     return SubmitRequest(
         action=body.action, arguments=body.arguments, maker=str(user.id)
     )

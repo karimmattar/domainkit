@@ -86,7 +86,7 @@ code `not_authenticated`, so it knows to log in. A refused user gets
 | `IsAuthenticatedOrReadOnly` | Anyone for `GET`, `HEAD`, `OPTIONS` (`SAFE_METHODS`); users otherwise. A WebSocket handshake is a `GET`, so anyone may open one: guard sockets that take writes with `IsAuthenticated`. |
 | `IsAdminUser` | Staff users (`is_staff`), with credentials that carry no scopes. |
 | `IsSuperuser` | Active superusers, with credentials that carry no scopes. |
-| `HasPermissions(*keys)` | Users granted every permission, by any backend. |
+| `HasPermissions(*keys, everywhere=False)` | Users granted every permission, by any backend. `everywhere=True` counts only what they hold where no tenant is served: a member's role does not count ([rows of no tenant](../tenancy.md#rows-of-no-tenant)). `HasObjectPermissions` takes it too. |
 | `ModelPermissions(model)` | Django's model permissions by method (`MODEL_ACTIONS`): `GET` and `HEAD` need `view`, `POST` `add`, `PUT` and `PATCH` `change`, `DELETE` `delete`. `OPTIONS` needs a user, and a WebSocket handshake `view`. `model` is a mapped class or `"<domain>.<model>"`. |
 | `HasObjectPermissions(*keys)` | Users granted every permission on the object, by a backend with object permissions. The request itself needs an active user who logged in; check each object with `check_object_permissions`. |
 | `HasScope(*keys)` | Users whose credentials' scopes cover every key; credentials without scopes cover all. |
