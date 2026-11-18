@@ -15,7 +15,7 @@ import pytest
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import insert, select, update
 
-from domainkit import clock, lifecycle, setup
+from domainkit import clock, setup
 from domainkit.apps import registry
 from domainkit.conf import UNSET, override_settings
 from domainkit.context import RequestContext, bind_request
@@ -43,8 +43,7 @@ from domainkit.contrib.webhooks.uow import WebhooksUnitOfWork
 from domainkit.db import connections
 from domainkit.ddd import DomainEvent
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.http import guard
-from domainkit.lifecycle import Phase
+from domainkit.outbound import guard
 from domainkit.reporting import flush_reports
 from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork, NoteWritten, notes
 from domainkit_tests.test_messaging import FAST, reported
@@ -686,7 +685,6 @@ async def test_one_subscribers_hung_hosts_leave_lookups_for_the_others(
     dns = HungDns(hung=4)
     monkeypatch.setattr(socket, "getaddrinfo", dns)
     monkeypatch.setattr(guard, "resolver", guard.GuardResolver())
-    saved = dict(lifecycle._registered[Phase.RESOURCES])
     hung = [
         (await subscribe(f"http://s{i}.hang.test:{hooks.port}/hook", "note.written"))[0]
         for i in range(4)
@@ -709,8 +707,6 @@ async def test_one_subscribers_hung_hosts_leave_lookups_for_the_others(
     finally:
         dns.release.set()
         await guard.resolver.close()
-        lifecycle._registered[Phase.RESOURCES].clear()
-        lifecycle._registered[Phase.RESOURCES].update(saved)
 
     statuses = {row.subscription_id: row.status for row in await rows(deliveries)}
     assert statuses[victim.id] == SUCCEEDED
@@ -767,7 +763,6 @@ async def test_hosts_one_owner_slows_down_hold_the_lookups_one_round_only(
     dns = SlowDns(16, succeed=succeed)
     monkeypatch.setattr(socket, "getaddrinfo", dns)
     monkeypatch.setattr(guard, "resolver", guard.GuardResolver())
-    saved = dict(lifecycle._registered[Phase.RESOURCES])
     slow = {
         (await subscribe(f"http://s{i}.slow.test:{hooks.port}/hook", "note.written"))[
             0
@@ -817,8 +812,6 @@ async def test_hosts_one_owner_slows_down_hold_the_lookups_one_round_only(
         dns.release.set()
         dns.all_waiting.set()
         await guard.resolver.close()
-        lifecycle._registered[Phase.RESOURCES].clear()
-        lifecycle._registered[Phase.RESOURCES].update(saved)
 
     assert outcomes == [(FAILED, 16), (SUCCEEDED, 0)]
 

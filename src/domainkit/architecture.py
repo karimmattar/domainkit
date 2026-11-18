@@ -13,17 +13,19 @@ domain layer), ``controllers.py`` (application), ``models.py``
   ``domainkit.money``, ``domainkit.i18n.lazy`` (to mark its texts for
   translation), and its own domain layer. No frameworks, no I/O, no
   settings.
-- ``application``: no ``infrastructure`` or ``api`` code, and no web or
-  database libraries; it reaches storage through repository ports.
-- ``infrastructure``: no ``api`` code and no web libraries, but the
-  outgoing HTTP client (``domainkit.http.client``): calling another
-  service is what an adapter does; and the checks and storing of uploads
-  (``domainkit.http.uploads``), which a file gateway runs on what its
-  route hands it, typed as ``Upload`` rather than Starlette's
-  ``UploadFile`` (ADR 0177); and the problems a route raises
-  (``domainkit.http.problems``: ``APIError``, ``FieldError``), so a file
-  gateway refuses a file with the code a route would (ADR 0182), and
-  only the names its ``__all__`` lists. The rest of
+- ``application``: no ``infrastructure`` or ``api`` code, no web or
+  database libraries, and no outgoing calls (``domainkit.outbound``); it
+  reaches storage and other services through ports.
+- ``infrastructure``: no ``api`` code and no web libraries. It calls other
+  services through ``domainkit.outbound`` (the outgoing HTTP client):
+  calling another service is what an adapter does. Of ``domainkit.http``
+  it may import the client's 2.8 path (``domainkit.http.client``, ADR
+  0195); the checks and storing of uploads (``domainkit.http.uploads``),
+  which a file gateway runs on what its route hands it, typed as
+  ``Upload`` rather than Starlette's ``UploadFile`` (ADR 0177); and the
+  problems a route raises (``domainkit.http.problems``: ``APIError``,
+  ``FieldError``), so a file gateway refuses a file with the code a route
+  would (ADR 0182), and only the names its ``__all__`` lists. The rest of
   ``domainkit.http.errors``, which builds responses, stays out.
 - Another domain may be used only through its ``application`` layer or its
   ``domain.events`` (bounded contexts stay decoupled).
@@ -92,6 +94,7 @@ FORBIDDEN_LIBRARIES: Final = {
         "redis",
         "domainkit.db",
         "domainkit.http",
+        "domainkit.outbound",
     ),
     "infrastructure": ("fastapi", "starlette", "domainkit.http"),
 }
@@ -107,7 +110,9 @@ ALLOWED_MODULES: Final = {
 """Modules a layer may import although a library it must not use holds them.
 
 An entry lifts only a library entry less specific than itself: a project
-that forbids ``domainkit.http.client`` by name forbids it.
+that forbids ``domainkit.http.client`` by name forbids it. That module is
+the client's path of 2.8; the client lives in ``domainkit.outbound``,
+which the infrastructure layer imports with no exception (ADR 0195).
 """
 
 _PUBLIC_ONLY: Final = ("domainkit.http.problems",)

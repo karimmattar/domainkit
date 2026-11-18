@@ -7,8 +7,7 @@ from typing import Final
 
 from domainkit.apps import DomainConfig, registry
 from domainkit.apps.hooks import on_erase_subject, on_export_subject
-from domainkit.conf import settings
-from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
+from domainkit.conf import DEPLOYED_ENVIRONMENTS, settings
 from domainkit.exceptions import ImproperlyConfigured
 
 from .settings import WebhooksSettings

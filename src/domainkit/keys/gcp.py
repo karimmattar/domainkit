@@ -54,7 +54,7 @@ class GcpKmsKeyProvider(KeyProvider):
             ValueError: ``key_name`` is not a key's full name.
         """
         from domainkit.cloud.google import MetadataAccount, ServiceAccount
-        from domainkit.http.client import HttpClient
+        from domainkit.outbound.client import HttpClient
 
         parts = key_name.split("/")
         if len(parts) != 8 or parts[::2] != [

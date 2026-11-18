@@ -98,7 +98,7 @@ class HuaweiKmsKeyProvider(KeyProvider):
         timeout: float | None = None,
     ) -> None:
         """Use the master key ``key_id`` of ``project_id`` in ``region``."""
-        from domainkit.http.client import HttpClient
+        from domainkit.outbound.client import HttpClient
 
         if not (key_id and project_id and access_key and secret_key):
             raise ValueError("Huawei KMS needs a key id, a project, and an access key.")

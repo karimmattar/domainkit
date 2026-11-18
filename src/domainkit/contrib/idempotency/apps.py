@@ -26,8 +26,8 @@ from domainkit.apps.hooks import (
     on_export_subject,
 )
 from domainkit.checks import CheckMessage
-from domainkit.conf import settings
-from domainkit.conf.global_settings import DEADLINE_MIDDLEWARE, DEPLOYED_ENVIRONMENTS
+from domainkit.conf import DEPLOYED_ENVIRONMENTS, settings
+from domainkit.conf.global_settings import DEADLINE_MIDDLEWARE
 from domainkit.db import SqlAlchemyUnitOfWork, connections
 from domainkit.db.hooks import (
     on_committed,

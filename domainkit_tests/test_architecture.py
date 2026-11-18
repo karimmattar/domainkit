@@ -544,6 +544,53 @@ def test_infrastructure_may_call_other_services_through_the_http_client(
     }
 
 
+def test_infrastructure_calls_out_through_domainkit_outbound_with_no_exception(
+    make_package: MakePackage,
+) -> None:
+    """The client's home since 2.9 is no web library: no rule names it there.
+
+    The application layer may not call out by its new path either, as by
+    its old one; the domain layer imports neither (ADR 0195, audit
+    A28-ARCH-04).
+    """
+    make_package(
+        "arch.rates",
+        {
+            "domain/model.py": "from domainkit.outbound.guard import UnsafeURL\n",
+            "application/services.py": """
+                from domainkit.outbound.client import HttpClient
+            """,
+            "infrastructure/feed.py": """
+                import domainkit.outbound
+                from domainkit.outbound import guard
+                from domainkit.outbound.client import CircuitOpen, HttpClient, httpx2
+            """,
+        },
+    )
+    make_package(
+        "arch.quotes",
+        {"models.py": "from domainkit.outbound.client import HttpClient\n"},
+    )
+    rules = LayerRules()
+
+    found = {
+        (v.module.removeprefix("arch.rates."), v.imported, v.rule)
+        for v in check_domains(["arch.rates", "arch.quotes"], rules)
+    }
+
+    assert "domainkit.outbound" not in str(rules.allowed_modules)
+    assert {(module, imported) for module, imported, _ in found} == {
+        ("domain.model", "domainkit.outbound.guard"),
+        ("domain.model", "domainkit.outbound.guard.UnsafeURL"),
+        ("application.services", "domainkit.outbound.client"),
+        ("application.services", "domainkit.outbound.client.HttpClient"),
+    }
+    assert {rule for module, _, rule in found if module.startswith("app")} == {
+        "the application layer must not use domainkit"
+    }
+    assert layer_warnings(["arch.rates", "arch.quotes"], rules) == []
+
+
 def test_a_file_gateway_may_check_and_store_uploads(
     make_package: MakePackage,
 ) -> None:

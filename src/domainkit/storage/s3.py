@@ -15,7 +15,7 @@ R2 (``region="auto"``), SeaweedFS, RustFS, and Versity's gateway
 Storage's interoperability API (HMAC keys). MinIO speaks it too, but
 its community edition is no longer maintained, and publishes source
 only. Every request is signed with Signature Version 4 here and sent
-through ``domainkit.http.client`` (pooled, retried, bounded by the
+through ``domainkit.outbound.client`` (pooled, retried, bounded by the
 deadline): no AWS SDK is needed. Credentials come from
 ``access_key_id`` and ``secret_access_key``, else from the environment
 as AWS's tools read it (``domainkit.cloud.aws.default_credentials``:
@@ -163,7 +163,7 @@ class S3Storage(ObjectStorage):
 
             credentials = fixed
         self.credentials = credentials or default_credentials(region)
-        from domainkit.http.client import HttpClient
+        from domainkit.outbound.client import HttpClient
 
         self.client = HttpClient(timeout=timeout, propagate=False)
         self.check_write_once = check_write_once

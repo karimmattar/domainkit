@@ -17,13 +17,14 @@ from typing import Any
 import pytest
 from fastapi import FastAPI, Response
 from fastapi.testclient import TestClient
-from hypothesis import given
+from hypothesis import example, given
 from hypothesis import strategies as st
 from prometheus_client import REGISTRY
 from prometheus_client.metrics import MetricWrapperBase
 from starlette.datastructures import MutableHeaders
 from starlette.types import Message, Receive, Scope, Send
 
+from domainkit import context
 from domainkit.conf import override_settings, settings
 from domainkit.conf.global_settings import DEFAULT_PERMISSIONS_POLICY
 from domainkit.http import get_asgi_application, metrics, middleware, ratelimit
@@ -165,6 +166,31 @@ def test_ipv4_clients_read_no_settings(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_any_host_gets_the_parsed_group(host: str) -> None:
     """Whatever the host, the remembered group is the parsed one."""
     assert client_group(host) == client_group(host) == parsed_group(host)
+
+
+@pytest.mark.parametrize("prefix", [64, 56, 128, 1])
+def test_the_request_context_groups_a_client_as_the_rate_limit_does(
+    prefix: int,
+) -> None:
+    """``domainkit.context.client_group``, public since 2.9, is the same rule.
+
+    The outgoing guard's lookups and auth's throttles count callers by it.
+    The rate limit keeps its own copy until its module imports this one,
+    so the two give one group for every host (audit A28-ARCH-04).
+    """
+
+    @given(st.ip_addresses().map(str) | st.text(max_size=MAX_CACHED_ADDRESS + 8))
+    @example(ZONE + "z")  # An IPv6 address too long to keep.
+    @example("testclient")
+    def same(host: str) -> None:
+        assert context.client_group(host) == client_group(host)
+
+    with override_settings(RATE_LIMIT_IPV6_PREFIX=prefix):
+        same()
+    assert (context.ADDRESS_CACHE, context.MAX_CACHED_ADDRESS) == (
+        ADDRESS_CACHE,
+        MAX_CACHED_ADDRESS,
+    )
 
 
 def test_a_new_prefix_is_never_answered_from_memory(parses: list[Work]) -> None:

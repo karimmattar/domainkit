@@ -16,7 +16,6 @@ import pytest
 from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.http.client import stub
 from domainkit.keys import (
     DataKey,
     KeyProvider,
@@ -35,6 +34,7 @@ from domainkit.keys.aws import (
     web_identity_credentials,
 )
 from domainkit.keys.vault import VaultTransitKeyProvider
+from domainkit.outbound.client import stub
 from domainkit_tests.fake_kms import SECRETS, FakeKms, FakeVault
 
 ACCESS_KEY: Final = "AKIDEXAMPLE"
@@ -711,7 +711,7 @@ def test_vault_needs_a_key_and_a_mount() -> None:
 @pytest.fixture
 def no_waits(monkeypatch: pytest.MonkeyPatch) -> None:
     """Retries go at once."""
-    from domainkit.http import client as client_module
+    from domainkit.outbound import client as client_module
 
     async def go(seconds: float) -> None:
         return None

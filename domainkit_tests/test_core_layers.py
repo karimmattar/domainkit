@@ -6,7 +6,8 @@ ADR 0188 writes the layering down. From the bottom:
 1. Settings and the model: settings, the domain model and money, apps,
    languages, signing, the request context, logs, and error reports.
 2. Adapters: databases, caches, storages, keys, clouds, brokers, ledgers,
-   search, documents, and the checks of uploaded files.
+   search, documents, the checks of uploaded files, and outgoing calls,
+   which the others call through.
 3. Serving: HTTP, resources, tenancy, the debug pages, and the process's
    start and stop.
 4. Tools: commands, the pytest plugin, and the layer checker.
@@ -73,6 +74,7 @@ LAYERS: Final = (
             "inspection",
             "keys",
             "ledger",
+            "outbound",
             "search",
             "storage",
         }
@@ -82,34 +84,16 @@ LAYERS: Final = (
 )
 """The core's packages, by layer, from the bottom (ADR 0188)."""
 
-CLIENT: Final = "domainkit.http.client"
 ALLOWED: Final = frozenset(
     {
-        # The outgoing HTTP client sits in the serving package (ADR 0050).
-        # Every adapter that calls a service imports it; it moves to a
-        # package of its own below the adapters in a later release.
-        ("domainkit.broker.sqs", CLIENT, "lazy"),
-        ("domainkit.cloud.aws", CLIENT, "lazy"),
-        ("domainkit.cloud.aws", CLIENT, "typing"),
-        ("domainkit.cloud.azure", CLIENT, "lazy"),
-        ("domainkit.cloud.google", CLIENT, "lazy"),
-        ("domainkit.documents.gotenberg", CLIENT, "eager"),
-        ("domainkit.keys.aws", CLIENT, "lazy"),
-        ("domainkit.keys.azure", CLIENT, "lazy"),
-        ("domainkit.keys.gcp", CLIENT, "lazy"),
-        ("domainkit.keys.huawei", CLIENT, "lazy"),
-        ("domainkit.keys.vault", CLIENT, "lazy"),
-        ("domainkit.search._http", CLIENT, "lazy"),  # Both engines' shared client.
-        ("domainkit.search._http", CLIENT, "typing"),
-        ("domainkit.storage.azure", CLIENT, "lazy"),
-        ("domainkit.storage.gcs", CLIENT, "lazy"),
-        ("domainkit.storage.s3", CLIENT, "lazy"),
         # For type checkers only: DomainConfig.databases(router) answers
         # where the domain's data lives (ADR 0101), so it names the router.
         ("domainkit.apps.config", "domainkit.db.routing", "typing"),
         # The settings validate ARCHITECTURE.EXTRA_LAYERS against the
-        # built-in layer names, which the layer checker defines.
-        ("domainkit.conf.global_settings", "domainkit.architecture", "eager"),
+        # built-in layer names, which the layer checker defines. Imported
+        # when they are validated, so importing domainkit.conf loads no
+        # checker (ADR 0195).
+        ("domainkit.conf.global_settings", "domainkit.architecture", "lazy"),
         # The settings make the default virus scanner when asked for it.
         ("domainkit.conf.global_settings", "domainkit.storage.scanning", "lazy"),
         # A tenant's schema is named by tenancy's rule when its tables are

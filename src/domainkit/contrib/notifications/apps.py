@@ -2,8 +2,7 @@
 
 from domainkit.apps import DomainConfig, Requirement, registry
 from domainkit.checks import CheckFailed, CheckMessage
-from domainkit.conf import settings
-from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
+from domainkit.conf import DEPLOYED_ENVIRONMENTS, settings
 from domainkit.contrib.messaging import task
 
 from .backends import NotificationRefused

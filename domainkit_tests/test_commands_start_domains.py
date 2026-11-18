@@ -33,11 +33,11 @@ from domainkit.apps.hooks import (
 from domainkit.conf import override_settings
 from domainkit.contrib.keys.operations import SettingsKeyring
 from domainkit.ddd import F
-from domainkit.http.client import stub
 from domainkit.keys.ring import KeysNotLoaded, keyring, use_keyring
 from domainkit.keys.vault import VaultTransitKeyProvider
 from domainkit.management import ActionCommand, action, call_command
 from domainkit.management.base import run_async
+from domainkit.outbound.client import stub
 from domainkit_tests.fake_kms import FakeVault
 from domainkit_tests.sample_domains.cards.models import Cardholder, CardNumber, Payment
 from domainkit_tests.sample_domains.cards.uow import CardsUnitOfWork

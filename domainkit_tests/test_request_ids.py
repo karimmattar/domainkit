@@ -18,12 +18,12 @@ from starlette.types import Message, Receive, Scope, Send
 
 from domainkit.conf import Settings, override_settings
 from domainkit.context import current_request
-from domainkit.http.client import HttpClient, stub
 from domainkit.http.middleware import (
     ProxyHeadersMiddleware,
     RequestContextMiddleware,
 )
 from domainkit.log import ContextFilter
+from domainkit.outbound.client import HttpClient, stub
 from domainkit.reporting import flush_reports
 
 URL: Final = "https://api.example.com/v1/rates"

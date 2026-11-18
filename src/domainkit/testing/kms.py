@@ -3,7 +3,7 @@
 For a project's tests of ``KEYS["PROVIDER"] = "aws-kms"`` or ``"vault"``,
 without the service (TEST-21)::
 
-    from domainkit.http.client import stub
+    from domainkit.outbound.client import stub
     from domainkit.testing.kms import FakeVault
 
     vault = FakeVault()
@@ -22,7 +22,7 @@ and every version still decrypts.
 ``decrypt`` and ``rewrap``, with ``vault:v<N>:`` ciphertexts, versions, and
 ``min_decryption_version``, and checks ``X-Vault-Token``.
 
-Both are handlers for ``domainkit.http.client.stub``.
+Both are handlers for ``domainkit.outbound.client.stub``.
 """
 
 import base64

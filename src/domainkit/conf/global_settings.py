@@ -26,7 +26,6 @@ from pydantic import (
     model_validator,
 )
 
-from domainkit.architecture import LAYERS
 from domainkit.checks import (
     MAX_SILENCED_CHECKS,
     CheckFailed,
@@ -1082,6 +1081,8 @@ class ArchitectureConfig(BaseModel):
     @model_validator(mode="after")
     def check_layers(self) -> Self:
         """Every layer named is known, and the domain layer keeps its allowlist."""
+        from domainkit.architecture import LAYERS  # Not loaded by importing conf.
+
         builtin = LAYERS
         if clash := sorted(set(self.EXTRA_LAYERS) & set(builtin)):
             raise ValueError(f"EXTRA_LAYERS repeats a built-in layer: {clash}")

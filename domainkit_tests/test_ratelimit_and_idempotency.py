@@ -480,8 +480,8 @@ def test_staff_acting_as_a_user_keep_keys_apart_and_one_budget() -> None:
     outbound lookups count what the staff member uses, as whomever they
     act: one person, one budget.
     """
-    from domainkit.http.guard import lookup_owner
     from domainkit.http.live import caller_of
+    from domainkit.outbound.guard import lookup_owner
 
     scope = {"type": "http", "headers": [], "client": ("203.0.113.4", 1)}
     names = IdempotencySettings().CREDENTIAL_HEADERS

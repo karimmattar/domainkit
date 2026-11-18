@@ -17,12 +17,12 @@ from domainkit.cloud import TokenSource
 from domainkit.contrib.keys.operations import provider_for
 from domainkit.contrib.keys.settings import KeysSettings
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.http.client import stub
 from domainkit.keys import DataKey, KeyProvider, KeyProviderError, UnknownKey
 from domainkit.keys.azure import AzureKeyVaultKeyProvider
 from domainkit.keys.gcp import AAD, GcpKmsKeyProvider
 from domainkit.keys.huawei import HuaweiKmsKeyProvider, sign
 from domainkit.keys.pkcs11 import Pkcs11KeyProvider
+from domainkit.outbound.client import stub
 
 pytestmark = pytest.mark.anyio
 

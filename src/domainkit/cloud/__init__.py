@@ -9,7 +9,7 @@
 - ``domainkit.cloud.aws``: AWS's Signature Version 4 and credential chain
   (S3, SQS, SNS, SES, KMS).
 
-Every call goes through ``domainkit.http.client``; no cloud SDK is needed.
+Every call goes through ``domainkit.outbound.client``; no cloud SDK is needed.
 """
 
 from abc import ABC, abstractmethod

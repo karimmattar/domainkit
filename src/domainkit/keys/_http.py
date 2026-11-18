@@ -7,7 +7,7 @@ from . import KeyProviderError, UnknownKey
 
 
 async def call_json(
-    client: Any,  # noqa: ANN401 - domainkit.http.client's HttpClient.
+    client: Any,  # noqa: ANN401 - domainkit.outbound.client's HttpClient.
     provider: str,
     action: str,
     url: str,

@@ -38,7 +38,7 @@ from domainkit.contrib.notifications.sms import (
     VonageSmsBackend,
     wsse,
 )
-from domainkit.http import client as client_module
+from domainkit.outbound import client as client_module
 
 pytestmark = pytest.mark.anyio
 

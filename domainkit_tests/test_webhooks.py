@@ -41,8 +41,8 @@ from domainkit.contrib.webhooks.settings import WebhooksSettings
 from domainkit.contrib.webhooks.signing import InvalidSignature, sign, verify
 from domainkit.ddd import BusinessRuleViolation
 from domainkit.encryption import DecryptionFailed, SecretBox
-from domainkit.http import guard as http_guard
-from domainkit.http.guard import refusal
+from domainkit.outbound import guard as http_guard
+from domainkit.outbound.guard import refusal
 
 pytestmark = pytest.mark.anyio
 

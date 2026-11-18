@@ -2,10 +2,11 @@
 
 Internal: ``UnsafeTarget`` is public, from ``domainkit.contrib.webhooks``.
 The shared guard's own names, which 1.x also imported from here, come
-from ``domainkit.http.guard`` since 2.0.
+from ``domainkit.http.guard`` since 2.0, and ``domainkit.outbound.guard``
+since 2.9.
 
 A subscription's URL is checked when it is saved and again before every
-attempt, by the shared guard (``domainkit.http.guard``):
+attempt, by the shared guard (``domainkit.outbound.guard``):
 
 - ``https`` only (``http`` too while ``DEBUG`` is on), with a host, and
   without a user name, password, or fragment;
@@ -27,8 +28,8 @@ from typing import Final
 
 import httpx2
 
-from domainkit.http import guard
-from domainkit.http.guard import Address, Network, UnsafeURL, lookup
+from domainkit.outbound import guard
+from domainkit.outbound.guard import Address, Network, UnsafeURL, lookup
 
 SUBJECT: Final = "The webhook URL"
 

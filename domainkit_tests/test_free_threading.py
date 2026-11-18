@@ -93,12 +93,8 @@ from domainkit.db.models import InstalledModel
 from domainkit.db.models import model_key as content_type_key
 from domainkit.ddd import DomainEvent, EventBus
 from domainkit.http import access, live, metrics, ratelimit
-from domainkit.http import client as http_client
-from domainkit.http import guard as guard_module
 from domainkit.http import middleware as body_limits
 from domainkit.http.access import AllowAny
-from domainkit.http.client import BREAKER_HOSTS, CircuitBreaker, HttpClient
-from domainkit.http.guard import GuardResolver, lookups_for
 from domainkit.http.live import Slots
 from domainkit.http.live_events import LiveEvents
 from domainkit.http.metrics import REQUESTS, MetricsMiddleware
@@ -107,6 +103,10 @@ from domainkit.http.ratelimit import MemoryBackend, client_group
 from domainkit.http.shedding import QUEUE_FULL, ConcurrencyLimitMiddleware, ShedReport
 from domainkit.http.websockets import WebSocketLimitsMiddleware
 from domainkit.log import JsonFormatter, ThrottledLog, flush_throttled
+from domainkit.outbound import client as http_client
+from domainkit.outbound import guard as guard_module
+from domainkit.outbound.client import BREAKER_HOSTS, CircuitBreaker, HttpClient
+from domainkit.outbound.guard import GuardResolver, lookups_for
 from domainkit.testing import CapturedQueries
 from domainkit.utils.loops import PerLoop
 from domainkit_tests.conftest import UseAuth

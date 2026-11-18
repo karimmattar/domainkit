@@ -13,7 +13,7 @@
         },
     }
 
-Speaks Blob storage's REST API through ``domainkit.http.client``,
+Speaks Blob storage's REST API through ``domainkit.outbound.client``,
 authorized by the account's key (Shared Key), or by an Entra ID token
 (``credential``: an application, or the host's managed identity). Files
 of up to 8 MiB are one ``Put Blob``; larger ones are staged as blocks and
@@ -91,7 +91,7 @@ class AzureBlobStorage(ObjectStorage):
         )
         self._key = account_key
         self.credential = credential
-        from domainkit.http.client import HttpClient
+        from domainkit.outbound.client import HttpClient
 
         self.client = HttpClient(timeout=timeout, propagate=False)
 

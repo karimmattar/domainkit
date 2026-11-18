@@ -9,7 +9,7 @@ which speaks OAuth 2 alone, is asked for the user and their verified
 primary email with the access token.
 
 The discovery document and the keys are read through
-``domainkit.http.client`` and kept for an hour; a key id not seen before
+``domainkit.outbound.client`` and kept for an hour; a key id not seen before
 reads the keys again, once, so a provider's key rotation never refuses
 a login.
 """
@@ -28,7 +28,7 @@ from .exceptions import ProviderError
 from .settings import ProviderSettings
 
 if TYPE_CHECKING:
-    from domainkit.http.client import HttpClient
+    from domainkit.outbound.client import HttpClient
 
 __all__ = [
     "AppleProvider",
@@ -402,7 +402,7 @@ def _client() -> "HttpClient":
     this one, so a provider that is down opens its host's circuit
     (audit A28-ARCH-02).
     """
-    from domainkit.http.client import HttpClient
+    from domainkit.outbound.client import HttpClient
 
     return HttpClient(propagate=False, name="identity")
 

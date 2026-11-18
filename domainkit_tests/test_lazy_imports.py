@@ -137,6 +137,50 @@ def test_importing_domainkit_http_loads_neither_fastapi_nor_sqlalchemy() -> None
     assert run(script) == ["[]", "True", "True", "True"]
 
 
+@pytest.mark.reads_own_source
+def test_importing_the_settings_loads_no_layer_checker() -> None:
+    """``domainkit.architecture`` is the settings' only when they are validated.
+
+    The settings check ``ARCHITECTURE.EXTRA_LAYERS`` against the checker's
+    layers; 2.8 imported it with ``domainkit.conf`` (audit A28-ARCH-04).
+    """
+    script = textwrap.dedent(
+        """\
+        import sys
+
+        import domainkit.conf
+
+        print("domainkit.architecture" in sys.modules)
+        """
+    )
+    assert run(script) == ["False"]
+
+
+@pytest.mark.reads_own_source
+def test_an_adapter_calls_out_without_the_serving_package() -> None:
+    """``domainkit.outbound`` loads neither ``domainkit.http`` nor the web libraries.
+
+    2.8's client lived in ``domainkit.http``, so every adapter that called a
+    service loaded that package (audit A28-ARCH-04, ADR 0195).
+    """
+    script = textwrap.dedent(
+        """\
+        import sys
+
+        import domainkit.outbound
+
+        loaded = ["domainkit.outbound.client", "httpx2"]
+        print([name for name in loaded if name in sys.modules])
+        from domainkit.outbound.client import HttpClient
+        from domainkit.storage.s3 import S3Storage
+
+        web = ["domainkit.http", "fastapi", "starlette"]
+        print([name for name in web if name in sys.modules])
+        """
+    )
+    assert run(script) == ["[]", "[]"]
+
+
 def test_a_served_application_loads_no_ledger_broker_or_worker(
     tmp_path: Path,
 ) -> None:
