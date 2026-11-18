@@ -271,13 +271,17 @@ AUTH = {"ADMIN_ACTION": True, "AUTHORIZATIONS": {"TYPED_LINKS": "refused"}}
 - **`holds_link(text)`** reads text as a person reads it: full-width forms
   as their letters, characters drawn as nothing (zero-width spaces)
   dropped, the dots that look like one (`。`, `．`, a middle dot, a bullet)
-  as a dot, `example[.]com` and `ann[at]example` as what they spell, and
-  since 2.9 a name spaced out: `example . com`, `example .com`,
-  `https : //`, and before `com`, `net` or `org`, `example dot com` and
-  `example. com` (in lower or upper case: `Paid. Net 30` ends a
-  sentence). Before another top-level domain, a full stop and a space, or
-  `dot`, are read as words: many top-level domains are words too
-  (`Done. Info sent`, `a dot in the name`). It
+  as a dot, `example[.]com` and `ann[at]example` as what they spell
+  (since 2.9 also `example (dot) com`, `example<dot>com`, `https : //`,
+  and white space or new lines around them), and since 2.9 a name spaced
+  out, in the text as typed: `example . com` (white space or new lines on
+  both sides of the dot, but before a capital, which starts a sentence:
+  `Rejected . No receipt`), and before `com` alone, `example .com`,
+  `example. com` and `example dot com`. Other words follow a full stop,
+  a dot, or `dot` in prose, and many are top-level domains (`vs. net`,
+  `the .NET service`, `a dot net developer`, `Done. Info sent`). A cut of
+  the text, which the screen may show, is read without these: `i.e.
+  company` cut to `i.e. com…` holds none. It
   finds a scheme (`https://`, `tel:`, `mailto:`), an at sign before a
   letter or a digit, an IP address, a name ending in a top-level domain
   IANA lists or one kept for special use (`evil.example`, also with
@@ -301,15 +305,16 @@ AUTH = {"ADMIN_ACTION": True, "AUTHORIZATIONS": {"TYPED_LINKS": "refused"}}
   (`build 1234567`, `EUR 1250000`), digits in threes by dots or spaces
   with no cents (`1.234.567`, `612 345 678`: numbers to call in Spain), a
   code with a run of seven digits (`JIRA-1234567`), an amount in a
-  text that asks for a call, a word after a space and a dot (`the .NET
-  team`, `a .zip file`), and `com`, `net` or `org` after `dot` or a full
-  stop (`the dot com era`, `Paid. net of fees`).
+  text that asks for a call, `com` after `dot` (`the dot com era`), a
+  top-level domain in lower case after a dot spaced on both sides (`fine
+  . me too`), and one after `(dot)` (`the key (dot) is broken`).
 - **What it does not read** (it is a heuristic, not a parser): a name
-  split by spaces alone (`evil com`), a full stop and a space or `dot`
-  before another top-level domain (`evil dot io`) or a capital
-  (`evil. Com`), a number in hexadecimal (`0xC0A80101`, which a browser
-  takes as an address, but which error codes are written as), an IPv6
-  address, and digits written as words. Where typed text must never
+  split by spaces alone (`evil com`); another top-level domain than
+  `com` after `dot`, `(.)`, or a dot with white space on one side
+  (`evil dot io`, `evil. net`); a capital after a dot spaced on both
+  sides (`evil . Com`); a number in hexadecimal (`0xC0A80101`, which a
+  browser takes as an address, but which error codes are written as); an
+  IPv6 address; and digits written as words. Where typed text must never
   carry a hint of a place to go, check it in `on_typed_text` your own
   way, or do not show it.
 - **`on_typed_text`** runs a project's own check on each typed text, as
