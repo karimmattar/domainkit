@@ -12,7 +12,7 @@ problem, and tests.
 | [maker-checker](maker-checker/README.md) | One person moves a large payout alone, or approves something other than what they read. | Approvals, action authorizations (`StepUp(for_=...)`), the audit trail. |
 | [outbox-webhooks](outbox-webhooks/README.md) | Another service hears of a change that rolled back, or never hears of one that committed, and cannot tell a real webhook from a forged one. | The outbox, durable handlers, the inbox, signed webhooks, retries, dead letters. |
 
-Two more are planned, after the tenancy fixes of 2.9 land:
+Two more are planned:
 `saas-tenancy`, a multi-tenant service with organizations in the path,
 and `document-intake`, an upload pipeline with checks.
 

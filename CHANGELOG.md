@@ -28,8 +28,9 @@ are written down and held, append-only tables are protected one way, and
 rules asked outside a request get a call of their own, and backend
 settings load one way (ADR 0196). The documentation site is
 published (ADR 0189), three runnable examples are tested as their CI
-runs them (ADR 0190), the tutorial gains three parts, and contrib routes
-are named after their app (ADR 0192). With `domainkit.contrib.approvals`
+runs them (ADR 0190), the tutorial gains three parts, and the contrib
+routers that serve a project's records name their routes after their
+app (ADR 0192). With `domainkit.contrib.approvals`
 installed, one migration, an index; on PostgreSQL, `migrate` makes the
 user table's lookup indexes: read
 [upgrading.md](docs/upgrading.md#28-to-29) before you deploy.

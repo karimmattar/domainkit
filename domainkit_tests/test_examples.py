@@ -92,8 +92,9 @@ def test_every_example_is_tested_and_listed() -> None:
 def test_an_example_depends_on_this_release(name: str) -> None:
     """Its domainkit range holds this version: a reader's install runs it.
 
-    It was made on 2.8, and keeps the range ``init`` wrote, up to the next
-    major version, which may break it.
+    Its floor is the oldest release it runs on, raised by hand when it
+    imports a newer name, and its ceiling the next major version, which
+    may break it (ADR 0190).
     """
     project = tomllib.loads(
         (EXAMPLES / name / "pyproject.toml").read_text(encoding="utf-8")
