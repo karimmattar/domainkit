@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from domainkit import setup
+from domainkit import deadlines, setup
 from domainkit.apps import registry
 from domainkit.conf import override_settings
 from domainkit.ddd import (
@@ -20,6 +20,7 @@ from domainkit.ddd import (
     DomainEvent,
     Entity,
     EventBus,
+    HandlerCancelled,
     HandlerTimedOut,
     InMemoryRepository,
     NotFound,
@@ -403,6 +404,151 @@ async def test_unit_of_work_publishes_after_commit() -> None:
     assert uow.log == ["commit", "rollback"]
     assert uow.repositories() == [uow.orders]
     assert FakeUnitOfWork().events is event_bus
+
+
+async def test_handlers_after_a_commit_run_free_of_the_deadline() -> None:
+    """A worker's task: its timeout does not count what follows the commit.
+
+    The first handler sleeps four times the block's seconds; it and the one
+    after it run, see no deadline, and the block ends without raising, with
+    what it had left at the commit still left.
+    """
+    bus = EventBus()
+    seen: list[object] = []
+
+    async def slow(event: OrderPaid) -> None:
+        await asyncio.sleep(0.2)
+        seen.append(("slow", deadlines.remaining()))
+
+    async def after(event: OrderPaid) -> None:
+        seen.append(("after", deadlines.remaining()))
+
+    bus.subscribe(OrderPaid, slow)
+    bus.subscribe(OrderPaid, after)
+    uow = FakeUnitOfWork(bus)
+    async with deadlines.timeout(0.05) as bound:
+        async with uow:
+            order = new_order()
+            await uow.orders.add(order)
+            order.pay()
+            await uow.commit()
+        left = deadlines.remaining()
+
+    assert seen == [("slow", None), ("after", None)]
+    assert not bound.expired()
+    assert left is not None
+    assert 0 < left <= 0.05
+
+
+class LosesItsAnswer(FakeUnitOfWork):
+    """Fails to commit with ``failure``: a refusal, or nothing said."""
+
+    def __init__(self, failure: BaseException) -> None:
+        """Fail every commit with ``failure``."""
+        super().__init__()
+        self.failure = failure
+
+    async def _commit(self) -> None:
+        raise self.failure
+
+
+@pytest.mark.parametrize(
+    ("failure", "in_doubt"),
+    [
+        (OrderTooLarge("refused"), 0),
+        (ConnectionError("the reply was lost"), 1),
+        (asyncio.CancelledError(), 1),
+    ],
+)
+async def test_a_commit_that_fails_unanswered_is_in_doubt(
+    failure: BaseException, in_doubt: int
+) -> None:
+    """A refusal stored nothing; a lost answer, or a cut, may have stored it."""
+    uow = LosesItsAnswer(failure)
+
+    async def commit() -> None:
+        async with uow:
+            await uow.commit()
+
+    with pytest.raises(type(failure)):
+        await commit()
+    assert (uow.committed, uow.in_doubt) == (0, in_doubt)
+
+
+async def test_handlers_a_cancellation_stops_are_logged_and_reported(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The handler cut off, those after it, and the next events' are named.
+
+    A shutdown, or a task cancelled, cancels the work: the cancellation
+    goes on, and every handler it kept from finishing is said.
+    """
+    bus = EventBus()
+    reported: list[tuple[BaseException, DomainEvent]] = []
+    bus.error_hook = lambda exc, event: reported.append((exc, event))
+    started = asyncio.Event()
+
+    async def hung(event: OrderPaid) -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    async def after(event: OrderPaid) -> None:
+        raise AssertionError("never runs")  # pragma: no cover - cancelled before.
+
+    class Unhandled(DomainEvent):
+        """An event no handler takes."""
+
+    bus.subscribe(OrderPaid, hung)
+    bus.subscribe(OrderPaid, after)
+    first, second = OrderPaid(order_id=uuid4()), OrderPaid(order_id=uuid4())
+    events = [first, Unhandled(), second]
+    with caplog.at_level(logging.ERROR, "domainkit.ddd.events"):
+        publishing = asyncio.create_task(bus.publish_all(events))
+        await started.wait()
+        publishing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await publishing
+
+    hung_name, after_name = hung.__qualname__, after.__qualname__
+    messages = [
+        (
+            f"Handler {hung_name} was cancelled for OrderPaid {first.event_id}; "
+            f"{after_name} did not run"
+        ),
+        (
+            f"{hung_name}, {after_name} did not run for OrderPaid "
+            f"{second.event_id}: the work was cancelled"
+        ),
+    ]
+    assert caplog.messages == messages
+    assert [(str(exc), event) for exc, event in reported] == list(
+        zip(messages, [first, second], strict=True)
+    )
+    assert all(isinstance(exc, HandlerCancelled) for exc, _ in reported)
+
+
+async def test_a_lone_handler_cancelled_names_itself(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Cut off with none after it, the handler alone is named, without a hook."""
+    bus = EventBus()
+    started = asyncio.Event()
+
+    async def hung(event: OrderPaid) -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    bus.subscribe(OrderPaid, hung)
+    event = OrderPaid(order_id=uuid4())
+    with caplog.at_level(logging.ERROR, "domainkit.ddd.events"):
+        publishing = asyncio.create_task(bus.publish(event))
+        await started.wait()
+        publishing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await publishing
+    assert caplog.messages == [
+        f"Handler {hung.__qualname__} was cancelled for OrderPaid {event.event_id}"
+    ]
 
 
 async def test_pages_know_whether_more_follow() -> None:

@@ -10,7 +10,10 @@ warning is logged.
 
 Once the response starts, the deadline is lifted: a streamed response (an
 export, Server-Sent Events) and background tasks that run after the
-response are not cut off. WebSocket connections have no request deadline.
+response are not cut off. So it is once the request commits a unit of
+work (``deadlines.after_commit``): the request is answered as committed,
+never 503, and the commit's in-process event handlers run, each within
+its own timeout. WebSocket connections have no request deadline.
 
 A route gives itself another deadline, counted from when the request
 arrived, with a dependency; ``RequestTimeout(None)`` removes it::
@@ -72,7 +75,7 @@ class DeadlineMiddleware:
         if scope["type"] != "http" or self.seconds is None:
             await self.app(scope, receive, send)
             return
-        bound = deadlines.timeout(self.seconds)
+        bound = deadlines.timeout(self.seconds, until_commit=True)
         started = False
 
         async def send_lifting(message: Message) -> None:

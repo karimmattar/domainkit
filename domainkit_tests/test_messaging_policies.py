@@ -45,10 +45,11 @@ from domainkit.contrib.messaging.tables import (
     messages,
 )
 from domainkit.db import connections
+from domainkit.ddd import EventBus
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.ratelimit import Decision
 from domainkit.management import CommandError
-from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork
+from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork, NoteWritten
 from domainkit_tests.test_messaging import (  # noqa: F401 - fixtures.
     FAST,
     NO_GRACE,
@@ -417,6 +418,43 @@ async def test_a_task_runs_under_its_own_timeout() -> None:
     statuses = {row["target"]: row["status"] for row in await rows()}
     assert statuses == {"tests.shorter": DEAD, "tests.longer": DONE}
     assert ran == ["longer"]
+
+
+@pytest.mark.usefixtures("tables")
+async def test_a_task_that_committed_is_not_failed_by_its_slow_handlers() -> None:
+    """What follows a task's commit does not count against its timeout.
+
+    The task commits a note whose event's first in-process handler sleeps
+    four times the task's timeout. It and the next handler run, free of the
+    deadline, and the message is done, run once: not failed, so not run
+    and committed again.
+    """
+    bus = EventBus()
+
+    async def slow(event: NoteWritten) -> None:
+        await asyncio.sleep(0.2)
+        ran.append(("slow", deadlines.remaining()))
+
+    async def after(event: NoteWritten) -> None:
+        ran.append(("after", deadlines.remaining()))
+
+    bus.subscribe(NoteWritten, slow)
+    bus.subscribe(NoteWritten, after)
+
+    @task(name="tests.commits", timeout=0.05, max_attempts=2)
+    async def commits() -> None:
+        note = Note(id=NoteId(uuid.uuid4()), text="once")
+        note.record(NoteWritten(note_id=note.id))
+        async with NotesUnitOfWork(events=bus) as uow:
+            await uow.notes.add(note)
+            await uow.commit()
+        ran.append("committed")
+
+    await enqueue(commits)
+    await Worker(MessagingSettings(**{**FAST, "VISIBILITY_TIMEOUT": 60})).run_once()
+
+    assert [row["status"] for row in await rows()] == [DONE]
+    assert ran == [("slow", None), ("after", None), "committed"]
 
 
 @pytest.mark.usefixtures("tables")

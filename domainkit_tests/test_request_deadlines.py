@@ -44,9 +44,11 @@ LOGGER = "domainkit.http.deadlines"
 def fresh_routes() -> Iterator[None]:
     """Start each test with the routes' records empty."""
     deadline_routes.seen.clear()
+    deadline_routes.told.clear()
     deadline_routes.hang_payments[:] = [True]
     yield
     deadline_routes.seen.clear()
+    deadline_routes.told.clear()
 
 
 @asynccontextmanager
@@ -341,6 +343,32 @@ async def test_cancellation_leaves_no_transaction_key_or_connection(
         assert len(await rows(payments)) == 1
         [stored] = await rows(idempotency_keys)
         assert stored.status_code == 201
+
+
+async def test_a_request_that_committed_is_answered_as_committed(
+    database_url: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Its deadline passes as its handlers run, and after: still 201.
+
+    The commit lifts the deadline for good: the slow handler and the one
+    after it run, see no deadline, and the request answers what it
+    committed, past its deadline. The keyed response kept is that 201 too.
+    """
+    caplog.set_level(logging.WARNING, LOGGER)
+    key = {"Idempotency-Key": "tell-once", "X-API-Key": "payer"}
+    async with paying(database_url, REQUEST_TIMEOUT=0.05) as client:
+        answer = await client.post("/pay-and-tell?after=0.1", json={}, headers=key)
+        assert answer.status_code == 201
+        assert answer.json() == {"paid": True, "remaining": None}
+        assert deadline_routes.told == [
+            "slow started",
+            ("slow finished", None),
+            "next",
+        ]
+        assert len(await rows(payments)) == 1
+        [stored] = await rows(idempotency_keys)
+        assert stored.status_code == 201
+    assert warnings_from(caplog) == []
 
 
 async def test_a_short_deadline_sets_nothing_outside_postgresql(

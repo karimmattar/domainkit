@@ -162,6 +162,14 @@ class HandlerTimedOut(TimeoutError, DomainkitError):
     """An in-process handler ran past its timeout and was cut off."""
 
 
+class HandlerCancelled(DomainkitError):
+    """In-process handlers did not finish: the work they ran in was cancelled.
+
+    Reported, never raised: the cancellation goes on. Its message names the
+    handler cut off, if one was running, and those that did not run.
+    """
+
+
 class HandlerKey(NamedTuple):
     """A key a worker runs messages of: the handler, and the event type it takes."""
 
@@ -420,13 +428,20 @@ class EventBus:
 
         Each runs within its timeout; one still running then is cancelled,
         logged, and reported as ``HandlerTimedOut``, and the next one runs.
+        When the work itself is cancelled (a shutdown, a task cancelled),
+        the handler cut off and those after it are logged and reported as
+        ``HandlerCancelled``, and the cancellation goes on.
         """
-        for entry in self._subscriptions(type(event), durable=False):
+        entries = self._subscriptions(type(event), durable=False)
+        for index, entry in enumerate(entries):
             name = getattr(entry.handler, "__qualname__", entry.handler)
             seconds = entry.timeout or self.handler_timeout
             try:
                 async with asyncio.timeout(seconds) as limit:
                     await entry.handler(event)
+            except asyncio.CancelledError:
+                self._cut_off(event, entries[index:], running=True)
+                raise
             except Exception as exc:
                 failure: Exception = exc
                 if limit.expired():
@@ -446,9 +461,47 @@ class EventBus:
                     self.error_hook(failure, event)
 
     async def publish_all(self, events: Iterable[DomainEvent]) -> None:
-        """Publish ``events`` one after another, in order."""
-        for event in events:
-            await self.publish(event)
+        """Publish ``events`` one after another, in order.
+
+        When the work is cancelled, the handlers of the events not reached
+        are logged and reported too (``HandlerCancelled``).
+        """
+        pending = list(events)
+        for index, event in enumerate(pending):
+            try:
+                await self.publish(event)
+            except asyncio.CancelledError:
+                for later in pending[index + 1 :]:
+                    entries = self._subscriptions(type(later), durable=False)
+                    self._cut_off(later, entries, running=False)
+                raise
+
+    def _cut_off(
+        self, event: DomainEvent, entries: list[_Subscription], *, running: bool
+    ) -> None:
+        """Log and report the handlers of ``event`` a cancellation kept from finishing.
+
+        With ``running``, the first was cut off as it ran; the others did
+        not run. Nothing is said when there are none.
+        """
+        names = [
+            str(getattr(each.handler, "__qualname__", each.handler)) for each in entries
+        ]
+        if not names:
+            return
+        about = f"{type(event).__name__} {event.event_id}"
+        if running:
+            message = f"Handler {names[0]} was cancelled for {about}"
+            if names[1:]:
+                message += f"; {', '.join(names[1:])} did not run"
+        else:
+            message = (
+                f"{', '.join(names)} did not run for {about}: the work was cancelled"
+            )
+        failure = HandlerCancelled(message)
+        logger.error("%s", failure)
+        if self.error_hook is not None:
+            self.error_hook(failure, event)
 
     def _subscriptions(
         self, event_type: type[DomainEvent], durable: bool

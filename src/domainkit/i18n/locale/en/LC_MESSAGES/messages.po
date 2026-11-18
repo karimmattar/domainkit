@@ -16,6 +16,9 @@ msgstr ""
 msgid "The database is busy; try again shortly."
 msgstr ""
 
+msgid "The database is unavailable; try again shortly."
+msgstr ""
+
 msgid ""
 "A value cannot be stored: it is too long, out of range, or holds a "
 "character the database refuses."

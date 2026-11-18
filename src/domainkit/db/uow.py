@@ -53,7 +53,7 @@ from sqlalchemy.orm.exc import StaleDataError
 from domainkit.apps import registry
 from domainkit.conf import settings
 from domainkit.db.connections import INTERNAL, Reads, connections
-from domainkit.db.errors import duplicate_value
+from domainkit.db.errors import CONNECTION_EXCEPTION, duplicate_value
 from domainkit.db.hooks import on_committed, on_stage
 from domainkit.db.orm import mapper_registry, metadata
 from domainkit.db.repository import SqlAlchemyRepository, reload_expired, sqlstate_of
@@ -411,6 +411,20 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
     def _conflicted(self, exc: BaseException) -> bool:
         """Whether PostgreSQL refused the transaction: serialization or deadlock."""
         return isinstance(exc, DBAPIError) and sqlstate_of(exc) in CONFLICTS
+
+    def _refused(self, exc: BaseException) -> bool:
+        """Whether the database answered the commit with a refusal: nothing stored.
+
+        A constraint, a stale version, a lost race, or another error the
+        server sent back. A connection lost or cut off (SQLSTATE class
+        ``08``), a timeout, or a cancellation leaves the outcome unknown:
+        the server may have applied the ``COMMIT`` whose answer never came.
+        """
+        if isinstance(exc, StaleDataError) or super()._refused(exc):
+            return True
+        if not isinstance(exc, DBAPIError) or exc.connection_invalidated:
+            return False
+        return not (sqlstate_of(exc) or "").startswith(CONNECTION_EXCEPTION)
 
     async def _begin_savepoint(self) -> Savepoint:
         """``SAVEPOINT`` in the session's transaction (flushing first)."""

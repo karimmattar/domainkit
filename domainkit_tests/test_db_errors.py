@@ -5,8 +5,10 @@ import logging
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from uuid import uuid4
 
+import asyncpg.exceptions  # type: ignore[import-untyped]
 import pytest
 from sqlalchemy import (
     Column,
@@ -22,13 +24,15 @@ from sqlalchemy import (
 )
 from sqlalchemy import UniqueConstraint as Unique
 from sqlalchemy.exc import DBAPIError, IntegrityError
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.orm.exc import StaleDataError
 
 from domainkit.conf import DatabaseConfig, override_settings
 from domainkit.db import connections, create_engine
 from domainkit.db.errors import duplicate_value
 from domainkit.db.orm import NAMING_CONVENTION
-from domainkit.ddd import DuplicateValue
+from domainkit.ddd import ConcurrentUpdate, DuplicateValue
+from domainkit.deadlines import DeadlineExceeded
 from domainkit.http.errors import database_refusal, status_code_for
 from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork, test_metadata
 
@@ -258,7 +262,7 @@ def test_database_refusals_come_from_the_sqlstate() -> None:
     assert refusal(SimpleNamespace(pgcode="40P01")) == (503, "database_busy")
     assert refusal(SimpleNamespace(sqlstate="22P02")) == (422, "invalid_value")
     assert refusal(SimpleNamespace(pgcode="22003")) == (422, "invalid_value")
-    for unrelated in ("23502", "08006", "42P01", "02000"):
+    for unrelated in ("23502", "42P01", "02000", "28P01"):
         assert refusal(SimpleNamespace(sqlstate=unrelated)) is None, unrelated
     assert refusal(SimpleNamespace(sqlstate=22021)) is None  # Not a SQLSTATE.
     assert refusal(SimpleNamespace()) is None
@@ -266,6 +270,67 @@ def test_database_refusals_come_from_the_sqlstate() -> None:
     assert pool is not None
     assert (pool.status_code, pool.headers) == (503, {"Retry-After": "1"})
     assert database_refusal(ValueError("22021")) is None
+
+
+def test_a_database_that_cannot_serve_is_unavailable() -> None:
+    """A lost connection, or a server down, starting, or full: 503, longer.
+
+    It is ``database_unavailable``, with a ``Retry-After`` of 5 seconds: a
+    restart or a failover takes longer than a busy statement.
+    """
+
+    def refusal(driver_error: object, *, invalidated: bool = False) -> object:
+        error = DBAPIError(
+            "SELECT",
+            {},
+            driver_error,  # type: ignore[arg-type]
+            connection_invalidated=invalidated,
+        )
+        found = database_refusal(error)
+        return None if found is None else (found.status_code, found.code, found.headers)
+
+    unavailable = (503, "database_unavailable", {"Retry-After": "5"})
+    for state in ("08006", "08001", "57P01", "57P02", "57P03", "53300"):
+        assert refusal(SimpleNamespace(sqlstate=state)) == unavailable, state
+    assert refusal(SimpleNamespace(), invalidated=True) == unavailable
+    # Not raised while a connection was opened: a socket's error is not the database's.
+    assert database_refusal(ConnectionRefusedError("elsewhere")) is None
+    assert database_refusal(DeadlineExceeded("The deadline passed.")) is None
+
+
+@pytest.mark.usefixtures("database_access")
+async def test_a_connection_that_cannot_be_opened_is_unavailable() -> None:
+    """The errors asyncpg raises as the pool connects: refused, or starting up.
+
+    A login refused is a mistake in the settings: it is reported as a bug.
+    """
+
+    async def failure(make: Any) -> BaseException:  # noqa: ANN401 - an engine's creator.
+        engine = create_async_engine(
+            "postgresql+asyncpg://postgres@127.0.0.1:1/postgres", async_creator=make
+        )
+        try:
+            with pytest.raises((OSError, DBAPIError)) as caught:
+                async with engine.connect():
+                    pass  # pragma: no cover - the connection is never made.
+        finally:
+            await engine.dispose()
+        return caught.value
+
+    async def refused() -> None:
+        raise ConnectionRefusedError(111, "Connect call failed")
+
+    async def starting() -> None:
+        raise asyncpg.exceptions.CannotConnectNowError("the database is starting up")
+
+    async def wrong_password() -> None:
+        raise asyncpg.exceptions.InvalidPasswordError("password authentication failed")
+
+    for make in (refused, starting):
+        found = database_refusal(await failure(make))
+        assert found is not None
+        assert (found.status_code, found.code) == (503, "database_unavailable")
+    assert database_refusal(await failure(wrong_password)) is None
 
 
 async def test_postgres_refusals_are_found_on_real_errors(engine: AsyncEngine) -> None:
@@ -608,6 +673,7 @@ async def test_a_commit_that_reuses_a_value_raises_duplicate_value(
     assert isinstance(caught.value.__cause__, IntegrityError)
     assert caught.value.code == "duplicate_value"
     assert status_code_for(caught.value) == 409
+    assert (uow.committed, uow.in_doubt) == (0, 0)  # Refused: nothing stored.
 
 
 async def test_a_flush_inside_the_block_raises_duplicate_value(
@@ -652,3 +718,55 @@ async def test_other_errors_leave_the_unit_of_work_unchanged(
         await flush_without_text()
     with pytest.raises(RuntimeError, match=r"^unrelated$"):
         await fail_otherwise()
+
+
+class FailsToCommit(NotesUnitOfWork):
+    """Fails its commit with ``failure``, as the database or the network would."""
+
+    def __init__(self, failure: BaseException) -> None:
+        """Fail every commit with ``failure``."""
+        super().__init__()
+        self.failure = failure
+
+    async def _commit(self) -> None:
+        raise self.failure
+
+
+def answered(sqlstate: str | None, *, invalidated: bool = False) -> DBAPIError:
+    """A driver's error with ``sqlstate``, its connection lost or not."""
+    return DBAPIError(
+        "COMMIT",
+        {},
+        SimpleNamespace(sqlstate=sqlstate),  # type: ignore[arg-type]
+        connection_invalidated=invalidated,
+    )
+
+
+@pytest.mark.parametrize(
+    ("failure", "in_doubt"),
+    [
+        (answered("40001"), 0),  # A lost race: refused.
+        (answered("23514"), 0),
+        (answered(None), 0),  # SQLite's errors are answers too.
+        (StaleDataError("a version moved"), 0),
+        (answered("08006"), 1),  # The connection failed.
+        (answered(None, invalidated=True), 1),
+        (TimeoutError("command_timeout"), 1),
+        (ConnectionResetError("reset"), 1),
+    ],
+)
+async def test_a_commit_the_database_did_not_answer_is_in_doubt(
+    notes_table: None, failure: BaseException, in_doubt: int
+) -> None:
+    """Only a refusal the database sent says nothing was stored."""
+    uow = FailsToCommit(failure)
+
+    async def write() -> None:
+        async with uow:
+            await uow.notes.add(Note(id=NoteId(uuid4()), text="maybe"))
+            await uow.commit()
+
+    raised = ConcurrentUpdate if isinstance(failure, StaleDataError) else type(failure)
+    with pytest.raises(raised):
+        await write()
+    assert (uow.committed, uow.in_doubt) == (0, in_doubt)

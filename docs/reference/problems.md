@@ -109,6 +109,7 @@ unique constraint may name its own code
 | `currency_mismatch` | 422 | `CurrencyMismatch` (money): Amounts of two currencies were added, subtracted, or compared. |
 | `currency_not_limited` | 422 | `CurrencyNotLimited` (contrib.limits.exceptions): A movement in a currency none of its subject's limits names (FIN-89). |
 | `database_busy` | 503 | http.errors: The database is busy; try again shortly. |
+| `database_unavailable` | 503 | http.errors: The database is unavailable; try again shortly. It cannot be reached, or cannot serve now (a restart, a failover), with `Retry-After: 5` ([runbook](../runbook.md#the-database-is-unavailable)). *New in 2.9* |
 | `deadline_exceeded` | 503 | http.deadlines: The request took too long; try again shortly. |
 | `device_already_bound` | 409 | `DeviceAlreadyBound` (contrib.devices.exceptions): The user has a bound device: approve the new one from it. |
 | `device_login_off` | 404 | `DeviceLoginOff` (contrib.devices.exceptions): `DEVICES.DEVICE_LOGIN` is off: devices do not log in here. |

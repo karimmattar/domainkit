@@ -20,7 +20,7 @@ from sqlalchemy import BindParameter, Insert, func, insert, literal, select
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 
-from domainkit import clock
+from domainkit import clock, deadlines
 from domainkit.apps import registry
 from domainkit.context import current_request
 from domainkit.db import UTCDateTime, connections, dbclock
@@ -340,7 +340,8 @@ async def enqueue(
     they join a unit of work's (``on_stage_transaction`` and
     ``on_transaction_committed``, ``domainkit.db.hooks``): inside a request with an
     ``Idempotency-Key``, the queued task holds the key as a commit does,
-    so a retry does not queue it again.
+    so a retry does not queue it again. What follows the commit runs free
+    of the deadline, as a unit of work's does (``deadlines.after_commit``).
     """
     config = registry.settings(MessagingSettings)
     task = DeferredTask(function, kwargs, delay, dedupe_key, ordering_key)
@@ -349,13 +350,14 @@ async def enqueue(
         await write(connection, connection.dialect.name, rows)
         for staged in on_stage_transaction:
             await staged.call(connection, config.DATABASE)
-    for hook in on_transaction_committed:
-        try:
-            await hook.call(config.DATABASE)
-        except Exception as exc:  # The task is queued: report, carry on.
-            logger.exception("After-commit work of %r failed", hook.domain)
-            report_error(exc, domain=hook.domain)
-    await notify_committed(config, config.DATABASE, rows)
+    with deadlines.after_commit():
+        for hook in on_transaction_committed:
+            try:
+                await hook.call(config.DATABASE)
+            except Exception as exc:  # The task is queued: report, carry on.
+                logger.exception("After-commit work of %r failed", hook.domain)
+                report_error(exc, domain=hook.domain)
+        await notify_committed(config, config.DATABASE, rows)
 
 
 async def notify_committed(

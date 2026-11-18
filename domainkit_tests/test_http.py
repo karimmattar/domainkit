@@ -127,6 +127,42 @@ def test_database_errors_that_are_not_bugs_answer_as_such(
         )
 
 
+def test_a_database_out_of_reach_is_unavailable_and_said_once_a_while(
+    make_client: MakeClient,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lost connection: 503 ``database_unavailable``, Retry-After 5; no report.
+
+    While the database is away every request fails the same way: three
+    requests write one line, and none is reported as a bug.
+    """
+    reported: list[BaseException] = []
+    monkeypatch.setattr(
+        middleware_module, "report_error", lambda exc, **_: reported.append(exc)
+    )
+    client = make_client(raise_server_exceptions=False)
+
+    with caplog.at_level(logging.WARNING, logger="domainkit.http.middleware"):
+        answers = [client.get("/database/08006") for _ in range(3)]
+
+    assert {(each.status_code, each.json()["code"]) for each in answers} == {
+        (503, "database_unavailable")
+    }
+    assert answers[0].headers["Retry-After"] == "5"
+    assert answers[0].json()["detail"] == (
+        "The database is unavailable; try again shortly."
+    )
+    assert reported == []
+    lines = [r for r in caplog.records if r.name == "domainkit.http.middleware"]
+    said = (
+        "The database is unavailable (SQLSTATE 08006): GET /database/{failure} "
+        "answered 503 database_unavailable"
+    )
+    assert [(r.levelname, r.getMessage()) for r in lines] == [("WARNING", said)]
+    assert lines[0].exc_info is None
+
+
 @pytest.mark.parametrize(("failure", "close_code"), [("pool", 1013), ("22021", 1007)])
 def test_websockets_the_database_refuses_are_closed_so(
     make_client: MakeClient, failure: str, close_code: int

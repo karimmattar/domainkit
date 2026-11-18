@@ -63,6 +63,17 @@ _SQLITE_NOT_NULL: Final = "NOT NULL constraint failed: "
 _SQLITE_CHECK: Final = "CHECK constraint failed: "
 _STILL_REFERENCED: Final = "update or delete on table"
 """How PostgreSQL starts a foreign key error about a row others refer to."""
+CONNECTION_EXCEPTION: Final = "08"
+"""The SQLSTATE class of a connection that failed, or was lost."""
+UNAVAILABLE_STATES: Final = frozenset(
+    {
+        "57P01",  # admin_shutdown: the server is shutting down.
+        "57P02",  # crash_shutdown
+        "57P03",  # cannot_connect_now: starting up, or failing over.
+        "53300",  # too_many_connections
+    }
+)
+"""SQLSTATEs of a server that cannot serve now, besides class ``08``."""
 
 type _Unique = UniqueConstraint | PrimaryKeyConstraint | Index
 

@@ -689,7 +689,11 @@ Content-Type: application/pdf
   runs, outside its transaction; the reach and `If-Match` are checked
   again in it. If the request fails and its unit of work did not commit,
   the file is deleted. Once it committed, a row may name the file, and
-  it is kept, whatever fails after.
+  it is kept, whatever fails after. A commit whose outcome is unknown
+  (its answer lost, or cut off as it committed: `uow.in_doubt`) may have
+  named it too: the file is kept, and the warning `Kept the upload <name>
+  on the <storage> storage` names it, to check by hand. A file that
+  cannot be deleted is logged with its name and storage too. *New in 2.9*
 - The service may read the file as it was received
   ([The file received](#the-file-received)), not from the storage.
 - The other options are `command_route`'s: `returns`, `method` (`POST`,

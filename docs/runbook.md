@@ -16,6 +16,7 @@ settings. Commands that change data take `--operator NAME` (or read
 | You see | Entry |
 | --- | --- |
 | `503 overloaded`, `503 database_busy`, `503 deadline_exceeded` | [Requests are shed](#requests-are-shed) |
+| `503 database_unavailable`, `/ready` answers 503 | [The database is unavailable](#the-database-is-unavailable) |
 | `messaging_outbox_lag_seconds` grows | [The outbox backs up](#the-outbox-backs-up) |
 | `messaging_outbox_messages{status="dead"}` above zero | [Messages are dead-lettered](#messages-are-dead-lettered) |
 | `messaging_outbox_messages{status="held"}` does not fall | [A key's messages stall](#a-keys-messages-stall) |
@@ -71,6 +72,44 @@ settings. Commands that change data take `--operator NAME` (or read
 - Do not raise `MAX_CONCURRENT_REQUESTS` to stop the 503s. The requests
   then queue for connections instead, and time out after they have held
   memory.
+
+## The database is unavailable
+
+**You see** these, while a database is down, restarting, or failing over:
+
+- requests that use it answer `503 database_unavailable`, with
+  `Retry-After: 5`. Requests that do not use it are served;
+- one warning per reason every 10 seconds, with a count of the requests
+  since:
+  `The database is unavailable (ConnectionRefusedError): GET /orders
+  answered 503 database_unavailable`. The reason is the socket's error,
+  or a SQLSTATE: class `08` (the connection failed or was lost), `57P01`
+  (shutting down), `57P03` (starting up, or a failover), `53300` (too
+  many connections). None of it is sent to the error reporters;
+- `/ready` answers 503, so the load balancer takes the replicas out.
+  With `READINESS_DETAILS` it names `database:<alias>`;
+- the worker logs `Could not reach the outbox of '<alias>' (N failures in
+  a row); trying again in Ns`, and backs off.
+
+**Check:**
+
+1. The database's own state: is it up, and is it the primary? A failover
+   takes from seconds to a couple of minutes.
+2. The network and the address: can a replica reach the host and port in
+   `DATABASES[alias]["URL"]` (or PgBouncer's)?
+3. `53300`: the connections in use against `max_connections`. Processes x
+   replicas x (`POOL_SIZE` + `MAX_OVERFLOW`) must stay below it
+   ([operations.md](operations.md#sizing)).
+
+**Do:**
+
+- Wait out a restart or a failover: requests answer again by themselves.
+  Nothing needs a restart: each pool opens new connections.
+- Too many connections: lower the pools, or put PgBouncer in front.
+- Tell client developers that `Retry-After` is safe for reads and for
+  writes sent with an `Idempotency-Key`. A write whose connection was
+  lost as it committed may have been applied; without a key, a retry may
+  apply it twice ([idempotency](contrib/idempotency.md)).
 
 ## The outbox backs up
 

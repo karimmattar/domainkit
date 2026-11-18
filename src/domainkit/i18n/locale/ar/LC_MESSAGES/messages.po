@@ -16,6 +16,9 @@ msgstr "الطلب غير صالح."
 msgid "The database is busy; try again shortly."
 msgstr "قاعدة البيانات مشغولة؛ أعد المحاولة بعد قليل."
 
+msgid "The database is unavailable; try again shortly."
+msgstr "قاعدة البيانات غير متاحة؛ أعد المحاولة بعد قليل."
+
 msgid ""
 "A value cannot be stored: it is too long, out of range, or holds a "
 "character the database refuses."

@@ -14,6 +14,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import insert, text, update
 
 from domainkit import clock, deadlines
+from domainkit.ddd import AggregateRoot, DomainEvent, EventBus
 from domainkit.http.deadlines import RequestTimeout
 from domainkit.http.health import router as health_router
 from domainkit_tests.sample_routes import PaymentsUnitOfWork, payments
@@ -55,6 +56,10 @@ paying: list[deadlines.Deadline | None] = []
 """The deadline of each ``/slow-pay`` that wrote and hangs, for the test to end."""
 swallowing: list[deadlines.Deadline | None] = []
 """The deadline of each ``/swallow`` waiting, for the test to end."""
+told: list[object] = []
+"""What the handlers of ``/pay-and-tell``'s event did, in order."""
+SLOW_HANDLER: float = 0.2
+"""Seconds ``/pay-and-tell``'s first handler takes: past the tests' deadline."""
 
 
 async def forever() -> None:
@@ -196,3 +201,50 @@ async def statement_timeout() -> dict[str, str]:
 async def month_long_statement_timeout() -> dict[str, str]:
     """``/statement-timeout`` under a deadline longer than PostgreSQL takes."""
     return await statement_timeout()
+
+
+class Payment(AggregateRoot[int]):
+    """A payment ``/pay-and-tell`` records, for the event it publishes."""
+
+
+class Paid(DomainEvent):
+    """A payment was recorded."""
+
+
+tellers = EventBus()
+"""The bus of ``/pay-and-tell``: a slow handler, then another."""
+
+
+async def tell_slowly(event: Paid) -> None:
+    """Take longer than the request's deadline, then note what is left of it."""
+    told.append("slow started")
+    await asyncio.sleep(SLOW_HANDLER)
+    told.append(("slow finished", deadlines.remaining()))
+
+
+async def tell_next(event: Paid) -> None:
+    """Run after the slow handler."""
+    told.append("next")
+
+
+tellers.subscribe(Paid, tell_slowly)
+tellers.subscribe(Paid, tell_next)
+
+
+class PaysAndTells(PaymentsUnitOfWork):
+    """Records a payment, and publishes ``Paid`` once it is committed."""
+
+    def _seen(self) -> list[Any]:
+        payment = Payment(id=1)
+        payment.record(Paid())
+        return [payment]
+
+
+@router.post("/pay-and-tell", status_code=201)
+async def pay_and_tell(after: float = 0.0) -> dict[str, Any]:
+    """Commit a payment whose handlers outlast the deadline, then wait ``after``."""
+    async with PaysAndTells(events=tellers) as uow:
+        await uow.session.execute(insert(payments))
+        await uow.commit()
+    await asyncio.sleep(after)
+    return {"paid": True, "remaining": deadlines.remaining()}

@@ -45,6 +45,7 @@ from domainkit.context import (
 )
 from domainkit.context import route_template as route_template
 from domainkit.http.errors import (
+    DATABASE_UNAVAILABLE,
     APIError,
     database_refusal,
     error_response,
@@ -528,6 +529,8 @@ class RequestContextMiddleware:
         )
         self.raw_path = settings.ACCESS_LOG_PATH == "raw"
         """Whether logs show the path as sent, not the route's template."""
+        self.unavailable = ThrottledLog(logger)
+        """Requests answered while the database cannot be reached: a line a while."""
         accept = settings.ACCEPT_REQUEST_ID
         self.ids_from_anyone = accept == "anyone"
         """Whether any caller's ``X-Request-ID`` is read."""
@@ -586,13 +589,7 @@ class RequestContextMiddleware:
                 refusal = database_refusal(exc)
                 path = context.path
                 if refusal is not None and response_status is None:
-                    logger.warning(
-                        "Database refused %s %s: %s (%s)",
-                        context.method,
-                        path,
-                        refusal.code,
-                        refusal_reason(exc),
-                    )
+                    self._log_refusal(refusal, exc, context.method, path)
                     await self._refuse(refusal, scope, receive, send_with_id)
                     return
                 logger.exception("Unhandled error in %s %s", context.method, path)
@@ -621,6 +618,30 @@ class RequestContextMiddleware:
                 )
         finally:
             leave_request(token)
+
+    def _log_refusal(
+        self, refusal: APIError, exc: Exception, method: str, path: str
+    ) -> None:
+        """Warn of a database's refusal; of a database out of reach, once a while.
+
+        While the database cannot be reached, every request fails the same
+        way: one line per reason each interval, with a count, says so.
+        """
+        reason = refusal_reason(exc)
+        if refusal.code != DATABASE_UNAVAILABLE:
+            logger.warning(
+                "Database refused %s %s: %s (%s)", method, path, refusal.code, reason
+            )
+            return
+        self.unavailable.warning(
+            DATABASE_UNAVAILABLE,
+            reason,
+            "The database is unavailable (%s): %s %s answered 503 %s",
+            reason,
+            method,
+            path,
+            DATABASE_UNAVAILABLE,
+        )
 
     async def _refuse(
         self, refusal: APIError, scope: Scope, receive: Receive, send: Send

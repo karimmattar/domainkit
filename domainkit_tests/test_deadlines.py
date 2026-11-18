@@ -404,3 +404,78 @@ async def test_enforced_says_whether_a_timer_cuts_this_task_off() -> None:
         async with deadlines.timeout():  # Bounded by the outer deadline.
             assert deadlines.enforced() is True
         assert await asyncio.create_task(in_a_task()) is False
+
+
+async def test_a_commit_lifts_a_deadline_until_commit_for_good() -> None:
+    """``until_commit``: after the commit nothing cuts the work off any more.
+
+    The block waits twice its seconds after the commit and ends without
+    raising; so do the blocks the lifted deadline bounds.
+    """
+    async with deadlines.timeout(0.05, until_commit=True) as bound:
+        async with deadlines.timeout(60.0) as inner:  # Bounded by the outer.
+            with deadlines.after_commit():
+                assert deadlines.remaining() is None
+            assert deadlines.remaining() is None
+            await asyncio.sleep(0.1)
+        assert deadlines.remaining() is None
+    assert not bound.expired()
+    assert inner.deadline is not None
+    assert bound.deadline is not None
+    assert bound.deadline.until_commit is True
+    assert inner.deadline.until_commit is False
+
+
+async def test_after_a_commit_other_deadlines_come_back_later() -> None:
+    """What follows a commit does not count: the time left is the same after.
+
+    On a frozen clock the block takes 30 seconds; the block's 10 seconds,
+    and its inner block's 5 (a timer of its own), are still left after,
+    and their timers follow.
+    """
+    loop = asyncio.get_running_loop()
+    with freeze_time("2026-01-01") as clock:
+        async with deadlines.timeout(10.0) as outer, deadlines.timeout(5.0) as inner:
+            with deadlines.after_commit():
+                assert deadlines.remaining() is None
+                assert outer.deadline is not None
+                assert outer.deadline.remaining() is None
+                clock.tick(30)
+            assert deadlines.remaining() == 5.0
+            assert outer.deadline.remaining() == 10.0
+            assert inner._timer is not None
+            when = inner._timer.when()
+            assert when is not None
+            assert loop.time() < when <= loop.time() + 5
+    assert not outer.expired()
+    assert not inner.expired()
+
+
+async def test_after_a_commit_a_deadline_moved_meanwhile_stays_moved() -> None:
+    """A deadline set again in the block keeps its new end."""
+    with freeze_time("2026-01-01"):
+        async with deadlines.timeout(10.0) as bound:
+            assert bound.deadline is not None
+            with deadlines.after_commit():
+                bound.deadline.reset(3.0)
+            assert deadlines.remaining() == 3.0
+
+
+async def test_after_a_commit_the_deadlines_of_other_tasks_are_left_alone() -> None:
+    """A task that shares a deadline lifts nothing; outside one, nothing happens.
+
+    The task commits under the deadline of the block that started it,
+    which only that block's task enforces: it keeps counting.
+    """
+    with deadlines.after_commit():  # No deadline at all.
+        assert deadlines.current_deadline() is None
+    with freeze_time("2026-01-01"):
+        async with deadlines.timeout(10.0) as bound:
+
+            async def commits() -> float | None:
+                with deadlines.after_commit():
+                    return deadlines.remaining()
+
+            assert await asyncio.create_task(commits()) == 10.0
+            assert bound.deadline is not None
+            assert bound.deadline.remaining() == 10.0
