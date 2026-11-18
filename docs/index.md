@@ -121,6 +121,8 @@ Choose the line that matches your goal.
 - [Coming from Django](from-django.md) and
   [coming from FastAPI](from-fastapi.md): what you know, and its name
   in domainkit.
+- [Choosing a feature](choosing.md): which tool to use for a need, and
+  which to leave alone, where two look alike.
 
 ### Build a service
 

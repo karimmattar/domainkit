@@ -4,6 +4,7 @@ import ast
 import json
 import re
 import shlex
+import tomllib
 from datetime import timedelta
 from importlib import import_module
 from pathlib import Path
@@ -1073,3 +1074,132 @@ def test_a_snippet_that_does_not_parse_or_import_is_named(tmp_path: Path) -> Non
         "docs/_snippet_probe.md:4: invalid syntax (line 2 of the snippet)",
         "docs/_snippet_probe.md:9: domainkit.tenancy has no nothing_here",
     ]
+
+
+_TITLED = re.compile(r'^```\S* title="(?P<path>[^"]+)"$', re.MULTILINE)
+_SECTION_START = re.compile(r"^#{1,6} .*$", re.MULTILINE)
+
+
+def unnamed_files(text: str) -> list[str]:
+    """The files that the page's titled blocks name in their title only.
+
+    GitHub shows a block's language, not its title, so the prose since the
+    heading above the block names the file too, in a code span. A ``*`` in
+    a title, a migration's revision, stands for any part of a file name.
+    """
+    unnamed = []
+    for found in _TITLED.finditer(text):
+        path = found["path"].removesuffix(" (new file)")
+        prose = _SECTION_START.split(_FENCE.sub("", text[: found.start()]))[-1]
+        name = re.escape(path).replace(r"\*", r"[^`/]+")
+        if not any(
+            re.fullmatch(name, span) for span in re.findall(r"`([^`]+)`", prose)
+        ):
+            unnamed.append(path)
+    return unnamed
+
+
+def test_every_titled_block_names_its_file_where_github_shows_it() -> None:
+    """A reader on GitHub sees which file each block makes or changes."""
+    assert [
+        f"{page.relative_to(ROOT)}: {path}"
+        for page in pages()
+        if "adr" not in page.parts
+        for path in unnamed_files(page.read_text(encoding="utf-8"))
+    ] == []
+
+
+def test_a_file_named_only_in_its_title_is_found() -> None:
+    """The prose of the block's own section counts, not an earlier one's."""
+    page = (
+        "## One\n\nMake `a.py`:\n\n"
+        '```python title="a.py (new file)"\nx = 1\n```\n\n'
+        "## Two\n\n```bash\n# b.py\n```\n\nMake this new file:\n\n"
+        '```python title="b.py"\nx = 1\n```\n\n'
+        "Edit `migrations/0002_<id>_x.py`:\n\n"
+        '```python title="migrations/0002_*_x.py"\nx = 1\n```\n\n'
+        "Edit `a.py` again:\n\n"
+        '```python title="c/a.py"\nx = 1\n```\n'
+    )
+
+    assert unnamed_files(page) == ["b.py", "c/a.py"]
+
+
+WHEN = "## When to use it, and when not to"
+CHOSEN = (
+    "resources.md",
+    "validation.md",
+    "contrib/messaging.md",
+    "contrib/webhooks.md",
+    "contrib/audit.md",
+    "contrib/idempotency.md",
+    "contrib/evidence.md",
+    "contrib/keys.md",
+    "contrib/accounting.md",
+    "contrib/approvals.md",
+    "contrib/limits.md",
+    "auth/step-up.md",
+    "auth/actions.md",
+    "tenancy.md",
+    "uploads.md",
+    "databases.md",
+)
+"""The key features' pages, which say when not to use them (A28-DX-05)."""
+
+
+@pytest.mark.parametrize("name", CHOSEN)
+def test_each_key_feature_says_when_to_use_it_and_what_instead(name: str) -> None:
+    """Right after its opening, a page names the needs it does not serve.
+
+    The section comes before the first example, and links what to use
+    instead; the decision guide links the page.
+    """
+    text = (DOCS / name).read_text(encoding="utf-8")
+    [first] = re.findall(r"^## .*$", text, re.MULTILINE)[:1]
+    when = section_of(text, WHEN)
+
+    assert first == WHEN
+    assert re.search(r"\*\*Do not (?:use|shard|read|keep)", when), name
+    assert re.search(r"\]\([^)#]*\.md", when), f"{name}: link what to use instead"
+    assert f"]({name}" in (DOCS / "choosing.md").read_text(encoding="utf-8")
+
+
+BUDGETS = ROOT / "benchmarks" / "budgets.toml"
+_RUNG_ROW = re.compile(
+    r"^\| `(?P<rung>[\w-]+)` \| [^|]+ \| (?P<calls>[\d,]+)(?: \([\d,]+\))? "
+    r"\| (?P<trips>\d+/\d+/\d+/\d+) \| (?P<modules>[\d,]+) \| [\d.,]+ \|$",
+    re.MULTILINE,
+)
+
+
+def test_the_ladders_table_shows_the_budgets_ci_holds() -> None:
+    """Each rung's calls, round trips, and modules are its budgets (A28-PERF-09)."""
+    page = (DOCS / "performance.md").read_text(encoding="utf-8")
+    written = tomllib.loads(BUDGETS.read_text(encoding="utf-8"))
+    budgets = written["rungs"]
+    shown = {
+        row["rung"]: (
+            int(row["calls"].replace(",", "")),
+            row["trips"],
+            int(row["modules"].replace(",", "")),
+        )
+        for row in _RUNG_ROW.finditer(section_of(page, "## What a request costs"))
+    }
+
+    assert shown == {
+        rung: (
+            budget["calls"],
+            "/".join(
+                str(budget[measure])
+                for measure in ("statements", "transactions", "checkouts", "pings")
+            ),
+            budget["modules"],
+        )
+        for rung, budget in budgets.items()
+    }
+    # The budgets the page quotes "as the file holds them now".
+    gate = section_of(page, "## Budgets and the CI gate")
+    [quoted] = re.findall(r"^```toml\n(.*?)^```$", gate, re.DOTALL | re.MULTILINE)
+    held = tomllib.loads(quoted)
+    assert held["tolerance"] == written["tolerance"]
+    assert held["rungs"] == {name: budgets[name] for name in held["rungs"]}

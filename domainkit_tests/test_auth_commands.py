@@ -155,9 +155,9 @@ def test_createsuperuser_asks_for_everything(
         *WEAK_ERRORS[1:],
         # Since 2.5 (ADR 0165): codes go only where the user proved it.
         (
-            "Note: no code reaches the superuser, to reset its password or enroll "
-            "a phone, until it proves its email address: run createsuperuser "
-            "--promote admin --verify"
+            "Note: no verification code can be sent to the superuser (to reset "
+            "its password or enroll a phone) until its email address is verified: "
+            "run createsuperuser --promote admin --verify"
         ),
     ]
 
@@ -590,9 +590,9 @@ def test_createsuperuser_by_email_or_number(
     assert stderr.getvalue().splitlines() == [
         "Error: That username is already taken.",
         (
-            "Note: no code reaches the superuser, to reset its password or enroll "
-            "a phone, until it proves its mobile number: run createsuperuser "
-            f"--promote {cast(User, by_number).id} --verify"  # No username: its id.
+            "Note: no verification code can be sent to the superuser (to reset "
+            "its password or enroll a phone) until its mobile number is verified: "
+            f"run createsuperuser --promote {cast(User, by_number).id} --verify"
         ),
     ]
     assert isinstance(by_number, User)

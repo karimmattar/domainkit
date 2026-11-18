@@ -22,6 +22,20 @@ On this page you learn how to:
 [Queries](queries.md) covers what repositories find: conditions, pages,
 filters, bulk changes, soft delete, row locks, and savepoints.
 
+## When to use it, and when not to
+
+- **One database serves most services.** Add the tools of this page one
+  at a time, for a need you measured: [read replicas](#read-replicas)
+  when reads load the primary, [routing](#routing-domains-to-databases)
+  when a domain needs a database of its own, [sharding](#sharding) when
+  one database cannot hold the rows, [partitioning](#partitioning) when a
+  large table's old rows must go by time, and a [ledger](#ledgers-immudb)
+  for [evidence](contrib/evidence.md).
+- **Do not shard** a domain that fits one database: each unit of work
+  then names its key, and a query across keys reads every database.
+- **Do not read a replica** when the caller must see its own write at
+  once: a replica may lag ([lag and failover](#lag-and-failover)).
+
 ## A first example
 
 A product, its table, and a SQL unit of work on SQLite:
@@ -1100,6 +1114,12 @@ add:
   ([contrib/idempotency.md](contrib/idempotency.md));
 - a rule that the caller may move money out of that wallet
   ([resources.md](resources.md#who-may-call-it)).
+
+Money that must balance, be reported, and be reconciled, such as
+customers' wallets, belongs in
+[the double-entry ledger](contrib/accounting.md): an entry moves it
+between accounts, and concurrent entries neither deadlock nor lose an
+update.
 
 ## Connections
 
