@@ -354,9 +354,13 @@ the changelog if it changes what is refused.
    Whatever tag starts it, it publishes the newest final release
    (`.github/scripts/newest_release.py`), so a pre-release, or a patch
    of an older line, leaves the site on that release. It first makes
-   release.yml's three tag checks on that release, judged as when its
-   tag was pushed: a tag that those checks refuse publishes nothing. The
-   site is built as CI's `docs-site` job builds it.
+   release.yml's three tag checks on that release, with every tag of a
+   newer version left out (`release_check.py --as-pushed`), whether it
+   was pushed before the release or after: a newer tag, such as a later
+   line's pre-release, never refuses the release here, even one that
+   refused it in release.yml. A tag that the other checks refuse
+   publishes nothing. The site is built as CI's `docs-site` job builds
+   it.
 
    CI keeps a run's `dist` and `sbom` for 90 days. To release an older
    commit, run its CI run again first (`gh run rerun <id>`). Each tag

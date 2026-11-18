@@ -73,7 +73,14 @@ The app brings two tables, `domainkit_approval_requests` and
 
 A refund of more than 1,000 dollars needs two approvals from people who
 hold `payments.approve_refund`. In code, a maker submits the refund, two
-checkers approve it, and the worker runs it:
+checkers approve it, and the worker runs it. The example uses names of
+the project's own: `refund_command` is a `Refund` command of 1,500
+dollars, guarded as `payments.refund` (the next section,
+[Guarding a use case](#guarding-a-use-case), writes the guard); `ann` is
+the maker, who holds `payments.add_refund`; `bob` and `carol` are users
+who hold `payments.approve_refund`. [Part 7 of the
+tutorial](../tutorial/7-four-eyes.md) writes a guard like it in a
+project, and approves a transfer over HTTP, end to end.
 
 ```python
 from domainkit.contrib.approvals import (

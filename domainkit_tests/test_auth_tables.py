@@ -20,6 +20,7 @@ from domainkit import setup
 from domainkit.apps import registry
 from domainkit.conf import override_settings
 from domainkit.contrib.auth import AbstractUser, PasswordHash
+from domainkit.contrib.auth.apps import AuthConfig
 from domainkit.contrib.auth.exceptions import UsernameTaken
 from domainkit.contrib.auth.tables import (
     PasswordHashType,
@@ -359,6 +360,42 @@ def test_migrate_waits_for_no_writer_once_the_indexes_are_made(
     finally:
         done.set()
         writer.join()
+
+
+@pytest.mark.skipif(not ON_POSTGRES, reason=f"set {POSTGRES_VARIABLE}: SQLite has none")
+@pytest.mark.parametrize("migrated", ["default"], indirect=True)
+def test_migrate_makes_the_lookup_indexes_in_the_user_tables_own_schema(
+    migrated: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A user table that names its schema gets them there, once.
+
+    They were looked for in the schema the connection works in, which has
+    no such table, so none was made (found in review).
+    """
+    people = Table("people", MetaData(), *abstract_user_columns(), schema="identity")
+    config = registry.get_domain_config("auth")
+    assert isinstance(config, AuthConfig)
+    monkeypatch.setattr(config, "user_table", people)
+
+    async def made() -> set[str]:
+        async with connections.engine().begin() as connection:
+            await connection.exec_driver_sql("CREATE SCHEMA identity")
+            await connection.run_sync(people.create)
+            await config.index_lookups(connection, "default")
+            await config.index_lookups(connection, "default")  # Finds them.
+            return await connection.run_sync(
+                lambda sync: {
+                    str(index["name"])
+                    for index in inspect(sync).get_indexes("people", schema="identity")
+                    if str(index["name"]).startswith("ix_")  # Not unique ones.
+                }
+            )
+
+    assert run_async(made()) == {
+        "ix_people_email_lower",
+        "ix_people_username_lower",
+        "ix_people_email_id",
+    }
 
 
 def test_migrate_before_any_revision_makes_no_index(

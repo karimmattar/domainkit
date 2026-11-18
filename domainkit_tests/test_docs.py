@@ -886,6 +886,27 @@ def test_the_upgrade_entries_are_read_from_their_sections() -> None:
     ) == ["**Breaking:** a security fix (S-1).\n", "Old (D-2).\n"]
 
 
+def test_the_runbook_analyzes_the_tables_the_webhook_checks_read() -> None:
+    """The runbook's "Webhook deliveries fail" has PostgreSQL analyse its tables.
+
+    A table no one has analysed has none until autovacuum analyses it, and
+    the hourly check for abandoned deliveries, which reads the deliveries
+    and the outbox, was planned as a nested loop: 15.7 s over 6,000
+    deliveries. The ``ANALYZE`` names both tables as they are named (found
+    in review).
+    """
+    from domainkit.contrib.messaging.tables import messages
+    from domainkit.contrib.webhooks.tables import deliveries
+
+    runbook = (DOCS / "runbook.md").read_text(encoding="utf-8")
+    entry = runbook.split("\n## Webhook deliveries fail\n", 1)[1].split("\n## ", 1)[0]
+    analyzed = re.findall(r"`ANALYZE ([a-z_, ]+);`", entry)
+
+    assert [names.split(", ") for names in analyzed] == [
+        [deliveries.name, messages.name]
+    ]
+
+
 def test_the_projects_images_run_serve() -> None:
     """Both ``Dockerfile``s ``init`` writes run ``manage.py serve`` (INFRA-09).
 
@@ -1092,11 +1113,12 @@ def unnamed_files(text: str) -> list[str]:
 
     GitHub shows a block's language, not its title, so the prose since the
     heading above the block names the file too, in a code span. A ``*`` in
-    a title, a migration's revision, stands for any part of a file name.
+    a title, a migration's revision, stands for any part of a file name;
+    " (new file)" and " (whole file)" after it are not part of the name.
     """
     unnamed = []
     for found in _TITLED.finditer(text):
-        path = found["path"].removesuffix(" (new file)")
+        path = re.sub(r" \((?:new|whole) file\)$", "", found["path"])
         prose = _SECTION_START.split(_FENCE.sub("", text[: found.start()]))[-1]
         name = re.escape(path).replace(r"\*", r"[^`/]+")
         if not any(
@@ -1126,7 +1148,9 @@ def test_a_file_named_only_in_its_title_is_found() -> None:
         "Edit `migrations/0002_<id>_x.py`:\n\n"
         '```python title="migrations/0002_*_x.py"\nx = 1\n```\n\n'
         "Edit `a.py` again:\n\n"
-        '```python title="c/a.py"\nx = 1\n```\n'
+        '```python title="c/a.py"\nx = 1\n```\n\n'
+        "Replace `d.py`:\n\n"
+        '```python title="d.py (whole file)"\nx = 1\n```\n'
     )
 
     assert unnamed_files(page) == ["b.py", "c/a.py"]

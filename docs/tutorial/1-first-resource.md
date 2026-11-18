@@ -2,7 +2,7 @@
 
 In this part you add bank accounts to the project of
 [part 0](0-first-route.md). A client can create accounts and list them,
-but only after it logs in. This is the first of the five parts that build
+but only after it logs in. This is the first of the parts that build
 the bank ([the tutorial](../tutorial.md)). Work in the `bank` directory,
 with the same environment turned on.
 

@@ -14,17 +14,54 @@ from domainkit.conf.global_settings import HIDDEN
 from domainkit.management.base import BaseCommand
 
 SECRET_KEY: Final = re.compile(
-    r"pass|secret|token|key|credential|auth|(?<![a-z])(?:sid|pin)(?![a-z])",
+    r"pass|secret|token|key|credential|auth|(?<![a-z])(?:sid|pin|pwd)(?![a-z])",
     re.IGNORECASE,
 )
-"""Names of settings and entries shown hidden (``CONNECT_ARGS``, ``APP_SID``)."""
-URL_USERINFO: Final = re.compile(r"\b([a-z][a-z0-9+.-]*://)(\S*)@", re.IGNORECASE)
-"""A URL's user and password, up to the last ``@`` of the address."""
+"""Names of settings and entries shown hidden (``CONNECT_ARGS``, ``APP_SID``).
+
+``sid``, ``pin``, and ``pwd`` (ODBC's ``PWD=``) only as words of their own.
+"""
+URL_USERINFO: Final = re.compile(
+    r"""
+    (?<!\S)  # A word, read from its start once.
+    (?>(\S*?)(?<![a-z0-9+.-])([a-z0-9+.-]++://))  # Its first URL's scheme,
+    (\S*)@  # and that URL's user and password, up to the word's last @.
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+"""A URL's user and password, up to the last ``@`` of the address.
+
+Each word is read from its start once, at its first URL, so a long text is
+read in a time that grows with its length, as ``SECRET_PAIR`` reads it.
+"""
 SECRET_PAIR: Final = re.compile(
-    rf"\b([\w.-]*(?:{SECRET_KEY.pattern})[\w.-]*=)('(?:[^'\\]|\\.)*'|[^\s&;#]*)",
-    re.IGNORECASE,
+    rf"""
+    (?<![\w.-])  # From the start of a name, but a host and port after // or @:
+    (?!(?:(?<=//)|(?<=@))[\w.-]++:\d++(?![^/?#\s"',)\]}}>]))
+    (["']?+(?=[\w.-]*?(?:{SECRET_KEY.pattern}))[\w.-]++["']?+\s*+(?:(=)|:)
+    [^\S\r\n]*+(?:\r?\n[^\S\r\n]++)?+)  # the name, quoted or not; its value
+    (  # on its line, or the next one indented: quoted, and read on after =,
+        (?:"(?:[^"\\]|\\.)*+"|'(?:[^'\\]|\\.)*+')  # and after : unless a
+        (?(2)[^\s&;#]*+|(?:(?![^\s&;#,)\]}}])|[^\s&;#]*+))  # delimiter follows;
+        | (?:[a-z][\w-]*+[ \t]++(?=[\w.~+/-]++=*+(?![\w.~+/=-])(?!\s*+[:=])))?+
+        [^\s&;#]*+  # or up to a space, &, ;, or #, a scheme first (Bearer x).
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
 )
-"""``password=...`` in a URL's query or a libpq connection string."""
+"""``password=...`` and ``password: ...``, the name quoted or not.
+
+As in a URL's query, a libpq connection string (``password = x``), JSON
+(``"private_key": "..."``), or a header (``Authorization: Bearer x``).
+A value starts on the name's line, or on the next one indented. After
+``=``, a quoted value is read on past its closing quote, to a space, ``&``,
+``;``, or ``#``, so ``password="a",x`` is hidden whole; after ``:``, as in
+JSON, it ends at its closing quote where a delimiter follows. A host that a
+port follows, after ``//`` or ``@``, is no name, so
+``https://auth.example.com:8443`` keeps its port. Each name and each value
+is matched from its start once, never again from within it, so a long text
+is read in a time that grows with its length.
+"""
 UNSHOWN: Final = frozenset({"SETTINGS_MODULE"})
 
 
@@ -35,10 +72,11 @@ class Command(BaseCommand):
     schema validated them, defaults filled in. Secrets stay hidden: secret
     values (``SecretStr`` keys and tokens), settings or entries whose names
     suggest secrets (a project's ``PAYMENT_API_KEY``, ``AUTH.TOKEN_TTL``),
-    the user and password of a URL, ``password=...`` pairs, and, in a
-    domain's settings, every text that no type describes: the strings of a
-    mapping or of a value typed ``Any`` (``SMS_OPTIONS``) show as hidden,
-    beside their keys and numbers.
+    the user and password of a URL, ``password=...`` and ``password: ...``
+    pairs, and, in a domain's settings, every text that no type describes:
+    the strings of a mapping, of a value typed ``Any`` (``SMS_OPTIONS``), or
+    of a value that is not a model (a dataclass) show as hidden, beside
+    their keys and numbers.
     """
 
     help = "Show settings that differ from the defaults (--all: every setting)."
@@ -109,7 +147,12 @@ def _shown(model: BaseModel) -> dict[str, Any]:
 
 
 def _typed(value: object, free_form: bool) -> object:
-    """``value`` of a typed field: shown, but secrets and untyped text hidden."""
+    """``value`` of a typed field: shown, but secrets and untyped text hidden.
+
+    A value of fields or entries that is not a model, such as a dataclass,
+    or a mapping in a ``NamedTuple``, is shown as ``_opaque`` shows it: no
+    model's types say what it holds.
+    """
     if free_form:
         return _opaque(value)
     if isinstance(value, BaseModel):
@@ -117,8 +160,11 @@ def _typed(value: object, free_form: bool) -> object:
     if isinstance(value, SecretStr | SecretBytes | bytes | bytearray):
         return HIDDEN
     if isinstance(value, list | tuple | set | frozenset):
-        return [_typed(item, free_form=False) for item in value]
-    return to_jsonable_python(value, fallback=_named)
+        return _items(value, [_typed(item, free_form=False) for item in value])
+    shown = to_jsonable_python(value, fallback=_named)
+    if isinstance(shown, dict | list):
+        return _opaque(shown)
+    return shown
 
 
 def _opaque(value: object) -> object:
@@ -135,8 +181,17 @@ def _opaque(value: object) -> object:
     if isinstance(value, Mapping):
         return {str(key): _opaque(item) for key, item in value.items()}
     if isinstance(value, list | tuple | set | frozenset):
-        return [_opaque(item) for item in value]
+        return _items(value, [_opaque(item) for item in value])
     return HIDDEN
+
+
+def _items(value: object, shown: list[object]) -> list[object]:
+    """The ``shown`` items of ``value``, a set's sorted by their text.
+
+    A set's order follows the hash seed, which differs between processes:
+    sorted, two runs print the same lines.
+    """
+    return sorted(shown, key=repr) if isinstance(value, set | frozenset) else shown
 
 
 def _free_form(annotation: object) -> bool:
@@ -191,7 +246,7 @@ def _userinfo(match: re.Match[str]) -> str:
     ``@``; a user that holds a ``/``, or no ``:`` at all (a key in the
     user's place, as some services give), is hidden too.
     """
-    scheme, userinfo = match[1], match[2]
+    scheme, userinfo = match[1] + match[2], match[3]
     user, colon, _ = userinfo.partition(":")
     if colon and "/" not in user:
         return f"{scheme}{user}:{HIDDEN}@"

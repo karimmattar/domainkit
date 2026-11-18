@@ -178,8 +178,10 @@ answers 401, and without the permission 403 `permission_denied`. A 404
 means an unknown path, or an item outside the caller's scope: `/docs`
 lists every route. `createsuperuser` without options asks for each value
 instead. [docs/tutorial.md](https://github.com/karimmattar/domainkit/blob/main/docs/tutorial.md)
-goes on from here, in six parts from a first route: a first resource,
-rules written by hand, permissions, events run by the worker, and tests.
+goes on from here, in nine parts from a first route: a first resource,
+rules written by hand, permissions, events run by the worker, tests, and
+then a bank's controls: transfers booked in double-entry books, approvals
+by a second person, and signed webhooks.
 
 `domainkit init` creates a project that passes `check` and its tests as it is.
 Users, groups, and permissions are installed, requests are authenticated,
