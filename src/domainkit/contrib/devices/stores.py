@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from domainkit.contrib.auth import AuthUnitOfWork
 from domainkit.contrib.auth.integration import utc_now
+from domainkit.db import affected_rows
 
 from .tables import challenges, devices, passkeys, push_tokens, signatures
 from .webauthn import b64encode
@@ -161,7 +162,7 @@ class PasskeyStore:
             .where(passkeys.c.id == passkey.id, counted)
             .values(sign_count=sign_count, last_used_at=utc_now())
         )
-        return bool(result.rowcount)  # type: ignore[attr-defined]
+        return bool(affected_rows(result))
 
     async def remove(self, user_id: UUID, passkey_id: UUID) -> bool:
         """Remove the user's passkey; whether there was one."""
@@ -170,7 +171,7 @@ class PasskeyStore:
                 passkeys.c.user_id == user_id, passkeys.c.id == passkey_id
             )
         )
-        return bool(result.rowcount)  # type: ignore[attr-defined]
+        return bool(affected_rows(result))
 
     async def forget_user(self, user_id: UUID) -> None:
         """Remove every passkey of a user who is gone."""
@@ -307,7 +308,7 @@ class DeviceStore:
         result = await self.session.execute(
             delete(signatures).where(signatures.c.time < before)
         )
-        return int(result.rowcount or 0)  # type: ignore[attr-defined]
+        return affected_rows(result)
 
     async def remove(self, user_id: UUID, device_id: UUID) -> bool:
         """Unbind the user's device; whether there was one."""
@@ -316,7 +317,7 @@ class DeviceStore:
                 devices.c.user_id == user_id, devices.c.id == device_id
             )
         )
-        if not result.rowcount:  # type: ignore[attr-defined]
+        if not affected_rows(result):
             return False
         await self.session.execute(
             delete(signatures).where(signatures.c.device_id == device_id)
@@ -406,7 +407,7 @@ class PushTokenStore:
                 push_tokens.c.user_id == user_id, push_tokens.c.id == token_id
             )
         )
-        return bool(result.rowcount)  # type: ignore[attr-defined]
+        return bool(affected_rows(result))
 
     async def forget(self, digest: str) -> None:
         """Remove the token of ``digest``, which its service no longer knows."""

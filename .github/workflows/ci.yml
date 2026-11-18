@@ -1291,6 +1291,7 @@ jobs:
               domainkit.management.commands.serve.* domainkit.management.operators.*
               domainkit.utils.closing.* domainkit.utils.formatting.*
               domainkit.utils.module_loading.* domainkit.utils.delivery.*
+              domainkit.utils.canonical.*
           - name: management-4
             mutants: >-
               domainkit.apps.config.* domainkit.management.base.*

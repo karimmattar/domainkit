@@ -461,6 +461,12 @@ OpenTelemetry spans and log correlation (`domainkit[tracing]`).
 - `span`: Run the block inside a span named `name` (a no-op without OpenTelemetry).
 - `trace_headers`: The active span's W3C trace context, as headers; empty without one.
 
+## `domainkit.utils.canonical`
+
+One text per JSON value, for digests and signatures: RFC 8785's (JCS).
+
+- `canonical_json`: `value` as RFC 8785 canonical JSON, in UTF-8.
+
 ## `domainkit.utils.decimals`
 
 One text form for a `Decimal`: fixed point, never an exponent.

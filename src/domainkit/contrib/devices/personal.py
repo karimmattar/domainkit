@@ -11,6 +11,8 @@ from uuid import UUID
 
 from sqlalchemy import Table, delete, select
 
+from domainkit.db import affected_rows
+
 from .stores import DevicesUnitOfWork
 from .tables import devices, passkeys, push_tokens
 
@@ -88,7 +90,7 @@ async def erase_subject(subject: str) -> Mapping[str, int]:
             removed = await uow.session.execute(
                 delete(table).where(table.c.user_id == user_id)
             )
-            if removed.rowcount:  # type: ignore[attr-defined]
-                counts[kind] = removed.rowcount  # type: ignore[attr-defined]
+            if count := affected_rows(removed):
+                counts[kind] = count
         await uow.commit()
     return counts

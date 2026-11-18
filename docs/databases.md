@@ -236,7 +236,21 @@ A `SqlAlchemyUnitOfWork` also takes these arguments:
 | `events=` | | The `EventBus` to publish to. |
 
 Inside the block, `uow.session` is the SQLAlchemy `AsyncSession`, and
-`uow.alias` the SQL alias in use.
+`uow.alias` the SQL alias in use. `domainkit.db.affected_rows(result)`
+says how many rows an `UPDATE` or `DELETE` run there changed (*new in
+2.9*): `AsyncSession.execute` is typed to return any result, and only
+the result of a change counts rows.
+
+```python
+from sqlalchemy import update
+
+from domainkit.db import affected_rows
+
+result = await uow.session.execute(
+    update(invoices).where(invoices.c.id == invoice_id).values(paid=True)
+)
+paid = affected_rows(result) == 1
+```
 
 ## Tables from domain classes
 
@@ -1744,6 +1758,29 @@ async def protect_history(connection, database: str) -> None:
 | `missing_append_only(connection, tables)` | The triggers that schema lacks, has disabled, or changed: a trigger counts only as made, enabled, with no `WHEN`, columns, or arguments, running its function with the same body. |
 | `unprotected(database, tables)` | The same for a database, by place: its own schema, and each tenant's schema that holds the first table (`TENANCY.SCHEMA_DATABASES`). |
 | `migrate_command(place)` | The command that makes a place's triggers: `migrate`, or `migrate --tenant <tenant>`. |
+
+## Digests
+
+A digest of a record is only as good as the one text the record has.
+`domainkit.utils.canonical.canonical_json(value)` writes a value as RFC
+8785's JSON Canonicalization Scheme does, in UTF-8: members sorted, no
+white space, numbers and strings written as ECMAScript writes them (*new
+in 2.9*). Any implementation of RFC 8785 gives the same bytes, so a
+client can work out the same digest from what it shows. It refuses what
+has no single text: NaN, an integer past 2**53 - 1, a lone surrogate, a
+`Decimal` (write it as text, with `decimal_text`).
+
+```python
+import hashlib
+
+from domainkit.utils.canonical import canonical_json
+
+digest = hashlib.sha256(canonical_json({"amount": "10.00", "to": "acct-7"})).hexdigest()
+```
+
+Use it for new digests. The digests the framework already stores (an
+audit row's, an evidence record's, an approved command's fingerprint)
+keep their own encoders, so what was stored still verifies.
 
 ## Hooks, models, and the database clock
 

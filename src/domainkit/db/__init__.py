@@ -26,7 +26,7 @@ from domainkit.db.orm import (
 from domainkit.db.orm import (
     mapper_registry as mapper_registry,
 )
-from domainkit.db.repository import SqlAlchemyRepository
+from domainkit.db.repository import SqlAlchemyRepository, affected_rows
 from domainkit.db.types import CurrencyCode, ExactDecimal, JSONTuple, UTCDateTime
 from domainkit.db.uow import Isolation, SqlAlchemyUnitOfWork, lock_key
 
@@ -46,6 +46,7 @@ __all__ = [
     "SqlAlchemyUnitOfWork",
     "UTCDateTime",
     "ValueObjectType",
+    "affected_rows",
     "child",
     "children",
     "connections",

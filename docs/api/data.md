@@ -58,6 +58,7 @@ SQLAlchemy integration: connections, ORM metadata, repositories, migrations.
 - `SqlAlchemyUnitOfWork`: Open a session on enter, commit on `commit()`, close on exit.
 - `UTCDateTime`: Timezone-aware UTC timestamps, also on SQLite (which has no time zones).
 - `ValueObjectType`: A single-field value object, stored as its field (`ProductName.value`).
+- `affected_rows`: How many rows the `UPDATE` or `DELETE` that gave `result` changed.
 - `child`: A relationship to the one child entity an aggregate owns, or None.
 - `children`: A relationship to the child entities an aggregate owns (`list[Line]`).
 - `connections`: Process-wide connection handler.
