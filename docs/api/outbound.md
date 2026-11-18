@@ -31,10 +31,10 @@ Public since 2.9, for an app that takes URLs from its users.
 - `MAX_URL_LENGTH`: The longest URL `checked_url` takes; a longer one is refused.
 - `Address`: An address a host resolves to.
 - `Network`: A network the checks let through (`allowed`), such as a private one.
+- `Resolver`: Looks a host up: every address of `(host, port)`, which the checks then judge.
 - `UnsafeURL`: A URL that may not be called; the message never quotes it.
 - `checked_address`: The address to connect to for `url` (see `checked_host`).
 - `checked_host`: The address to connect to for `host`, once all of its addresses pass.
 - `checked_url`: Parse `url` and check everything that does not need a lookup.
-- `lookup`: Every address `host` resolves to, on the guard's threads (`resolver`).
 - `lookups_for`: Count the guard's lookups in the block, and tasks it starts, as `owner`'s.
 - `tls_context`: A client TLS context for calls to URLs someone else chose, built once.

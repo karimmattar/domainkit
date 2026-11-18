@@ -1757,9 +1757,10 @@ users as webhooks do. `checked_url(url, allow_http=...)` checks what the
 URL shows, as a subscription is saved; `checked_host` and
 `checked_address` resolve the host on the guard's threads and check every
 address, as a call is made; `lookups_for(owner)` counts the lookups of a
-block as one owner's. `MAX_URL_LENGTH`, `tls_context`, `lookup`, and the
-`Address` and `Network` types are public too
-([Outgoing calls](api/outbound.md)).
+block as one owner's. `MAX_URL_LENGTH`, `tls_context`, and the `Address`,
+`Network`, and `Resolver` types are public too
+([Outgoing calls](api/outbound.md)). The lookup alone, whose addresses
+nothing has checked, is not: `checked_host` resolves with it by default.
 
 **Lookups.** Host names are looked up on threads of the guard's own,
 never the event loop's default executor, which `asyncio.to_thread` and

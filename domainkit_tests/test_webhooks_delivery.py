@@ -260,7 +260,7 @@ async def test_refused_targets_fail_at_once(
 ) -> None:
     """A URL that resolves to a refused address is never retried."""
     resolver = FakeResolver({"rebind.example": ["169.254.169.254"]})
-    monkeypatch.setattr("domainkit.contrib.webhooks.guard.lookup", resolver)
+    monkeypatch.setattr("domainkit.outbound.guard.lookup", resolver)
     await subscribe("http://rebind.example/hook", "note.written")
     await write_note()
 

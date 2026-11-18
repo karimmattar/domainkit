@@ -77,11 +77,11 @@ __all__ = [
     "MAX_URL_LENGTH",
     "Address",
     "Network",
+    "Resolver",
     "UnsafeURL",
     "checked_address",
     "checked_host",
     "checked_url",
-    "lookup",
     "lookups_for",
     "tls_context",
 ]
@@ -91,6 +91,7 @@ type Address = ipaddress.IPv4Address | ipaddress.IPv6Address
 type Network = ipaddress.IPv4Network | ipaddress.IPv6Network
 """A network the checks let through (``allowed``), such as a private one."""
 type Resolver = Callable[[str, int], Awaitable[list[Address]]]
+"""Looks a host up: every address of ``(host, port)``, which the checks then judge."""
 
 MAX_URL_LENGTH: Final = 2048
 """The longest URL ``checked_url`` takes; a longer one is refused."""

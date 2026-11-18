@@ -29,7 +29,7 @@ from typing import Final
 import httpx2
 
 from domainkit.outbound import guard
-from domainkit.outbound.guard import Address, Network, UnsafeURL, lookup
+from domainkit.outbound.guard import Address, Network, UnsafeURL
 
 SUBJECT: Final = "The webhook URL"
 
@@ -67,5 +67,5 @@ async def checked_address(url: httpx2.URL, allowed: Sequence[Network] = ()) -> A
         OSError: the host could not be resolved.
     """
     return await guard.checked_address(
-        url, allowed, resolve=lookup, subject=SUBJECT, error=UnsafeTarget
+        url, allowed, subject=SUBJECT, error=UnsafeTarget
     )

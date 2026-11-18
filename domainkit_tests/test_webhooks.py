@@ -19,7 +19,7 @@ from cryptography.x509.oid import NameOID
 
 from domainkit.clock import freeze_time
 from domainkit.conf import override_settings
-from domainkit.contrib.webhooks import client, guard, signing
+from domainkit.contrib.webhooks import client, signing
 from domainkit.contrib.webhooks.guard import (
     UnsafeTarget,
     checked_address,
@@ -649,7 +649,7 @@ class FakeResolver:
 def resolver(monkeypatch: pytest.MonkeyPatch) -> FakeResolver:
     """Replace DNS with a table."""
     fake = FakeResolver({})
-    monkeypatch.setattr(guard, "lookup", fake)
+    monkeypatch.setattr(http_guard, "lookup", fake)  # What checked_host calls.
     return fake
 
 
