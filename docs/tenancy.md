@@ -122,7 +122,7 @@ It then serves the request as that tenant. It refuses:
 
 | Request | Answer |
 | --- | --- |
-| Names no tenant, while `REQUIRED`, and its path does not start with one of `EXEMPT_PATHS` | `400 tenant_not_named` |
+| Names no tenant, while `REQUIRED`, and its path does not start with one of `EXEMPT_PATHS`, nor is a probe's (`PROBE_PATHS`) | `400 tenant_not_named` |
 | Names an id that is not 1 to 63 letters, digits, `_`, and `-`, starting with a letter or a digit | `400 invalid_tenant` |
 | Comes from a caller that `MEMBERSHIP` says does not belong | `403 not_a_member` |
 
@@ -206,13 +206,15 @@ would refuse every request with `422`.
 **With `TenantMiddleware` too.** A project may name some tenants before
 routing and others by path. `TenantMiddleware` then refuses a request
 that names no tenant before routing, unless its path is exempt. List the
-prefix in `EXEMPT_PATHS`:
+prefix in `EXEMPT_PATHS`. The probes and the metrics scrape
+(`PROBE_PATHS`: `/health`, `/ready`, `/metrics`) are exempt without it
+(since 2.9):
 
 ```python
 TENANCY = {
     "SUBDOMAIN_OF": "example.com",
     "MEMBERSHIP": "accounts.tenancy.is_member",
-    "EXEMPT_PATHS": ["/health", "/orgs/"],
+    "EXEMPT_PATHS": ["/orgs/"],
 }
 ```
 
@@ -699,7 +701,7 @@ None
 | `MEMBER_GRANTS` | `None` | Dotted path to a function of the user and a tenant id (async or not): every key the user's roles there grant whatever the tenant's state, or None. The admin API adds them to a membership `MEMBER_PERMISSIONS` answers for, never in its place. With `MEMBER_PERMISSIONS` and `MEMBER_TENANTS`. |
 | `ALL_TENANTS_PERMISSION` | `None` | A permission key: staff who hold it everywhere change, and act as, members of tenants they do not belong to who hold no key they lack there (under `MEMBERSHIP` alone, every member). With `MEMBER_TENANTS`. |
 | `REQUIRED` | `True` | Refuse a request that names no tenant. |
-| `EXEMPT_PATHS` | `("/health",)` | Paths that may name no tenant. |
+| `EXEMPT_PATHS` | `("/health",)` | Paths that may name no tenant, besides `PROBE_PATHS`, which never need one. |
 | `SCHEMA` | `"tenant_{tenant}"` | A tenant's schema on `SCHEMA_DATABASES`: lowercase letters and `_` around `{tenant}`. |
 | `SCHEMA_DATABASES` | `()` | Database aliases (PostgreSQL) whose every table lives in a schema per tenant. |
 

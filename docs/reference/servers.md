@@ -172,7 +172,7 @@ shutdown too: give it both, `25` for 10 seconds of requests and the 15 of
 `MAX_QUEUED_REQUESTS`, plus the WebSockets you expect, and, for Granian,
 the idle connections the proxy keeps open. It is the backstop. The
 application refuses first, with a JSON 503 and `Retry-After`, and it
-never refuses the probes in `CONCURRENCY_EXEMPT_PATHS`. uvicorn's own
+never refuses the probes in `PROBE_PATHS`. uvicorn's own
 503 is plain text, and it refuses probes too.
 
 **Slow bodies.** A request whose body is slow to arrive holds no slot of

@@ -65,8 +65,9 @@ never mistakes a bad token for being anonymous.
   public routes.
 - **Credentials that no class recognizes** are left to the route
   (`/metrics` has its own token).
-- **`AUTHENTICATION_EXEMPT_PATHS`** (`/health`, `/ready`, `/metrics`) are
-  served without looking at credentials at all.
+- **The probes** (`PROBE_PATHS`: `/health`, `/ready`, `/metrics`), and
+  the paths of `AUTHENTICATION_EXEMPT_PATHS`, are served without looking
+  at credentials at all.
 
 `Credentials` holds `user`, `scheme` (`token`, `jwt`, `cookie`,
 `certificate`, or your class's), `token_id` (the digest of the token),
@@ -737,7 +738,7 @@ the principal on every request, in the same two queries.
 | `AUTH` key | Default | What it does |
 | --- | --- | --- |
 | `AUTHENTICATION_CLASSES` | `TokenAuthentication` | Classes tried in order; the first issues login tokens. |
-| `AUTHENTICATION_EXEMPT_PATHS` | `/health`, `/ready`, `/metrics` | Served without reading credentials. |
+| `AUTHENTICATION_EXEMPT_PATHS` | `()` | Served without reading credentials, besides `PROBE_PATHS`. |
 | `TOKEN_TTL`, `TOKEN_PREFIX` | 14 days, `dkt_` | Opaque login tokens. |
 | `PERSONAL_TOKEN_MAX_AGE`, `MAX_LIVE_TOKENS` | 90 days, 100 | Personal tokens. |
 | `JWT` | see the table | `SIGNING_KEY`, `VERIFYING_KEY`, `ALGORITHM`, `PREVIOUS_KEYS`, `ACCESS_TOKEN_TTL`, `REFRESH_TOKEN_TTL`, `ISSUER`, `AUDIENCE`, `LEEWAY`. |

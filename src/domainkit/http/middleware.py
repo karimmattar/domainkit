@@ -323,11 +323,11 @@ def refused_caller(scope: Scope) -> str:
 def request_path(scope: Scope) -> str:
     """The request's path within the application: without its ``root_path``.
 
-    Every list of paths in settings (``RATE_LIMIT_EXEMPT_PATHS``,
-    ``CONCURRENCY_EXEMPT_PATHS``, ``AUTHENTICATION_EXEMPT_PATHS``,
-    ``ACCESS_LOG_QUIET_PATHS``) is compared with it, so they hold the same
-    under ``--root-path /api`` as without. A root path the path does not
-    start with, at a ``/``, is left on.
+    Every list of paths in settings (``PROBE_PATHS``,
+    ``RATE_LIMIT_EXEMPT_PATHS``, ``CONCURRENCY_EXEMPT_PATHS``,
+    ``AUTHENTICATION_EXEMPT_PATHS``, ``ACCESS_LOG_QUIET_PATHS``) is compared
+    with it, so they hold the same under ``--root-path /api`` as without. A
+    root path the path does not start with, at a ``/``, is left on.
     """
     path: str = scope["path"]
     # No method call while there is no root path: every request asks.
@@ -523,7 +523,9 @@ class RequestContextMiddleware:
         """Wrap ``app``; in debug mode errors reach the framework debug page."""
         self.app = app
         self.debug = settings.DEBUG
-        self.quiet_paths = frozenset(settings.ACCESS_LOG_QUIET_PATHS)
+        self.quiet_paths = frozenset(
+            (*settings.PROBE_PATHS, *settings.ACCESS_LOG_QUIET_PATHS)
+        )
         self.sampler = AccessSampler(
             settings.ACCESS_LOG_SAMPLE_RATE, settings.ACCESS_LOG_SLOW_DURATION
         )

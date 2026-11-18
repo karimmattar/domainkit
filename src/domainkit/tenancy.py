@@ -77,6 +77,7 @@ from domainkit.http.access import (
 )
 from domainkit.http.errors import error_response
 from domainkit.http.live import record_check
+from domainkit.http.middleware import request_path
 from domainkit.utils.module_loading import import_string
 
 __all__ = [
@@ -366,8 +367,9 @@ async def tenants_beyond(
 class TenantMiddleware:
     """Serve each request as its tenant (see the module).
 
-    A request that names no tenant, where ``REQUIRED`` and its path is not
-    ``EXEMPT_PATHS``', gets ``400 tenant_not_named``; a malformed id,
+    A request that names no tenant, where ``REQUIRED`` and its path is
+    neither ``EXEMPT_PATHS``' nor a probe's (``PROBE_PATHS``), gets
+    ``400 tenant_not_named``; a malformed id,
     ``400 invalid_tenant``; a caller ``MEMBERSHIP`` (or
     ``MEMBER_PERMISSIONS``) refuses, ``403 not_a_member``. A WebSocket is
     closed (1008) instead.
@@ -382,6 +384,8 @@ class TenantMiddleware:
         if config is None:
             raise ImproperlyConfigured("TenantMiddleware needs TENANCY settings.")
         self.config = config
+        self.probes = frozenset(settings.PROBE_PATHS)
+        """Paths that never name a tenant: the probes and the metrics scrape."""
         self.resolver: Resolver | None = (
             None if config.RESOLVER is None else import_string(config.RESOLVER)
         )
@@ -397,8 +401,10 @@ class TenantMiddleware:
         refusal = None
         held = None
         if found is None:
-            if self.config.REQUIRED and not connection.url.path.startswith(
-                self.config.EXEMPT_PATHS
+            if (
+                self.config.REQUIRED
+                and request_path(scope) not in self.probes
+                and not connection.url.path.startswith(self.config.EXEMPT_PATHS)
             ):
                 refusal = error_response(
                     400, "Say which tenant this is for.", code="tenant_not_named"

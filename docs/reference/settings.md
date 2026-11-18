@@ -22,6 +22,7 @@ On this page you find:
 | Databases, ledgers, shards, caches, storages, search, tenancy, brokers | [backends.md](backends.md) |
 | `DOCUMENTS`: the Gotenberg server that renders documents (new in 2.5) | [backends.md](backends.md#documents) |
 | HTTP, security headers, CORS, outgoing calls, live connections, middleware | [http.md](http.md) |
+| `PROBE_PATHS`: the paths of the probes and the metrics scrape, which every list of exempt paths adds to (new in 2.9) | [http.md](http.md#probe-paths) |
 | Each optional app's settings (`AUTH`, `MESSAGING`, `AUDIT`, ...) | the app's own page ([contrib.md](../contrib.md)) |
 | `AUTH`'s keys, `AUTH["BREACHED_PASSWORDS"]` (new passwords checked against data breaches) among them | [auth.md](../auth.md#settings) |
 | `AUTH["ADMIN_ACTION"]`, and `APPROVALS["SUBMIT_ACTION"]`, `["REJECT_ACTION"]`, and `["CANCEL_ACTION"]`: the admin API's changes and a request's steps, each authorized as one act | [auth.md](../auth.md#settings), [approvals.md](../contrib/approvals.md#settings) |

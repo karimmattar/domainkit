@@ -1441,9 +1441,9 @@ Retry-After: 1
 ```
 
 - **Probes are never shed.** The health and readiness probes and the
-  metrics scrape (`CONCURRENCY_EXEMPT_PATHS`: `/health`, `/ready`,
-  `/metrics`) are never counted or refused, so a busy replica is not
-  taken for a dead one. Behind `--root-path`, the paths are compared
+  metrics scrape (`PROBE_PATHS`: `/health`, `/ready`, `/metrics`), and
+  the paths in `CONCURRENCY_EXEMPT_PATHS`, are never counted or refused,
+  so a busy replica is not taken for a dead one. Behind `--root-path`, the paths are compared
   without it.
 - **A slot is held until the response starts.** A request holds its slot
   until its response starts, or until it ends. A streamed response, an
@@ -1833,7 +1833,7 @@ Each setting has its full row on
 | `MAX_CONCURRENT_REQUESTS` | `1000` | Requests each event loop works on at once. `None` turns shedding off. |
 | `MAX_QUEUED_REQUESTS` | `100` | Requests that may wait for a slot. |
 | `REQUEST_QUEUE_TIMEOUT` | `1.0` | Seconds a request may wait for a slot. |
-| `CONCURRENCY_EXEMPT_PATHS` | `("/health", "/ready", "/metrics")` | Paths never counted or shed. |
+| `CONCURRENCY_EXEMPT_PATHS` | `()` | Paths never counted or shed, besides `PROBE_PATHS`. |
 | `REQUEST_BODY_TIMEOUT` | `10.0` | Seconds a request body may take to arrive (408 after). |
 | `HTTP_CLIENT` | see below | The defaults of every `HttpClient`. |
 | `GUARD_LOOKUP_THREADS` | `16` | Threads for a guarded client's host lookups. |

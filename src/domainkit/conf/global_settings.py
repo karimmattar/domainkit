@@ -703,7 +703,8 @@ class TenancyConfig(BaseModel):
     REQUIRED: bool = True
     """Refuse a request that names no tenant (``400 tenant_not_named``)."""
     EXEMPT_PATHS: tuple[str, ...] = ("/health",)
-    """Paths that start with one of these may name no tenant."""
+    """Paths that start with one of these may name no tenant, besides the
+    probes (``PROBE_PATHS``), which never need one."""
     SCHEMA: str = Field(
         default="tenant_{tenant}", pattern=r"^[a-z_]*\{tenant\}[a-z_]*$"
     )
@@ -1258,8 +1259,15 @@ class Settings(BaseModel):
     """Bytes a response needs before ``GZipMiddleware`` compresses it."""
     GZIP_LEVEL: int = Field(default=6, ge=1, le=9)
     """``GZipMiddleware``'s compression level: 1 fastest, 9 smallest."""
-    CONCURRENCY_EXEMPT_PATHS: tuple[str, ...] = ("/health", "/ready", "/metrics")
-    """Exact paths never counted against the cap, so probes are never refused."""
+    PROBE_PATHS: tuple[str, ...] = ("/health", "/ready", "/metrics")
+    """Exact paths of the probes and the metrics scrape (``domainkit.http.health``,
+    ``domainkit.http.metrics``). They are never counted against the rate limit
+    or the concurrency cap, are served without reading credentials or naming
+    a tenant, and are logged at DEBUG when they succeed. Change it where the
+    probes are mounted elsewhere; the lists of each concern add paths of the
+    project's own (ADR 0186)."""
+    CONCURRENCY_EXEMPT_PATHS: tuple[str, ...] = ()
+    """Exact paths never counted against the cap, besides ``PROBE_PATHS``."""
     HTTP_CLIENT: HttpClientConfig = Field(default_factory=HttpClientConfig)
     """Defaults of outgoing calls through ``domainkit.http.client``."""
     GUARD_LOOKUP_THREADS: int = Field(default=16, ge=1, le=MAX_LOOKUP_THREADS)
@@ -1277,8 +1285,9 @@ class Settings(BaseModel):
     leave their messages to the outbox's relay. Turn it on where a process
     cannot do its work without one.
     """
-    ACCESS_LOG_QUIET_PATHS: tuple[str, ...] = ("/health", "/ready")
-    """Successful requests to these paths are logged at DEBUG, not INFO."""
+    ACCESS_LOG_QUIET_PATHS: tuple[str, ...] = ()
+    """Successful requests to these paths, and to ``PROBE_PATHS``, are logged
+    at DEBUG, not INFO."""
     ACCESS_LOG_SAMPLE_RATE: float = Field(default=1.0, ge=0.0, le=1.0)
     """Share of access lines written; from status 400 up, and slow ones: all of them."""
     ACCESS_LOG_SLOW_DURATION: float = Field(default=1.0, gt=0, le=MAX_REQUEST_SECONDS)
@@ -1308,8 +1317,8 @@ class Settings(BaseModel):
     trace). Out of the W3C format, it is ignored either way."""
     RATE_LIMIT: str | None = None
     """Requests per caller, e.g. ``"300/minute"``; None disables the limit."""
-    RATE_LIMIT_EXEMPT_PATHS: tuple[str, ...] = ("/health", "/ready", "/metrics")
-    """Exact paths never counted, so probes and scrapers are not refused."""
+    RATE_LIMIT_EXEMPT_PATHS: tuple[str, ...] = ()
+    """Exact paths never counted, besides ``PROBE_PATHS``."""
     RATE_LIMIT_BACKEND: str = "domainkit.http.ratelimit.MemoryBackend"
     """Dotted path to a ``Backend`` class; the default counts per process."""
     RATE_LIMIT_CACHE: str = DEFAULT_CACHE_ALIAS

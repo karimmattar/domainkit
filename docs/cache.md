@@ -737,8 +737,9 @@ MIDDLEWARE = [
   a close with code 1013 (try again later) where it cannot.
 - IPv6 callers are counted per network of `RATE_LIMIT_IPV6_PREFIX` bits
   (a /64 by default), because one customer usually holds a whole /64.
-- The paths in `RATE_LIMIT_EXEMPT_PATHS` (`/health`, `/ready`, `/metrics`)
-  are never counted, so probes and scrapers are not refused.
+- The probes and the metrics scrape (`PROBE_PATHS`: `/health`, `/ready`,
+  `/metrics`), and the paths in `RATE_LIMIT_EXEMPT_PATHS`, are never
+  counted, so probes and scrapers are not refused.
 
 `check` warns while `RATE_LIMIT` is not set, or the middleware is not
 listed.
@@ -976,7 +977,7 @@ the full rows:
 | `RATE_LIMIT` | `None` | Requests per caller, such as `"300/minute"`; `None` turns the limit off. |
 | `RATE_LIMIT_BACKEND` | `domainkit.http.ratelimit.MemoryBackend` | Where the counts live; `RedisBackend` shares them. |
 | `RATE_LIMIT_CACHE` | `"default"` | The Redis cache that `RedisBackend` counts in. |
-| `RATE_LIMIT_EXEMPT_PATHS` | `("/health", "/ready", "/metrics")` | Exact paths that are never counted. |
+| `RATE_LIMIT_EXEMPT_PATHS` | `()` | Exact paths that are never counted, besides `PROBE_PATHS`. |
 | `RATE_LIMIT_FALLBACK_REPLICAS` | `None` | While Redis is down, count in each process at the limit divided by this (1 to 1,024). |
 | `RATE_LIMIT_IPV6_PREFIX` | `64` | IPv6 callers are counted per network of this many bits (1 to 128). |
 
