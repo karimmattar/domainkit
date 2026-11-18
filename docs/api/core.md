@@ -109,6 +109,7 @@ Django-style settings access.
 
 - `DEFAULT_CACHE_ALIAS`: The alias of the cache used when none is named: `"default"`.
 - `DEFAULT_DB_ALIAS`: The alias of the database used when none is named: `"default"`.
+- `DEPLOYED_ENVIRONMENTS`: Environments held to the deployment checks in `Settings`.
 - `SETTINGS_MODULE_VARIABLE`: The environment variable naming the settings module, after the project's prefix.
 - `UNSET`: Pass to `override_settings` to remove a setting (Django's `del settings.X`); the same object as `domainkit.ddd.UNSET`.
 - `ArchitectureConfig`: `ARCHITECTURE`: what the project adds to the layer rules `check` enforces.
@@ -139,6 +140,7 @@ Per-request context shared by logging and error responses.
 - `SYSTEM_ACTOR`: The actor of work no caller asked for: periodic tasks, commands' messages.
 - `RequestContext`: Facts about the request or job being served; no personal data.
 - `bind_request`: Make `context` current for the duration of the block.
+- `client_group`: The address a client is counted by: IPv4 as is, IPv6 by its network.
 - `current_request`: Return the request being served, or None outside a request.
 
 ## `domainkit.deadlines`

@@ -233,11 +233,16 @@ domains' own models keep those keys as secrets.
   `domainkit.clock`, `domainkit.money`, `domainkit.i18n.lazy` (*new in
   2.5*: marks and lazy strings, [i18n.md](../i18n.md#messages-of-the-domain-layer)),
   and itself;
-- the application layer uses no web or database library, and the
-  infrastructure layer no web library but the outgoing HTTP client
-  (`domainkit.http.client`), which adapters call other services with,
-  and the uploads' checks and storing (`domainkit.http.uploads`), which
-  a file gateway runs on the bytes its route hands it (*New in 2.5*),
+- the application layer uses no web or database library, and calls no
+  other service (`domainkit.outbound`): it reaches one through a port;
+- the infrastructure layer calls other services through
+  `domainkit.outbound` (the outgoing HTTP client and its guard), which is
+  no web library, so no rule names it there (*new in 2.9*,
+  [ADR 0195](../adr/0195-move-the-outgoing-client-below-the-adapters-and-hold-module-state-to-its-resets.md)).
+  It uses no web library but the client's path until 2.9
+  (`domainkit.http.client`, the same objects), and the uploads' checks
+  and storing (`domainkit.http.uploads`), which a file gateway runs on
+  the bytes its route hands it (*New in 2.5*),
   typed as `domainkit.http.uploads.Upload` rather than Starlette's
   `UploadFile` (*New in 2.7*), and the problems a route raises
   (`domainkit.http.problems`: `APIError` and `FieldError`), so that a

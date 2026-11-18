@@ -36,7 +36,7 @@ each message, and returns how many went. It raises `NotificationFailed`
 when the provider refuses a message, or cannot be reached.
 
 The backend reads its settings from `NOTIFICATIONS["SMS_OPTIONS"]`. Its
-calls go through `domainkit.http.client`, with its timeouts, retries, and
+calls go through `domainkit.outbound.client`, with its timeouts, retries, and
 circuit breaker. Make a new file, `src/config/sms.py`:
 
 ```python title="src/config/sms.py (new file)"
@@ -51,7 +51,7 @@ from domainkit.contrib.notifications import (
     SmsBackend,
     SmsMessage,
 )
-from domainkit.http.client import HttpClient
+from domainkit.outbound.client import HttpClient
 from pydantic import BaseModel, ConfigDict, SecretStr
 
 
@@ -128,7 +128,7 @@ import json
 import httpx2
 import pytest
 from domainkit.contrib.notifications import NotificationFailed, SmsMessage
-from domainkit.http.client import stub
+from domainkit.outbound.client import stub
 
 from config.sms import ExampleSmsBackend
 

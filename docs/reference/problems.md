@@ -285,7 +285,7 @@ unique constraint may name its own code
 | `unknown_user_field` | 422 | `UnknownUserField` (contrib.auth.exceptions): The user model has no such field, or it changes another way. |
 | `unreadable_file` | 422 | `FileRefused` (inspection), through http.uploads: The file's type's check could not read it (a damaged PDF or ZIP, XML that is not), or its process took more time or memory than `UPLOAD_CHECKS` gives it. |
 | `unsafe_file` | 422 | `FileRefused` (inspection), through http.uploads: The file's type's check refused what it holds (scripts, actions, macros, embedded objects, outside links, a DTD, a password, too many pages or parts). |
-| `unsafe_url` | 422 | `UnsafeURL` (http.guard): A URL that may not be called; the message never quotes it. |
+| `unsafe_url` | 422 | `UnsafeURL` (outbound.guard): A URL that may not be called; the message never quotes it. |
 | `unsafe_webhook_url` | 422 | `UnsafeTarget` (contrib.webhooks.guard): A webhook URL that may not be called; the message never quotes it. |
 | `unsupported_device_key` | 422 | `UnsupportedKey` (contrib.devices.exceptions): Not a P-256 or Ed25519 public key. |
 | `unsupported_file_type` | 415 | http.uploads: This type of file is not accepted. |

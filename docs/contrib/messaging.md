@@ -511,7 +511,7 @@ async def push_invoice(invoice_id: UUID) -> None:
   refuses to start: a claim that ends while the task still runs would run
   it twice. A run's timeout is its deadline (`domainkit.deadlines`). On
   PostgreSQL its transactions lower `statement_timeout` to the time left,
-  and its calls through `domainkit.http.client` are limited by it, as in
+  and its calls through `domainkit.outbound.client` are limited by it, as in
   a request. What follows each of its commits (the in-process handlers
   and the domains' after-commit hooks, up to `EVENT_HANDLER_TIMEOUT` each)
   does not count against it, since 2.9, so the timeout no longer bounds a

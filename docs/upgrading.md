@@ -375,6 +375,26 @@ No migration.
   `default_credentials` calls `environment_credentials` from
   `domainkit.cloud.aws`, so patch it there
   (`monkeypatch.setattr("domainkit.cloud.aws.environment_credentials", ...)`).
+- **The outgoing client is defined in `domainkit.outbound.client`, and its
+  guard in `domainkit.outbound.guard`.** Every name still imports from
+  `domainkit.http.client` and `domainkit.http.guard`, the same objects,
+  and neither path warns in 2.9; a later minor release may deprecate the
+  old ones. What prints a class by its module prints the new one
+  (`domainkit.outbound.client.CircuitOpen`, in a trace's
+  `exception.type` or an admins' report). A test that patches a name in
+  `domainkit.http.client` no longer reaches the code that calls it: the
+  client reads its names from `domainkit.outbound.client`, so patch them
+  there (`monkeypatch.setattr("domainkit.outbound.client.random.random",
+  ...)`), and the guard's in `domainkit.outbound.guard`. The calls still
+  log as `domainkit.http.client`. The layer rules let an infrastructure
+  layer import `domainkit.outbound` with no exception, and keep it out of
+  the application layer, as the old path was. `lifecycle.register("guard
+  lookups", ...)` raises `ValueError`: shutdown closes the guard's lookup
+  threads itself, under that name.
+- **The plugin forgets the push services' tokens before each test**
+  (`domainkit.contrib.notifications.push.reset_tokens()`). A test that
+  counted on a token an earlier test's stub answered gets asked for one
+  again: answer the token request in its own stub.
 
 ### `migrate` makes the user lookups' indexes, on PostgreSQL
 

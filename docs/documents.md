@@ -115,7 +115,7 @@ pdf = await renderer().html_to_pdf(
 )
 ```
 
-Each rendering is one call through `domainkit.http.client`:
+Each rendering is one call through `domainkit.outbound.client`:
 
 - bounded by `TIMEOUT` (30 seconds) and by the deadline of the request
   it serves;
@@ -681,7 +681,7 @@ import httpx2
 
 from domainkit.documents import renderer
 from domainkit.documents.gotenberg import LIBREOFFICE
-from domainkit.http.client import stub
+from domainkit.outbound.client import stub
 
 
 async def test_a_lease_is_converted() -> None:

@@ -209,7 +209,7 @@ together take at most `SHUTDOWN_TIMEOUT` seconds (15 by default):
 | `domains` | Each started domain's `on_shutdown` hooks, in reverse domain order (the application only) | 30% |
 | `drain` | Closers registered to finish work in flight, such as a publisher sending the messages it holds | 50% |
 | `tasks` | The loop's background tasks: cancelled, and waited for | 60% |
-| `resources` | Caches, HTTP clients, databases, ledgers, brokers, and kinds others register, all at once | 90% |
+| `resources` | Caches, HTTP clients, the guard's lookup threads, databases, ledgers, brokers, and kinds others register, all at once | 90% |
 | `flush` | Closers registered to run last, then the counts of held-back log lines, then error reports, then logs | 100% |
 
 Each phase may run until its share of the budget has passed, counted
@@ -267,9 +267,10 @@ lifecycle.register("publishers", close_publishers, phase=Phase.DRAIN)
   running loop opened.
 - Registering a name again replaces its closer. `lifecycle.unregister(name)`
   removes it. An unknown name is ignored.
-- The framework's own kinds (`caches`, `HTTP clients`, `databases`,
-  `ledgers`, `brokers`, `held-back log lines`, `error reports`, `logs`)
-  are in the same table, so their names are taken. `register` raises
+- The framework's own kinds (`caches`, `HTTP clients`, `guard lookups`
+  since 2.9, `databases`, `ledgers`, `brokers`, `held-back log lines`,
+  `error reports`, `logs`) are in the same table, so their names are
+  taken. `register` raises
   `ValueError` for one of them, and for the `domains` and `tasks` phases.
 - `lifecycle.closers(phase)` lists what a phase will close, in the steps
   it runs them. A registered closer runs in the first step, at the same
@@ -284,7 +285,7 @@ print([list(step) for step in closers(Phase.FLUSH)])
 ```
 
 ```text
-[['caches', 'HTTP clients', 'databases', 'ledgers', 'brokers']]
+[['caches', 'HTTP clients', 'guard lookups', 'databases', 'ledgers', 'brokers']]
 [['held-back log lines'], ['error reports'], ['logs']]
 ```
 
@@ -828,7 +829,7 @@ event loop while it serves:
 | RabbitMQ (`TLS_CA`, `TLS_CERT`, `TLS_KEY`) | at the first connection, on a worker thread |
 | Redis and Valkey (`rediss://`, `TLS_CA`, `TLS_CERT`, `TLS_KEY`) | at the first connection, on a worker thread, then shared by every connection of every pool with those settings (servers, Sentinel primaries, and Cluster nodes) |
 | immudb (`TLS_CA`) | on the ledger's own thread |
-| Outgoing calls (`HTTP_CLIENT.CA_BUNDLE`, `domainkit.http.client`) | at a client's first call on each loop, on a worker thread, then shared by every client with that bundle |
+| Outgoing calls (`HTTP_CLIENT.CA_BUNDLE`, `domainkit.outbound.client`) | at a client's first call on each loop, on a worker thread, then shared by every client with that bundle |
 
 A process keeps its contexts until it ends. Restart it to use renewed
 certificate files.
@@ -1437,7 +1438,7 @@ timers that cancel work run on the event loop's own clock.
   `disable`, and with `SSLMODE` unset over TCP, unless `PGSSLMODE` says
   otherwise. Under anyio's pytest plugin, the report fails the test or
   fixture running then.
-- **Outgoing HTTP calls** through `domainkit.http.client` are bounded by
+- **Outgoing HTTP calls** through `domainkit.outbound.client` are bounded by
   the deadline ([below](#outgoing-http-calls)).
 - **Worker tasks.** The messaging worker runs each message under a
   deadline of its timeout (the task's `timeout`, or `TASK_TIMEOUT`). So a
@@ -1598,14 +1599,16 @@ or one whose `CONNECT_ARGS` turn the statement cache off by hand.
 
 ### Outgoing HTTP calls
 
-`domainkit.http.client` (the `httpclient` extra, on httpx2) calls other
+`domainkit.outbound.client` (the `httpclient` extra, on httpx2) calls other
 services from a request, a task, or a command, within the deadline of
-the work it serves:
+the work it serves. Until 2.9 it was `domainkit.http.client`, which still
+imports every name it had, the same objects
+([upgrading.md](upgrading.md#28-to-29)):
 
 ```python
 from decimal import Decimal
 
-from domainkit.http.client import HttpClient
+from domainkit.outbound.client import HttpClient
 
 rates = HttpClient(base_url="https://rates.example.com/v1", timeout=3.0)
 
@@ -1619,15 +1622,15 @@ async def euro_rate() -> Decimal:
 Make one client per service, at module level. Nothing opens until the
 first call. In a domain, call it from the infrastructure layer
 (`models.py`, or `infrastructure/`): the [layer rules](reference/settings.md#layer-rules)
-allow `domainkit.http.client` there, imported by that name, and keep it
+allow `domainkit.outbound` there, as any adapter's library, and keep it
 out of the application layer, which reaches the service through a port.
 
 - Each client keeps one pool of connections per process (per event
   loop), opened by its first call. The pool closes with the other
   resources when the application or a command ends.
-  `domainkit.http.client.close_all()` closes every client's connections
+  `domainkit.outbound.client.close_all()` closes every client's connections
   on the running loop.
-- `domainkit.http.client.client` is a ready client for one-off calls.
+- `domainkit.outbound.client.client` is a ready client for one-off calls.
 - A client has `get`, `head`, `options`, `post`, `put`, `patch`,
   `delete`, and `request(method, url, ...)`. Each takes `params`,
   `headers`, `content`, `data`, `files`, `json`, `timeout`, and `retry`.
@@ -1669,7 +1672,7 @@ user's failing URLs should not refuse another's calls. Give such a
 client `breaker=False`:
 
 ```python
-from domainkit.http.client import HttpClient
+from domainkit.outbound.client import HttpClient
 
 callbacks = HttpClient(guard=True, breaker=False, retries=0)
 ```
@@ -1723,7 +1726,7 @@ Every call:
 
 URLs someone else chose (a callback, a link to fetch) go through a
 client made with `guard=True`. It calls only public addresses, with the
-checks `domainkit.contrib.webhooks` uses (`domainkit.http.guard`):
+checks `domainkit.contrib.webhooks` uses (`domainkit.outbound.guard`):
 
 - `https` only (`allow_http=True` adds `http`);
 - no credentials in the URL;
@@ -1748,6 +1751,15 @@ host name. A guarded client:
 
 A refused URL raises `UnsafeURL`, which answers 422 `unsafe_url` when the
 request does not catch it.
+
+*New in 2.9:* the checks are public, for an app that takes URLs from its
+users as webhooks do. `checked_url(url, allow_http=...)` checks what the
+URL shows, as a subscription is saved; `checked_host` and
+`checked_address` resolve the host on the guard's threads and check every
+address, as a call is made; `lookups_for(owner)` counts the lookups of a
+block as one owner's. `MAX_URL_LENGTH`, `tls_context`, `lookup`, and the
+`Address` and `Network` types are public too
+([Outgoing calls](api/outbound.md)).
 
 **Lookups.** Host names are looked up on threads of the guard's own,
 never the event loop's default executor, which `asyncio.to_thread` and
@@ -1809,7 +1821,7 @@ from decimal import Decimal
 
 import httpx2
 
-from domainkit.http.client import stub
+from domainkit.outbound.client import stub
 
 
 def rates_api(request: httpx2.Request) -> httpx2.Response:
@@ -1842,7 +1854,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from domainkit.http.client import stub
+from domainkit.outbound.client import stub
 
 
 @pytest.fixture

@@ -518,6 +518,7 @@ Transactional outbox, durable event handlers, and background tasks.
 - `periodic`: Register an argument-free task that runs on a schedule, cluster-wide.
 - `task`: Register an async function as a background task (`uow.defer(task)`).
 - `tasks_kept`: Put the registered tasks back as they were when the block ends.
+- `unregister_task`: Forget the task registered as `key`; an unknown key is ignored (*new in 2.9*).
 
 ## `domainkit.contrib.messaging.admin`
 
@@ -700,6 +701,7 @@ Push providers: Firebase Cloud Messaging, Apple's APNs, Huawei Push Kit.
 - `FcmPushBackend`: Firebase Cloud Messaging's HTTP v1 API (Android, iOS, the web).
 - `HuaweiPushBackend`: Huawei Push Kit's HTTP API, for devices without Google's services.
 - `Refusal`: How a push service refused a notification, read from its answer.
+- `reset_tokens`: Forget the services' tokens kept between sends (*new in 2.9*).
 
 ## `domainkit.contrib.mail.providers`
 

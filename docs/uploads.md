@@ -249,7 +249,7 @@ instead, and speak only its protocol.
 ## Object storage
 
 Three storages keep files in an object store. They call it through
-`domainkit.http.client` (pooled, retried, limited by the request's
+`domainkit.outbound.client` (pooled, retried, limited by the request's
 deadline), with no cloud SDK. Install the `cloud` extra.
 
 | Backend | Stores | Credentials |
