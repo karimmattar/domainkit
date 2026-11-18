@@ -25,7 +25,11 @@ from domainkit.db.connections import pool_sizing_warnings
 from domainkit.ddd import event_bus
 from domainkit.documents.base import flags_statement
 from domainkit.http import websockets
-from domainkit.http.application import application_problems, build_application
+from domainkit.http.application import (
+    application_problems,
+    backend_warnings,
+    build_application,
+)
 from domainkit.http.blocking import awaited_sync, sync_calls
 from domainkit.http.live import unchecked_routes
 from domainkit.http.live_events import fanout_warnings
@@ -141,6 +145,7 @@ def _warnings(app: FastAPI) -> list[str]:
         map(str, layer_warnings(settings.INSTALLED_DOMAINS)),
     )
     warnings += _partial_probe_lists()
+    warnings += backend_warnings(app)
     if not deployed:  # A deployment migrates as it rolls out, after its checks.
         warnings += _tagged("migrations.W001", migrations.unapplied_warnings())
     warnings += shared_apps()

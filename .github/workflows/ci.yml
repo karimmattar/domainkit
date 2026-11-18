@@ -1321,7 +1321,8 @@ jobs:
               domainkit.utils.rates.* domainkit.utils.readiness.*
           - name: management-3
             mutants: >-
-              domainkit.conf.env.* domainkit.conf.lazy.* domainkit.checks.*
+              domainkit.conf.backends.* domainkit.conf.env.* domainkit.conf.lazy.*
+              domainkit.checks.*
               domainkit.management.commands.check.*
               domainkit.management.commands.diffsettings.*
               domainkit.management.commands.docs.*

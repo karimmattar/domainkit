@@ -54,7 +54,7 @@ from domainkit.contrib.auth import (
 from domainkit.contrib.auth import permissions as permissions_module
 from domainkit.contrib.auth import users as users_module
 from domainkit.contrib.auth.apps import AuthConfig
-from domainkit.contrib.auth.backends import load_backends
+from domainkit.contrib.auth.backends import get_backends
 from domainkit.contrib.auth.permissions import declared_permissions, sync_permissions
 from domainkit.contrib.auth.tables import abstract_user_columns, permissions, users
 from domainkit.contrib.auth.users import get_user_table
@@ -504,15 +504,15 @@ def test_repositories(auth_project: str) -> None:
 
 
 def test_backend_settings_are_checked(use_auth: UseAuth) -> None:
-    """Unknown paths and other classes are configuration errors."""
-    use_auth()
-    with pytest.raises(ImproperlyConfigured, match=r"AUTH\.BACKENDS"):
-        load_backends(("nowhere.Backend",))
+    """Unknown paths and other classes are configuration errors, at startup."""
+    with pytest.raises(ImproperlyConfigured, match=r"^AUTH\.BACKENDS: .*nowhere"):
+        use_auth(BACKENDS=["nowhere.Backend"])
     with pytest.raises(ImproperlyConfigured, match="is not a BaseBackend"):
-        load_backends((f"{HERE}.Product",))
-    assert isinstance(
-        load_backends((f"{AUTH}.backends.ModelBackend",))[0], ModelBackend
-    )
+        use_auth(BACKENDS=[f"{HERE}.Product"])
+    use_auth(BACKENDS=[f"{AUTH}.backends.ModelBackend"])
+    (backend,) = get_backends()
+    assert isinstance(backend, ModelBackend)
+    assert get_backends()[0] is backend  # Made once for the settings.
 
 
 @pytest.mark.parametrize(

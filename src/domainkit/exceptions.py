@@ -58,3 +58,6 @@ class UpstreamError(DomainkitError):
     detail: ClassVar[str] = "A service this one depends on failed; try again later."
     retry_after: int | None = None
     """Seconds to wait before trying again, if known."""
+    retryable: ClassVar[bool] = True
+    """Whether trying again may succeed; False where it cannot change the
+    outcome, as for an answer too large to read (since 2.9, ADR 0196)."""

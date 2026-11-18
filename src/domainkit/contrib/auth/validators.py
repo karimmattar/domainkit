@@ -32,11 +32,12 @@ from collections.abc import Awaitable, Iterator, Sequence
 from difflib import SequenceMatcher
 from functools import cache
 from pathlib import Path
-from typing import ClassVar, Final, Protocol
+from typing import ClassVar, Final, Protocol, runtime_checkable
 
+from domainkit.conf.backends import BackendHandler
 from domainkit.exceptions import DomainkitError, ImproperlyConfigured, UpstreamError
 from domainkit.i18n import gettext, ngettext, number_format, pgettext
-from domainkit.utils.module_loading import import_string
+from domainkit.utils.module_loading import backend_class
 from domainkit.utils.rates import parse_rate
 
 from .exceptions import InvalidPassword
@@ -92,6 +93,7 @@ class BreachedPasswordsUnavailable(UpstreamError):
     )
 
 
+@runtime_checkable
 class PasswordValidator(Protocol):
     """What ``PASSWORD_VALIDATORS`` classes provide."""
 
@@ -345,21 +347,24 @@ def _breaches(text: str) -> Iterator[tuple[str, int]]:
         yield found.upper(), int(count)
 
 
-@cache
-def load_validators(
-    configs: tuple[PasswordValidatorConfig, ...],
-) -> tuple[PasswordValidator, ...]:
-    """Instantiate the validators ``configs`` names, with their options."""
-    validators = []
-    for config in configs:
-        try:
-            cls = import_string(config.NAME)
-            validators.append(cls(**config.OPTIONS))
-        except (ImportError, TypeError) as exc:
-            raise ImproperlyConfigured(
-                f"AUTH.PASSWORD_VALIDATORS: {config.NAME}: {exc}"
-            ) from exc
-    return tuple(validators)
+def _named(
+    configs: Sequence[PasswordValidatorConfig],
+) -> list[tuple[str, dict[str, object]]]:
+    """Each validator ``configs`` names, as a ``BackendHandler`` reads it."""
+    return [(each.NAME, each.OPTIONS) for each in configs]
+
+
+_validators: Final[BackendHandler[PasswordValidator]] = BackendHandler(
+    "AUTH.PASSWORD_VALIDATORS",
+    PasswordValidator,
+    lambda: _named(auth_settings().PASSWORD_VALIDATORS),
+    factories=True,
+)
+"""``AUTH.PASSWORD_VALIDATORS``, by path or by name, with their options (ADR 0196).
+
+Each needs ``validate`` and ``help_text`` (since 2.9): a class, or a
+function that makes one, as in 2.8.
+"""
 
 
 @cache
@@ -375,9 +380,8 @@ def get_password_validators() -> tuple[PasswordValidator, ...]:
 
     Then the breached-password check, with ``AUTH.BREACHED_PASSWORDS``.
     """
-    config = auth_settings()
-    return load_validators(config.PASSWORD_VALIDATORS) + breach_validators(
-        config.BREACHED_PASSWORDS
+    return _validators.instances() + breach_validators(
+        auth_settings().BREACHED_PASSWORDS
     )
 
 
@@ -461,17 +465,17 @@ def preset_contradictions(config: AuthSettings) -> list[str]:
     if config.PRESET != PCI_DSS_4:
         return []
     found = []
-    validators = load_validators(config.PASSWORD_VALIDATORS)
+    loaded = _validators.load(_named(config.PASSWORD_VALIDATORS))
     if not any(
         isinstance(each, MinimumLengthValidator) and each.min_length >= PCI_MIN_LENGTH
-        for each in validators
+        for each in loaded
     ):
         found.append(
             f"PASSWORD_VALIDATORS take passwords under {PCI_MIN_LENGTH} "
             "characters (8.3.6): give MinimumLengthValidator "
             f'{{"min_length": {PCI_MIN_LENGTH}}} or more'
         )
-    if not any(isinstance(each, LettersAndDigitsValidator) for each in validators):
+    if not any(isinstance(each, LettersAndDigitsValidator) for each in loaded):
         found.append(
             "PASSWORD_VALIDATORS take passwords without both letters and digits "
             "(8.3.6): add LettersAndDigitsValidator"
@@ -524,11 +528,10 @@ def _signs_jwts(config: AuthSettings) -> bool:
 
     for path in config.AUTHENTICATION_CLASSES:
         try:
-            found = import_string(path)
-        except ImportError:
+            backend_class("AUTH.AUTHENTICATION_CLASSES", path, JWTAuthentication)
+        except ImproperlyConfigured:
             continue
-        if isinstance(found, type) and issubclass(found, JWTAuthentication):
-            return True
+        return True
     return False
 
 

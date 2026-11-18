@@ -29,12 +29,13 @@ catalogs.
 ``APIError`` and ``FieldError`` are defined in ``domainkit.http.problems``,
 which the infrastructure layer may import (since 2.8, ADR 0182); this module
 re-exports them, and ``DomainkitError``, as 2.7's did. Its ``__all__`` lists
-the names ``domainkit.http`` takes from it, and the two problems (since 2.9):
-the rest is the framework's own.
+the names ``domainkit.http`` takes from it, the two problems, and
+``transient`` (since 2.9): the rest is the framework's own.
 """
 
 import re
-from collections.abc import Mapping
+import socket
+from collections.abc import Iterator, Mapping
 from http import HTTPStatus
 from typing import Final
 from urllib.parse import quote
@@ -71,7 +72,7 @@ from domainkit.ddd.exceptions import (
 from domainkit.ddd.uow import failed_in_doubt
 from domainkit.deadlines import DeadlineExceeded
 from domainkit.exceptions import DomainkitError as DomainkitError
-from domainkit.exceptions import ServiceBusy, UpstreamError
+from domainkit.exceptions import ImproperlyConfigured, ServiceBusy, UpstreamError
 from domainkit.http.problems import APIError as APIError
 from domainkit.http.problems import FieldError as FieldError
 from domainkit.http.responses import BuiltJSONResponse, JSONResponse
@@ -84,6 +85,7 @@ __all__ = [
     "FieldError",
     "error_response",
     "error_responses",
+    "transient",
 ]
 
 STATUS_CODES: Final[tuple[tuple[type[DomainError], int], ...]] = (
@@ -111,6 +113,12 @@ DATABASE_UNAVAILABLE: Final = "database_unavailable"
 UNAVAILABLE_RETRY_AFTER: Final = "5"
 """Seconds a client should wait while the database cannot be reached: longer
 than ``database_busy``'s, as a restart or a failover takes seconds."""
+RETRIED_STATUSES: Final = frozenset({408, 429})
+"""The 4xx answers worth trying again after: a timeout, too many requests."""
+_CAUSES: Final = 16
+"""Errors ``transient`` reads down an error's chain at most."""
+_READ: Final = 64
+"""Errors ``transient`` reads at most in all, the groups' included."""
 _POOL: Final = "sqlalchemy.pool.base"
 """The module of the pool's ``__connect``, which opens each connection."""
 _EVENTS: Final = "sqlalchemy.event"
@@ -468,6 +476,108 @@ def database_refusal(exc: BaseException) -> APIError | None:
             code="invalid_value",
         )
     return None
+
+
+def transient(exc: BaseException) -> bool:
+    """Whether ``exc`` says that what the work needs cannot serve now: try later.
+
+    Read on the error and on what it was raised from (``_chain``), from
+    the error outwards, the first that settles it deciding:
+
+    - Transient: a connection that failed (``ConnectionError``), a
+      timeout (``TimeoutError``), a name that did not resolve
+      (``socket.gaierror``), ``ServiceBusy``, a cache, ledger, or broker
+      out of reach (``CacheUnavailable``, ``LedgerUnavailable``,
+      ``BrokerUnavailable``), or a database that is busy or out of reach,
+      as ``database_refusal`` answers with 503.
+    - Not: a refusal (a ``DomainError``, such as the guard's
+      ``UnsafeURL``), the settings (``ImproperlyConfigured``), an outgoing
+      call's failure that trying again cannot change (``UpstreamError``
+      whose ``retryable`` is False: an answer too large to read), a 4xx
+      answer but 408 and 429, or another answer of the database.
+
+    An ``UpstreamError`` that none of these settles, or a host's circuit
+    open, is transient, and so is a 5xx answer; any other error is the
+    work's own. An exception group is transient if an error it holds is.
+    No error is read twice, though a group may hold the error raised from
+    it, and ``_READ`` errors at most are read in all (since 2.9, ADR 0196).
+    """
+    return _transient(exc, set())
+
+
+def _transient(exc: BaseException, read: set[int]) -> bool:
+    """``transient``, past the errors ``read`` holds the ids of already."""
+    found_upstream = False
+    for seen in _chain(exc):
+        if id(seen) in read or len(read) >= _READ:
+            break
+        read.add(id(seen))
+        if isinstance(seen, BaseExceptionGroup):
+            return any(_transient(each, read) for each in seen.exceptions)
+        decided = _settles(seen)
+        if decided is not None:
+            return decided
+        found_upstream = found_upstream or isinstance(seen, UpstreamError)
+    return found_upstream
+
+
+def _settles(exc: BaseException) -> bool | None:
+    """True or False if ``exc`` alone says whether to try again; None if not."""
+    from domainkit.broker.base import BrokerUnavailable  # Loaded when asked.
+    from domainkit.cache.base import CacheUnavailable
+    from domainkit.ledger.base import LedgerUnavailable
+
+    if isinstance(exc, DomainError | ImproperlyConfigured):
+        return False
+    if isinstance(exc, UpstreamError) and not exc.retryable:
+        return False
+    answered = getattr(getattr(exc, "response", None), "status_code", None)
+    if (
+        isinstance(answered, int)
+        and status.HTTP_400_BAD_REQUEST
+        <= answered
+        < status.HTTP_500_INTERNAL_SERVER_ERROR
+    ):
+        return answered in RETRIED_STATUSES
+    if isinstance(answered, int) and answered >= status.HTTP_500_INTERNAL_SERVER_ERROR:
+        return True
+    state = getattr(exc, "sqlstate", None)
+    if isinstance(state, str) and not isinstance(exc, DBAPIError):  # A driver's own.
+        return state in BUSY_STATES | UNAVAILABLE_STATES or state.startswith(
+            CONNECTION_EXCEPTION
+        )
+    if isinstance(
+        exc,
+        ConnectionError
+        | TimeoutError
+        | socket.gaierror
+        | ServiceBusy
+        | CacheUnavailable
+        | LedgerUnavailable
+        | BrokerUnavailable,
+    ):
+        return True
+    refusal = database_refusal(exc)
+    if refusal is None:
+        return None
+    return refusal.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+
+
+def _chain(exc: BaseException) -> Iterator[BaseException]:
+    """``exc``, then what it was raised from, ``_CAUSES`` errors at most.
+
+    Its cause where one is set; else the error it was raised while
+    handling, unless that is suppressed (``raise ... from None``).
+    """
+    seen: BaseException | None = exc
+    for _ in range(_CAUSES):
+        if seen is None:
+            return
+        yield seen
+        if seen.__cause__ is not None or seen.__suppress_context__:
+            seen = seen.__cause__
+        else:
+            seen = seen.__context__
 
 
 def unreachable(exc: BaseException) -> bool:

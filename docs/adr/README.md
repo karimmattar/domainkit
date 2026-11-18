@@ -203,6 +203,7 @@ statuses, and the amendments they name.
 | [0191](0191-gate-the-lines-a-change-adds.md) | Gate the lines a change adds | Accepted |
 | [0192](0192-start-a-contrib-routers-route-names-with-its-app.md) | Start a contrib router's route names with its app | Accepted |
 | [0195](0195-move-the-outgoing-client-below-the-adapters-and-hold-module-state-to-its-resets.md) | Move the outgoing client below the adapters, and hold module state to its resets | Accepted |
+| [0196](0196-ask-rules-on-a-call-of-their-own-and-load-backend-settings-one-way.md) | Ask rules on a call of their own, and load backend settings one way | Accepted |
 
 ### Decisions still without a record
 

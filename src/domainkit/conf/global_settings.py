@@ -89,6 +89,11 @@ BACKEND_NAME: Final = (
 """A class by module and name: ``accounts.infrastructure.cache.FileStore``."""
 """A CORS origin: ``*``, or a scheme and host (and port), without a path."""
 """A header value a setting gives: printable ASCII, no line breaks, bounded."""
+BACKEND_PATH: Final = (
+    r"^(?:[^\W\d]\w*(?:[.:][^\W\d]\w*)+|[A-Za-z0-9][A-Za-z0-9_-]{0,63})$"
+)
+"""What ``import_backend`` can load: a dotted path (``module:Class`` too), or a
+name an installed package offers (``RATE_LIMIT_BACKEND``, ADR 0196)."""
 DEFAULT_CONTENT_SECURITY_POLICY: Final = "default-src 'none'; frame-ancestors 'none'"
 """An API answers data: nothing in it may load, run, or be framed."""
 DEFAULT_PERMISSIONS_POLICY: Final = (
@@ -1320,8 +1325,11 @@ class Settings(BaseModel):
     """Requests per caller, e.g. ``"300/minute"``; None disables the limit."""
     RATE_LIMIT_EXEMPT_PATHS: tuple[str, ...] = ()
     """Exact paths never counted, besides ``PROBE_PATHS``."""
-    RATE_LIMIT_BACKEND: str = "domainkit.http.ratelimit.MemoryBackend"
-    """Dotted path to a ``Backend`` class; the default counts per process."""
+    RATE_LIMIT_BACKEND: str = Field(
+        default="domainkit.http.ratelimit.MemoryBackend", pattern=BACKEND_PATH
+    )
+    """A ``Backend`` class, by dotted path or by name; the default counts per process.
+    ``check`` and the application's start refuse one with no ``hit``."""
     RATE_LIMIT_CACHE: str = DEFAULT_CACHE_ALIAS
     """The Redis cache ``RedisBackend`` keeps counts in, shared by every replica."""
     RATE_LIMIT_FALLBACK_REPLICAS: int | None = Field(default=None, ge=1, le=1024)

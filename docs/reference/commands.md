@@ -343,8 +343,10 @@ System check identified no issues. Domains: messaging, contenttypes, auth.
 
 `check` validates the settings, the installed domains, the routes and
 their access rules, the middleware (an optional app's needs the app,
-`apps.E003`), the layer rules between a domain's layers, and the
-migration history (one head per target). It also warns about:
+`apps.E003`), the rate-limit backend (`backends.E001`, or `backends.W001`
+where nothing counts with it), the layer rules
+between a domain's layers, and the migration history (one head per
+target). It also warns about:
 
 - outside staging and production, migrations a database does not have
   yet (`migrations.W001`): run `migrate`. It asks each database, unless

@@ -184,8 +184,9 @@ in `UNRESET`, the 54 pieces of 2.9 without one, grouped by why: kept for
 a live object and gone with it, worked out once from what does not
 change, the process's counts and locks, and registrations no test undoes
 yet. `UNRESET` only shrinks. Module-level functions behind
-`functools.cache` or `lru_cache` are listed apart (`CACHED`, 66 in 2.9,
-by what they keep), and that list only shrinks too.
+`functools.cache` or `lru_cache` are listed apart (`CACHED`, 66 when it
+was made, 62 once ADR 0196's loaders replaced auth's four, by what they
+keep), and that list only shrinks too.
 
 Reading the source sees only what the source shows. Not found: a class
 attribute changed later, a `ContextVar` whose default is a container, a

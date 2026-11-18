@@ -153,6 +153,12 @@ print(config.TOKEN_TTL, config.JWT.ACCESS_TOKEN_TTL)
 | `CSRF_TRUSTED_ORIGINS` | `()` | Origins (`https://app.example.com`, `https://*.example.com`) whose pages may send cookie requests, besides the request's own and `ALLOWED_HOSTS`. |
 | `JWT` | see below | JSON Web Tokens, for `JWTAuthentication`. |
 
+The classes of `PASSWORD_HASHERS`, `PASSWORD_VALIDATORS`, `BACKENDS`, and
+`AUTHENTICATION_CLASSES` are named by dotted path, or, since 2.9, by the
+name an installed package offers them by
+([Backends from an installed package](reference/extension-points.md#backends-from-an-installed-package)).
+Each is made once for the settings: `override_settings` makes them again.
+
 | `AUTH["BREACHED_PASSWORDS"]` key | Default | Meaning |
 | --- | --- | --- |
 | `ENABLED` | `False` | Check every new password (signup, change, reset, the admin API, a change at first use or at enrollment, the commands) after `PASSWORD_VALIDATORS`. Needs the `httpclient` extra. |

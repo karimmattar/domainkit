@@ -54,10 +54,12 @@ Who may call an endpoint: access rules, for any authentication (ADR 0080).
 - `ModelPermissions`: Django's model permissions, by method, for one model.
 - `Not`: Allows what `rule` refuses.
 - `NotAuthenticated`: The route needs a principal who proved who they are, and none did (401).
+- `OfflineContext`: A call made outside any request, to ask access rules on (New in 2.9).
 - `Principal`: Who sent a request, as the access rules read them (`scope["user"]`).
 - `Public`: `dependencies=[Public]`: the route needs no rule (`REQUIRE_ROUTE_RULES`).
 - `Require`: A FastAPI dependency: the rules must allow the request; returns the principal.
 - `Rule`: A rule, or a rule class that takes no arguments.
+- `RuleContext`: What an access rule may read of the call it is asked about (New in 2.9).
 - `acurrent_user`: `current_user` as a dependency FastAPI awaits, with no thread to hop to.
 - `check_object_permissions`: Refuse the request unless every rule allows it on `obj`.
 - `check_scopes_bounded`: Hold credentials limited to scopes to routes with a rule that checks them.
@@ -128,6 +130,7 @@ One error format for every failure, and the mapping from domain errors.
 - `FieldError`: One invalid part of a request; the submitted value is left out.
 - `error_response`: Build an error body that carries the request id for support cases.
 - `error_responses`: OpenAPI `responses` for the error statuses a route may answer with.
+- `transient`: Whether `exc` says that what the work needs cannot serve now: try later (New in 2.9).
 
 ## `domainkit.http.health`
 
@@ -208,6 +211,7 @@ Request rate limiting (`RATE_LIMIT = "300/minute"`).
 - `RedisBackend`: GCRA in Redis or Valkey, shared by every replica (`RATE_LIMIT_CACHE`).
 - `RefundingBackend`: A backend that can give a counted request back.
 - `Throttle`: A FastAPI dependency: at most `rate` requests per caller to a route.
+- `rate_limit_backend`: The class `RATE_LIMIT_BACKEND` names, by dotted path or by name (New in 2.9).
 
 ## `domainkit.http.responses`
 

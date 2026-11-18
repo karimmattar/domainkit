@@ -168,6 +168,73 @@ read the body before the limit is decided
 ([Bounds decided per request](../resources.md#bounds-decided-per-request)).
 `A & B`, `A | B`, and `~A` read the body if a rule of theirs does.
 
+### Rules asked outside a request
+
+Some rules are asked where no request exists: approvals asks a guard's
+`maker_rule` when the approved command runs in the worker, and a
+policy's `approver_rule` in `approvers_of`
+([approvals](../contrib/approvals.md#guarding-a-use-case)). They are asked
+on an `OfflineContext` (*new in 2.9*): a call of its own, by the user, of
+no client. It has the method and path it is given, no headers, query,
+cookies, or session data, no credentials (`request.auth` is None, so
+`scopes_of(request)` is None), and a `request.state` of its own. A rule
+reads it as it reads a request. With no scopes there is no limit, so
+rules about scopes (`HasScope`, `IsUnscoped`, `AllowScoped`) do not
+limit there: approvals checks them when the request is submitted over
+HTTP. A rule that needs what only a request carries, such as a header or
+a step-up, refuses there.
+
+When such a rule raises, approvals tells three kinds of error apart:
+
+- A transient one (`domainkit.http.errors.transient`, *new in 2.9*): a
+  connection that failed (`ConnectionError`), a timeout, a host name that
+  did not resolve, `ServiceBusy`, a cache, ledger, or broker out of reach
+  (`CacheUnavailable`, `LedgerUnavailable`, `BrokerUnavailable`), an
+  outgoing call that may succeed later (a 5xx answer, or a host's
+  circuit open; not an answer too large to read, a 4xx answer but 408
+  and 429, or a refusal of the guard), or a database that is busy or out
+  of reach, by SQLAlchemy's error or its driver's. An error raised from
+  one of these (its cause) counts as one, and so does an exception group
+  that holds one; an error unwrapped from a group is read once.
+  Another `OSError`, such as a file not found, does not. It goes up, and
+  the run is tried again, as any run that meets one is; `approvers_of`
+  raises it.
+- A `DomainError` of a maker rule. The approved request fails with the
+  error's own code, as in 2.8. An approver rule's leaves the user out.
+- Any other error, a mistake in the rule. It refuses, is logged as a
+  warning by the rule's class and the error's, never the error's text,
+  and is reported to the error reporters (`domainkit.reporting`), once
+  per run and once per call of `approvers_of`: the request fails with
+  `maker_not_allowed`, once, and `approvers_of` leaves the user out.
+
+Code of your own that asks a rule outside a request makes one context
+per call:
+
+```python
+from domainkit.http.access import OfflineContext
+
+allowed = await rule.has_permission(OfflineContext(user, path="/payouts"), user)
+```
+
+`scopes=[...]` limits its credentials to those scopes, as a scoped token
+limits a request's.
+
+`RuleContext` is what both kinds of call have: `scope` (with its
+`method`, `path`, `auth`, and `user`), `user`, and `state`. Annotate a
+rule's `request` with it to say the rule reads no more; it then answers
+offline as it does on a route. The built-in rules read no more, and keep
+their `HTTPConnection` annotation:
+
+```python
+from domainkit.contrib.auth import AnyUser
+from domainkit.http.access import BasePermission, RuleContext
+
+
+class IsCashier(BasePermission):
+    async def has_permission(self, request: RuleContext, user: AnyUser) -> bool:
+        return user.is_active and "cashiers" in {g.name for g in user.groups}
+```
+
 ### Refusals in the audit trail
 
 A refused user (`403`) is recorded in the audit trail when

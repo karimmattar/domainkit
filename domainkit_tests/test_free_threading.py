@@ -7,7 +7,8 @@ guard's lookup threads and its owners' shares, a throttled log's counts,
 the remembered client addresses, the handles of the request metrics, the
 principal cache, the shedding middleware's slots and an HTTP client's
 pools per loop (``PerLoop``), and the grants principals share between threads, an
-application's throttle backend and attempt counter, the idempotency
+application's throttle backend and attempt counter, the instances a backend
+setting names (``BackendHandler``), the idempotency
 middleware's sweep schedule, the body limit's largest route limit, a
 ledger's trusted state and the store it is kept in, and the registries
 that keep each loop's tasks, publishers, brokers, and caches. Each test
@@ -56,6 +57,7 @@ from domainkit.conf import (
     override_settings,
     unwrap_settings,
 )
+from domainkit.conf.backends import BackendHandler
 from domainkit.contrib.audit import personal
 from domainkit.contrib.auth import middleware as middleware_module
 from domainkit.contrib.auth import principals, throttling
@@ -99,7 +101,7 @@ from domainkit.http.live import Slots
 from domainkit.http.live_events import LiveEvents
 from domainkit.http.metrics import REQUESTS, MetricsMiddleware
 from domainkit.http.middleware import ProxyHeadersMiddleware, _address
-from domainkit.http.ratelimit import MemoryBackend, client_group
+from domainkit.http.ratelimit import Backend, MemoryBackend, client_group
 from domainkit.http.shedding import QUEUE_FULL, ConcurrencyLimitMiddleware, ShedReport
 from domainkit.http.websockets import WebSocketLimitsMiddleware
 from domainkit.log import JsonFormatter, ThrottledLog, flush_throttled
@@ -704,6 +706,63 @@ def test_an_application_gets_one_throttle_backend_from_every_thread() -> None:
 
     assert all(made is found[0] for made in found)
     assert CountedBackend.made == [found[0]]
+
+
+class CheckedHandler(BackendHandler[Backend]):
+    """A backend handler whose instances are kept only under its lock."""
+
+    def __setattr__(self, name: str, value: object) -> None:
+        """Set ``name``; the kept instances only with the lock held."""
+        if name == "_kept" and hasattr(self, "_lock"):
+            assert self._lock.locked()
+        super().__setattr__(name, value)
+
+
+def test_a_backend_settings_instances_are_made_once_from_every_thread() -> None:
+    """Loops asking at once get the same instances, made once, under the lock.
+
+    Two sets for one settings object would each count on their own.
+    """
+    CountedBackend.made.clear()
+    handler = CheckedHandler(
+        "RATE_LIMIT_BACKEND", Backend, lambda: [f"{__name__}.CountedBackend"]
+    )
+
+    found = on_threads(lambda _: handler.instances())
+
+    assert all(made is found[0] for made in found)
+    assert CountedBackend.made == list(found[0])
+
+
+class RacedLock:
+    """A handler's lock, taken just after another thread kept its instances."""
+
+    def __init__(self, handler: BackendHandler[Backend], made: tuple[Backend]) -> None:
+        """Have ``made`` kept for the current settings once the lock is taken."""
+        self.handler = handler
+        self.made = made
+
+    def __enter__(self) -> None:
+        """Keep the other thread's instances."""
+        self.handler._kept = (unwrap_settings(), self.made)
+
+    def __exit__(self, *exc: object) -> None:
+        """Nothing to let go."""
+
+
+def test_a_backend_settings_instances_made_meanwhile_are_the_ones_used(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A loop that lost the race to make them uses the winner's, not a second set."""
+    CountedBackend.made.clear()
+    handler: BackendHandler[Backend] = BackendHandler(
+        "RATE_LIMIT_BACKEND", Backend, lambda: [f"{__name__}.CountedBackend"]
+    )
+    made = (MemoryBackend(),)
+    monkeypatch.setattr(handler, "_lock", RacedLock(handler, made))
+
+    assert handler.instances() is made
+    assert CountedBackend.made == []
 
 
 class CheckedStores(dict[tuple[str, CacheConfig], Store]):

@@ -796,7 +796,9 @@ resets these counters too.
 ### A backend of your own
 
 `RATE_LIMIT_BACKEND` is the dotted path to a class with one method,
-`hit(key, limit, period)`, that returns a `Decision`:
+`hit(key, limit, period)`, that returns a `Decision`, or the name an
+installed package offers it by
+([Backends from an installed package](reference/extension-points.md#backends-from-an-installed-package)):
 
 ```python
 from domainkit.http.ratelimit import Decision
@@ -817,6 +819,17 @@ fails). A backend that can also give a counted request back, with
 `refund(key, limit, period)`, is a `RefundingBackend`: the login
 throttles of `domainkit.contrib.auth` then count only the attempts that
 fail. `MemoryBackend` and `RedisBackend` are both refunding backends.
+
+A path that does not import, or a class without `hit`, is refused by
+`check` and as the application starts where something counts with it
+(`backends.E001`, since 2.9: `RATE_LIMIT`, a `Throttle`, or auth's
+attempt throttles): in staging and production it does not start. Where
+nothing counts with it yet, `check` warns (`backends.W001`). Each counter makes its own
+instance, once: the global limit and the throttles of an application,
+the counts of refused credentials and of attempts of
+`domainkit.contrib.auth`, and the worker's task rates. Their counts stay
+apart in a `MemoryBackend`, so a flood of one kind never pushes another
+kind's callers out.
 
 ## Throttles for one route
 

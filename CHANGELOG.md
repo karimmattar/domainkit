@@ -267,6 +267,39 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   test ([What each test starts from](docs/testing.md#what-each-test-starts-from),
   ADR 0195) (audit A28-ARCH-14).
 
+- `domainkit.http.access.OfflineContext(user, method=..., path=...,
+  scopes=...)`: a call made outside any request, to ask access rules on,
+  each of its own: no client, headers, query, or credentials, the user in
+  its scope, and a `state` of its own. `RuleContext` is what a rule may
+  read of both kinds of call (`scope`, `user`, `state`): `HTTPConnection`
+  is one, and a rule that annotates its `request` with it answers offline
+  as on a route; `scopes_of` takes one.
+  `domainkit.http.errors.transient(exc)` says whether an error is one
+  worth trying again after, read on the error and on what it was raised
+  from: a connection that failed, a timeout, a host name that did not
+  resolve, `ServiceBusy`, a cache, ledger, or broker out of reach, a 5xx
+  answer, an `UpstreamError` that may succeed later (not one whose
+  `retryable` is False, as an answer too large to read, nor one from a
+  4xx answer but 408 and 429, or from a refusal), or a database busy or
+  out of reach, a driver's own error of one included. An exception group
+  is transient if an error it holds is; no error is read twice.
+  `UpstreamError.retryable` says whether trying again may help
+  ([Rules asked outside a request](docs/auth/routes.md#rules-asked-outside-a-request),
+  ADR 0196) (audit A28-ARCH-08).
+
+- `domainkit.conf.backends.BackendHandler`: the classes one setting
+  names, imported by dotted path or by the name an installed package
+  offers them by, checked to be of the setting's kind, and made once per
+  settings object, which `override_settings` replaces.
+  `domainkit.utils.module_loading.backend_class` is its import and check,
+  which `utils.delivery.load_backend` uses too, and
+  `domainkit.http.ratelimit.rate_limit_backend` is `RATE_LIMIT_BACKEND`'s.
+  `RATE_LIMIT_BACKEND` and `AUTH`'s `BACKENDS`, `PASSWORD_HASHERS`,
+  `AUTHENTICATION_CLASSES`, and `PASSWORD_VALIDATORS` take the names
+  packages offer
+  ([Backends from an installed package](docs/reference/extension-points.md#backends-from-an-installed-package),
+  ADR 0196) (audit A28-ARCH-09).
+
 ### Changed
 
 - In development and tests, each problem the application finds at its
@@ -502,6 +535,23 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   only shrink, and on a new module-level function behind a cache, beside
   another (ADR 0195) (audit A28-ARCH-04, A28-ARCH-06, A28-ARCH-14).
 
+- `RATE_LIMIT_BACKEND` is checked before it counts: a value that is
+  neither a dotted path nor a name is refused with the settings, and one
+  that does not import, or names a class without `hit`, is refused by
+  `check` and as the application starts where something counts with it
+  (`backends.E001`: `RATE_LIMIT`, a route's `Throttle`, or auth's attempt
+  throttles); 2.8 failed on the first request that counted. Where nothing
+  counts with it, `check` warns (`backends.W001`). Each counter still
+  makes its own backend: the global limit, an application's throttles,
+  auth's counts, and the worker's task rates. A `PASSWORD_VALIDATORS`
+  class, or the function that makes one, must give a rule with
+  `validate` and `help_text`, or startup refuses it. Auth's backends,
+  hashers, authentication classes, and validators are made once per
+  settings object, and a class of them that refuses to be made is an
+  `ImproperlyConfigured` naming its setting
+  ([upgrading.md](docs/upgrading.md#28-to-29), ADR 0196) (audit
+  A28-ARCH-09).
+
 ### Deprecated
 
 - A name the infrastructure layer imports from `domainkit.http.client`
@@ -694,6 +744,24 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   other tests read at the same time; it writes it under a temporary
   directory of its own (audit A28-TEST-10).
 
+- Approvals asks a guard's `maker_rule` and a policy's `approver_rule`
+  on an `OfflineContext` when an approved command runs and in
+  `approvers_of`: a complete request context, with an empty query, an
+  application, and the user asked about. A rule written for routes, which
+  reads the request's query, application, or user, answers there instead
+  of raising. A rule that raises an error of its own refuses: it is
+  logged by its class and its error's, and reported to the error
+  reporters. An approved command whose maker rule makes such a mistake
+  fails once (`maker_not_allowed`) instead of being run again until
+  dead-lettered, and `approvers_of` leaves that rule's users out instead
+  of raising for every caller. A transient error
+  (`domainkit.http.errors.transient`: a connection or a backend out of
+  reach, a timeout, an outgoing call that may succeed later, a database
+  busy) is still raised, so the run is tried again, and a maker rule's
+  `DomainError` still fails the request with its code
+  ([upgrading.md](docs/upgrading.md#28-to-29), ADR 0196) (audit
+  A28-ARCH-08).
+
 ### Security
 
 - Live events are scoped to the tenant they were committed in: an event
@@ -811,6 +879,10 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   ([Request deadlines](docs/runtime.md#request-deadlines),
   [upgrading.md](docs/upgrading.md#28-to-29), ADR 0048) (audit
   A28-SEC-06).
+- Approvals asks each maker and approver rule on a request context of
+  its own when an approved command runs and when its approvers are
+  found, so nothing a rule keeps on it reaches another call (audit
+  A28-SEC-07).
 
 ## [2.8.0] - 2026-11-18
 

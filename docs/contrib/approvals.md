@@ -214,8 +214,19 @@ returns the approved command being run here, if any, and
 `approved(action, command)` says whether `command` is it.
 
 `maker_rule` is asked again when the approved command runs, on the maker
-as a user, with no credentials. So a rule about the submitting request's
-own scopes or step-up passes at submission only, and refuses at the run.
+as a user, on a call of its own with no credentials (an `OfflineContext`,
+[Rules asked outside a request](../auth/routes.md#rules-asked-outside-a-request)).
+Rules about the submitting request's scopes (`HasScope`, `IsUnscoped`,
+`AllowScoped`) are checked when the request is submitted over HTTP. At
+the run there are no scopes, which is no limit, so they do not limit
+there. A step-up refuses at the run. A rule that raises a `DomainError`
+fails the request with its code; a transient error (a timeout, a
+connection lost, a backend out of reach, an outgoing call that may
+succeed later, a database busy or out of reach) has the run tried again.
+Since 2.9, a rule that raises any other error refuses: it is logged by
+its class and its error's, and reported to the error reporters. The
+request fails (`maker_not_allowed`), and the run is not tried again
+([Rules asked outside a request](../auth/routes.md#rules-asked-outside-a-request)).
 
 ### Run by its maker
 
@@ -1227,9 +1238,9 @@ async def withdraw_stale() -> None:
   rule, acting in one's own name, the model permissions, and, at
   submission, the guard's permission and `maker_rule`. The run asks
   those of the maker only with `domainkit.contrib.auth` installed and a
-  maker that is a user's id, on a connection without credentials: a
-  `maker_rule` that reads credentials refuses there, and a maker that
-  names no user is never asked
+  maker that is a user's id, on a call without credentials
+  (`OfflineContext`): rules about scopes do not limit there, a step-up
+  refuses, and a maker that names no user is never asked
   ([What maker-checker does not stop](#what-maker-checker-does-not-stop)).
   Code that acts for a person it did not authenticate, such as a command
   given a user's id, checks them first: `approvers_of(request)` lists who
@@ -1358,7 +1369,11 @@ users who may decide it now:
   group of theirs; superusers hold every permission);
 - the members of its group;
 - for an approver rule, the superusers and staff the rule lets through,
-  asked about the user alone, on a connection without credentials;
+  asked about the user alone, on a call of its own without credentials
+  (`OfflineContext`); a rule that raises leaves the user out, and is
+  logged, but a transient error (a timeout, a connection lost, an outgoing
+  call that may succeed later, a database busy or out of reach) is
+  raised;
 - never its maker, a party to its command, or someone who decided it
   already.
 

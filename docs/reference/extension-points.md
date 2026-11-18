@@ -238,7 +238,15 @@ This works for:
 - the `BACKEND` of `CACHES` and `BROKERS` entries;
 - the `BACKEND` of `STORAGES`, `SEARCH`, and `UPLOAD_SCANNER`;
 - `MAIL.BACKEND`;
-- `NOTIFICATIONS`' `SMS_BACKEND` and `PUSH_BACKEND`.
+- `NOTIFICATIONS`' `SMS_BACKEND` and `PUSH_BACKEND`;
+- `RATE_LIMIT_BACKEND` (since 2.9);
+- `AUTH`'s `BACKENDS`, `PASSWORD_HASHERS`, `AUTHENTICATION_CLASSES`, and
+  the `NAME` of each `PASSWORD_VALIDATORS` entry (since 2.9).
+
+The framework loads these through one handler
+(`domainkit.conf.backends.BackendHandler`, ADR 0196): it imports what the
+setting names by path or by name, and checks that it is a class of the
+setting's kind.
 
 A name has no dot; a dotted path is imported as before. Installing a
 package loads nothing by itself: only the backend that a setting names is

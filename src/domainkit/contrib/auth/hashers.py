@@ -33,8 +33,8 @@ from functools import cache, partial
 from typing import ClassVar, Final
 
 from domainkit import clock
-from domainkit.exceptions import ImproperlyConfigured, ServiceBusy
-from domainkit.utils.module_loading import import_string
+from domainkit.conf.backends import BackendHandler
+from domainkit.exceptions import ServiceBusy
 
 from .models import UNUSABLE_PASSWORD_PREFIX
 
@@ -282,28 +282,22 @@ class PasswordCheck:
     """A new hash of the correct password with current settings, if needed."""
 
 
-@cache
-def load_hashers(paths: tuple[str, ...]) -> tuple[PasswordHasher, ...]:
-    """Instantiate the hasher classes named in ``paths``."""
-    hashers = []
-    for path in paths:
-        try:
-            hasher = import_string(path)
-        except ImportError as exc:
-            raise ImproperlyConfigured(f"AUTH.PASSWORD_HASHERS: {exc}") from exc
-        if not (isinstance(hasher, type) and issubclass(hasher, PasswordHasher)):
-            raise ImproperlyConfigured(
-                f"AUTH.PASSWORD_HASHERS: {path!r} is not a PasswordHasher."
-            )
-        hashers.append(hasher())
-    return tuple(hashers)
+def _configured_hashers() -> tuple[str, ...]:
+    """``AUTH.PASSWORD_HASHERS``, read when the hashers are made."""
+    from .settings import auth_settings
+
+    return auth_settings().PASSWORD_HASHERS
+
+
+_hashers: Final[BackendHandler[PasswordHasher]] = BackendHandler(
+    "AUTH.PASSWORD_HASHERS", PasswordHasher, _configured_hashers
+)
+"""``AUTH.PASSWORD_HASHERS``, by path or by name, made once per settings (ADR 0196)."""
 
 
 def get_hashers() -> tuple[PasswordHasher, ...]:
     """The configured hashers, the preferred one first."""
-    from .settings import auth_settings
-
-    return load_hashers(auth_settings().PASSWORD_HASHERS)
+    return _hashers.instances()
 
 
 def identify_hasher(encoded: str) -> PasswordHasher:
@@ -523,4 +517,4 @@ async def acheck_password(
 
 def insecure_hashers(paths: Sequence[str]) -> list[str]:
     """The paths in ``paths`` that name hashers too fast for real passwords."""
-    return [path for path in paths if load_hashers((path,))[0].insecure]
+    return [path for path in paths if _hashers.load([path])[0].insecure]

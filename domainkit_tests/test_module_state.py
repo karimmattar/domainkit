@@ -241,13 +241,9 @@ CACHED: Final = frozenset(
         # thread pool. A test that changes what made one gets the kept one.
         "domainkit.broker.rabbitmq._ssl_context",
         "domainkit.contrib.accounting.reconciliation._rule",
-        "domainkit.contrib.auth.authentication.load_authenticators",
-        "domainkit.contrib.auth.backends.load_backends",
         "domainkit.contrib.auth.captcha._verifier",
         "domainkit.contrib.auth.hashers.hashing_pool",
-        "domainkit.contrib.auth.hashers.load_hashers",
         "domainkit.contrib.auth.validators.breach_validators",
-        "domainkit.contrib.auth.validators.load_validators",
         "domainkit.contrib.identity.providers._client",
         "domainkit.db.drivers._ssl_context",
         "domainkit.i18n.translation._catalog",

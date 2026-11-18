@@ -40,16 +40,15 @@ from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from datetime import datetime
-from functools import cache
 from typing import Any, ClassVar, Final, cast
 from uuid import UUID
 
 from domainkit.conf import settings
+from domainkit.conf.backends import BackendHandler
 from domainkit.ddd import PermissionDenied
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.live import LONG_LIVED
 from domainkit.tenancy import member_permissions
-from domainkit.utils.module_loading import import_string
 
 from .hashers import amake_password, averify_password
 from .models import AbstractBaseUser, AnyUser, Group, PasswordHash, UserId
@@ -417,24 +416,15 @@ async def memoised[T](key: Hashable, compute: Callable[[], Awaitable[T]]) -> T:
     return answer
 
 
-@cache
-def load_backends(paths: tuple[str, ...]) -> tuple[BaseBackend, ...]:
-    """Instantiate the backend classes named in ``paths``."""
-    backends = []
-    for path in paths:
-        try:
-            backend = import_string(path)
-        except ImportError as exc:
-            raise ImproperlyConfigured(f"AUTH.BACKENDS: {exc}") from exc
-        if not (isinstance(backend, type) and issubclass(backend, BaseBackend)):
-            raise ImproperlyConfigured(f"AUTH.BACKENDS: {path!r} is not a BaseBackend.")
-        backends.append(backend())
-    return tuple(backends)
+_backends: Final[BackendHandler[BaseBackend]] = BackendHandler(
+    "AUTH.BACKENDS", BaseBackend, lambda: auth_settings().BACKENDS
+)
+"""``AUTH.BACKENDS``, by dotted path or by name, made once per settings (ADR 0196)."""
 
 
 def get_backends() -> tuple[BaseBackend, ...]:
     """The configured backends, in order."""
-    return load_backends(auth_settings().BACKENDS)
+    return _backends.instances()
 
 
 async def authenticate(**credentials: object) -> AbstractBaseUser | None:

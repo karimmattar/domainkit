@@ -113,7 +113,7 @@ class PasswordValidatorConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
     NAME: str
-    """Dotted path to the validator class."""
+    """The validator class: a dotted path, or a name an installed package offers."""
     OPTIONS: dict[str, Any] = Field(default_factory=dict)
     """Keyword arguments for the class, such as ``{"min_length": 12}``."""
 

@@ -29,7 +29,6 @@ from domainkit.contrib.auth.hashers import (
     identify_hasher,
     insecure_hashers,
     is_password_usable,
-    load_hashers,
     make_password,
     verify_password,
 )
@@ -390,11 +389,13 @@ def test_async_helpers_run_in_threads(use_auth: UseAuth) -> None:
 
 def test_hasher_settings_are_checked(use_auth: UseAuth) -> None:
     """Unknown paths and other objects are configuration errors."""
-    use_auth()
+    use_auth(PASSWORD_HASHERS=["nowhere.Hasher"])
     with pytest.raises(ImproperlyConfigured, match="PASSWORD_HASHERS"):
-        load_hashers(("nowhere.Hasher",))
+        hashers.get_hashers()
+    use_auth(PASSWORD_HASHERS=[f"{HERE}.NotAHasher"])
     with pytest.raises(ImproperlyConfigured, match="is not a PasswordHasher"):
-        load_hashers((f"{HERE}.NotAHasher",))
+        hashers.get_hashers()
+    use_auth()
     assert insecure_hashers([FAST, SHA1]) == [FAST]
     assert hashers.get_hashers()[0].insecure
 
