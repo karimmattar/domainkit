@@ -36,6 +36,21 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.8 to 2.9
+
+2.9 answers the audit of 2.8. Each item of this list says what a
+project that relied on 2.8's behaviour notices, and what to change.
+
+- **Staff acting as a user get answers kept for that user alone.** Under
+  an impersonation, a page cached with `vary_on_user=True` and a
+  response kept for an `Idempotency-Key` are kept for the staff member
+  acting as that user, where 2.8 kept them for the staff member, shared
+  across every user they acted as. An entry or a key made while acting
+  as a user before the upgrade misses once; a retry of a request sent
+  just before the deploy, while acting as a user, runs again. Rate
+  limits, throttles, and live connections count the staff member, as
+  before.
+
 ## 2.7 to 2.8
 
 2.8 follows up 2.7. Each item of this list says what a project that

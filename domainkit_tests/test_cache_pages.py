@@ -8,6 +8,7 @@ from contextvars import ContextVar
 from datetime import timedelta
 from functools import partial, wraps
 from typing import Annotated, Any, Final
+from uuid import uuid4
 
 import pytest
 from fastapi import APIRouter, Depends, FastAPI, Request, Response, Security
@@ -257,6 +258,52 @@ def test_pages_that_vary_on_the_user_keep_an_entry_each(
     ]
     assert alice[0].headers["Cache-Control"] == "private, no-cache"
     assert unchecked.json() == {"owner": None}
+
+
+def test_staff_acting_as_users_keep_an_entry_for_each_user(
+    client: TestClient, computed: list[str]
+) -> None:
+    """A page computed as one user is never served as another (audit A28-SEC-03).
+
+    Staff impersonating ann, then bob, then as themselves, each get their
+    own entry; so do ann and bob. The entry of staff acting as ann is
+    kept, and served to them again.
+    """
+    staff = {"X-Test-Actor": "staff"}
+    asked = [
+        {**staff, "X-Test-Impersonating": "ann"},
+        {**staff, "X-Test-Impersonating": "bob"},
+        staff,
+        {"X-Test-Actor": "ann"},
+        {**staff, "X-Test-Impersonating": "ann"},
+    ]
+
+    owners = [client.get("/me/basket", headers=each).json() for each in asked]
+
+    assert owners == [
+        {"owner": "ann"},
+        {"owner": "bob"},
+        {"owner": "staff"},
+        {"owner": "ann"},
+        {"owner": "ann"},
+    ]
+    assert computed == [
+        "basket:staff as ann",
+        "basket:staff as bob",
+        "basket:staff",
+        "basket:ann",
+    ]
+
+
+def test_credentials_of_staff_acting_as_a_user_key_apart_without_an_actor() -> None:
+    """With no context bound, an impersonation's credentials name both."""
+    staff = uuid4()
+    bob = COOKIE_USERS["bob"]
+    acting = Credentials(user=bob, scheme="x", impersonator=staff)  # type: ignore[arg-type]
+
+    assert _user(Request({"type": "http", "headers": [], "auth": acting})) == (
+        f"{staff}:as:{bob.id}"
+    )
 
 
 @pytest.mark.parametrize(

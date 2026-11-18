@@ -365,8 +365,11 @@ gets `304` and no body.
   middleware accepted (from a token, a cookie, or a client certificate),
   or an `Authorization` header. With `vary_on_user=True`, each actor (or,
   with no actor bound, each user id) has entries of their own, and
-  anonymous callers share theirs. Credentials with neither an actor nor a
-  user id are never cached either way.
+  anonymous callers share theirs. Staff acting as a user
+  ([impersonation](auth/routes.md#impersonation)) have entries apart for
+  each user they act as, apart from their own and the user's (since 2.9).
+  Credentials with neither an actor nor a user id are never cached either
+  way.
 - **Browsers and proxies.** The framework answers `Cache-Control:
   no-store` by default. Cached pages change this on purpose: `public,
   no-cache` (keep it, but ask each time), `private` when they vary on the
@@ -711,7 +714,9 @@ shutdown call.
 ## Rate limits for every request
 
 `RATE_LIMIT` limits the requests of each caller to the whole service. A
-caller is the authenticated actor, or else the client address:
+caller is the authenticated actor, or else the client address. Staff
+acting as a user ([impersonation](auth/routes.md#impersonation)) count as
+themselves, whomever they act as: one person, one budget.
 
 ```python
 RATE_LIMIT = "300/minute"

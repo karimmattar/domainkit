@@ -472,6 +472,38 @@ def test_callers_are_actors_or_addresses() -> None:
     assert idempotency._caller(other_header, names) == anonymous
 
 
+def test_staff_acting_as_a_user_keep_keys_apart_and_one_budget() -> None:
+    """Idempotency keys of staff acting as ann are apart (audit A28-SEC-03).
+
+    From the staff member's own, from ann's, and from those of staff
+    acting as bob. Rate limits and throttles, live connections, and
+    outbound lookups count what the staff member uses, as whomever they
+    act: one person, one budget.
+    """
+    from domainkit.http.guard import lookup_owner
+    from domainkit.http.live import caller_of
+
+    scope = {"type": "http", "headers": [], "client": ("203.0.113.4", 1)}
+    names = IdempotencySettings().CREDENTIAL_HEADERS
+    keys: dict[str | None, str] = {}
+    budgets: dict[str | None, list[str | None]] = {}
+    for actor, acting_as in (("staff", None), ("staff", "ann"), ("staff", "bob")):
+        context = RequestContext("r", None, "GET", "/", actor, acting_as)
+        with bind_request(context):
+            keys[acting_as] = idempotency._caller(scope, names)
+            budgets[acting_as] = [_caller(scope), caller_of(scope), lookup_owner()]
+    with bind_request(RequestContext("r", None, "GET", "/", actor="ann")):
+        ann = idempotency._caller(scope, names)
+
+    assert keys == {
+        None: "actor:staff",
+        "ann": "actor:staff:as:ann",
+        "bob": "actor:staff:as:bob",
+    }
+    assert ann == "actor:ann"
+    assert budgets == dict.fromkeys(keys, ["actor:staff"] * 3)
+
+
 def test_hashes_are_length_prefixed() -> None:
     """Each part is prefixed by its length, so parts never run together."""
     assert idempotency._hash("POST", b"body") == (
