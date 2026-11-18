@@ -887,6 +887,7 @@ def test_a_database_whose_migrations_cannot_be_read_is_said_so(
     broken.write_bytes(b"not a database, " * 64)
     url = f"sqlite+aiosqlite:///{broken}"
     caplog.set_level(logging.INFO, logger="alembic")
+    caplog.clear()  # makemigrations' own lines are not the check's.
     with override_settings(DATABASES={"default": {"URL": url}}):
         found = migrations_module.unapplied_warnings()
         checked = run("check")
