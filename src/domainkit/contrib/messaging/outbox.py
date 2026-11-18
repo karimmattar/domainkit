@@ -25,13 +25,17 @@ from domainkit import clock, deadlines
 from domainkit.apps import registry
 from domainkit.conf import settings
 from domainkit.context import current_request
-from domainkit.db import UTCDateTime, connections, dbclock
+from domainkit.db import UTCDateTime, connections, dbclock, refused_commit
 from domainkit.db.hooks import on_stage_transaction, on_transaction_committed
 from domainkit.db.routing import router
-from domainkit.db.uow import refused_commit
-from domainkit.ddd import DeferredTask, DomainEvent, EventBus, HandlerTimedOut
+from domainkit.ddd import (
+    DeferredTask,
+    DomainEvent,
+    EventBus,
+    HandlerTimedOut,
+    mark_in_doubt,
+)
 from domainkit.ddd.tenancy import current_tenant
-from domainkit.ddd.uow import mark_in_doubt
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.reporting import report_error
 from domainkit.tracing import trace_headers

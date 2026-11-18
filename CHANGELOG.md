@@ -128,6 +128,13 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   `after_commit` listener can raise once the `COMMIT` landed, are in
   doubt (audit A28-REL-04).
 
+- `domainkit.ddd.mark_in_doubt(exc)` and `failed_in_doubt(exc)`, and
+  `domainkit.db.refused_commit(exc)`, for a commit made outside a unit of
+  work, as `enqueue`'s is: `refused_commit` says whether the database
+  refused it; `mark_in_doubt` marks its error, and the work's deadlines,
+  when it may have been applied; `failed_in_doubt` says so of an error,
+  or of one raised from it (audit A28-REL-04).
+
 - `apps.E003`: `check` refuses an optional app's middleware in
   `MIDDLEWARE` without the app in `INSTALLED_DOMAINS`, and names the app;
   staging and production refuse to start with it (audit A28-DX-04).
@@ -141,8 +148,10 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 
 - `probes.W001`: `check` warns of a list of exempt paths that names some of
   `PROBE_PATHS`, not all: the probes it leaves out are exempt from it
-  since 2.9. The auth app warns so of `AUTH.AUTHENTICATION_EXEMPT_PATHS`
-  (audit A28-ARCH-01).
+  since 2.9. The auth app warns so of `AUTH.AUTHENTICATION_EXEMPT_PATHS`,
+  and an app of a list of its own with
+  `domainkit.checks.probes_left_out(name, listed, probes)` (audit
+  A28-ARCH-01).
 
 - Three parts continue the tutorial's bank, each walked by
   `domainkit_tests/test_walkthroughs.py`: money that moves (a transfer
@@ -197,7 +206,9 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   name must be lowercase letters, digits, and underscores, of at most 42
   characters, with no schema of its own, or each refuses it with
   `ValueError`; `contrib.audit`'s `protect` and `unprotect`, which
-  revisions call, take any table as in 2.8
+  revisions call, take any table as in 2.8. A name that PostgreSQL 16
+  reserves is quoted: SQLAlchemy's list, and `collation`, `concurrently`,
+  `lateral`, `system_user`, and `tablesample`, which it lacks
   ([Append-only tables](docs/databases.md#append-only-tables), ADR 0188)
   (audit A28-ARCH-07).
 

@@ -58,6 +58,11 @@ TRUNCATE_TRIGGER: Final = 2 | 32
 MAX_TABLE_NAME: Final = 63 - len("_append_only_truncate")
 """The longest table name whose triggers' names PostgreSQL keeps whole (63 bytes)."""
 _TABLE_NAME: Final = re.compile(r"[a-z_][a-z0-9_]*")
+_RESERVED: Final = RESERVED_WORDS | frozenset(
+    {"collation", "concurrently", "lateral", "system_user", "tablesample"}
+)
+"""PostgreSQL 16's reserved words (``pg_get_keywords()``, categories ``R`` and
+``T``): SQLAlchemy's, and the five it lacks. None can name a table unquoted."""
 """What PostgreSQL keeps as written when it is not quoted, so every name
 made from it (the function, the triggers) is the same quoted or not."""
 FIRING: Final = frozenset({"O", "A"})
@@ -147,8 +152,8 @@ def append_only_statements(
     dropped and made again, so a trigger changed in place (disabled, under
     a ``WHEN``, running another function) is put back as it must be.
     Names are not qualified: they are the schema's ``search_path`` finds.
-    A table named by a reserved word (``order``) is quoted; the others are
-    written as 2.8 wrote them.
+    A table named by one of PostgreSQL 16's reserved words (``order``,
+    ``lateral``) is quoted; the others are written as 2.8 wrote them.
 
     ``checked=False`` writes them from the table's name as it is, neither
     checked nor quoted, as ``contrib.audit``'s ``protect()`` and
@@ -161,7 +166,7 @@ def append_only_statements(
     if checked:
         function, truncate = trigger_names(table)
         body = append_only_body(table)
-        name = f'"{table.name}"' if table.name in RESERVED_WORDS else table.name
+        name = f'"{table.name}"' if table.name in _RESERVED else table.name
     else:
         name = table.name
         function = f"{name}_append_only"

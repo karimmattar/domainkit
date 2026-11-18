@@ -63,6 +63,7 @@ System checks: what `check` and startup find, each with an id and a level.
 - `CheckMessage`: One finding of a check: the message, with an `id` and a `hint`.
 - `Level`: How serious a check's finding is, read from its id's letter.
 - `describe`: One finding as `check` prints it: the id, the message, the hint.
+- `probes_left_out`: `probes.W001`: the list `name` names some of `probes`, not all.
 - `silence`: `messages` without those whose id `SILENCED_CHECKS` lists.
 - `validate_silenced`: Check `SILENCED_CHECKS`: ids of warnings, each once, and not too many.
 

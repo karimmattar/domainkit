@@ -17,9 +17,9 @@ from domainkit.apps import registry
 from domainkit.apps.hooks import on_deployment_warnings, unregistered_methods
 from domainkit.architecture import check_domains, layer_warnings
 from domainkit.cache.handler import deployment_warnings as cache_deployment_warnings
-from domainkit.checks import CheckMessage, Level, describe, silence
+from domainkit.checks import CheckMessage, Level, describe, probes_left_out, silence
 from domainkit.conf import settings
-from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS, probes_left_out
+from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db import migrations
 from domainkit.db.connections import pool_sizing_warnings
 from domainkit.ddd import event_bus
