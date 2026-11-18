@@ -586,7 +586,7 @@ class AuthConfig(DomainConfig):
         """
         if database != self.database or connection.dialect.name != "postgresql":
             return
-        present = await connection.run_sync(_index_names, self.user_table.name)
+        present = await connection.run_sync(_index_names, self.user_table)
         if present is None:
             return
         preparer = connection.dialect.identifier_preparer
@@ -654,6 +654,17 @@ class AuthConfig(DomainConfig):
                     f"AUTH.IDENTIFIERS names {', '.join(map(repr, unknown))}, which "
                     f"{self.user_model.__name__} has no field for; name its fields, "
                     "such as 'email' or 'mobile_number'.",
+                )
+            )
+        stored = set(self.user_table.c.keys())
+        if linked := [name for name in identifiers if name in names - stored]:
+            errors.append(
+                CheckMessage(
+                    "auth.E011",
+                    f"AUTH.IDENTIFIERS names {', '.join(map(repr, linked))}, which "
+                    f"the user table {self.user_table.name!r} has no column for; "
+                    "name fields that it stores, such as 'email' or "
+                    "'mobile_number'.",
                 )
             )
         if len(set(identifiers)) != len(identifiers):
@@ -1111,18 +1122,21 @@ async def _export_logins(subject: str) -> Mapping[str, object]:
     return await export_logins(subject)
 
 
-def _index_names(connection: Connection, table: str) -> set[str] | None:
-    """The names of ``table``'s indexes, in the schema the connection works in.
+def _index_names(connection: Connection, table: Table) -> set[str] | None:
+    """The names of ``table``'s indexes, in its schema, else the connection's.
 
-    None where it has no such table yet. Read from the catalog, which takes
-    no lock on the table.
+    A table that names its schema (``Table(..., schema="identity")``) is
+    there, whatever schema the connection works in. None where it has no
+    such table yet. Read from the catalog, which takes no lock on the table.
     """
     inspector = inspect(connection)
-    schema = connection.exec_driver_sql("SELECT current_schema()").scalar()
-    if not inspector.has_table(table, schema=schema):
+    schema = table.schema
+    if schema is None:
+        schema = connection.exec_driver_sql("SELECT current_schema()").scalar()
+    if not inspector.has_table(table.name, schema=schema):
         return None
     return {
         str(index["name"])
-        for index in inspector.get_indexes(table, schema=schema)
+        for index in inspector.get_indexes(table.name, schema=schema)
         if index["name"] is not None
     }

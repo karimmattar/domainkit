@@ -297,6 +297,12 @@ attempt that fails is tried again, until `MAX_ATTEMPTS`
   to drop a delivery it already has.
 - No worker serves the queue: start one.
 - A dead delivery task: fix the cause, then `messages retry ID`.
+- On PostgreSQL, a table no one has analysed yet, as after `migrate`
+  made it, a restore, or a bulk load, has no statistics until autovacuum
+  analyses it. Until then the hourly check for abandoned deliveries may
+  be planned as a nested loop: over 6,000 deliveries it took 15.7 s. Run
+  `ANALYZE domainkit_webhook_deliveries, domainkit_messages;` as the user
+  that runs `migrate`.
 
 ## Codes and mail do not arrive
 
