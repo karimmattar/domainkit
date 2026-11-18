@@ -72,6 +72,7 @@ from domainkit_tests.gadgets import (
     Color,
     Gadget,
     GadgetMade,
+    GadgetRepository,
     GadgetsUnitOfWork,
     InMemoryGadgets,
     Label,
@@ -894,6 +895,17 @@ async def test_a_count_stops_where_it_is_told(tables: None) -> None:
             assert await fake.count(criteria, at_most=at_most) == expected
         with pytest.raises(ValueError, match="0 or more, not -1"):
             await uow.gadgets.count(at_most=-1)
+        doubled = Doubled(uow.gadgets.session)  # Counts its own way: asked so.
+        assert await doubled.count(at_most=7) == 7
+        assert await doubled.count(at_most=20) == 10
+
+
+class Doubled(GadgetRepository):
+    """A repository that counts in a way of its own."""
+
+    async def _count(self, criteria: Criteria | None) -> int:
+        """Twice the matches."""
+        return 2 * await super()._count(criteria)
 
 
 async def test_get_or_create_reads_or_stores_one(tables: None) -> None:

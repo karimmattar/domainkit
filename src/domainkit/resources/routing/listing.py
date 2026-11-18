@@ -7,7 +7,8 @@ answers ``text/csv`` or ``application/x-ndjson`` by ``Accept``: every match,
 up to ``max_export``, streamed in chunks.
 """
 
-from collections.abc import AsyncIterator, Sequence
+import inspect
+from collections.abc import AsyncIterator, Callable, Sequence
 from typing import TYPE_CHECKING, Final
 
 from fastapi import Response
@@ -102,10 +103,11 @@ class ListRoute:
         """
         router = self.router
         async with context.uow as uow:  # One past the bound tells it is too many.
-            total = await router.repository(uow).count(
-                query.criteria,
-                include_deleted=query.include_deleted,
-                at_most=router.max_export + 1,
+            repository = router.repository(uow)
+            stops = _stops(repository.count)
+            bound = {"at_most": router.max_export + 1} if stops else {}
+            total = await repository.count(
+                query.criteria, include_deleted=query.include_deleted, **bound
             )
         if total > router.max_export:
             raise ExportTooLarge
@@ -151,3 +153,15 @@ class ListRoute:
                 f'attachment; filename="{router.plural}.csv"'
             )
         return StreamingResponse(body(), media_type=media, headers=headers)
+
+
+def _stops(count: Callable[..., object]) -> bool:
+    """Whether a repository's ``count`` takes ``at_most`` (since 2.9).
+
+    A project's repository may override ``count`` with 2.8's signature: it
+    is still asked, and counts every match, as before.
+    """
+    parameters = inspect.signature(count).parameters.values()
+    return any(
+        each.name == "at_most" or each.kind is each.VAR_KEYWORD for each in parameters
+    )

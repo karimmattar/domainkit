@@ -170,6 +170,26 @@ def test_an_export_counts_no_further_than_one_past_its_bound(
     assert len(rows(fits.text)) == 4
 
 
+def test_an_export_counts_all_where_count_keeps_its_2_8_signature(
+    store: InMemoryGadgets, use_auth: UseAuth, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A repository that overrides ``count`` as 2.8 had it is asked so."""
+    use_auth()
+    counted = store.count
+
+    async def count(criteria: object = None, *, include_deleted: bool = False) -> int:
+        return await counted(criteria, include_deleted=include_deleted)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(store, "count", count)
+    small = client_of(gadgets(store, exports=("csv",), max_export=2))
+    roomy = client_of(gadgets(store, exports=("csv",), max_export=3))
+
+    too_many = small.get("/gadgets", headers=as_("viewer", Accept=CSV))
+    fits = roomy.get("/gadgets", headers=as_("viewer", Accept=CSV))
+
+    assert (too_many.status_code, fits.status_code) == (422, 200)
+
+
 def test_exports_are_declared_and_documented(store: InMemoryGadgets) -> None:
     """Unknown formats are refused; OpenAPI lists the media types and 406."""
     with pytest.raises(TypeError, match="not pdf"):
