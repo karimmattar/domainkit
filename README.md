@@ -65,6 +65,8 @@ release, and a release's pages are under its tag
   parts: a first route, a first resource, rules, permissions, events and
   the worker, and tests and production; every command and code change run
   in CI
+- [docs/choosing.md](https://github.com/karimmattar/domainkit/blob/main/docs/choosing.md): which feature to use for a
+  need, and when not to use it
 - [docs/operations.md](https://github.com/karimmattar/domainkit/blob/main/docs/operations.md): running in production:
   processes, configuration, sizing, migrations in a rollout, the worker,
   sealing, backups, and what to alert on; [docs/runbook.md](https://github.com/karimmattar/domainkit/blob/main/docs/runbook.md)

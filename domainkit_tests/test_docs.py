@@ -1104,3 +1104,42 @@ def test_a_file_named_only_in_its_title_is_found() -> None:
     )
 
     assert unnamed_files(page) == ["b.py", "c/a.py"]
+
+
+WHEN = "## When to use it, and when not to"
+CHOSEN = (
+    "resources.md",
+    "validation.md",
+    "contrib/messaging.md",
+    "contrib/webhooks.md",
+    "contrib/audit.md",
+    "contrib/idempotency.md",
+    "contrib/evidence.md",
+    "contrib/keys.md",
+    "contrib/accounting.md",
+    "contrib/approvals.md",
+    "contrib/limits.md",
+    "auth/step-up.md",
+    "auth/actions.md",
+    "tenancy.md",
+    "uploads.md",
+    "databases.md",
+)
+"""The key features' pages, which say when not to use them (A28-DX-05)."""
+
+
+@pytest.mark.parametrize("name", CHOSEN)
+def test_each_key_feature_says_when_to_use_it_and_what_instead(name: str) -> None:
+    """Right after its opening, a page names the needs it does not serve.
+
+    The section comes before the first example, and links what to use
+    instead; the decision guide links the page.
+    """
+    text = (DOCS / name).read_text(encoding="utf-8")
+    [first] = re.findall(r"^## .*$", text, re.MULTILINE)[:1]
+    when = section_of(text, WHEN)
+
+    assert first == WHEN
+    assert re.search(r"\*\*Do not (?:use|shard|read|keep)", when), name
+    assert re.search(r"\]\([^)#]*\.md", when), f"{name}: link what to use instead"
+    assert f"]({name}" in (DOCS / "choosing.md").read_text(encoding="utf-8")

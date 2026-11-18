@@ -19,6 +19,15 @@ The solution has three parts
 - it locks both rows in id order, so two payments never deadlock;
 - it runs again, whole, when the database says it lost a race.
 
+The balance here is a field of the wallet, which suits a balance with a
+rule or two and no reports. A service that holds customers' money, and
+must balance, report, and reconcile it, books each payment as an entry in
+[the double-entry ledger](../contrib/accounting.md) instead. Its
+concurrent postings neither deadlock nor lose an update, and a retried
+request books once, as this recipe makes sure by hand; it adds holds,
+periods, and a trial balance
+([choosing a feature](../choosing.md#keeping-money)).
+
 You need a project with `domainkit[sqlite,testing]` installed. Every step
 here is run as written by `domainkit_tests/test_recipes.py`.
 

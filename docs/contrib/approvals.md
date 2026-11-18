@@ -30,6 +30,20 @@ Every step is a domain event, recorded in the [audit trail](audit.md)
 with its actor. The decisions are in
 [ADR 0121](../adr/0121-hold-guarded-commands-as-sealed-requests-and-count-approvals-under-the-requests-lock.md).
 
+## When to use it, and when not to
+
+- **Use it when** a command must wait for other people to agree: a large
+  payment, a journal entry over a limit, a user made superuser.
+- **Do not use it** for the user's own confirmation of an act: a
+  [step-up](../auth/step-up.md) or an
+  [action authorization](../auth/actions.md) is given by the user alone,
+  at once. Do not use it alone against many small commands under a
+  threshold: add [limits](limits.md) per window
+  ([what maker-checker does not stop](#what-maker-checker-does-not-stop)).
+- **An approved command runs later**, in the worker. The maker's call
+  gets the request, not the command's result
+  ([what a direct call does](#what-a-direct-call-does)).
+
 ## Install
 
 Approvals need messaging (approved commands run in the worker) and audit
