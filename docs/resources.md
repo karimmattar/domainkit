@@ -1315,6 +1315,11 @@ So `POST /products/{id}/rename` needs `catalog.change_product`, where
 - Each permission is a `HasModelPermission(action, model)`;
   `.permission()` gives its key. It checks the credentials' scopes too,
   so a token limited to that key passes it.
+- `ModelActions(Limit, everywhere=True)` counts only the keys a user
+  holds where no tenant is served: a member's role in the tenant served
+  does not, for a resource over rows that belong to no tenant
+  ([rows of no tenant](tenancy.md#rows-of-no-tenant)).
+  `HasModelPermission` takes `everywhere=` too.
 - A rule of your own that depends on the action is any object with
   `rules_for(action)`, which returns the rules to check: the `Actions`
   protocol.
@@ -1830,7 +1835,11 @@ router.include_router(admin.site.router, prefix="/admin")
   credentials not limited to scopes, and the model permission of its
   action: `catalog.view_product` to list, read, and query; `change` for
   commands (or a command's `action=`); and `audit.view_history` too for
-  histories. `/meta` needs staff.
+  histories. `/meta` needs staff. With multi-tenancy, a model's
+  permission counts as the staff member holds it everywhere, unless the
+  model is `TenantOwned`, whose rows are the tenant's served; so does
+  `audit.view_history`, always
+  ([rows of no tenant](tenancy.md#rows-of-no-tenant)).
 - **Actions are commands** through application services. The admin never
   sets fields itself, so the domain's rules and events hold.
 - **Options.** `schema=`, `present=`, `policy=`, `scope=`, and

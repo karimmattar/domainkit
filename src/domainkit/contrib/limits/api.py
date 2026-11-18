@@ -11,6 +11,10 @@ Each route needs a model permission, whatever authenticates requests:
 ``change_limit``, and ``delete_limit`` to change them. Every change is
 recorded in the audit trail (``LimitSet``, ``LimitRemoved``), with who
 made it. Amounts are ``{"amount": "5000.00", "currency": "EGP"}``.
+
+Limits belong to no tenant: each permission counts only as the user holds
+it everywhere, never through a member's role in the tenant served
+(``everywhere=True``, ADR 0183).
 """
 
 from datetime import datetime
@@ -44,7 +48,9 @@ TAGS: Final[list[str | Enum]] = ["limits"]
 NAMES: Final = "limits_"
 """What every route's name starts with, and so its operation id: a project's
 resource of the same name clashes with none of them (ADR 0192)."""
-VIEW_LIMITS: Final = Depends(Require(HasModelPermission("view", Limit)))
+VIEW_LIMITS: Final = Depends(
+    Require(HasModelPermission("view", Limit, everywhere=True))
+)
 Code = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9_.:-]{0,63}$")]
 Kind = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{0,31}$")]
 Subject = Annotated[str, Field(min_length=1, max_length=255)]
@@ -102,7 +108,7 @@ limits = ResourceRouter(
     repository=lambda uow: uow.limits,
     filters=LimitFilters,
     pagination=PAGES,
-    rule=ModelActions(Limit),
+    rule=ModelActions(Limit, everywhere=True),
     tags=TAGS,
     name_prefix=NAMES,
 )

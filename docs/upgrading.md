@@ -68,6 +68,56 @@ project that relied on 2.8's behaviour changes, and what to run.
   can be sent to the superuser (to reset its password or enroll a phone)
   until its email address is verified: run ...". A script that matched
   2.8's wording matches this one instead.
+- **Live events are each tenant's own** (security,
+  [ADR 0183](adr/0183-keep-live-events-and-approval-requests-to-their-tenant-and-rows-of-no-tenant-to-keys-held-everywhere.md)).
+  With `TENANCY`, an event reaches only the connections served as the
+  tenant it was committed in, and one committed as no tenant only those
+  served as none. A route only staff reach that streams every tenant's
+  events on purpose, such as a back office's, passes `per_tenant=False`
+  to `stream`, `forward`, or `subscribe`: its rule never sees an event's
+  tenant ([tenancy](tenancy.md#live-events-and-approvals)). With
+  `LIVE_FANOUT`, processes of 2.8.0 send their events without a tenant,
+  so connections served as a tenant miss them until every process is
+  upgraded. Without `TENANCY`, nothing changes.
+- **Approval requests are each tenant's own** (security). With
+  `TENANCY`, a request is listed, read, approved, rejected, and
+  cancelled where the tenant it was submitted in is served alone, and
+  its command runs in that tenant. Approvers who decided for a tenant
+  while served as another, or as none, are served as the request's
+  tenant now; code that decides across tenants does it inside
+  `all_tenants()`
+  ([Requests and tenants](contrib/approvals.md#requests-and-tenants)).
+  Requests stored by 2.8.0 have no tenant: they are read where no tenant
+  is served. Do not set their `tenant_id` by hand, which breaks their
+  seal: decide or cancel them where no tenant is served, or let them
+  expire. Before you deploy, let the worker run the requests already
+  approved: once deployed, such a request runs as no tenant.
+  `approvals.view_every_approvalrequest` shows the requests of a guard
+  `everywhere`, such as approvals' own guards of postings, superusers,
+  and admin changes, to those who hold it everywhere: grant it so to the
+  staff who read them. Without `TENANCY`, nothing changes.
+- **Limits and the ledger count the keys held everywhere** (security).
+  A key granted in the tenant served, by `MembershipBackend` or any
+  backend that grants by `current_tenant()`, does not count on the routes
+  of `domainkit.contrib.limits` or `domainkit.contrib.accounting`
+  (`403`), nor for the makers and approvers of approvals' guards of
+  postings, captures, reversals, making superusers, and admin changes.
+  Grant those keys to the staff who use them, directly or through a
+  group ([Rows of no tenant](tenancy.md#rows-of-no-tenant)). Routes of
+  your own over rows every tenant shares say `everywhere=True`, which
+  asks the permissions as where no tenant is served: it relies on a
+  backend that grants per tenant reading `current_tenant()`.
+- **Staff APIs count the keys held everywhere** (security). The admin
+  API (users, groups, permissions), the staff APIs of flags and
+  webhooks, the audit trail's history, and the admin site's models that
+  are not `TenantOwned` count a staff member's model permission, and
+  `audit.view_history`, as they hold it everywhere: a role in the tenant
+  served opens none of them (`403`). Staff who used them through a role
+  are granted the keys everywhere, directly or through a group
+  ([Rows of no tenant](tenancy.md#rows-of-no-tenant)).
+- **`check` names the apps whose rows every tenant shares**
+  (`tenancy.I001`). It is an info: nothing to change, and
+  `check --deploy` never refuses it.
 - **A memory ledger keeps what it holds when the ledgers close.** In
   tests, evidence recorded before `outbox.run_queued()`, a command, or a
   client's shutdown is still there after it. A test that relied on the
@@ -78,12 +128,11 @@ project that relied on 2.8's behaviour changes, and what to run.
   that is `Money` now reads `1500.00 USD`, where 2.8 showed
   `{"amount":"1500.00","currency":"USD"}`. A test that compared a
   screen's details compares the new text.
-- **A failed approval request keeps a seal that did not hold.** Failing
-  makes the seal again only if it held, so a request changed around the
-  application, then failed, still fails its seal. Code that reads
-  `sealed()` on failed requests, to report them, finds these.
-2.9 answers the audit of 2.8. Each part below says what a project that
-relied on 2.8's behaviour changes, and what to run.
+- **A failed approval request keeps a seal that did not hold**
+  (security). Failing makes the seal again only if it held, so a request
+  changed around the application, then failed, still fails its seal.
+  Code that reads `sealed()` on failed requests, to report them, finds
+  these.
 
 ### `migrate` makes the user lookups' indexes, on PostgreSQL
 
@@ -159,6 +208,21 @@ Nothing to change; plans and costs change.
 - **An export counts at most `max_export + 1` matches**
   (`count(at_most=...)`), and flags' `GET /settings` reads its values in
   one statement.
+
+### Make and apply approvals' migration
+
+With `domainkit.contrib.approvals` installed, the requests table
+(`domainkit_approval_requests`) gains a nullable column, `tenant_id`,
+the tenant a request was submitted in
+([ADR 0183](adr/0183-keep-live-events-and-approval-requests-to-their-tenant-and-rows-of-no-tenant-to-keys-held-everywhere.md)).
+Run `python manage.py makemigrations`, review the revision, then
+`migrate` it before the new code serves. Until then every read of the
+requests fails with a database error, so their routes and the worker's
+runs answer `500`. Requests stored before have no tenant.
+
+The same table gains an index, `ix_domainkit_approval_requests_scope`, of
+`(tenant_id, action, policy, submitted_at)`, which an approver's list
+reads through. The same `makemigrations` makes it.
 
 ### A client generated from the OpenAPI document calls contrib routes by new names
 

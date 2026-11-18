@@ -23,11 +23,12 @@ from typing import Any, Final
 from sqlalchemy import or_, select
 
 from domainkit.db import connections
+from domainkit.ddd.tenancy import all_tenants, tenant_alone
 
 from .exceptions import MakerNotAllowed
 from .models import RequestId, RequestStatus, Verdict
 from .tables import decisions, requests
-from .uow import ApprovalsUnitOfWork, approvals_alias
+from .uow import ApprovalsUnitOfWork, approvals_alias, servable
 
 ERASED: Final = "erased:"
 """The start of the id that replaces an erased subject's."""
@@ -75,18 +76,54 @@ async def export_subject(subject: str) -> Mapping[str, object]:
 
 
 async def erase_subject(subject: str) -> Mapping[str, int]:
-    """Pseudonymise ``subject`` in the requests and decisions; how many of each."""
+    """Pseudonymise ``subject`` in the requests and decisions; how many of each.
+
+    In every tenant's requests, as the export lists them all: those of
+    each tenant in a transaction of their own, as that tenant alone, so
+    what the commit publishes is that tenant's. A request whose stored
+    tenant is not a tenant id was changed around the application; it
+    still names the person, so it is pseudonymised too, read among every
+    tenant's requests and committed as no tenant: its tenant is not to be
+    trusted, and its seal is made again only if it held.
+    """
     pseudonym = f"{ERASED}{uuid.uuid4().hex}"
     counts = dict.fromkeys(("requests", "cancelled", "failed", "decisions"), 0)
     async with ApprovalsUnitOfWork() as uow:
         decided = select(decisions.c.request_id).where(decisions.c.approver == subject)
-        found = await uow.session.scalars(
-            select(requests.c.id).where(
+        found = await uow.session.execute(
+            select(requests.c.id, requests.c.tenant_id).where(
                 or_(requests.c.maker == subject, requests.c.id.in_(decided))
             )
         )
-        for request_id in sorted(found):
-            request = await uow.locked(RequestId(request_id))
+        by_tenant: dict[str | None, list[RequestId]] = {}
+        for row in found:
+            by_tenant.setdefault(row.tenant_id, []).append(RequestId(row.id))
+    for tenant_id in sorted(by_tenant, key=lambda each: each or ""):
+        ids = sorted(by_tenant[tenant_id])
+        if servable(tenant_id):
+            with tenant_alone(tenant_id):
+                await _erase(subject, pseudonym, ids, counts, tenant_id)
+        else:  # Changed around the application: found among every tenant's.
+            with all_tenants():
+                await _erase(subject, pseudonym, ids, counts, None)
+    return {kind: count for kind, count in counts.items() if count}
+
+
+async def _erase(
+    subject: str,
+    pseudonym: str,
+    ids: list[RequestId],
+    counts: dict[str, int],
+    committed_as: str | None,
+) -> None:
+    """Pseudonymise ``subject`` in the requests ``ids``, counting into ``counts``.
+
+    The transaction commits as the tenant ``committed_as`` alone (None: no
+    tenant).
+    """
+    async with ApprovalsUnitOfWork() as uow:
+        for request_id in ids:
+            request = await uow.locked(request_id)
             mine = request.maker == subject
             rejected = any(
                 each.approver == subject and each.verdict is Verdict.REJECT
@@ -105,5 +142,5 @@ async def erase_subject(subject: str) -> Mapping[str, int]:
                 each.approver == subject for each in request.decisions
             )
             request.pseudonymise(subject, pseudonym)
-        await uow.commit()
-    return {kind: count for kind, count in counts.items() if count}
+        with tenant_alone(committed_as):
+            await uow.commit()
