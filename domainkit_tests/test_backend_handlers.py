@@ -16,25 +16,33 @@ from pathlib import Path
 from typing import Any, ClassVar, Final
 
 import pytest
+from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 
 from domainkit.checks import CheckMessage
-from domainkit.conf import Settings, override_settings
+from domainkit.conf import Settings, override_settings, unwrap_settings
 from domainkit.conf.backends import BackendHandler
-from domainkit.contrib.auth.apps import _counted_per_process
+from domainkit.contrib.auth.apps import _counted_per_process, _uncountable_attempts
 from domainkit.contrib.auth.backends import ModelBackend, get_backends
 from domainkit.contrib.auth.settings import auth_settings
 from domainkit.contrib.auth.validators import get_password_validators
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
-from domainkit.http.application import application_problems, backend_problems
+from domainkit.http.access import Public
+from domainkit.http.application import (
+    application_problems,
+    backend_problems,
+    backend_warnings,
+)
 from domainkit.http.ratelimit import (
     Backend,
     Decision,
     MemoryBackend,
     RedisBackend,
+    Throttle,
     rate_limit_backend,
 )
+from domainkit.management import call_command
 from domainkit.utils.module_loading import backend_class
 from domainkit_tests.conftest import UseAuth
 from domainkit_tests.test_custom_backends import offer
@@ -127,17 +135,28 @@ def test_instances_are_made_once_per_settings_object() -> None:
 
 
 def test_instances_made_while_the_settings_change_are_not_kept() -> None:
-    """Made for settings no longer in place, they would outlive them."""
-    with ExitStack() as stack:
+    """Made as other settings came in, they are not kept for those they began with.
 
-        def read() -> str:
+    The settings are replaced during the first make only, and put back
+    after it: the next call, under the first settings again, makes anew.
+    """
+    stack = ExitStack()
+    reads: list[str] = []
+
+    def read() -> str:
+        if not reads:  # Only the first make sees the settings replaced meanwhile.
             stack.enter_context(override_settings(DEBUG=False))
-            return f"{HERE}.Counted"
+        reads.append(f"{HERE}.Counted")
+        return reads[-1]
 
-        changing = handler(read)
-        made = changing.instances()
+    changing = handler(read)
+    source = unwrap_settings()
+    made = changing.instances()
+    stack.close()
 
-        assert changing.instances() is not made
+    assert unwrap_settings() is source
+    assert changing.instances() is not made
+    assert changing.instances() is changing.instances()  # Kept from then on.
 
 
 def test_each_call_of_create_makes_a_new_backend() -> None:
@@ -162,20 +181,88 @@ def test_rate_limit_backend_is_a_path_or_a_name_when_the_settings_load() -> None
             Settings.model_validate({"RATE_LIMIT_BACKEND": wrong})
 
 
-def test_a_rate_limit_backend_without_hit_is_a_problem_of_the_application() -> None:
-    """``check`` and the application's start report it (``backends.E001``)."""
-    assert backend_problems() == []
-    with override_settings(RATE_LIMIT_BACKEND="collections.OrderedDict"):
-        problems = application_problems(get_asgi_application())
+def ids(found: list[str]) -> list[str]:
+    """The ids of the checks in ``found``."""
+    return [getattr(each, "id", "") for each in found]
 
-    (problem,) = [
-        each for each in problems if getattr(each, "id", None) == "backends.E001"
-    ]
+
+def throttled_app() -> FastAPI:
+    """An application with one route that a ``Throttle`` counts."""
+    app = FastAPI()
+    app.add_api_route(
+        "/exports",
+        lambda: None,
+        dependencies=[Depends(Throttle("5/hour")), Public],
+    )
+    return app
+
+
+def test_a_rate_limit_backend_without_hit_is_an_error_where_something_counts() -> None:
+    """``RATE_LIMIT`` or a ``Throttle`` counts with it: ``backends.E001``."""
+    assert backend_problems(throttled_app()) == []
+    with override_settings(RATE_LIMIT_BACKEND="collections.OrderedDict"):
+        assert backend_problems(throttled_app()) == [
+            "RATE_LIMIT_BACKEND: 'collections.OrderedDict' is not a Backend."
+        ]
+        with override_settings(RATE_LIMIT="100/minute"):
+            problems = application_problems(get_asgi_application())
+            warnings = backend_warnings(get_asgi_application())
+
+    (problem,) = [each for each in problems if "backends" in getattr(each, "id", "")]
     assert isinstance(problem, CheckMessage)
-    assert str(problem) == (
-        "RATE_LIMIT_BACKEND: 'collections.OrderedDict' is not a Backend."
+    assert (problem.id, str(problem)) == (
+        "backends.E001",
+        "RATE_LIMIT_BACKEND: 'collections.OrderedDict' is not a Backend.",
     )
     assert "RedisBackend" in problem.hint
+    assert warnings == []
+
+
+def test_a_rate_limit_backend_nothing_counts_with_is_a_warning() -> None:
+    """Unused yet, it stops no deployment: ``check`` warns (``backends.W001``)."""
+    with override_settings(RATE_LIMIT_BACKEND="collections.OrderedDict"):
+        app = get_asgi_application()
+        problems = application_problems(app)
+        (warning,) = backend_warnings(app)
+
+    assert "backends.E001" not in ids(problems)
+    assert isinstance(warning, CheckMessage)
+    assert warning.id == "backends.W001"
+    assert str(warning).startswith(
+        "RATE_LIMIT_BACKEND: 'collections.OrderedDict' is not a Backend. Nothing "
+        "counts with it now"
+    )
+    assert backend_warnings(app) == []  # The default backend: nothing to say.
+
+
+def test_check_lists_the_warning(capsys: pytest.CaptureFixture[str]) -> None:
+    """``check`` passes, with the warning; ``--deploy`` would stop on it."""
+    with override_settings(RATE_LIMIT_BACKEND="collections.OrderedDict"):
+        call_command("check")
+
+    assert "backends.W001" in capsys.readouterr().out
+
+
+def test_auths_attempt_throttles_count_with_the_backend(use_auth: UseAuth) -> None:
+    """Without ``RATE_LIMIT``, auth says so of its own rates (``backends.E001``)."""
+    use_auth(LOGIN_RATE="5/minute")
+    config = auth_settings()
+    with override_settings(RATE_LIMIT_BACKEND="collections.OrderedDict"):
+        (problem,) = _uncountable_attempts(config)
+        with override_settings(RATE_LIMIT="100/minute"):
+            assert _uncountable_attempts(config) == []  # The core's to say.
+        assert problem.id == "backends.E001"
+        assert str(problem).endswith("AUTH's attempt throttles count with it.")
+    assert _uncountable_attempts(config) == []
+    no_rates = config.model_copy(
+        update={
+            "LOGIN_RATE": None,
+            "EMAIL_RATE": None,
+            "MFA": config.MFA.model_copy(update={"RATE": None, "ADDRESS_RATE": None}),
+        }
+    )
+    with override_settings(RATE_LIMIT_BACKEND="collections.OrderedDict"):
+        assert _uncountable_attempts(no_rates) == []
 
 
 def test_the_limit_refuses_to_count_with_what_is_not_a_backend() -> None:
@@ -235,6 +322,47 @@ def test_a_password_rule_without_help_text_is_refused_at_startup(
         use_auth(PASSWORD_VALIDATORS=[{"NAME": f"{HERE}.NoHelp"}])
     use_auth(PASSWORD_VALIDATORS=[])
     assert get_password_validators() == ()
+
+
+class Plain:
+    """A password rule that takes every password."""
+
+    def validate(self, password: str, user: object | None = None) -> None:
+        """Take it."""
+
+    def help_text(self) -> str:
+        """Say so."""
+        return "Any password."
+
+
+def plain_rule() -> Plain:
+    """Make a ``Plain`` rule: a factory, as 2.8 let a rule's ``NAME`` name."""
+    return Plain()
+
+
+def helpless_rule() -> NoHelp:
+    """Make a rule without ``help_text``."""
+    return NoHelp()
+
+
+def test_a_password_rule_may_be_named_by_the_function_that_makes_it(
+    use_auth: UseAuth,
+) -> None:
+    """As in 2.8; what it makes must be a rule, with ``validate`` and ``help_text``."""
+    use_auth(PASSWORD_VALIDATORS=[{"NAME": f"{HERE}.plain_rule"}])
+    (rule,) = get_password_validators()
+    assert isinstance(rule, Plain)
+
+    with pytest.raises(
+        ImproperlyConfigured,
+        match=rf"^AUTH\.PASSWORD_VALIDATORS: '{HERE}\.helpless_rule' made no "
+        r"PasswordValidator\.$",
+    ):
+        use_auth(PASSWORD_VALIDATORS=[{"NAME": f"{HERE}.helpless_rule"}])
+    with pytest.raises(ImproperlyConfigured, match=r"VALIDATORS: .*nowhere"):
+        use_auth(PASSWORD_VALIDATORS=[{"NAME": "nowhere.rule"}])
+    with pytest.raises(ImproperlyConfigured, match="is not a PasswordValidator"):
+        use_auth(PASSWORD_VALIDATORS=[{"NAME": f"{HERE}.NOT_A_CLASS"}])
 
 
 def test_attempts_counted_per_process_follow_the_backend_named(

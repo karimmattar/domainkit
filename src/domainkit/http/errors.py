@@ -34,7 +34,8 @@ the names ``domainkit.http`` takes from it, the two problems, and
 """
 
 import re
-from collections.abc import Mapping
+import socket
+from collections.abc import Iterator, Mapping
 from http import HTTPStatus
 from typing import Final
 from urllib.parse import quote
@@ -112,17 +113,10 @@ DATABASE_UNAVAILABLE: Final = "database_unavailable"
 UNAVAILABLE_RETRY_AFTER: Final = "5"
 """Seconds a client should wait while the database cannot be reached: longer
 than ``database_busy``'s, as a restart or a failover takes seconds."""
-SETTLED_UPSTREAM: Final = frozenset(
-    {
-        "upstream_response_too_large",  # ResponseTooLarge: the answer stays as long.
-        "direct_upload_unavailable",  # WriteOnceIgnored: the store ignores a header.
-    }
-)
-"""Codes of ``UpstreamError`` that trying again cannot change (``transient``)."""
 RETRIED_STATUSES: Final = frozenset({408, 429})
 """The 4xx answers worth trying again after: a timeout, too many requests."""
 _CAUSES: Final = 16
-"""Errors ``transient`` reads down an upstream error's chain at most."""
+"""Errors ``transient`` reads down an error's chain at most."""
 _POOL: Final = "sqlalchemy.pool.base"
 """The module of the pool's ``__connect``, which opens each connection."""
 _EVENTS: Final = "sqlalchemy.event"
@@ -485,54 +479,87 @@ def database_refusal(exc: BaseException) -> APIError | None:
 def transient(exc: BaseException) -> bool:
     """Whether ``exc`` says that what the work needs cannot serve now: try later.
 
-    A timeout or another error of the operating system (a connection
-    refused or lost), ``ServiceBusy``, an outgoing call that failed for now
-    (``_upstream_transient``), or a database that is busy or out of reach:
-    what ``database_refusal`` answers with 503, a connection SQLAlchemy
-    found invalidated among them. Work that ran into one is tried again;
-    any other error is the work's own (since 2.9, ADR 0196).
+    Read on the error and on what it was raised from (``_chain``), from
+    the error outwards, the first that settles it deciding:
+
+    - Transient: a connection that failed (``ConnectionError``), a
+      timeout (``TimeoutError``), a name that did not resolve
+      (``socket.gaierror``), ``ServiceBusy``, a cache, ledger, or broker
+      out of reach (``CacheUnavailable``, ``LedgerUnavailable``,
+      ``BrokerUnavailable``), or a database that is busy or out of reach,
+      as ``database_refusal`` answers with 503.
+    - Not: a refusal (a ``DomainError``, such as the guard's
+      ``UnsafeURL``), the settings (``ImproperlyConfigured``), an outgoing
+      call's failure that trying again cannot change (``UpstreamError``
+      whose ``retryable`` is False: an answer too large to read), a 4xx
+      answer but 408 and 429, or another answer of the database.
+
+    An ``UpstreamError`` that none of these settles, a 5xx answer or a
+    host's circuit open, is transient; any other error is the work's own.
+    An exception group is transient if an error it holds is (since 2.9,
+    ADR 0196).
     """
-    if isinstance(exc, UpstreamError):
-        return _upstream_transient(exc)
-    if isinstance(exc, OSError | ServiceBusy):  # TimeoutError is an OSError.
+    found_upstream = False
+    for seen in _chain(exc):
+        if isinstance(seen, BaseExceptionGroup):
+            return any(transient(each) for each in seen.exceptions)
+        decided = _settles(seen)
+        if decided is not None:
+            return decided
+        found_upstream = found_upstream or isinstance(seen, UpstreamError)
+    return found_upstream
+
+
+def _settles(exc: BaseException) -> bool | None:
+    """True or False if ``exc`` alone says whether to try again; None if not."""
+    from domainkit.broker.base import BrokerUnavailable  # Loaded when asked.
+    from domainkit.cache.base import CacheUnavailable
+    from domainkit.ledger.base import LedgerUnavailable
+
+    if isinstance(exc, DomainError | ImproperlyConfigured):
+        return False
+    if isinstance(exc, UpstreamError) and not exc.retryable:
+        return False
+    answered = getattr(getattr(exc, "response", None), "status_code", None)
+    if (
+        isinstance(answered, int)
+        and status.HTTP_400_BAD_REQUEST
+        <= answered
+        < status.HTTP_500_INTERNAL_SERVER_ERROR
+    ):
+        return answered in RETRIED_STATUSES
+    if isinstance(
+        exc,
+        ConnectionError
+        | TimeoutError
+        | socket.gaierror
+        | ServiceBusy
+        | CacheUnavailable
+        | LedgerUnavailable
+        | BrokerUnavailable,
+    ):
         return True
     refusal = database_refusal(exc)
-    return (
-        refusal is not None
-        and refusal.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
-    )
+    if refusal is None:
+        return None
+    return refusal.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
 
 
-def _upstream_transient(exc: UpstreamError) -> bool:
-    """Whether an outgoing call's failure may not happen again: a timeout, a 5xx.
+def _chain(exc: BaseException) -> Iterator[BaseException]:
+    """``exc``, then what it was raised from, ``_CAUSES`` errors at most.
 
-    Not when trying again cannot change it: an answer too large to read
-    or a store that ignores ``If-None-Match`` (``SETTLED_UPSTREAM``); an
-    error that is, or comes from, a refusal (a ``DomainError``, such as
-    the guard's ``UnsafeURL``) or the settings (``ImproperlyConfigured``,
-    a renderer not configured); or one that comes from a 4xx answer but
-    408 and 429. A connection that failed, a timeout, a 5xx answer, and a
-    host's circuit open (``CircuitOpen``) are tried again.
+    Its cause where one is set; else the error it was raised while
+    handling, unless that is suppressed (``raise ... from None``).
     """
-    if exc.code in SETTLED_UPSTREAM:
-        return False
     seen: BaseException | None = exc
     for _ in range(_CAUSES):
         if seen is None:
-            break
-        if isinstance(seen, DomainError | ImproperlyConfigured):
-            return False
-        answered = getattr(getattr(seen, "response", None), "status_code", None)
-        if (
-            isinstance(answered, int)
-            and status.HTTP_400_BAD_REQUEST
-            <= answered
-            < status.HTTP_500_INTERNAL_SERVER_ERROR
-            and answered not in RETRIED_STATUSES
-        ):
-            return False
-        seen = seen.__cause__ or seen.__context__
-    return True
+            return
+        yield seen
+        if seen.__cause__ is not None or seen.__suppress_context__:
+            seen = seen.__cause__
+        else:
+            seen = seen.__context__
 
 
 def unreachable(exc: BaseException) -> bool:

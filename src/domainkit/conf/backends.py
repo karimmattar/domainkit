@@ -28,7 +28,7 @@ from typing import Any, cast
 
 from domainkit.conf import settings, unwrap_settings
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.utils.module_loading import backend_class
+from domainkit.utils.module_loading import backend_class, import_backend
 
 __all__ = ["BackendHandler"]
 
@@ -44,6 +44,8 @@ class BackendHandler[T]:
         setting: str,
         base: type,
         read: Callable[[], str | Sequence[Named]] | None = None,
+        *,
+        factories: bool = False,
     ) -> None:
         """Load what ``read`` returns for ``setting``: each a ``base``.
 
@@ -51,10 +53,13 @@ class BackendHandler[T]:
         paths, each alone or with its keyword arguments (``(path,
         options)``). By default it reads ``settings.<setting>``. ``base`` is
         a class, or a protocol marked ``runtime_checkable`` whose members
-        are methods.
+        are methods. With ``factories``, a path may also name a function
+        that makes one, as 2.8 let ``PASSWORD_VALIDATORS`` name: what it
+        returns must be a ``base``.
         """
         self.setting = setting
         self.base = base
+        self.factories = factories
         self._read = read or (lambda: cast(str, getattr(settings, setting)))
         self._kept: tuple[object, tuple[T, ...]] | None = None
         self._lock = threading.Lock()
@@ -124,7 +129,28 @@ class BackendHandler[T]:
                 ``base``, or refuses its keyword arguments.
         """
         path, options = _named(named)
-        found = backend_class(self.setting, path, self.base)
+        if self.factories:
+            try:
+                found = import_backend(path)
+            except ImportError as exc:
+                raise ImproperlyConfigured(f"{self.setting}: {exc}") from exc
+            if callable(found) and not isinstance(found, type):
+                made = self._called(found, path, options)
+                if not isinstance(made, self.base):
+                    raise ImproperlyConfigured(
+                        f"{self.setting}: {path!r} made no {self.base.__name__}."
+                    )
+                return made
+        return self._called(backend_class(self.setting, path, self.base), path, options)
+
+    def _called(
+        self, found: Callable[..., object], path: str, options: Mapping[str, Any]
+    ) -> T:
+        """What ``found`` makes of ``options``.
+
+        Raises:
+            ImproperlyConfigured: It refuses them.
+        """
         try:
             return cast(T, found(**options))
         except TypeError as exc:

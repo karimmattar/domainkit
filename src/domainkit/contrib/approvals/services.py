@@ -59,6 +59,7 @@ from domainkit.http.access import BasePermission, OfflineContext
 from domainkit.http.errors import transient
 from domainkit.log import ThrottledLog
 from domainkit.money import MoneyError
+from domainkit.reporting import report_error
 
 from .exceptions import (
     ApprovalNotNeeded,
@@ -254,8 +255,8 @@ async def record_submission(
     its ``maker_rule``, which ``POST /requests`` asks of the maker, are
     asked only when the command runs (``maker_not_allowed``), and only of
     a maker that is a user's id, with ``domainkit.contrib.auth``
-    installed, on a connection without credentials, where a
-    ``maker_rule`` that reads them refuses. A maker that names no user is
+    installed, on a call without credentials: there, rules about scopes
+    do not limit, and a step-up refuses. A maker that names no user is
     never asked. A guard ``http=False`` is submitted too.
 
     Raises:
@@ -863,10 +864,10 @@ async def _check_maker(guard: Guard, maker: str) -> None:
     submitting runs nothing. It is asked in the request's tenant, where
     the run is (a guard ``everywhere``: as where no tenant is served).
     The rule sees the user on a call of its own, outside any request,
-    with no credentials (``OfflineContext``): a rule about the submitting
-    request itself (its scopes, a step-up) was checked when the request
-    was submitted, and one that needs such credentials refuses here, as
-    does one that raises an error of its own (``_allows``). A
+    with no credentials (``OfflineContext``). Rules about scopes were
+    checked when the request was submitted over HTTP; here no scopes are
+    found, which is no limit, so they do not limit. A step-up refuses
+    here, as does a rule that raises an error of its own (``_allows``). A
     ``DomainError`` it raises fails the run with its code, as in 2.8, and
     a transient error is raised for the run to be tried again. A maker
     that names no user (a principal of the project's own) is left to the
@@ -904,13 +905,15 @@ async def _allows(
 ) -> bool:
     """Whether ``rule`` allows ``user`` on a call of their own, outside any request.
 
-    Each is asked on a new ``OfflineContext``, so what one call keeps in
-    its ``state`` no other sees. A transient error (``transient``: a
-    timeout, a connection lost, a database busy or out of reach) and the
-    errors of ``raised`` go up, for the caller to try again or to answer.
-    A rule that raises any other refuses, and is logged by its class and
-    the error's, never the error's text: a run it would fail is not tried
-    again for it, nor is a list of approvers lost.
+    Each is asked on a new ``OfflineContext``, a request context of its
+    own. A transient error (``transient``: a timeout, a connection lost, a
+    backend or a database out of reach) and the errors of ``raised`` go
+    up, for the caller to try again or to answer. A rule that raises any
+    other refuses: it is logged by its class and the error's, never the
+    error's text, and reported (``report_error``), as a run that failed
+    was in 2.8, so the mistake still reaches whoever watches the errors. A
+    run it would fail is not tried again for it, nor is a list of
+    approvers lost.
     """
     try:
         return await rule.has_permission(
@@ -923,10 +926,11 @@ async def _allows(
         rule_log.warning(
             "rule_raised",
             name,
-            "The access rule %s raised %s asked outside a request; it refuses",
+            "The access rule %s, asked outside a request, raised %s: it refuses",
             name,
             type(exc).__name__,
         )
+        report_error(exc, rule=name)
         return False
 
 

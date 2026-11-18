@@ -18,8 +18,7 @@ depended on a concrete thing where an interface would do.
   reads `request.query_params`, `request.app`, or `request.user`, raised
   there instead of answering. The run sat in a `try` that caught only
   `DomainError`, so the worker tried it again until it dead-lettered it,
-  and `approvers_of` raised for every caller. `request.state` was shared
-  too: what one call kept, every later call saw.
+  and `approvers_of` raised for every caller.
 - **Settings that name backend classes are loaded by hand** (ARCH-09).
   `utils.delivery.load_backend` imports, checks the class, and makes it.
   Five more loaders did the same with their own checks:
@@ -108,34 +107,45 @@ How others do it:
   `state`; and a `state` of its own. Code that asks rules outside a
   request (a task, a command) makes one per call.
 - Approvals asks a guard's `maker_rule` and a policy's `approver_rule` on
-  a new `OfflineContext` each time, as `POST /domainkit.approvals.execute`.
-  What a rule raises is told apart:
+  a new `OfflineContext` each time, as `POST /domainkit.approvals.execute`:
+  each rule on a request context of its own (A28-SEC-07). What a rule
+  raises is told apart:
   - A transient error goes up, so the run is tried again as before, and
     `approvers_of` raises it: a rule that could not answer has not
-    refused, and an approved command is not lost to a blip.
-    `domainkit.http.errors.transient` says which: `OSError` (timeouts and
-    lost connections among them), `ServiceBusy`, an `UpstreamError` that
-    may not happen again, and what
-    `database_refusal` already answers with 503 (a pool out of
-    connections, a statement cancelled or lost to another transaction, a
-    server out of reach or a connection SQLAlchemy invalidated). It reuses
-    that classification rather than keeping a second list. An
-    `UpstreamError` is transient when it comes from a timeout, a failed
-    connection, a 5xx answer, or a host's open circuit (`CircuitOpen`,
-    `CallTimeout`). It is not where trying again cannot change it:
-    `ResponseTooLarge` (the answer stays as long) and `WriteOnceIgnored`
-    (the store ignores `If-None-Match`), by their pinned codes, so the
-    serving layer imports no HTTP client for them; one that is, or comes
-    from, a `DomainError` (the guard's `UnsafeURL`: a private address) or
-    `ImproperlyConfigured` (`RendererNotConfigured`); and one that comes
-    from a 4xx answer other than 408 and 429, read on the error's chain.
+    refused, and an approved command is not lost to an outage.
+    `domainkit.http.errors.transient` says which. It reads the error and
+    what it was raised from: its `__cause__`, or else its `__context__`
+    unless that is suppressed, 16 deep at most, the first that settles it
+    deciding. Transient: `ConnectionError`, `TimeoutError`,
+    `socket.gaierror`, `ServiceBusy`, the framework's own errors of a
+    backend out of reach (`CacheUnavailable`, `LedgerUnavailable`,
+    `BrokerUnavailable`), and what `database_refusal` already answers with
+    503 (a pool out of connections, a statement cancelled or lost to
+    another transaction, a server out of reach or a connection SQLAlchemy
+    invalidated), reusing that classification rather than keeping a second
+    list. Not transient: a `DomainError` (the guard's `UnsafeURL`, a
+    private address), `ImproperlyConfigured` (`RendererNotConfigured`), an
+    `UpstreamError` whose `retryable` is False (`ResponseTooLarge`: the
+    answer stays as long; `WriteOnceIgnored`: the store ignores
+    `If-None-Match`), a 4xx answer other than 408 and 429, and another
+    answer of the database. An `UpstreamError` nothing settles (a 5xx
+    answer, `CircuitOpen`, `CallTimeout`) is transient. An exception group
+    is transient if an error it holds is. Other `OSError`s
+    (`FileNotFoundError`, `PermissionError`, a certificate refused) are
+    not: retrying cannot mend them.
   - A maker rule's `DomainError` fails the request with its own code, as in
-    2.8: it is the rule's answer, not a mistake.
+    2.8: it is the rule's answer, not a mistake. An approver rule's leaves
+    the user out.
   - Any other error is a mistake in the rule, and refuses: the maker may
     not make the command (`maker_not_allowed`, the request fails once),
     and the user is not an approver. It is logged as a warning by the
     rule's class and the error's, never the error's text, a line per rule
-    a while (`ThrottledLog`).
+    a while (`ThrottledLog`), and reported to the error reporters
+    (`report_error`), as 2.8 reported the run that failed, so the mistake
+    reaches whoever watches the errors.
+- `UpstreamError.retryable` (a class attribute, True by default) says
+  whether trying again may succeed, so a subclass says which side it is
+  on itself, rather than a list of codes in the serving layer.
 
 ### Settings that name backend classes
 
@@ -147,7 +157,9 @@ How others do it:
 - `domainkit.conf.backends.BackendHandler[T](setting, base, read=None)`
   stands for one setting. `read` returns one path, or a sequence of paths,
   each alone or with its keyword arguments; by default
-  `settings.<setting>`. `backend_class()` and `create()` load the one
+  `settings.<setting>`. With `factories=True`, a path may name a function
+  that makes one, whose result is checked: `PASSWORD_VALIDATORS` takes
+  one, as 2.8 did. `backend_class()` and `create()` load the one
   class a setting names; `instances()` makes one instance of each class a
   setting names, kept while the settings object is the one loaded, as
   `registry.settings` keeps app settings, and made again under a lock so
@@ -170,9 +182,14 @@ How others do it:
   tests under one settings object, together.
 - `Settings` refuses a `RATE_LIMIT_BACKEND` of no form that could load
   (`BACKEND_PATH`). `check` and the application's start refuse one that
-  does not import, or names a class without `hit` (`backends.E001`):
-  staging and production do not start, and elsewhere it is logged, and
-  the first request is refused with what is wrong. The class is not
+  does not import, or names a class without `hit`, where something counts
+  with it (`backends.E001`): `RATE_LIMIT`, a route's `Throttle`, or auth's
+  attempt throttles, which auth's own check names. Staging and production
+  do not start, and elsewhere it is logged, and the first request is
+  refused with what is wrong. Where nothing counts with it, `check` warns
+  instead (`backends.W001`): a minor release does not stop a deployment
+  over a setting nothing uses. The worker's task rates fall under the
+  warning: the worker is not the application `check` builds. The class is not
   imported when the settings load: the default one lives in
   `domainkit.http.ratelimit`, so every process, every command, and every
   `override_settings` would import the HTTP stack, which neither loading
@@ -182,7 +199,8 @@ How others do it:
   and `AUTH.PASSWORD_VALIDATORS` use handlers: they take names that
   packages offer, and their instances are made once per settings object
   rather than once per value for the process. `PasswordValidator` is
-  `runtime_checkable`: a validator class needs `validate` and `help_text`.
+  `runtime_checkable`: a validator class, or what a function named in its
+  place makes, needs `validate` and `help_text`.
   Auth's `setup()` loads the backends, the authentication classes, and the
   validators, as before.
 - The handlers of caches, storages, brokers, ledgers, and connections are
@@ -194,21 +212,22 @@ How others do it:
   offline as on a route. One that needs a request (a header, a step-up)
   refuses there, as the docs said; one with a mistake refuses and is
   logged, and no longer dead-letters the run or breaks `approvers_of`.
-  One that meets a timeout, an outgoing call that may succeed later, or
-  a database out of reach is tried again, as before, and one that refuses
-  with a `DomainError` names its code, as before. A mistake that raises
-  an `OSError` (a file not found) is taken for a transient error and
-  tried again until it is dead-lettered. So is an `UpstreamError` that
-  names its 4xx answer only in its message, as an identity provider's
-  refusal of a code does (`ProviderError`): nothing on it says which.
+  One that meets a connection, a backend, or a database out of reach, a
+  timeout, or an outgoing call that may succeed later is tried again, as
+  before, and one that refuses with a `DomainError` names its code, as
+  before. An `UpstreamError` that names its 4xx answer only in its
+  message, as an identity provider's refusal of a code does
+  (`ProviderError`), is still tried again until it is dead-lettered:
+  nothing on it says which.
 - A rule meant for both places can say so by annotating `RuleContext`.
   The built-in rules keep their annotations, so a project's subclass of
   one passes its type check as before.
 - Newly refused, each a configuration that could not have worked where it
   was used: a `RATE_LIMIT_BACKEND` of no form that loads (with the
-  settings), one that does not import or has no `hit`, even where nothing
-  counts with it (`backends.E001`), and a password validator class without
-  `validate` or `help_text` (at `setup()`). docs/upgrading.md says so.
+  settings), one that does not import or has no `hit` where something
+  counts with it (`backends.E001`; a warning, `backends.W001`, where
+  nothing does), and a password rule without `validate` or `help_text`
+  (at `setup()`). docs/upgrading.md says so.
 - An error that a misconfigured auth class raised as `TypeError` (a class
   that wants arguments) is now `ImproperlyConfigured`, naming the setting.
 - `override_settings` gives auth's classes new instances, so a test that

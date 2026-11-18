@@ -1,16 +1,19 @@
 """Access rules asked outside a request: ``RuleContext`` and ``OfflineContext``.
 
-A28-ARCH-08. The rules read a Starlette connection. Approvals asked a
-guard's maker rule and a policy's approver rule on one connection the
-whole process shared, whose scope had no ``query_string`` or ``app`` and
-no user: a rule written for routes raised there instead of answering, the
-run was tried again until it was dead-lettered, ``approvers_of`` raised
-for every caller, and what a rule kept in ``request.state`` was seen by
-every later call. Each call is now a whole connection of its own, and a
-rule that raises refuses, logged (ADR 0196).
+A28-ARCH-08, A28-SEC-07. The rules read a Starlette connection.
+Approvals asked a guard's maker rule and a policy's approver rule on a
+connection whose scope had no ``query_string`` or ``app`` and no user: a
+rule written for routes raised there instead of answering, the run was
+tried again until it was dead-lettered, and ``approvers_of`` raised for
+every caller. Each rule is now asked on a request context of its own; a
+rule that raises a mistake of its own refuses, logged and reported, and
+a transient error is still raised for the run to be tried again (ADR
+0196).
 """
 
 import logging
+import socket
+import ssl
 from typing import Any, ClassVar, Final
 from uuid import uuid4
 
@@ -20,6 +23,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy.exc import DBAPIError, OperationalError
 from starlette.requests import HTTPConnection
 
+from domainkit.broker.base import BrokerUnavailable
+from domainkit.cache import caches
+from domainkit.cache.base import CacheUnavailable
+from domainkit.conf import override_settings
 from domainkit.contrib.approvals import (
     MakerNotAllowed,
     Policy,
@@ -27,6 +34,7 @@ from domainkit.contrib.approvals import (
     approvers_of,
     guard,
     requires_approval,
+    services,
 )
 from domainkit.contrib.approvals.guards import Guard
 from domainkit.contrib.approvals.services import _check_maker
@@ -48,6 +56,7 @@ from domainkit.http.access import (
 from domainkit.http.client import CallTimeout, CircuitOpen, ResponseTooLarge
 from domainkit.http.errors import transient
 from domainkit.http.guard import UnsafeURL
+from domainkit.ledger.base import LedgerUnavailable
 from domainkit.management.base import run_async
 from domainkit.storage.s3 import WriteOnceIgnored
 from domainkit_tests.test_approvals_api import decide
@@ -62,7 +71,7 @@ from domainkit_tests.test_auth_admin import token_for
 HOLDS: Final = "accounting.add_account"
 """The permission the guards' policies name their approvers by."""
 RAISED: Final = (
-    "The access rule Raises raised LookupError asked outside a request; it refuses"
+    "The access rule Raises, asked outside a request, raised LookupError: it refuses"
 )
 """What is logged of a rule that raised: its class and the error's, not its text."""
 
@@ -264,9 +273,17 @@ def test_a_maker_rule_reads_a_whole_call_of_its_own(
 def test_a_maker_rule_that_raises_refuses_the_run_and_is_logged(
     client: TestClient,  # noqa: F811 - the fixture.
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Its error is the rule's mistake: the maker may not make the command."""
+    """Its error is the rule's mistake: the maker may not make the command.
+
+    It is reported too, as a run that failed was in 2.8.
+    """
     maker = str(person("maker"))
+    reported: list[tuple[BaseException, dict[str, object]]] = []
+    monkeypatch.setattr(
+        services, "report_error", lambda exc, **context: reported.append((exc, context))
+    )
 
     with (
         caplog.at_level(logging.WARNING, "domainkit.contrib.approvals.services"),
@@ -281,6 +298,8 @@ def test_a_maker_rule_that_raises_refuses_the_run_and_is_logged(
     ]
     assert line == RAISED
     assert "a mistake in the rule" not in caplog.text
+    ((error, context),) = reported
+    assert (type(error), context) == (LookupError, {"rule": "Raises"})
 
 
 def test_an_approved_command_whose_maker_rule_raises_fails_once(
@@ -368,7 +387,11 @@ def test_transient_errors_are_told_apart_from_a_rules_own() -> None:
 
     assert transient(TimeoutError())
     assert transient(ConnectionResetError())
+    assert transient(socket.gaierror(socket.EAI_NONAME, "Name not known"))
     assert transient(ServiceBusy("Busy."))
+    assert transient(CacheUnavailable("The cache could not be reached."))
+    assert transient(LedgerUnavailable("The ledger could not be reached."))
+    assert transient(BrokerUnavailable("The broker could not be reached."))
     assert transient(UpstreamError())
     assert transient(CircuitOpen("Calls to the payments service fail at once."))
     assert transient(gone)
@@ -377,6 +400,129 @@ def test_transient_errors_are_told_apart_from_a_rules_own() -> None:
     assert not transient(OperationalError("SELECT 1", {}, Exception("syntax")))
     assert not transient(LookupError("a mistake"))
     assert not transient(Suspended("No."))
+    assert not transient(FileNotFoundError("flags.toml"))  # A rule's mistake.
+    assert not transient(PermissionError("flags.toml"))
+    assert not transient(ssl.SSLCertVerificationError("certificate verify failed"))
+    assert not transient(OSError("another"))
+
+
+def test_an_error_raised_from_an_outage_is_transient() -> None:
+    """Its cause is read, or what it was raised while handling, if not hidden."""
+    try:
+        try:
+            raise ConnectionResetError
+        except ConnectionResetError:
+            raise LookupError("The flag could not be read.")  # noqa: B904 - its context.
+    except LookupError as exc:
+        while_handling = exc
+    try:
+        try:
+            raise ConnectionResetError
+        except ConnectionResetError:
+            raise LookupError("A mistake of its own.") from None
+    except LookupError as exc:
+        hidden = exc
+    beyond: BaseException = ConnectionResetError()
+    for _ in range(20):  # Read 16 deep at most: an outage past that is not seen.
+        beyond = raised_from(LookupError(), beyond)
+
+    assert transient(raised_from(RuntimeError("No flags."), ConnectionRefusedError()))
+    assert transient(while_handling)
+    assert not transient(hidden)
+    assert not transient(raised_from(RuntimeError("A mistake."), LookupError()))
+    assert not transient(beyond)
+    assert transient(raised_from(UpstreamError(), beyond))  # Nothing settles it.
+
+
+def test_an_exception_group_is_transient_if_an_error_it_holds_is() -> None:
+    """As a task group raises what its tasks met."""
+    held = ExceptionGroup("calls", [ExceptionGroup("inner", [TimeoutError()])])
+
+    assert transient(ExceptionGroup("calls", [LookupError(), ConnectionResetError()]))
+    assert transient(raised_from(RuntimeError("No answer."), held))
+    assert not transient(ExceptionGroup("calls", [LookupError(), FileNotFoundError()]))
+
+
+def test_a_timeout_while_handling_an_unrelated_4xx_is_transient() -> None:
+    """The timeout says why the call failed; the 4xx before it does not."""
+    try:
+        try:
+            raise answered(404)
+        except httpx2.HTTPStatusError:
+            try:
+                raise TimeoutError("slow")
+            except TimeoutError as timeout:
+                raise CallTimeout("slow") from timeout
+    except CallTimeout as exc:
+        timed_out = exc
+
+    assert transient(timed_out)
+    assert not transient(raised_from(UpstreamError(), answered(404)))
+
+
+def test_an_upstream_error_says_itself_whether_trying_again_may_help() -> None:
+    """A subclass cannot change sides by its code: ``retryable`` says it."""
+    assert UpstreamError.retryable
+    assert CircuitOpen.retryable
+    assert CallTimeout.retryable
+    assert not ResponseTooLarge.retryable
+    assert not WriteOnceIgnored.retryable
+
+
+class Flagged(Command):
+    """A command whose maker a flag in the cache may suspend."""
+
+    note: str
+
+
+@requires_approval("tests.flagged")
+async def flagged(command: Flagged, uow: object) -> None:
+    """Do nothing: a use case whose maker rule reads the cache."""
+
+
+class NotSuspended(BasePermission):
+    """A maker rule a project might write: a suspension flag kept in the cache."""
+
+    async def has_permission(self, request: HTTPConnection, user: Any) -> bool:  # noqa: ANN401 - a user.
+        """Allow unless the cache holds a suspension of the user."""
+        return await caches["flags"].get(f"suspended:{user.id}") is None
+
+
+def test_a_cache_out_of_reach_has_the_run_tried_again_not_refused(
+    client: TestClient,  # noqa: F811 - the fixture.
+) -> None:
+    """Redis down while a maker rule reads it: the run fails and is tried again.
+
+    The request is not failed for good (``maker_not_allowed``), as 2.8
+    did not fail it: once the cache is back, the run can go on.
+    """
+    down = {
+        "URL": "redis://127.0.0.1:9/0",
+        "KEY_PREFIX": "down",
+        "CONNECT_TIMEOUT": 0.5,
+    }
+    with override_settings(CACHES={"default": {}, "flags": down}):
+        guard(
+            "tests.flagged",
+            flagged,
+            unit_of_work=object,
+            policies=[Policy("tests.flagged", permission=HOLDS)],
+            maker_rule=NotSuspended(),
+            domain="alpha",
+        )
+        maker = person("maker")
+        person("holder", HOLDS)
+        made = submitted("tests.flagged", Flagged(note="x"), maker)
+        shown = {"id": str(made.id), "fingerprint": made.fingerprint}
+        approved = decide(client, shown, token_for("holder")).json()
+        assert approved["status"] == "approved"
+
+        drained = run_async(drain())
+
+    done = stored(made.id)
+    assert drained.failures
+    assert all("CacheUnavailable" in failure for failure in drained.failures)
+    assert (done.status, done.reason) == (RequestStatus.APPROVED, "")
 
 
 def raised_from(error: Exception, cause: BaseException) -> Exception:

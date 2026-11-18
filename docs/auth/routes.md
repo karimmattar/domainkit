@@ -177,24 +177,32 @@ policy's `approver_rule` in `approvers_of`
 on an `OfflineContext` (*new in 2.9*): a call of its own, by the user, of
 no client. It has the method and path it is given, no headers, query,
 cookies, or session data, no credentials (`request.auth` is None, so
-`scopes_of(request)` is None), and a `request.state` that no other call
-sees. A rule reads it as it reads a request. A rule that needs what only
-a request carries, such as a header or a step-up, refuses there.
+`scopes_of(request)` is None), and a `request.state` of its own. A rule
+reads it as it reads a request. With no scopes there is no limit, so
+rules about scopes (`HasScope`, `IsUnscoped`, `AllowScoped`) do not
+limit there: approvals checks them when the request is submitted over
+HTTP. A rule that needs what only a request carries, such as a header or
+a step-up, refuses there.
 
 When such a rule raises, approvals tells three kinds of error apart:
 
-- A transient one: a timeout, a connection refused or lost, `ServiceBusy`,
-  an outgoing call that may succeed later (an `UpstreamError` of a
-  timeout, a failed connection, a 5xx answer, or a host's circuit open;
-  not an answer too large to read, a 4xx answer but 408 and 429, or a
-  refusal of the guard), or a database that is busy or out of reach
-  (`domainkit.http.errors.transient`, *new in 2.9*). It goes up, and the
-  run is tried again, as any run that meets one is; `approvers_of` raises
-  it.
+- A transient one (`domainkit.http.errors.transient`, *new in 2.9*): a
+  connection that failed (`ConnectionError`), a timeout, a host name that
+  did not resolve, `ServiceBusy`, a cache, ledger, or broker out of reach
+  (`CacheUnavailable`, `LedgerUnavailable`, `BrokerUnavailable`), an
+  outgoing call that may succeed later (an `UpstreamError` of a 5xx
+  answer, or a host's circuit open; not an answer too large to read, a
+  4xx answer but 408 and 429, or a refusal of the guard), or a database
+  that is busy or out of reach. An error raised from one of these (its
+  cause) counts as one, and so does an exception group that holds one.
+  Another `OSError`, such as a file not found, does not. It goes up, and
+  the run is tried again, as any run that meets one is; `approvers_of`
+  raises it.
 - A `DomainError` of a maker rule. The approved request fails with the
   error's own code, as in 2.8. An approver rule's leaves the user out.
-- Any other error, a mistake in the rule. It refuses, and is logged as a
-  warning by the rule's class and the error's, never the error's text:
+- Any other error, a mistake in the rule. It refuses, is logged as a
+  warning by the rule's class and the error's, never the error's text,
+  and is reported to the error reporters (`domainkit.reporting`):
   the request fails with `maker_not_allowed`, once, and `approvers_of`
   leaves the user out.
 

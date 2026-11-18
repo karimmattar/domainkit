@@ -330,6 +330,7 @@ class AuthConfig(DomainConfig):
             )
         problems.extend(self._mailing_problems(app))
         problems.extend(self._unshared_throttles(required=True))
+        problems.extend(_uncountable_attempts(auth_settings()))
         problems.extend(
             CheckMessage(
                 "auth.E106",
@@ -1000,15 +1001,40 @@ def _check_middleware() -> None:
             )
 
 
-def _counted_per_process(config: AuthSettings) -> bool:
-    """Whether attempts are throttled, in a backend each process keeps alone."""
+def _throttles_attempts(config: AuthSettings) -> bool:
+    """Whether some attempts are counted: a rate of ``config`` is set."""
     rates = (
         config.LOGIN_RATE,
         config.EMAIL_RATE,
         config.MFA.RATE,
         config.MFA.ADDRESS_RATE,
     )
-    if all(rate is None for rate in rates):
+    return any(rate is not None for rate in rates)
+
+
+def _uncountable_attempts(config: AuthSettings) -> list[CheckMessage]:
+    """``backends.E001``: attempts counted with a ``RATE_LIMIT_BACKEND`` that cannot.
+
+    Said here only without ``RATE_LIMIT``: with it, the core says so.
+    """
+    if settings.RATE_LIMIT is not None or not _throttles_attempts(config):
+        return []
+    try:
+        rate_limit_backend.backend_class()
+    except ImproperlyConfigured as exc:
+        return [
+            CheckMessage(
+                "backends.E001",
+                f"{exc} AUTH's attempt throttles count with it.",
+                f"Name a class with hit(key, limit, period), such as {REDIS_BACKEND}.",
+            )
+        ]
+    return []
+
+
+def _counted_per_process(config: AuthSettings) -> bool:
+    """Whether attempts are throttled, in a backend each process keeps alone."""
+    if not _throttles_attempts(config):
         return False
     try:
         backend = rate_limit_backend.backend_class()

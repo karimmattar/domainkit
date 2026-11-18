@@ -89,6 +89,7 @@ class WriteOnceIgnored(StorageError, UpstreamError):
 
     status_code: ClassVar[int] = 503
     code: ClassVar[str] = "direct_upload_unavailable"
+    retryable: ClassVar[bool] = False  # The store ignores the header every time.
     detail: ClassVar[str] = (
         "Uploads straight to storage are not available; upload through the API."
     )

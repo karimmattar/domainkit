@@ -821,8 +821,10 @@ throttles of `domainkit.contrib.auth` then count only the attempts that
 fail. `MemoryBackend` and `RedisBackend` are both refunding backends.
 
 A path that does not import, or a class without `hit`, is refused by
-`check` and as the application starts (`backends.E001`, since 2.9): in
-staging and production it does not start. Each counter makes its own
+`check` and as the application starts where something counts with it
+(`backends.E001`, since 2.9: `RATE_LIMIT`, a `Throttle`, or auth's
+attempt throttles): in staging and production it does not start. Where
+nothing counts with it yet, `check` warns (`backends.W001`). Each counter makes its own
 instance, once: the global limit and the throttles of an application,
 the counts of refused credentials and of attempts of
 `domainkit.contrib.auth`, and the worker's task rates. Their counts stay

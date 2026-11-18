@@ -380,28 +380,41 @@ No migration.
   `approver_rule`, in `approvers_of`, are asked on a new `OfflineContext`
   each time: the query, the headers, and the cookies are empty,
   `request.user` is the user asked about, `request.auth` is None, and
-  `request.state` is that call's alone. A rule that kept a value in
-  `request.state` for later calls no longer finds it there. A rule that
-  raises an error of its own, neither a `DomainError` nor a transient one
-  (a timeout, a connection lost, an outgoing call that may succeed later,
-  a database busy or out of reach), refuses, and is logged as a warning by its class and its error's: the request
-  fails with `maker_not_allowed` at once, where 2.8 ran it again until it
-  was dead-lettered, and `approvers_of` leaves that rule's users out,
-  where 2.8 raised
+  `request.state` starts empty. A rule that raises an error of its own
+  refuses, is logged as a warning by its class and its error's, and is
+  reported to the error reporters: the request fails with
+  `maker_not_allowed` at once, where 2.8 ran it again until it was
+  dead-lettered, and `approvers_of` leaves that rule's users out, where
+  2.8 raised. For a maker rule, a `DomainError` still fails the request
+  with its own code; for an approver rule, it leaves the user out, as
+  any other error of the rule's. A transient error (a connection, a
+  cache, ledger, or broker out of reach, a timeout, an outgoing call that
+  may succeed later, a database busy or out of reach) is still raised,
+  so the run is tried again; another `OSError`, such as a file not found,
+  is the rule's own
   ([Rules asked outside a request](auth/routes.md#rules-asked-outside-a-request)).
 - **`RATE_LIMIT_BACKEND` is checked before it counts.** A value that is
   neither a dotted path (`module.Class`, `module:Class`) nor a name a
   package offers is refused with the settings. One that does not import,
   or names a class without `hit(key, limit, period)`, is refused by
-  `check` and as the application starts (`backends.E001`): staging and
-  production do not start, and elsewhere the first request that counts
-  is refused, with the reason. 2.8 refused these only where a request was
-  counted, with an error of the call. A project with such a value, and no
-  `RATE_LIMIT` or throttle that counts with it, removes the setting or
-  names a backend.
+  `check` and as the application starts where something counts with it
+  (`backends.E001`): `RATE_LIMIT`, a route's `Throttle`, or auth's attempt
+  throttles. Staging and production do not start, and elsewhere the
+  first request that counts is refused, with the reason. 2.8 refused
+  these only where a request was counted, with an error of the call.
+  Where nothing counts with it, `check` warns (`backends.W001`), and
+  `check --deploy` stops on the warning: remove the setting or name a
+  backend, or list `backends.W001` in `SILENCED_CHECKS`. The worker's
+  task rates count with it too, and fail where they first count.
+- **`domainkit.http.ratelimit.load_backend` is gone.** It was not public.
+  Call `domainkit.http.ratelimit.rate_limit_backend.create()` for a new
+  backend of `RATE_LIMIT_BACKEND`'s class, or
+  `rate_limit_backend.backend_class()` for the class.
 - **A password rule needs `validate` and `help_text`.** A
   `PASSWORD_VALIDATORS` class without both is refused at startup
   (`ImproperlyConfigured`), where 2.8 failed when the rules were listed.
+  A `NAME` may still name a function that makes the rule, as in 2.8;
+  what it makes is checked the same way.
 - **Auth's classes are made once per settings object.** The backends,
   hashers, authentication classes, and password rules of `AUTH` are made
   again when `override_settings` (or the `settings` fixture) changes any

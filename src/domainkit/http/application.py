@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Final
 
 from fastapi import APIRouter, FastAPI
+from fastapi.dependencies.models import Dependant
 from fastapi.telemetry import TelemetryConfig
 from starlette.types import Message, Receive, Scope, Send
 
@@ -18,7 +19,7 @@ from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db.drivers import connect_args
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.http.access import route_rule_problems
+from domainkit.http.access import route_rule_problems, served_routes
 from domainkit.http.apidocs import OPENAPI_PATH, docs_routes
 from domainkit.http.blocking import watch_event_loop
 from domainkit.http.errors import ErrorResponse, install_exception_handlers
@@ -27,7 +28,7 @@ from domainkit.http.openapi import (
     install_openapi,
     operation_id,
 )
-from domainkit.http.ratelimit import rate_limit_backend
+from domainkit.http.ratelimit import Throttle, rate_limit_backend
 from domainkit.http.routing import (
     flatten_routes,
     index_routes,
@@ -251,7 +252,8 @@ def application_problems(app: FastAPI) -> list[str]:
     its path must name a parameter it has, before its rules
     (``tenancy.E001``, ``tenancy.E002``); an optional app's middleware
     needs the app (``apps.E003``), and ``RATE_LIMIT_BACKEND`` a class with
-    ``hit`` (``backends.E001``). Domains report through
+    ``hit`` where something counts with it (``backends.E001``). Domains
+    report through
     ``domainkit.apps.hooks.on_check_application``.
     """
     problems: list[str] = [
@@ -259,7 +261,7 @@ def application_problems(app: FastAPI) -> list[str]:
         for problem in duplicate_operation_ids(app)
     ]
     problems.extend(middleware_without_its_app())
-    problems.extend(backend_problems())
+    problems.extend(backend_problems(app))
     if settings.REQUIRE_ROUTE_RULES:
         problems.extend(
             CheckMessage("security.E101", problem)
@@ -295,27 +297,70 @@ def middleware_without_its_app() -> list[str]:
     return problems
 
 
-def backend_problems() -> list[str]:
-    """``backends.E001``: ``RATE_LIMIT_BACKEND`` names no rate-limit backend.
+BACKEND_HINT: Final = (
+    "Name a class with hit(key, limit, period), such as "
+    "domainkit.http.ratelimit.RedisBackend, or a name an installed package "
+    "offers in its domainkit.backends entry points."
+)
+"""How to mend a ``RATE_LIMIT_BACKEND`` that names no rate-limit backend."""
 
-    The global limit, each ``Throttle``, auth's counts of attempts, and the
-    worker's task rates make one where they first count, and would fail
-    there: a path that does not import, or a class without ``hit``, is
-    refused before then (since 2.9, ADR 0196).
+
+def backend_problems(app: FastAPI) -> list[str]:
+    """``backends.E001``: something counts with a ``RATE_LIMIT_BACKEND`` that cannot.
+
+    The global limit (``RATE_LIMIT``) and a route's ``Throttle`` make one
+    where they first count, and would fail there: a path that does not
+    import, or a class without ``hit``, is refused before then (since
+    2.9, ADR 0196). Auth's attempt throttles say so of their own.
     """
+    problem = _backend_problem()
+    if problem is None or not _counts_requests(app):
+        return []
+    return [CheckMessage("backends.E001", problem, BACKEND_HINT)]
+
+
+def backend_warnings(app: FastAPI) -> list[str]:
+    """``backends.W001``: a ``RATE_LIMIT_BACKEND`` that cannot count, unused yet.
+
+    Neither ``RATE_LIMIT`` nor a ``Throttle`` counts with it, so it fails
+    nothing yet: a deployment is not stopped over it. The worker's task
+    rates, and a throttle or a limit added later, would fail where they
+    first count.
+    """
+    problem = _backend_problem()
+    if problem is None or _counts_requests(app):
+        return []
+    return [
+        CheckMessage(
+            "backends.W001",
+            f"{problem} Nothing counts with it now: neither RATE_LIMIT nor a Throttle.",
+            BACKEND_HINT,
+        )
+    ]
+
+
+def _counts_requests(app: FastAPI) -> bool:
+    """Whether ``RATE_LIMIT`` is set, or a route of ``app`` has a ``Throttle``."""
+    return settings.RATE_LIMIT is not None or any(
+        dependant is not None and _throttles(dependant)
+        for _, dependant in served_routes(app.routes)
+    )
+
+
+def _throttles(dependant: Dependant) -> bool:
+    """Whether ``dependant`` depends on a ``Throttle``, at any depth."""
+    return isinstance(dependant.call, Throttle) or any(
+        _throttles(each) for each in dependant.dependencies
+    )
+
+
+def _backend_problem() -> str | None:
+    """What is wrong with ``RATE_LIMIT_BACKEND``; None if it names a backend."""
     try:
         rate_limit_backend.backend_class()
     except ImproperlyConfigured as exc:
-        return [
-            CheckMessage(
-                "backends.E001",
-                str(exc),
-                "Name a class with hit(key, limit, period), such as "
-                "domainkit.http.ratelimit.RedisBackend, or a name an installed "
-                "package offers in its domainkit.backends entry points.",
-            )
-        ]
-    return []
+        return str(exc)
+    return None
 
 
 def check_started(app: FastAPI) -> None:

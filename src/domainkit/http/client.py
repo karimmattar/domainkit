@@ -223,6 +223,7 @@ class ResponseTooLarge(httpx2.RequestError, UpstreamError):
 
     status_code: ClassVar[int] = 502
     code: ClassVar[str] = "upstream_response_too_large"
+    retryable: ClassVar[bool] = False  # The answer stays as long.
     detail: ClassVar[str] = (
         "A service this one depends on answered with more than can be read."
     )

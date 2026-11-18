@@ -358,10 +358,12 @@ _validators: Final[BackendHandler[PasswordValidator]] = BackendHandler(
     "AUTH.PASSWORD_VALIDATORS",
     PasswordValidator,
     lambda: _named(auth_settings().PASSWORD_VALIDATORS),
+    factories=True,
 )
 """``AUTH.PASSWORD_VALIDATORS``, by path or by name, with their options (ADR 0196).
 
-Each class needs ``validate`` and ``help_text`` (since 2.9).
+Each needs ``validate`` and ``help_text`` (since 2.9): a class, or a
+function that makes one, as in 2.8.
 """
 
 
