@@ -125,9 +125,10 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && !failure() && github.event_name != 'schedule' }}
     runs-on: ubuntu-24.04
-    # The suite takes about 4 minutes on the runner's 4 cores; a
-    # slower runner must not fail it.
-    timeout-minutes: 30
+    # Under coverage, which follows the processes the tests start (ADR
+    # 0191), the suite takes 14 to 26 minutes on a hosted runner; it has as
+    # long as integration's suite, so a slow runner does not fail it.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
