@@ -1,6 +1,6 @@
 # 0048. Give every request a deadline, answer 503 when it passes, and pass it on
 
-- Status: Accepted; amended 2026-10-25, 2026-10-26 and 2026-10-28 (at the end); amended by [0186](0186-answer-a-commit-as-committed-a-lost-database-as-unavailable-start-loudly-and-name-the-probes-once.md)
+- Status: Accepted; amended 2026-10-25, 2026-10-26, 2026-10-28 and 2026-11-18 (at the end); amended by [0186](0186-answer-a-commit-as-committed-a-lost-database-as-unavailable-start-loudly-and-name-the-probes-once.md)
 - Date: 2026-10-20
 
 ## Context
@@ -300,3 +300,128 @@ not named: the 27 cases of both modules passed with settling on, and only
 the installed-releases test (with its message) and the three rows of the
 range table that name 0.32 failed.
 
+## Amendment (2026-11-18, 2.8.2): a unit of work gives its connection back however it is cancelled
+
+A cancellation can reach a unit of work's close as well as its work:
+once, as a deadline cancels, or again at every wait, as an anyio cancel
+scope does. The consequence above said such cleanup needs shielding. Two
+SQLAlchemy steps do not complete when they are cut: its
+`SessionTransaction.close` stops before `Connection.close()` when its
+`ROLLBACK` is cut, and its discard of a connection (one whose statement
+was cut, whose reset failed, or which was found closed as it left the
+pool) first awaits a graceful close, on asyncpg and on aiosqlite, which
+the cancellation cuts in turn. Either way the pool did not have the
+connection back. And a statement cut under an anyio scope ran on to its
+end on the server: `_keep_cut_off`, cancelled again as it waited for
+the settling, closed asyncpg's socket at once (`Connection.terminate()`),
+which drops the cancel request asyncpg had yet to send, so the statement
+kept its locks and its server process while the pool opened another
+connection.
+
+Decision (A28-SEC-06):
+
+- Work that is not being cancelled closes its session in its own task,
+  with no task made and no shield (`_close`). The session's transaction
+  is read before the close; if anything ends the close early, the
+  connections it held are invalidated at once, without I/O
+  (`Connection.invalidate`, which returns the pool slot), and the error
+  goes on. A connection already closed is left alone, so no
+  `ResourceClosedError` replaces the cancellation.
+- Work already being cancelled (it raised `CancelledError`, or its task
+  has a cancellation pending, `Task.cancelling()`) closes in an owned
+  task (`domainkit.tasks.spawn`, named `domainkit.db.close`), which no
+  cancellation of the work reaches, and the work waits for it under
+  `anyio.CancelScope(shield=True)` for at most `SETTLE_TIMEOUT` (2
+  seconds). The task bounds itself by the same moment: a timer
+  invalidates the connections the session held, then cancels the close.
+  In that order `_keep_cut_off` finds them invalidated and does not
+  settle and keep them, and a second cancellation of the waiting work
+  leaves no close unbounded.
+- `_keep_cut_off`, cancelled again as it waits for the settling, calls
+  the settling off and leaves the connection to SQLAlchemy's discard,
+  below; it no longer closes the socket itself.
+- domainkit's engines on asyncpg and aiosqlite discard a connection
+  without awaiting its close (`do_terminate`, `_discard_at_once`), so a
+  discard always ends and the pool has the slot back at once.
+  aiosqlite's thread is stopped, as SQLAlchemy does outside a greenlet,
+  and the connection's transaction ends with it. An asyncpg connection
+  closes gracefully in an owned task (named `domainkit.db.discard`),
+  which no cancellation of the discarding work reaches: asyncpg first
+  sends the cancel request a cut statement left pending and reads the
+  server's answer to it, so the server has stopped that statement, then
+  says `Terminate`, and the server ends the transaction with its locks.
+  Past `SETTLE_TIMEOUT` the task closes the socket at once. A discard
+  outside a greenlet (a connection the garbage collector found) closes
+  the socket at once, as SQLAlchemy does there. psycopg keeps
+  SQLAlchemy's discard; nothing here proves it.
+- A connection a cut close discards is replaced: the pool opens another.
+
+Rejected:
+
+- A task for every close: the same safety, but a task on every unit of
+  work of every request.
+- `anyio.CancelScope(shield=True)` around every close. It would keep the
+  connection a cut close now discards, but holds off only anyio's
+  cancellations, not asyncio's, costs a scope on every unit of work, and
+  a bound on it cancels the close again.
+- `asyncio.shield` in a loop until the close ends, as SQLAlchemy's own
+  `AsyncSession.__aexit__` does since 1.4.40 (#8145): under an anyio
+  scope each wait is cancelled at once, so it spins for the whole close,
+  and it has no bound.
+- Cancelling the close at the bound without invalidating first: on
+  asyncpg `_keep_cut_off` would keep a connection whose `ROLLBACK` it cut.
+- Leaving the close of cancelled work to the background at once: the
+  503 would come before the rollback released the transaction's locks,
+  as the 0.11 amendment rejected for settling.
+- Finding the connections through the session alone: a statement cut as
+  its transaction begins holds a connection the session's transaction
+  does not list yet, and a connection found closed as it leaves the pool
+  was never the session's. SQLAlchemy's own discard has to end, which a
+  discard that awaits nothing makes so.
+- Keeping SQLAlchemy's graceful close in the discard, shielded: a shield
+  holds off only anyio's cancellations, and asyncio's own still cuts the
+  graceful close.
+- Closing a discarded asyncpg connection at once, in the discard or in
+  `_keep_cut_off` (`Connection.terminate()`): it ends as surely, but
+  asyncpg drops the cancel request a cut statement left pending, so the
+  server runs that statement to its end, with its locks and its process,
+  and logs an unexpected EOF for the missing `Terminate`.
+
+Costs, measured with the ladder against the branch point:
+
+- 5 or 6 more Python calls per request for each unit of work, from the
+  close's read of the session's transaction and the check for a
+  cancellation: `read` 1,669 to 1,675, `write` 2,049 to 2,054,
+  `resource-command` (two units of work) 2,720 to 2,730. No statement,
+  round trip, checkout or module more; the rungs without a unit of work
+  are unchanged.
+- A task only for work already being cancelled.
+- A connection a cut close discards costs the pool a new one: 20 ms and
+  a server process on PostgreSQL, as the 0.11 amendment measured. The
+  cut close of a healthy database is rare: a `ROLLBACK` takes 0.1 ms.
+- A discarded asyncpg connection is not the pool's while it closes, for
+  as long as the server takes to answer what was cut, at most
+  `SETTLE_TIMEOUT`: for that time the server can hold, besides the
+  pool's connections, one for each connection closing.
+
+`test_db_cancelled_close.py` holds the cases, on SQLite and PostgreSQL,
+under an anyio scope and under asyncio's cancellation: a cut as the
+transaction begins, in the close of work that ended normally, with an
+error, or after a flushed write, in a statement, in a savepoint's
+rollback, as the pool replaces a connection found closed, and twenty
+cut closes in a row; and a discarded asyncpg connection closed
+gracefully, or at once when that fails. `test_db_cut_off.py` holds a
+statement holding a lock, cut under an anyio scope and under asyncio's
+cancellation: the server stops it and the lock is free at once.
+`test_request_deadlines.py` holds the HTTP ones: a cut under a
+`BaseHTTPMiddleware`, in an anyio and an asyncio task group, a block
+that catches the cancellation and ends, a `ROLLBACK` slower than the
+bound, a close that fails, and a second cancellation as the close runs.
+
+Sources:
+
+1. AnyIO, Cancellation and timeouts (level cancellation; shielding
+   cleanup): <https://anyio.readthedocs.io/en/stable/cancellation.html>
+2. SQLAlchemy 1.4.40 changelog, #8145 (`asyncio.shield()` in the release
+   of connections and sessions in `__aexit__()`):
+   <https://docs.sqlalchemy.org/en/20/changelog/changelog_14.html>

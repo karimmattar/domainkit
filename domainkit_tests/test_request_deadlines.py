@@ -5,12 +5,14 @@ import logging
 import math
 import os
 from collections.abc import AsyncIterator, Iterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import Any, Final
 
+import anyio
 import pytest
 from sqlalchemy import insert, select, text, update
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.util import await_only
 from starlette.types import Message, Receive, Scope, Send
 
 from domainkit import deadlines, setup
@@ -28,7 +30,7 @@ from domainkit.http.deadlines import DeadlineMiddleware, RequestTimeout, lift
 from domainkit.testing import AsyncTestClient, assert_num_queries
 from domainkit_tests import deadline_routes
 from domainkit_tests.conftest import POSTGRES_VARIABLE
-from domainkit_tests.sample_routes import payments
+from domainkit_tests.sample_routes import PaymentsUnitOfWork, payments
 
 pytestmark = pytest.mark.anyio
 
@@ -41,6 +43,9 @@ MIDDLEWARE = [
     "domainkit.http.middleware.RequestBodyLimitMiddleware",
 ]
 LOGGER = "domainkit.http.deadlines"
+BOUNDED: Final = pytest.mark.timeout(30, method="signal")
+"""For the tests of work cut off: each is bounded, so one that regresses
+fails rather than hangs."""
 
 
 @pytest.fixture(autouse=True)
@@ -349,6 +354,249 @@ async def test_cancellation_leaves_no_transaction_key_or_connection(
         assert len(await rows(payments)) == 1
         [stored] = await rows(idempotency_keys)
         assert stored.status_code == 201
+
+
+async def cut_off(client: AsyncTestClient, path: str) -> tuple[Any, float]:
+    """POST ``path``, which writes and waits, and pass its deadline once it waits.
+
+    Returns the answer, and the seconds it came after the deadline passed.
+    A request that never answers fails the test.
+    """
+    deadline_routes.paying.clear()
+    deadline_routes.arrivals.value = 0
+    loop = asyncio.get_running_loop()
+    async with asyncio.timeout(10):
+        pending = asyncio.create_task(client.post(path, json={}))
+        await deadline_routes.arrivals.reach(1)  # Written, not committed.
+        [deadline] = deadline_routes.paying
+        assert deadline is not None
+        deadline.reset(0.0)  # The deadline passes now, mid-transaction.
+        passed = loop.time()
+        answer = await pending
+    return answer, loop.time() - passed
+
+
+def checked_out() -> int:
+    """The connections of the default pool not given back."""
+    return connections.pool_stats()["default"]["checked_out"]
+
+
+async def busy_sessions() -> int:
+    """The database's other sessions that are not idle: in a transaction, say."""
+    async with connections.engine().connect() as connection:
+        busy = await connection.scalar(
+            text(
+                "SELECT count(*) FROM pg_stat_activity WHERE datname = "
+                "current_database() AND pid <> pg_backend_pid() AND state <> 'idle'"
+            )
+        )
+    return int(busy or 0)
+
+
+def closes_failed(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    """What ``spawn`` logged of the closes of work cut off that failed."""
+    said = f"Background task {uow_module.CLOSE_TASK!r} failed"
+    logged = [r for r in caplog.records if r.name == "domainkit.tasks"]
+    return [r for r in logged if r.getMessage() == said]
+
+
+def close_task() -> "asyncio.Task[None]":
+    """The task closing the session of work cut off, still running."""
+    [closing] = [
+        task
+        for task in asyncio.all_tasks()
+        if task.get_name() == uow_module.CLOSE_TASK and not task.done()
+    ]
+    return closing
+
+
+@pytest.mark.parametrize(
+    ("path", "middleware"),
+    [
+        ("/slow-pay", ("domainkit_tests.deadline_routes.InATask",)),
+        ("/slow-pay-in-a-group?group=anyio", ()),
+        ("/slow-pay-in-a-group?group=asyncio", ()),
+    ],
+    ids=[
+        "under-base-http-middleware",
+        "in-an-anyio-task-group",
+        "in-an-asyncio-task-group",
+    ],
+)
+@BOUNDED
+async def test_work_cut_off_gives_its_connection_back_under_any_cancellation(
+    database_url: str, path: str, middleware: tuple[str, ...]
+) -> None:
+    """The pool has its connection back when the 503 is sent, on time.
+
+    So it is under an anyio cancel scope, which cancels every wait until it
+    exits (the task group a ``BaseHTTPMiddleware`` serves the route in, or
+    one the route opens), and in an asyncio task group, which cancels once.
+    """
+    async with paying(
+        database_url, middleware=middleware, REQUEST_TIMEOUT=30.0
+    ) as client:
+        for _ in range(3):
+            answer, took = await cut_off(client, path)
+            assert answer.status_code == 503
+            assert answer.json()["code"] == "deadline_exceeded"
+            assert took < 1.0  # The close waited for is a rollback.
+            assert checked_out() == 0
+        assert await rows(payments) == []
+        if ON_POSTGRES:
+            assert await busy_sessions() == 0  # Rolled back, not left open.
+        deadline_routes.hang_payments[:] = [False]
+        assert (await client.post("/slow-pay", json={})).status_code == 201
+        assert checked_out() == 0
+
+
+@BOUNDED
+async def test_work_that_goes_on_after_its_cancellation_still_closes(
+    database_url: str,
+) -> None:
+    """A block that catches an anyio scope's cancellation and ends still closes.
+
+    The scope would cancel the close too: the unit of work sees that a
+    cancellation is pending (``Task.cancelling``), not only one it is
+    handed.
+    """
+    async with paying(database_url):
+        async with asyncio.timeout(10):
+            with anyio.CancelScope() as scope:
+                async with PaymentsUnitOfWork() as uow:
+                    await uow.session.execute(insert(payments))
+                    await uow.session.flush()
+                    scope.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await asyncio.sleep(10)
+        assert checked_out() == 0
+        assert await rows(payments) == []
+
+
+@BOUNDED
+async def test_a_rollback_slower_than_the_bound_discards_the_connection(
+    database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``ROLLBACK`` that does not answer within ``SETTLE_TIMEOUT`` is given up on.
+
+    The close hangs on a driver that will not answer (aiosqlite whose
+    thread the cut stopped is the real case). At the bound the connection
+    is invalidated, which takes it out of the pool at once, and the close
+    is cancelled; the cancellation lands in the ``ROLLBACK``. On
+    PostgreSQL the cancellation reaches ``_keep_cut_off``, which must not
+    settle and keep a connection already invalidated: it is discarded, the
+    pool opens a fresh one, and the server is left with no busy session of
+    its own.
+    """
+    monkeypatch.setattr(uow_module, "SETTLE_TIMEOUT", 0.2)
+    answering = asyncio.Event()  # Never set: the ROLLBACK does not answer.
+    rolling: list[asyncio.Task[Any] | None] = []
+    async with paying(database_url, REQUEST_TIMEOUT=30.0) as client:
+        dialect = connections.engine().sync_engine.dialect
+
+        def hung(dbapi_connection: Any) -> None:  # noqa: ANN401 - the driver's.
+            rolling.append(asyncio.current_task())  # The close's.
+            if ON_POSTGRES:
+                # A real statement in flight, so the bound's cancellation
+                # lands in asyncpg and reaches _keep_cut_off.
+                driver = dbapi_connection.driver_connection
+                await_only(driver.execute("SELECT pg_sleep(1)"))
+            else:
+                await_only(answering.wait())  # pragma: no cover - never answers.
+
+        with monkeypatch.context() as patched:
+            patched.setattr(dialect, "do_rollback", hung)
+            answer, took = await cut_off(client, "/slow-pay")
+            assert answer.status_code == 503
+            assert 0.2 <= took < 2.0  # Answered at the bound.
+            assert checked_out() == 0  # Invalidated, out of the pool.
+            [task] = rolling
+            assert task is not None
+            assert task.get_name() == uow_module.CLOSE_TASK
+            async with asyncio.timeout(5):
+                await asyncio.wait([task])
+            assert task.cancelled()
+        assert checked_out() == 0
+        if ON_POSTGRES:
+            for _ in range(100):  # The orphaned backend ends; none is kept.
+                if await busy_sessions() == 0:
+                    break
+                await asyncio.sleep(0.1)
+            assert await busy_sessions() == 0
+        deadline_routes.hang_payments[:] = [False]
+        assert (await client.post("/slow-pay", json={})).status_code == 201
+        assert checked_out() == 0
+
+
+@BOUNDED
+async def test_a_close_that_fails_is_logged_and_the_cut_still_answered(
+    database_url: str,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cancellation goes on: 503, not the close's error; that is logged."""
+    real_close = AsyncSession.close
+
+    async def failing_close(session: AsyncSession) -> None:
+        await real_close(session)
+        raise RuntimeError("The close failed.")
+
+    caplog.set_level(logging.ERROR, "domainkit.tasks")
+    async with paying(database_url, REQUEST_TIMEOUT=30.0) as client:
+        with monkeypatch.context() as patched:
+            patched.setattr(AsyncSession, "close", failing_close)
+            answer, _ = await cut_off(client, "/slow-pay")
+        assert answer.status_code == 503
+        assert answer.json()["code"] == "deadline_exceeded"
+        assert checked_out() == 0
+    [failed] = closes_failed(caplog)
+    assert failed.exc_info is not None
+    assert str(failed.exc_info[1]) == "The close failed."
+
+
+@BOUNDED
+async def test_work_cancelled_again_as_it_closes_leaves_at_once(
+    database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Asyncio cancels once each time: another cancellation ends the wait at once.
+
+    The close is not cut off with it: it ends on its own, and gives the
+    connection back.
+    """
+    closing_started = asyncio.Event()
+    answering = asyncio.Event()
+    written = asyncio.Event()
+    real_close = AsyncSession.close
+
+    async def slow_close(session: AsyncSession) -> None:
+        closing_started.set()
+        await answering.wait()
+        await real_close(session)
+
+    async def pay() -> None:
+        async with PaymentsUnitOfWork() as uow:
+            await uow.session.execute(insert(payments))
+            await uow.session.flush()
+            written.set()
+            await asyncio.Event().wait()
+
+    async with paying(database_url):
+        with monkeypatch.context() as patched:
+            patched.setattr(AsyncSession, "close", slow_close)
+            async with asyncio.timeout(10):
+                work = asyncio.create_task(pay())
+                await written.wait()
+                work.cancel()  # The cut.
+                await closing_started.wait()
+                work.cancel()  # Again, while it closes.
+                with pytest.raises(asyncio.CancelledError):
+                    await work
+                assert checked_out() == 1  # Still closing.
+                closing = close_task()
+                answering.set()
+                await closing
+        assert checked_out() == 0
+        assert await rows(payments) == []
 
 
 @pytest.mark.parametrize(

@@ -41,6 +41,15 @@ never published), with each section below.
 2.9 follows up the audit of 2.8. Each item of this list says what a
 project that relied on 2.8's behaviour changes, and what to run.
 
+- **A discarded PostgreSQL connection closes in the background**
+  (since 2.8.2). With asyncpg, a connection the pool discards, such as
+  one cut off under an anyio cancel scope, gives its pool slot back at
+  once and closes in a task of its own within 2 seconds, while the pool
+  may open another. For that time the server can hold more connections
+  than the pool: a pool sized to `max_connections` exactly needs room
+  for them. The close cancels a statement cut off on the connection, so
+  the server logs `canceling statement due to user request` for it, as
+  for a statement a deadline cuts.
 - **`diffsettings` shows each domain's settings.** `AUTH`, `APPROVALS`,
   `LIMITS`, and every other installed domain's setting print as the
   domain's schema validated them, with its defaults, where 2.8 printed

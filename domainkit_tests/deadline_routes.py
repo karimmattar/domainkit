@@ -9,6 +9,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
+import anyio
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy import insert, text, update
@@ -178,6 +179,23 @@ async def slow_pay() -> dict[str, Any]:
             await forever()
         await uow.commit()
     return {"paid": True}
+
+
+@router.post("/slow-pay-in-a-group", status_code=201)
+async def slow_pay_in_a_group(group: str) -> dict[str, Any]:
+    """``/slow-pay`` in a task of a task group: ``anyio``'s, or ``asyncio``'s.
+
+    The deadline cancels the request's task, and its task group cancels the
+    payment's: anyio's cancel scope at every wait until the task ends,
+    asyncio's once.
+    """
+    if group == "anyio":
+        async with anyio.create_task_group() as tasks:
+            tasks.start_soon(slow_pay)
+    else:
+        async with asyncio.TaskGroup() as group_of_tasks:
+            group_of_tasks.create_task(slow_pay())
+    return {"paid": True}  # pragma: no cover - the deadline cuts it off.
 
 
 @router.post("/locked-pay")

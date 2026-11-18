@@ -31,10 +31,11 @@ from sqlalchemy.exc import PendingRollbackError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import Pool
 
-from domainkit import deadlines
+from domainkit import deadlines, tasks
 from domainkit.conf import DatabaseConfig, override_settings
 from domainkit.db import Reads, connections
 from domainkit.db.connections import create_engine, create_read_engine
+from domainkit.db.uow import lock_key
 from domainkit_tests.conftest import POSTGRES_VARIABLE
 from domainkit_tests.engine_events import watching
 from domainkit_tests.gadgets import GadgetsUnitOfWork, gadgets, make_gadget, metadata
@@ -57,6 +58,13 @@ asyncpg_only = pytest.mark.skipif(
 )
 SLEEP = text("SELECT pg_sleep(5)")
 """A statement only a cancellation ends in time."""
+SLEEPING = text(
+    "SELECT count(*) FROM pg_stat_activity WHERE state = 'active' "
+    "AND query = 'SELECT pg_sleep(5)' AND pid <> pg_backend_pid()"
+)
+"""How many connections run ``SLEEP`` on the server."""
+TRY_LOCK = text("SELECT pg_try_advisory_xact_lock(:key)")
+"""Whether an advisory lock is free: taken, and let go as its transaction ends."""
 
 
 @pytest.fixture
@@ -164,12 +172,30 @@ async def assert_clean(database_url: str) -> None:
     assert await idle_in_transaction(database_url) == 0
 
 
+async def discarded() -> None:
+    """Wait for the closes of discarded connections, within their bound.
+
+    A discarded asyncpg connection closes in a task of its own
+    (``_terminate_asyncpg``): it reads the server's answer to what was cut
+    before it says goodbye, at most ``SETTLE_TIMEOUT`` later.
+    """
+    closing = [
+        task
+        for task in tasks.owned()
+        if task.get_name() == connections_module._DISCARD_TASK and not task.done()
+    ]
+    if closing:
+        async with asyncio.timeout(connections_module.SETTLE_TIMEOUT + 1.0):
+            await asyncio.wait(closing)
+
+
 async def eventually_clean(database_url: str) -> None:
     """``assert_clean``, once the server has ended what a closed connection left.
 
-    A connection closed without its transaction rolled back keeps its locks
-    until the server notices it went away.
+    A discarded connection's close runs in the background (``discarded``),
+    and its transaction keeps its locks until the server has ended it.
     """
+    await discarded()
     for _ in range(50):
         if not await locks_held(database_url):
             break
@@ -328,8 +354,10 @@ async def test_a_unit_of_work_going_on_after_begin_was_cut_off_commits(
 async def test_a_write_after_an_anyio_scope_cut_begin_off_is_committed(
     tables: None, database: str
 ) -> None:
-    """As above, under an anyio cancel scope: the connection is closed, as before.
+    """As above, under an anyio cancel scope: the connection is discarded.
 
+    It closes in the background once the server's answer to the cut
+    ``BEGIN`` has come: until then the server holds that transaction open.
     The pool does not ping, and SQLAlchemy may hand the closed connection
     out again (its close was cancelled too): the pool replaces it.
     """
@@ -391,6 +419,65 @@ async def test_a_transaction_cut_off_refuses_to_go_on(
         await uow.commit()
     assert await committed(database) == ["after", "first"]
     await assert_clean(database)
+
+
+async def lock_free_at(database_url: str, name: str) -> float:
+    """The loop's time once no connection runs ``SLEEP`` and lock ``name`` is free.
+
+    Asked every 50 ms, from another connection, for at most 6 seconds.
+    """
+    loop = asyncio.get_running_loop()
+    other = create_async_engine(database_url)
+    try:
+        async with other.connect() as connection:
+            for _ in range(120):
+                async with connection.begin():  # Its end lets the lock go.
+                    free = await connection.scalar(TRY_LOCK, {"key": lock_key(name)})
+                    sleeping = await connection.scalar(SLEEPING)
+                if free and not sleeping:
+                    return loop.time()
+                await asyncio.sleep(0.05)
+    finally:
+        await other.dispose()
+    raise AssertionError(f"Lock {name!r} still held")
+
+
+@asyncpg_only
+@pytest.mark.parametrize("repeating", [True, False], ids=["anyio-scope", "asyncio"])
+async def test_a_statement_cut_off_ends_on_the_server_with_its_locks(
+    tables: None, database: str, repeating: bool
+) -> None:
+    """The server stops a cut statement, and its transaction's lock is free at once.
+
+    The transaction holds an advisory lock while ``SLEEP`` runs, 5
+    seconds. Cancelled once, as asyncio does, the connection settles and
+    is kept, its transaction rolled back. Cancelled again as it settles,
+    as an anyio cancel scope does, it is discarded, and its close sends
+    the cancel request all the same. Either way no connection runs the
+    statement and the lock is free well before the statement would end.
+    """
+
+    async def hold() -> None:
+        async with GadgetsUnitOfWork() as uow:
+            await uow.lock("held")
+            await uow.session.execute(SLEEP)
+
+    await store("made")
+    started = asyncio.get_running_loop().time()
+    with PoolEvents() as events:
+        if repeating:
+            with anyio.move_on_after(0.3):
+                await hold()
+        else:
+            holding = asyncio.create_task(hold())
+            await asyncio.sleep(0.3)
+            holding.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await holding
+        freed = await lock_free_at(database, "held") - started
+    assert freed < 2.0  # Cut at 0.3 seconds; uncut, it runs to 5.
+    assert events.counts[1] == (1 if repeating else 0)  # Discarded, or kept.
+    await eventually_clean(database)
 
 
 @asyncpg_only
