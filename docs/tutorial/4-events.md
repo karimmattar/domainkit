@@ -18,7 +18,8 @@ stops in the middle, it runs the reaction again.
 
 A handler is an async function that takes an event. You mark it with
 `@handles`, in `controllers.py`. When the domain starts, it subscribes
-every marked handler of that file. Add a handler that writes each
+every marked handler of that file. Open
+`src/domains/accounts/controllers.py` and add a handler that writes each
 deposit to the log. A real one would update a statement, or tell
 another service.
 

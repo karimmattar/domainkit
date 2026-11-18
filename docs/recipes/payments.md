@@ -45,8 +45,9 @@ write.
 ### Step 2: give the wallet a balance and its rules
 
 An amount is `Money` ([money.md](../money.md)): an exact amount and its
-currency, `{"amount": "5.00", "currency": "USD"}` in JSON. Give the
-wallet a balance, and write the methods:
+currency, `{"amount": "5.00", "currency": "USD"}` in JSON. In
+`src/domains/wallets/domain/model.py`, give the wallet a balance, and
+write the methods:
 
 ```python title="src/domains/wallets/domain/model.py"
 from domainkit.ddd import Digits
@@ -101,7 +102,8 @@ from a wallet of dollars raises `CurrencyMismatch`, which answers 422
 The use case changes two aggregates. It locks both rows in one statement,
 by ascending id (`get_many_for_update`). So two payments between the same
 wallets take the locks in the same order, and cannot deadlock. `uow.run`
-runs the whole function again when its transaction loses a race:
+runs the whole function again when its transaction loses a race. Write
+it in `src/domains/wallets/application/services.py`:
 
 ```python title="src/domains/wallets/application/services.py"
 from domainkit.ddd import ConcurrentUpdate, Retry
@@ -133,7 +135,8 @@ The work enters the unit of work itself: `run` never runs part of an
 On PostgreSQL, a `SERIALIZABLE` transaction fails when it could not have
 run one after the other with the payments around it; the payment then
 runs again, instead of breaking a rule across rows. On SQLite, such units
-of work begin with `BEGIN IMMEDIATE`, and run one at a time:
+of work begin with `BEGIN IMMEDIATE`, and run one at a time. Set the
+isolation in `src/domains/wallets/infrastructure/unit_of_work.py`:
 
 ```python title="src/domains/wallets/infrastructure/unit_of_work.py"
 from domainkit.db import Isolation
@@ -153,8 +156,9 @@ python manage.py migrate
 
 ### Step 6: test the payment, and a lost race
 
-Replace the tests that `addcommand` wrote for the payment, and add one in
-which the first commit loses a race:
+Replace the tests that `addcommand` wrote for the payment, in
+`tests/domains/wallets/test_pay_wallet.py`, and add one in which the
+first commit loses a race:
 
 ```python title="tests/domains/wallets/test_pay_wallet.py"
 from domainkit.ddd import ConcurrentUpdate

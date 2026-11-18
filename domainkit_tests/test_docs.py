@@ -1055,3 +1055,52 @@ def test_a_snippet_that_does_not_parse_or_import_is_named(tmp_path: Path) -> Non
         "docs/_snippet_probe.md:4: invalid syntax (line 2 of the snippet)",
         "docs/_snippet_probe.md:9: domainkit.tenancy has no nothing_here",
     ]
+
+
+_TITLED = re.compile(r'^```\S* title="(?P<path>[^"]+)"$', re.MULTILINE)
+_SECTION_START = re.compile(r"^#{1,6} .*$", re.MULTILINE)
+
+
+def unnamed_files(text: str) -> list[str]:
+    """The files that the page's titled blocks name in their title only.
+
+    GitHub shows a block's language, not its title, so the prose since the
+    heading above the block names the file too, in a code span. A ``*`` in
+    a title, a migration's revision, stands for any part of a file name.
+    """
+    unnamed = []
+    for found in _TITLED.finditer(text):
+        path = found["path"].removesuffix(" (new file)")
+        prose = _SECTION_START.split(_FENCE.sub("", text[: found.start()]))[-1]
+        name = re.escape(path).replace(r"\*", r"[^`/]+")
+        if not any(
+            re.fullmatch(name, span) for span in re.findall(r"`([^`]+)`", prose)
+        ):
+            unnamed.append(path)
+    return unnamed
+
+
+def test_every_titled_block_names_its_file_where_github_shows_it() -> None:
+    """A reader on GitHub sees which file each block makes or changes."""
+    assert [
+        f"{page.relative_to(ROOT)}: {path}"
+        for page in pages()
+        if "adr" not in page.parts
+        for path in unnamed_files(page.read_text(encoding="utf-8"))
+    ] == []
+
+
+def test_a_file_named_only_in_its_title_is_found() -> None:
+    """The prose of the block's own section counts, not an earlier one's."""
+    page = (
+        "## One\n\nMake `a.py`:\n\n"
+        '```python title="a.py (new file)"\nx = 1\n```\n\n'
+        "## Two\n\n```bash\n# b.py\n```\n\nMake this new file:\n\n"
+        '```python title="b.py"\nx = 1\n```\n\n'
+        "Edit `migrations/0002_<id>_x.py`:\n\n"
+        '```python title="migrations/0002_*_x.py"\nx = 1\n```\n\n'
+        "Edit `a.py` again:\n\n"
+        '```python title="c/a.py"\nx = 1\n```\n'
+    )
+
+    assert unnamed_files(page) == ["b.py", "c/a.py"]
