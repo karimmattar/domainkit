@@ -1,6 +1,6 @@
 # 0175. Bound a PDF's page content, check an act's upload once, and read a signed body last
 
-- Status: Accepted; amended 2026-11-17 (at the end)
+- Status: Accepted; amended 2026-11-17 (at the end), and by [0181](0181-decide-a-body-limit-per-request-count-before-the-rules-hand-over-the-file-received-and-bound-the-xml-parsed.md)
 - Date: 2026-11-17
 
 ## Context

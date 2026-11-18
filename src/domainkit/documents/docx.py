@@ -29,24 +29,33 @@ grammar, within the same ``ArchiveLimits``.
 
 The archive is read within ``ArchiveLimits``, so a zip bomb costs no
 more than they allow: its files are stored or deflated, plain relative
-names, each inflated no further than the size the archive states. The
-XML is read as UTF-8 with lxml, without entities, DTDs, or anything
-outside the part: a part that declares a DTD or an entity is refused
-before it is parsed (Word writes none), and the parser resolves any
-outside reference to nothing. It is written back with the namespace
-prefixes it had: Word reads ``mc:Ignorable`` by prefix. Values are text,
-escaped as they are written, so a value cannot add markup. Every other
-part of the archive is written back unchanged, in its order.
+names, each inflated no further than the size the archive states. Each
+is checked a piece at a time, then inflated whole only when it is
+parsed or written back, one at a time. The XML parsed is bounded in all
+before it is parsed, by its bytes and by the nodes they can make, and
+so is what ``fill_docx`` writes in it (New in 2.8): lxml keeps up to
+340 bytes of memory a node, some 90 times the bytes of the densest XML.
+Each call parses in a thread of its own, which ends with it, and takes
+with it the names lxml keeps for the thread. The XML is read as UTF-8
+with lxml, without entities, DTDs, or anything outside the part: a part
+that declares a DTD or an entity is refused before it is parsed (Word
+writes none), and the parser resolves any outside reference to nothing.
+It is written back with the namespace prefixes it had: Word reads
+``mc:Ignorable`` by prefix. Values are text, escaped as they are
+written, so a value cannot add markup. Every other part of the archive
+is written back unchanged, in its order.
 """
 
 import io
 import re
 import struct
+import threading
 import unicodedata
 import zipfile
 import zlib
 from bisect import bisect_right
-from collections.abc import Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from itertools import accumulate
 from typing import Any, Final
@@ -96,11 +105,18 @@ NAME_SEGMENT: Final = re.compile(r"[^\x00-\x1f\x7f\\:]+")
 NOT_XML: Final = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
 """Characters XML 1.0 cannot hold."""
 BREAKS: Final = re.compile(r"([\n\t])")
+BREAK_NODES: Final = 3
+"""What a line break or tab of a value adds once written: its element, the
+``w:t`` of the text after it, and that text's ``xml:space``."""
 SHOWN: Final = 40
 """The most characters of a malformed placeholder an error quotes."""
 GRACE: Final = 100 * 1024
 """Bytes a part may inflate to before its ratio counts (Apache POI's grace)."""
 MiB: Final = 1024 * 1024
+CHUNK: Final = MiB
+"""Bytes of a file inflated at a time when it is only checked."""
+DAMAGED: Final = (zipfile.BadZipFile, EOFError, OSError, zlib.error)
+"""What ``zipfile`` raises for a file it cannot inflate as the archive states."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -124,7 +140,9 @@ class ArchiveLimits:
     The defaults hold any contract or letter; a template full of large
     images may need more ``max_bytes``. The ratio is Apache POI's
     ``ZipSecureFile`` default (an entry inflated past 100 times its size,
-    once past 100 KiB).
+    once past 100 KiB). The XML parsed, the content types and the parts
+    filled, and what ``fill_docx`` writes in it, are bounded in all before
+    any is parsed or written, by ``max_xml_bytes`` and ``max_nodes``.
     """
 
     max_bytes: int = 32 * MiB
@@ -137,6 +155,17 @@ class ArchiveLimits:
     """Every file, inflated."""
     max_ratio: int = 100
     """Inflated size over stored size, for a file past 100 KiB."""
+    max_xml_bytes: int = 12 * MiB
+    """The XML parsed, inflated, and the values ``fill_docx`` writes in it,
+    in UTF-8, in all (New in 2.8)."""
+    max_nodes: int = 1_000_000
+    """The nodes the XML parsed may make, the placeholders its text may
+    hold, and the elements its values add, in all (New in 2.8). The nodes
+    are counted on its bytes before it is parsed: each ``<`` twice (a tag,
+    and the text before it), each ``=`` once (an attribute). A paragraph's
+    ``{{`` counts once more each, before its placeholders are read; each
+    line break or tab of a value written counts three times (a break, the
+    text after it, and its ``xml:space``), before it is written."""
 
 
 def fill_docx(
@@ -169,27 +198,24 @@ def fill_docx(
     """
     etree = _etree()
     given = _checked(values)
-    files = _read(document, limits or ArchiveLimits())
-    parts = {info.filename: data for info, data in files}
-    found: dict[str, None] = {}  # Ordered, as written.
-    malformed: list[str] = []
-    changed: dict[str, bytes] = {}
-    for name in _filled_parts(etree, parts):
-        root = _parse(etree, parts[name], name)
-        if _fill(etree, root, given, found, malformed):
-            changed[name] = etree.tostring(
-                root.getroottree(),
-                xml_declaration=True,
-                encoding="UTF-8",
-                standalone=root.getroottree().docinfo.standalone,
-            )
-    valueless = set() if allow_missing else found.keys() - given.keys()
-    unused = set() if allow_unused else given.keys() - found.keys()
-    if allow_malformed:
-        malformed = []
-    if valueless or unused or malformed:
-        raise PlaceholderError(missing=valueless, unused=unused, malformed=malformed)
-    return _written(files, changed)
+    bounds = limits or ArchiveLimits()
+
+    def fill() -> bytes:
+        with _opened(document, bounds) as archive:
+            found: dict[str, None] = {}  # Ordered, as written.
+            malformed: list[str] = []
+            changed = _filled(etree, archive, _Budget(bounds), given, found, malformed)
+            valueless = set() if allow_missing else found.keys() - given.keys()
+            unused = set() if allow_unused else given.keys() - found.keys()
+            if allow_malformed:
+                malformed = []
+            if valueless or unused or malformed:
+                raise PlaceholderError(
+                    missing=valueless, unused=unused, malformed=malformed
+                )
+            return _written(archive, changed)
+
+    return _alone(fill)
 
 
 def placeholders(
@@ -207,13 +233,80 @@ def placeholders(
             or holds a DTD.
     """
     etree = _etree()
-    files = _read(document, limits or ArchiveLimits())
-    parts = {info.filename: data for info, data in files}
-    found: dict[str, None] = {}
-    malformed: list[str] = []
-    for name in _filled_parts(etree, parts):
-        _fill(etree, _parse(etree, parts[name], name), {}, found, malformed)
-    return Placeholders(names=tuple(found), malformed=tuple(malformed))
+    bounds = limits or ArchiveLimits()
+
+    def read() -> Placeholders:
+        found: dict[str, None] = {}
+        malformed: list[str] = []
+        with _opened(document, bounds) as archive:
+            _filled(etree, archive, _Budget(bounds), {}, found, malformed)
+        return Placeholders(names=tuple(found), malformed=tuple(malformed))
+
+    return _alone(read)
+
+
+def _alone[T](work: Callable[[], T]) -> T:
+    """``work()``, in a thread of its own that ends with it.
+
+    lxml keeps every element and attribute name a thread parses in a
+    dictionary of that thread's, for as long as the thread lives: a pool's
+    thread that read documents of 250,000 names each grew by 700 MiB over
+    80 of them. A thread's dictionary goes with it. The thread costs about
+    0.4 ms a call.
+    """
+    done: list[T] = []
+    failed: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            done.append(work())
+        except BaseException as error:  # noqa: BLE001 - raised again in the caller.
+            failed.append(error)
+
+    thread = threading.Thread(target=run, name="domainkit.documents.docx")
+    thread.start()
+    thread.join()
+    if failed:
+        raise failed.pop()
+    return done.pop()
+
+
+def _filled(
+    etree: Any,  # noqa: ANN401 - lxml has no types.
+    archive: zipfile.ZipFile,
+    budget: "_Budget",
+    values: Mapping[str, str],
+    found: dict[str, None],
+    malformed: list[str],
+) -> dict[str, bytes]:
+    """Each part filled with ``values``, written, by name: those that changed.
+
+    Each part's tree is dropped before the next is parsed. Adds to
+    ``found`` and ``malformed`` as ``_fill`` does.
+
+    Raises:
+        DocumentError: A part is past ``budget``, or not XML ``_parse``
+            reads.
+    """
+    changed: dict[str, bytes] = {}
+    costs = {
+        name: (
+            len(value.encode()),
+            BREAK_NODES * (value.count("\n") + value.count("\t")),
+        )
+        for name, value in values.items()
+    }
+    for info in _filled_parts(etree, archive, budget):
+        root = _xml(etree, archive, info, budget)
+        if _fill(etree, root, values, found, malformed, budget, costs):
+            changed[info.filename] = etree.tostring(
+                root.getroottree(),
+                xml_declaration=True,
+                encoding="UTF-8",
+                standalone=root.getroottree().docinfo.standalone,
+            )
+        del root
+    return changed
 
 
 def _etree() -> Any:  # noqa: ANN401 - lxml has no types.
@@ -252,17 +345,17 @@ def _checked(values: Mapping[str, str]) -> dict[str, str]:
     return checked
 
 
-def _read(
-    document: bytes, limits: ArchiveLimits
-) -> list[tuple[zipfile.ZipInfo, bytes]]:
-    """Every file of the archive, in its order, within ``limits``.
+@contextmanager
+def _opened(document: bytes, limits: ArchiveLimits) -> Iterator[zipfile.ZipFile]:
+    """The archive, open, its files checked within ``limits``.
 
     The count of files and the size of the central directory are read
     from the archive's end first: ``zipfile`` reads every entry the
     directory holds before any can be counted. The sizes are checked as
     the archive states them, before anything is inflated; then each file
-    is inflated no further than its stated size, and ``zipfile`` refuses
-    one whose CRC-32 then differs, or it is kept cut to that size.
+    is inflated a piece at a time, no further than its stated size, and
+    ``zipfile`` refuses one whose CRC-32 then differs. Nothing inflated is
+    kept: a file is inflated again when it is read (``_inflated``).
 
     Raises:
         DocumentError: It is not a ZIP archive, is past a limit, is
@@ -287,10 +380,9 @@ def _read(
     with archive:
         infos = archive.infolist()
         _check_entries(infos, limits)
-        try:
-            return [(info, _inflated(archive, info)) for info in infos]
-        except (zipfile.BadZipFile, EOFError, OSError, zlib.error):
-            raise DocumentError("The document's archive is damaged.") from None
+        for info in infos:
+            _checked_whole(archive, info)
+        yield archive
 
 
 def _directory(document: bytes) -> tuple[int, int] | None:
@@ -318,10 +410,74 @@ def _inflated(archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> bytes:
     ``ZipFile.read`` asks the decompressor for up to 2 GiB at once, and
     cuts to the stated size only after: a file that states 10 bytes and
     inflates to gigabytes would be inflated whole. Asked for its stated
-    size, the decompressor stops there, and the CRC-32 is checked.
+    size, the decompressor stops there, and the CRC-32 is checked: once
+    more, as ``_opened`` checked every file first.
     """
     with archive.open(info) as part:
         return part.read(info.file_size)
+
+
+def _checked_whole(archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> None:
+    """Inflate one file as ``_inflated`` does, a piece at a time, keeping nothing.
+
+    Raises:
+        DocumentError: The file is damaged.
+    """
+    left = info.file_size
+    try:
+        with archive.open(info) as part:
+            while left > 0 and (piece := part.read(min(CHUNK, left))):
+                left -= len(piece)
+    except DAMAGED:
+        raise DocumentError("The document's archive is damaged.") from None
+
+
+class _Budget:
+    """What is left of ``ArchiveLimits``' bounds on the XML parsed, in one call."""
+
+    def __init__(self, limits: ArchiveLimits) -> None:
+        """All of it."""
+        self.limits = limits
+        self.bytes = limits.max_xml_bytes
+        self.nodes = limits.max_nodes
+
+    def take_bytes(self, size: int, *, written: bool = False) -> None:
+        """Count ``size`` bytes of XML, as stated or inflated, or ``written``.
+
+        Raises:
+            DocumentError: They are more than is left.
+        """
+        if size > self.bytes:
+            filled = ", with its values," if written else ""
+            raise DocumentError(
+                f"The document's XML{filled} is larger than "
+                f"{self.limits.max_xml_bytes:,} bytes in all."
+            )
+        self.bytes -= size
+
+    def take_nodes(self, count: int) -> None:
+        """Count ``count`` nodes, placeholders, or elements written.
+
+        Raises:
+            DocumentError: They are more than is left.
+        """
+        if count > self.nodes:
+            raise DocumentError(
+                f"The document holds more than {self.limits.max_nodes:,} elements, "
+                "texts, attributes, and placeholders in all, with its values."
+            )
+        self.nodes -= count
+
+
+def _nodes(data: bytes) -> int:
+    """The most nodes lxml makes of ``data``, counted before it is parsed.
+
+    Each ``<`` begins an element, an end tag, a comment, an instruction,
+    or a CDATA section, and may end a text; each ``=`` may give an
+    attribute or a namespace. With no DTD and no entity, nothing else
+    makes a node.
+    """
+    return 2 * data.count(b"<") + data.count(b"=")
 
 
 def _check_entries(infos: list[zipfile.ZipInfo], limits: ArchiveLimits) -> None:
@@ -376,8 +532,12 @@ def _plain(name: str) -> bool:
     )
 
 
-def _filled_parts(etree: Any, parts: Mapping[str, bytes]) -> list[str]:  # noqa: ANN401 - lxml has no types.
-    """The names of the parts whose text is filled, from ``[Content_Types].xml``.
+def _filled_parts(
+    etree: Any,  # noqa: ANN401 - lxml has no types.
+    archive: zipfile.ZipFile,
+    budget: _Budget,
+) -> list[zipfile.ZipInfo]:
+    """The parts whose text is filled, from ``[Content_Types].xml``.
 
     In a stable order, not the content types', which is the writer's: the
     body, the headers, the footers, the footnotes, then the endnotes, each
@@ -385,12 +545,13 @@ def _filled_parts(etree: Any, parts: Mapping[str, bytes]) -> list[str]:  # noqa:
 
     Raises:
         DocumentError: The archive is no .docx: it has no content types, or
-            its body is a template's or holds macros.
+            its body is a template's or holds macros; or its XML is past
+            ``budget``.
     """
-    by_lower = {name.lower(): name for name in parts}
+    by_lower = {info.filename.lower(): info for info in archive.infolist()}
     if CONTENT_TYPES.lower() not in by_lower:
         raise DocumentError("The document is not a Word document (.docx).")
-    root = _parse(etree, parts[by_lower[CONTENT_TYPES.lower()]], CONTENT_TYPES)
+    root = _xml(etree, archive, by_lower[CONTENT_TYPES.lower()], budget)
     typed = {
         (override.get("PartName") or "").lstrip("/").lower(): override.get(
             "ContentType"
@@ -408,6 +569,26 @@ def _filled_parts(etree: Any, parts: Mapping[str, bytes]) -> list[str]:  # noqa:
         for kind, name in sorted(filled, key=_read_before)
         if name in by_lower
     ]
+
+
+def _xml(
+    etree: Any,  # noqa: ANN401 - lxml has no types.
+    archive: zipfile.ZipFile,
+    info: zipfile.ZipInfo,
+    budget: _Budget,
+) -> Any:  # noqa: ANN401 - lxml has no types.
+    """The root element of the part ``info`` names, within ``budget``.
+
+    Its stated size is counted before it is inflated, and the nodes its
+    bytes may make before they are parsed.
+
+    Raises:
+        DocumentError: It is past ``budget``, or not XML ``_parse`` reads.
+    """
+    budget.take_bytes(info.file_size)
+    data = _inflated(archive, info)
+    budget.take_nodes(_nodes(data))
+    return _parse(etree, data, info.filename)
 
 
 def _read_before(part: tuple[str, str]) -> tuple[int, list[str | int]]:
@@ -476,23 +657,37 @@ def _fill(
     values: Mapping[str, str],
     found: dict[str, None],
     malformed: list[str],
+    budget: _Budget,
+    costs: Mapping[str, tuple[int, int]],
 ) -> bool:
     """Fill each paragraph under ``root``; whether any text changed.
 
     Adds the names of the placeholders met to ``found``, in order, and the
-    text of braces that make no placeholder to ``malformed``.
+    text of braces that make no placeholder to ``malformed``. Each ``{{``
+    of a paragraph is counted in ``budget`` before its placeholders are
+    read: a character reference (``&#123;``) makes one where the bytes
+    showed none. What each value written adds, its bytes and the nodes of
+    its line breaks and tabs (``costs``, by name), is counted before a
+    paragraph is written: the template says how many times a value is.
+
+    Raises:
+        DocumentError: The placeholders, or what the values add, are past
+            ``budget``.
     """
     changed = False
     for texts in _paragraphs(etree, root):
         joined = "".join(text.text or "" for text in texts)
         if "{{" not in joined and "}}" not in joined:
             continue
+        budget.take_nodes(joined.count("{{"))
         matches = list(PLACEHOLDER.finditer(joined))
         if stray := _stray(joined, matches):
             malformed.append(stray)
         found.update(dict.fromkeys(match[1] for match in matches))
         known = [match for match in matches if match[1] in values]
         if known:
+            budget.take_bytes(sum(costs[match[1]][0] for match in known), written=True)
+            budget.take_nodes(sum(costs[match[1]][1] for match in known))
             _replace(texts, known, values)
             changed = True
     return changed
@@ -590,13 +785,14 @@ def _set(text: Any, content: str) -> None:  # noqa: ANN401 - lxml has no types.
     text.set(XML_SPACE, "preserve")
 
 
-def _written(
-    files: list[tuple[zipfile.ZipInfo, bytes]], changed: Mapping[str, bytes]
-) -> bytes:
-    """The archive again: each file in its order and with its date, changed or not."""
+def _written(archive: zipfile.ZipFile, changed: Mapping[str, bytes]) -> bytes:
+    """The archive again: each file in its order and with its date, changed or not.
+
+    A file not changed is inflated as it is written, one at a time.
+    """
     out = io.BytesIO()
-    with zipfile.ZipFile(out, "w") as archive:
-        for info, data in files:
+    with zipfile.ZipFile(out, "w") as written_archive:
+        for info in archive.infolist():
             written = zipfile.ZipInfo(info.filename, date_time=info.date_time)
             written.external_attr = info.external_attr
             written.compress_type = (
@@ -604,5 +800,8 @@ def _written(
                 if info.compress_type == zipfile.ZIP_STORED
                 else zipfile.ZIP_DEFLATED
             )
-            archive.writestr(written, changed.get(info.filename, data))
+            data = changed.get(info.filename)
+            written_archive.writestr(
+                written, _inflated(archive, info) if data is None else data
+            )
     return out.getvalue()

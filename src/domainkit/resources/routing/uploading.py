@@ -27,12 +27,20 @@ the twin and the act agree on the file. The twin's checks are
 remembered for its caller (``receive_upload(remember=...)``): the act
 does not check the same content again (ADR 0175).
 
-The file's types, its size, and where it is stored may be decided per
-request: a callable given the request and the aggregate the route
-reached (None on the collection), sync or async, in place of a value.
-It runs once the reach is checked, before the body is read, on the act
-and on its twin; the storage an alias names, and the directory, are
-checked then too.
+The file's types, its size, where it is stored, and the body limit may
+be decided per request: a callable given the request and the aggregate
+the route reached (None on the collection), sync or async, in place of a
+value. It runs once the reach is checked, before the body is read, on
+the act and on its twin; the storage an alias names, and the directory,
+are checked then too. A body limit so decided holds the body from then
+on (``hold_body``), and the file to it too, whatever read the body
+before.
+
+A service that names a ``received`` parameter is given the file as it
+was received (``ReceivedUpload``), its temporary file open from its
+start, besides the stored upload in its command: it reads what the file
+holds without reading the storage again. The route closes it once the
+service is done, however it ends.
 """
 
 import dataclasses
@@ -40,7 +48,8 @@ import inspect
 import logging
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from contextlib import aclosing
-from typing import TYPE_CHECKING, Any, Final, Literal, cast
+from contextvars import ContextVar
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, cast
 from urllib.parse import unquote
 
 import anyio
@@ -50,14 +59,16 @@ from starlette.datastructures import UploadFile
 
 from domainkit.ddd.exceptions import PreconditionFailed
 from domainkit.ddd.messages import Command
+from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.errors import error_responses
+from domainkit.http.middleware import MAX_ROUTE_BODY_SIZE, hold_body
 from domainkit.http.uploads import FileType, ReceivedUpload, receive_upload
 from domainkit.storage.base import Storage, StoredUpload, new_name
 from domainkit.storage.handler import storages
 
 from ..conditional import PreconditionRequired, expected_versions
 from . import reach
-from .authorizing import SUFFIX
+from .authorizing import BY_NAME, SUFFIX
 from .commands import CommandRoute
 from .context import RouteContext
 
@@ -83,11 +94,29 @@ MAX_FORM_FIELDS: Final = 16
 CHANGED: Final = "This was changed since you read it; read it again before changing it."
 """The detail of a 412, as a command route's."""
 logger: Final = logging.getLogger(__name__)
+HANDED: ContextVar[ReceivedUpload | None] = ContextVar(
+    "domainkit.upload.handed", default=None
+)
+"""The file received for the request whose service runs, for a service that asks."""
 
 type Decided[T] = Callable[[Request, Any], T | Awaitable[T]]
 """A bound of an upload decided per request: given the request and the aggregate
 the route reached (None on the collection), it returns the bound, or an
 awaitable of it."""
+
+
+class Receiving(Protocol):
+    """A service that is given the file received too (``received=``)."""
+
+    def __call__(
+        self,
+        command: Any,  # noqa: ANN401 - as ``Service``.
+        uow: Any,  # noqa: ANN401 - as ``Service``.
+        /,
+        *,
+        received: ReceivedUpload,
+    ) -> Awaitable[Any]:
+        """Run ``command`` in ``uow``; ``received`` holds the file, open."""
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -96,9 +125,12 @@ class Bounds:
 
     types: tuple[FileType, ...]
     max_size: int
+    """The file's, never more than ``body_limit``."""
     storage: Storage
     """The storage itself: an alias is looked up when the bounds are decided."""
     directory: str
+    body_limit: int | None = None
+    """The request's, when the route decides it per request (``hold_body``)."""
 
 
 class UploadRoute(CommandRoute):
@@ -109,7 +141,7 @@ class UploadRoute(CommandRoute):
         router: "ResourceRouter",
         command: type[Command],
         *,
-        service: "Service",
+        service: "Service | Receiving",
         field: str,
         types: "Iterable[FileType] | Decided[Iterable[FileType]]",
         max_size: "int | Decided[int]",
@@ -125,9 +157,10 @@ class UploadRoute(CommandRoute):
         name: str | None,
         summary: str | None,
         provide: Mapping[str, Callable[..., object]] | None,
-        body_limit: int | None,
+        body_limit: "int | Decided[int] | None",
         retry: "Retry | None",
         dependencies: Sequence[params.Depends] = (),
+        before_rules: Sequence[params.Depends] = (),
     ) -> None:
         """Check the command against what gives its fields, and the upload's bounds.
 
@@ -152,16 +185,25 @@ class UploadRoute(CommandRoute):
         if callable(max_size) and body_limit is None:
             raise TypeError(
                 "max_size is decided per request: give body_limit=, the most a "
-                "request may send, file and form."
+                "request may send, file and form; a number, or decided per "
+                "request too."
             )
         default = None if callable(max_size) else _size(max_size) + FORM_ROOM
         self.max_size = max_size
         self.storage = storage
         self.directory = directory
+        self.body_limit = body_limit if callable(body_limit) else None
+        """The body limit, when it is decided per request."""
+        declared = default if body_limit is None else body_limit
+        if callable(declared):  # Until it is decided, held as a command route's.
+            declared = None
+        self.receives = _asks_received(service)
+        """Whether the service is given the file received (``received=``)."""
         super().__init__(
             router,
             command,
-            service=service,
+            # The service itself, as the twin's rule reads it (``service_problem``).
+            service=cast("Service", service),
             body=None,
             returns=returns,
             method=method,
@@ -173,10 +215,35 @@ class UploadRoute(CommandRoute):
             summary=summary,
             # The file gives these: named here so the command's fields check.
             provide={**(provide or {}), **dict.fromkeys(given, _from_the_file)},
-            body_limit=default if body_limit is None else body_limit,
+            body_limit=declared,
+            body_limit_per_request=self.body_limit is not None,
             retry=retry,
             dependencies=dependencies,
+            before_rules=before_rules,
         )
+        if self.body_limit is not None:
+            self._check_rules_read_no_body()
+        if self.receives:
+            self.service = _handing(cast("Receiving", service))
+
+    def _check_rules_read_no_body(self) -> None:
+        """Refuse a rule that reads the body, on a route that decides its limit.
+
+        The rule reads the body before the limit is decided, held to the
+        limit of a command route without one: never to the decided one.
+
+        Raises:
+            ImproperlyConfigured: One of the route's rules reads the body.
+        """
+        for each in self.rules:
+            rule = each() if isinstance(each, type) else each
+            if rule.reads_the_body():
+                raise ImproperlyConfigured(
+                    f"{self.router.prefix}{self.spec.path} decides its body limit "
+                    f"per request, but {type(rule).__name__} reads the body before "
+                    "it is decided: give body_limit= a number, the most a request "
+                    "may send."
+                )
 
     def declare(self) -> None:
         """Add the route and its twin, and say in OpenAPI what body they take."""
@@ -217,7 +284,9 @@ class UploadRoute(CommandRoute):
         """Check the reach, receive and store the file, then run the command.
 
         What was stored is deleted when the request fails and its unit of
-        work did not commit: a commit may have kept the file's name.
+        work did not commit: a commit may have kept the file's name. A
+        service that asks for the file received gets it open, and it is
+        closed once the service is done, however it ends.
 
         Raises:
             NotFound: The aggregate is out of the caller's reach.
@@ -229,15 +298,22 @@ class UploadRoute(CommandRoute):
         request = context.request
         bounds = await self.bounds(request, aggregate)
         received = await self.received(request, bounds)
-        stored = await received.store(bounds.storage, directory=bounds.directory)
-        request.scope[STORED] = stored
-        committed = context.uow.committed
+        stored = await received.store(
+            bounds.storage, directory=bounds.directory, keep=self.receives
+        )
+        handed = HANDED.set(received)
         try:
-            return await super().handle(context)
-        except BaseException:
-            if context.uow.committed == committed:
-                await _forget(bounds.storage, stored.name)
-            raise
+            request.scope[STORED] = stored
+            committed = context.uow.committed
+            try:
+                return await super().handle(context)
+            except BaseException:
+                if context.uow.committed == committed:
+                    await _forget(bounds.storage, stored.name)
+                raise
+        finally:
+            HANDED.reset(handed)
+            received.close()  # Kept for the service: closed however it ended.
 
     async def _reachable(
         self,
@@ -276,21 +352,27 @@ class UploadRoute(CommandRoute):
         return aggregate
 
     async def bounds(self, request: Request, aggregate: object) -> Bounds:
-        """The request's types, size, storage and directory, each decided now.
+        """The request's types, size, storage, directory and body limit, decided now.
 
         Before the body is read: the storage an alias names is looked up,
-        and the directory checked as a storage takes it.
+        and the directory checked as a storage takes it. A file is held to
+        the body limit decided, where that is less than its size.
 
         Raises:
             TypeError: A callable decided something of the wrong kind.
             ValueError: It decided no type, a size that is not a positive
-                integer, or a malformed directory.
+                integer, a body limit out of its bounds, or a malformed
+                directory.
             ImproperlyConfigured: ``STORAGES`` has no such alias.
         """
         types = await _decided(self.types, request, aggregate)
-        max_size = await _decided(self.max_size, request, aggregate)
+        max_size = _size(await _decided(self.max_size, request, aggregate))
         storage = await _decided(self.storage, request, aggregate)
         directory = await _decided(self.directory, request, aggregate)
+        limit = None
+        if self.body_limit is not None:
+            limit = _body(await _decided(self.body_limit, request, aggregate))
+            max_size = min(max_size, limit)  # The file is never more than its body.
         if not isinstance(storage, Storage | str) or not isinstance(directory, str):
             raise TypeError(
                 "An upload route's storage is a Storage or an alias, and its "
@@ -298,7 +380,7 @@ class UploadRoute(CommandRoute):
             )
         new_name(directory)  # Malformed: ValueError, before a byte is read.
         target = storages[storage] if isinstance(storage, str) else storage
-        return Bounds(_types(types), _size(max_size), target, directory)
+        return Bounds(_types(types), max_size, target, directory, limit)
 
     async def received(
         self, request: Request, bounds: Bounds | None = None
@@ -312,6 +394,8 @@ class UploadRoute(CommandRoute):
         found = request.scope.get(RECEIVED)
         if found is None:
             assert bounds is not None  # noqa: S101 - the first receive decides them.
+            if bounds.body_limit is not None:
+                hold_body(request.scope, bounds.body_limit)
             found = request.scope[RECEIVED] = await self._receive(request, bounds)
         return cast("ReceivedUpload", found)
 
@@ -430,6 +514,46 @@ def _size(max_size: object) -> int:
     if not isinstance(max_size, int) or isinstance(max_size, bool) or max_size < 1:
         raise ValueError(f"max_size is 1 byte or more, not {max_size!r}.")
     return max_size
+
+
+def _body(limit: object) -> int:
+    """``limit``, a body limit decided per request: whole bytes, within a route's.
+
+    Raises:
+        ValueError: It is not a whole number of bytes from 1 to
+            ``MAX_ROUTE_BODY_SIZE``.
+    """
+    if (
+        not isinstance(limit, int)
+        or isinstance(limit, bool)
+        or not 1 <= limit <= MAX_ROUTE_BODY_SIZE
+    ):
+        raise ValueError(
+            f"A body limit is 1 to {MAX_ROUTE_BODY_SIZE} bytes, not {limit!r}."
+        )
+    return limit
+
+
+def _asks_received(service: object) -> bool:
+    """Whether ``service`` names a ``received`` parameter it can be given by name."""
+    try:
+        parameters = inspect.signature(service).parameters  # type: ignore[arg-type]
+    except (TypeError, ValueError):  # No signature to read: given the command alone.
+        return False
+    found = parameters.get("received")
+    return found is not None and found.kind in BY_NAME
+
+
+def _handing(service: "Receiving") -> "Service":
+    """``service``, given the file the request received, from its start."""
+
+    async def handed(command: Command, uow: object) -> object:
+        received = HANDED.get()
+        assert received is not None  # noqa: S101 - set while the service runs.
+        received.file.seek(0)  # From its start: a retry reads it again.
+        return await service(command, uow, received=received)
+
+    return handed
 
 
 def _shown(max_size: "int | Decided[int]") -> str:

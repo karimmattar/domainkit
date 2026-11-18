@@ -28,6 +28,7 @@ import time
 from collections.abc import Callable, Iterable, Sequence
 from typing import Any, Final
 
+import anyio.lowlevel
 from fastapi import status
 from starlette.middleware import cors
 from starlette.routing import Match
@@ -820,6 +821,10 @@ MAX_ROUTE_BODY_SIZE: Final = 1 << 30
 """The largest body limit a route may set: 1 GiB."""
 BODY_LIMIT: Final = "__domainkit_body_limit__"
 """The endpoint attribute that holds its route's body limit (``body_limit``)."""
+PER_REQUEST: Final = "__domainkit_body_limit_per_request__"
+"""The endpoint attribute that marks a route deciding its body limit per request."""
+DECIDED: Final = "domainkit.body_limit"
+"""Where a request keeps the body limit its route decided for it (``hold_body``)."""
 
 
 def body_limit[F: Callable[..., object]](size: int) -> Callable[[F], F]:
@@ -859,6 +864,37 @@ def route_body_limit(route: object) -> int | None:
     return size
 
 
+def decides_body_limit[F: Callable[..., object]](endpoint: F) -> F:
+    """Mark ``endpoint`` as one whose route decides its body limit per request.
+
+    The route holds each request's body to its own limit before reading it
+    (``hold_body``), up to ``MAX_ROUTE_BODY_SIZE``: ``RequestBodyLimitMiddleware``
+    then refuses a declared length only past that before routing. Until
+    the route decides, the endpoint's ``body_limit``, if it has one, or
+    ``MAX_REQUEST_BODY_SIZE`` holds the body.
+    """
+    setattr(endpoint, PER_REQUEST, True)
+    return endpoint
+
+
+def hold_body(scope: Scope, size: int) -> None:
+    """Hold the request's body to ``size`` bytes, decided now by its route.
+
+    ``RequestBodyLimitMiddleware`` reads it when the body is first read: a
+    declared length over it is refused before a byte is read, a streamed
+    body as soon as it passes it. A body something read before (a rule,
+    a dependency, ``IdempotencyMiddleware``) was held to the limit then.
+
+    Raises:
+        ValueError: ``size`` is not between 1 and ``MAX_ROUTE_BODY_SIZE``.
+    """
+    if not 1 <= size <= MAX_ROUTE_BODY_SIZE:
+        raise ValueError(
+            f"A route's body limit is 1 to {MAX_ROUTE_BODY_SIZE} bytes, not {size}."
+        )
+    scope[DECIDED] = size
+
+
 def _inner_routes(route: object) -> list[Any] | None:
     """The routes below ``route`` (a mount, a router, an included router), if any."""
     inner = getattr(getattr(route, "original_router", route), "routes", None)
@@ -875,6 +911,8 @@ def largest_body_limit(routes: Iterable[object]) -> int:
     pending = list(routes)
     while pending:
         route = pending.pop()
+        if getattr(getattr(route, "endpoint", None), PER_REQUEST, False):
+            return MAX_ROUTE_BODY_SIZE  # Decided per request, up to it.
         largest = max(largest, route_body_limit(route) or 0)
         pending.extend(_inner_routes(route) or ())
     return largest
@@ -951,7 +989,13 @@ class RequestBodyLimitMiddleware:
     once the router has matched it: a declared length over it is refused
     before a byte is read, and a streamed body as soon as it passes it.
     Before routing, a declared length is checked against the largest
-    limit, the global one or a route's.
+    limit, the global one or a route's. A route that decides its limit per
+    request (``decides_body_limit``) is held, from the first read of the
+    body on, to the limit it decided before (``hold_body``). A route's
+    limit is fixed by the first message of its body. A probe for a
+    disconnect (``Request.is_disconnected``, a ``receive()`` in a cancelled
+    scope) made before such a route decides is cancelled before it takes a
+    message: the server keeps it for the read.
 
     A WebSocket message over the limit closes the connection with 1009
     (message too big); the application sees the client disconnect. The
@@ -1022,15 +1066,22 @@ class RequestBodyLimitMiddleware:
 
         async def limited_receive() -> Message:
             nonlocal received, body_read, limit
-            if limit is None:  # The route's own, known once it is matched.
-                limit = self._route_limit(scope)
-                if size is not None and size > limit:
-                    self._reject(scope, size, limit)
+            current = limit
+            if current is None:  # The route's own, fixed at the first body read.
+                current, undecided = self._route_limit(scope)
+                if undecided:
+                    # Its route decides the limit before it reads the body: a
+                    # probe for a disconnect before then (is_disconnected, in
+                    # a cancelled scope) ends here, and takes no message.
+                    await anyio.lowlevel.checkpoint_if_cancelled()
+                if size is not None and size > current:
+                    self._reject(scope, size, current)
                     raise RequestBodyTooLarge
             message = await timed_receive()
             if message["type"] != "http.request":
                 body_read = True
                 return message
+            limit = current
             body_read = not message.get("more_body", False)
             received += len(message.get("body", b""))
             if received > limit:
@@ -1093,22 +1144,31 @@ class RequestBodyLimitMiddleware:
                 )
             return self._largest
 
-    def _route_limit(self, scope: Scope) -> int:
-        """The body limit of the route serving ``scope``: its own, or the global.
+    def _route_limit(self, scope: Scope) -> tuple[int, bool]:
+        """The body limit of the route serving ``scope``, and whether it is to come.
+
+        The limit is the route's own, or the global. One the route decided
+        for the request (``hold_body``) comes first; a route that decides it
+        (``decides_body_limit``) and has not yet is held to the rest until
+        it does, and its limit is to come.
 
         The route is the one the router matched, or, while nothing has
         matched yet (or only a mount above the application), the one it will
         match (``_matched_route``); below a mount or router whose route it
         cannot tell, the strictest limit there (``smallest_body_limit``).
         """
+        if DECIDED in scope:
+            decided: int = scope[DECIDED]
+            return decided, False
         route = scope.get("route")
         if route is None or _inner_routes(route) is not None:
             route = _matched_route(scope)
         inner = _inner_routes(route)
         if inner is not None:  # Its route below cannot be told yet.
-            return smallest_body_limit(inner, self.max_body_size)
+            return smallest_body_limit(inner, self.max_body_size), False
         own = route_body_limit(route)
-        return self.max_body_size if own is None else own
+        undecided = getattr(getattr(route, "endpoint", None), PER_REQUEST, False)
+        return self.max_body_size if own is None else own, undecided
 
     def _reject(self, scope: Scope, size: int, limit: int) -> None:
         """Log an oversized request as a security event, throttled."""

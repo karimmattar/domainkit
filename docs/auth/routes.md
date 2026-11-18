@@ -161,6 +161,12 @@ permission with the `403`.
 A rule that reads `scopes_of(request)` and limits what scoped tokens
 reach sets `bounds_scopes = True`
 ([Scopes on every route](authentication.md#scopes-on-every-route)).
+A rule that reads the request's body, as `DeviceSigned` does, sets
+`reads_body = True` (*new in 2.8*): an upload route whose body limit is
+decided per request refuses it when it is declared, since the rule would
+read the body before the limit is decided
+([Bounds decided per request](../resources.md#bounds-decided-per-request)).
+`A & B`, `A | B`, and `~A` read the body if a rule of theirs does.
 
 ### Refusals in the audit trail
 

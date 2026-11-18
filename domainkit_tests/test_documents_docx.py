@@ -5,11 +5,15 @@ placeholder spread over runs by a spelling mark, text boxes kept twice
 (``mc:Choice`` and ``mc:Fallback``), headers, footers, and footnotes.
 """
 
+import concurrent.futures
 import contextlib
 import io
 import os
+import random
+import string
 import struct
 import sys
+import threading
 import tracemalloc
 import unicodedata
 import warnings
@@ -958,3 +962,335 @@ def test_placeholders_are_read_within_the_archives_limits() -> None:
                 template, "word/document.xml", b'<!DOCTYPE w [<!ENTITY a "b">]><w/>'
             )
         )
+
+
+# The XML parsed, bounded in all (U7) --------------------------------------------------
+
+
+def crafted(unit: str, size: int) -> bytes:
+    """The report's kind of file: ``unit`` repeated to ``size`` bytes of body.
+
+    A comment of random letters every 8 KiB keeps each part under the
+    ratio ``OfficeCheck`` and ``ArchiveLimits`` allow: 2.7 took such files,
+    whose XML lxml keeps at up to 90 times its bytes (a 340 KB file of 16
+    MiB of ``<w:p/>`` took 546 MiB of memory in ``placeholders``).
+    """
+    noise = random.Random(0)  # noqa: S311 - noise to compress less, not a secret.
+    pieces: list[str] = []
+    written = 0
+    block = unit * (8192 // len(unit))
+    while written < size:
+        letters = "".join(noise.choices(string.ascii_letters, k=180))
+        pieces.append(f"{block}<!--{letters}-->")
+        written += len(block) + 187
+    return docx("".join(pieces))
+
+
+def test_a_crafted_documents_xml_is_refused_before_it_is_parsed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Past the nodes its bytes may make: lxml is never called.
+
+    16 MiB of empty paragraphs: 2.7 listed them, with 546 MiB of memory.
+    """
+    bomb = crafted("<w:p/>", 16 * 1024 * 1024)
+    assert len(bomb) < 400_000
+    parsed: list[str] = []
+    real = docx_module._parse
+
+    def parse(etree: Any, data: bytes, name: str) -> Any:  # noqa: ANN401 - lxml's.
+        parsed.append(name)
+        return real(etree, data, name)
+
+    monkeypatch.setattr(docx_module, "_parse", parse)
+
+    for call in (lambda: placeholders(bomb), lambda: fill_docx(bomb, {})):
+        with pytest.raises(DocumentError, match=r"XML is larger than 12,582,912 bytes"):
+            call()
+    with pytest.raises(DocumentError, match=r"more than 1,000,000 elements, texts"):
+        placeholders(bomb, limits=ArchiveLimits(max_xml_bytes=64 * 1024 * 1024))
+    assert parsed == ["[Content_Types].xml"] * 3
+
+
+@pytest.mark.parametrize(
+    ("body", "nodes"),
+    [
+        ("<w:p/>" * 100, 2 * 100),
+        ('<w:p w:a="" w:b="1"/>' * 100, 4 * 100),
+        ("<!---->" * 100, 2 * 100),
+        ("<w:p><w:r><w:t>x</w:t></w:r></w:p>" * 100, 12 * 100),
+    ],
+    ids=["paragraphs", "attributes", "comments", "runs"],
+)
+def test_the_nodes_are_counted_on_the_bytes_before_parsing(
+    body: str, nodes: int
+) -> None:
+    """Each ``<`` twice, each ``=`` once: never fewer than lxml makes."""
+    template = docx(body)
+    taken = docx_module._nodes(read(template, "[Content_Types].xml")) + (
+        docx_module._nodes(read(template))
+    )
+    document = etree.fromstring(read(template))
+    made = sum(
+        1 + len(node.attrib) + (node.text is not None) + (node.tail is not None)
+        for node in document.iter()
+    )
+
+    assert nodes <= docx_module._nodes(read(template))
+    assert made <= taken
+    placeholders(template, limits=ArchiveLimits(max_nodes=taken))
+    with pytest.raises(DocumentError, match="more than"):
+        placeholders(template, limits=ArchiveLimits(max_nodes=taken - 1))
+
+
+def test_the_bytes_are_counted_in_all_before_each_part_is_inflated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The body, then a header: each counted as stated, the header never inflated."""
+    template = docx(runs("{{a}}" + "x" * 5_000), header=runs("x" * 5_000))
+    sizes = {
+        name: len(read(template, name))
+        for name in ("[Content_Types].xml", "word/document.xml")
+    }
+    inflated: list[str] = []
+    real = docx_module._inflated
+
+    def inflate(archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> bytes:
+        inflated.append(info.filename)
+        return real(archive, info)
+
+    monkeypatch.setattr(docx_module, "_inflated", inflate)
+    limits = ArchiveLimits(max_xml_bytes=sum(sizes.values()) + 100)
+
+    with pytest.raises(DocumentError, match="XML is larger than"):
+        placeholders(template, limits=limits)
+    assert inflated == ["[Content_Types].xml", "word/document.xml"]
+
+
+@pytest.mark.parametrize("brace", ["{{", "&#123;&#123;", "{&#123;"])
+def test_placeholders_are_counted_before_they_are_read(brace: str) -> None:
+    """Each ``{{`` of a paragraph's text, however the bytes wrote it."""
+    text = (brace + "a}} ") * 1000
+    template = docx(runs(text) + runs(text))
+    nodes = docx_module._nodes(read(template, "[Content_Types].xml")) + (
+        docx_module._nodes(read(template))
+    )
+
+    assert placeholders(
+        template, limits=ArchiveLimits(max_nodes=nodes + 2000)
+    ).names == ("a",)
+    with pytest.raises(DocumentError, match="placeholders in all"):
+        placeholders(template, limits=ArchiveLimits(max_nodes=nodes + 1999))
+    with pytest.raises(DocumentError, match="placeholders in all"):
+        fill_docx(template, {"a": "1"}, limits=ArchiveLimits(max_nodes=nodes + 1999))
+
+
+def test_only_the_parts_read_are_inflated_whole(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The others are checked a piece at a time, and inflated once, as written.
+
+    2.7 held every part inflated, 256 MiB at most, for the whole call.
+    """
+    template = docx(
+        runs("{{a}}"),
+        header=runs("h"),
+        extra={"word/media/image1.png": PNG, "word/media/image2.png": PNG},
+    )
+    inflated: list[str] = []
+    real = docx_module._inflated
+
+    def inflate(archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> bytes:
+        inflated.append(info.filename)
+        return real(archive, info)
+
+    monkeypatch.setattr(docx_module, "_inflated", inflate)
+    read_parts = ["[Content_Types].xml", "word/document.xml", "word/header1.xml"]
+
+    placeholders(template)
+    assert inflated == read_parts
+    inflated.clear()
+    filled = fill_docx(template, {"a": "1"})
+    with zipfile.ZipFile(io.BytesIO(filled)) as archive:
+        names = archive.namelist()
+
+    assert inflated == [
+        *read_parts,
+        *(name for name in names if name != "word/document.xml"),
+    ]
+    assert read(filled, "word/media/image2.png") == PNG
+
+
+def test_a_damaged_part_not_read_is_refused_by_placeholders_too() -> None:
+    """Checked whole, a piece at a time, as ``fill_docx`` checks it."""
+    template = docx(runs("{{a}}"), extra={"word/note.txt": b"original text"})
+    stored = io.BytesIO()
+    with (
+        zipfile.ZipFile(io.BytesIO(template)) as source,
+        zipfile.ZipFile(stored, "w", zipfile.ZIP_STORED) as copy,
+    ):
+        for info in source.infolist():
+            copy.writestr(info.filename, source.read(info))
+    damaged = stored.getvalue().replace(b"original text", b"ORIGINAL text")
+
+    for call in (lambda: placeholders(damaged), lambda: fill_docx(damaged, {"a": "1"})):
+        with pytest.raises(DocumentError, match="archive is damaged"):
+            call()
+
+
+def test_a_part_inflated_a_piece_at_a_time_is_checked_whole(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pieces of a few bytes: its checksum is still read at its end."""
+    monkeypatch.setattr(docx_module, "CHUNK", 7)
+    template = docx(runs("{{a}}"), extra={"word/note.txt": b"original text " * 50})
+    bomb = stating(template, "word/note.txt", 10)
+
+    assert placeholders(template).names == ("a",)
+    with pytest.raises(DocumentError, match="archive is damaged"):
+        placeholders(bomb)
+
+
+def many(count: int, paragraphs: int) -> bytes:
+    """A small template of ``count`` placeholders of one name, in ``paragraphs``.
+
+    A comment of random letters every 1,000 placeholders keeps it under
+    the ratio ``ArchiveLimits`` allows.
+    """
+    noise = random.Random(0)  # noqa: S311 - noise to compress less, not a secret.
+    each = count // paragraphs
+    every = max(1, 1000 // each)
+    body = "".join(
+        runs("{{a}}" * each)
+        + (
+            f"<!--{''.join(noise.choices(string.ascii_letters, k=120))}-->"
+            if index % every == 0
+            else ""
+        )
+        for index in range(paragraphs)
+    )
+    return docx(body)
+
+
+ADDRESS: Final = "12 Rue X\nApt 4\n75011 Paris\nFrance"
+
+
+@pytest.mark.timeout(60, method="signal")
+@pytest.mark.parametrize("paragraphs", [480, 14_000])
+def test_what_the_values_add_is_bounded_before_it_is_written(paragraphs: int) -> None:
+    """A template sets how many times a value is written: it counts.
+
+    480,000 placeholders of one name, 50 KB that ``OfficeCheck`` and
+    ``placeholders`` take, filled with a four-line address: 2.8.0's first
+    cut wrote 16 MB of text and 1.4 million elements, and took 1,075 MiB
+    (637 MiB over 14,000 paragraphs).
+    """
+    template = many(480_000, paragraphs)
+    assert len(template) < 600_000
+
+    assert placeholders(template).names == ("a",)
+    with pytest.raises(DocumentError, match="with its values"):
+        fill_docx(template, {"a": ADDRESS})
+    with pytest.raises(DocumentError, match=r"XML, with its values, is larger than"):
+        fill_docx(template, {"a": "x" * 40})
+    with pytest.raises(DocumentError, match="placeholders in all, with its values"):
+        fill_docx(template, {"a": "a\nb\tc"})
+
+
+def test_each_value_written_counts_its_bytes_and_breaks() -> None:
+    """Its bytes in UTF-8; each line break or tab, a break, a text, and its space."""
+    template = docx(runs("{{a}} {{a}}") + runs("{{b}}"))
+    values = {"a": "عقد\nx", "b": "y\tz"}
+    taken = ArchiveLimits(max_xml_bytes=10**9, max_nodes=10**9)
+    nodes = docx_module._nodes(read(template, "[Content_Types].xml")) + (
+        docx_module._nodes(read(template))
+    )
+    sizes = sum(
+        len(read(template, name))
+        for name in ("[Content_Types].xml", "word/document.xml")
+    )
+    written = 2 * len("عقد\nx".encode()) + len(b"y\tz")
+    breaks = 3 * (2 + 1)
+
+    def limits(extra_bytes: int, extra_nodes: int) -> ArchiveLimits:
+        return ArchiveLimits(
+            max_xml_bytes=sizes + extra_bytes, max_nodes=nodes + 3 + extra_nodes
+        )
+
+    assert fill_docx(template, values, limits=taken) == fill_docx(
+        template, values, limits=limits(written, breaks)
+    )
+    with pytest.raises(DocumentError, match="with its values"):
+        fill_docx(template, values, limits=limits(written - 1, breaks))
+    with pytest.raises(DocumentError, match="with its values"):
+        fill_docx(template, values, limits=limits(written, breaks - 1))
+    placeholders(template, limits=limits(0, 0))
+
+
+@pytest.mark.parametrize("unit", ["\tx", "\nx", "x\n"])
+def test_a_value_of_many_lines_counts_what_each_line_writes(unit: str) -> None:
+    """A break, a ``w:t`` after it, and that text's ``xml:space``: three nodes.
+
+    One value of 499,000 lines took 375 MiB in the second cut of 2.8,
+    which counted two nodes a line; at three, it is refused.
+    """
+    template = docx(runs("{{a}}"))
+
+    with pytest.raises(DocumentError, match="placeholders in all, with its values"):
+        fill_docx(template, {"a": unit * 499_000})
+    filled = fill_docx(template, {"a": unit * 330_000})
+
+    assert len(filled) > len(template)
+
+
+def test_each_call_parses_in_a_thread_of_its_own() -> None:
+    """The names lxml keeps for the caller's thread are left as they were.
+
+    lxml keeps every name a thread parses, in a dictionary of the thread's.
+
+    2.8.0's first cut parsed in the caller's thread: a pool's thread that
+    read documents of 250,000 names each grew from 78 to 787 MiB over 80
+    of them.
+    """
+    names = "".join(f"<w:e{index:x}/>" for index in range(20_000))
+    before = etree.memory_debugger.dict_size()
+
+    placeholders(docx(runs("{{a}}") + names))
+    fill_docx(docx(runs("{{a}}") + names), {"a": "1"})
+
+    assert etree.memory_debugger.dict_size() == before
+
+
+def test_a_failure_in_the_calls_thread_is_raised_in_the_caller() -> None:
+    """As it would be in the caller's own: its type, message, and cause."""
+    with pytest.raises(PlaceholderError) as refused:
+        fill_docx(docx(runs("{{a}}")), {})
+    with pytest.raises(DocumentError, match="not a Word document"):
+        placeholders(b"not a zip")
+
+    assert refused.value.missing == ("a",)
+
+
+def test_calls_from_threads_at_once_read_and_fill_their_own() -> None:
+    """Each call's thread parses its own document: no tree crosses a thread.
+
+    Sixteen callers at once, each its own names and values, from a pool
+    as ``asyncio.to_thread`` calls them; a barrier starts them together.
+    """
+    callers = 16
+    start = threading.Barrier(callers)
+
+    def call(number: int) -> tuple[Placeholders, list[str]]:
+        names = [f"n{number}_{index}" for index in range(50)]
+        template = docx("".join(runs(f"{{{{{name}}}}}") for name in names))
+        start.wait()
+        found = placeholders(template)
+        filled = fill_docx(template, dict.fromkeys(names, f"v{number}"))
+        return found, paragraphs(filled)
+
+    with concurrent.futures.ThreadPoolExecutor(callers) as pool:
+        results = list(pool.map(call, range(callers)))
+
+    for number, (found, written) in enumerate(results):
+        assert found.names == tuple(f"n{number}_{index}" for index in range(50))
+        assert written == [f"v{number}"] * 50

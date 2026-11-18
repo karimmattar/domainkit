@@ -132,10 +132,15 @@ class RouteSpec:
     """Command fields that FastAPI dependencies give, by field."""
     body_limit: int | None = None
     """Its body limit in bytes (``body_limit``); None: ``MAX_REQUEST_BODY_SIZE``."""
+    body_limit_per_request: bool = False
+    """It holds each request's body to a limit it decides (``hold_body``), and
+    ``body_limit`` until it does."""
     rules: tuple[Rule, ...] | None = None
     """What it checks in place of the resource's rules and its own (a twin's)."""
     dependencies: Sequence[params.Depends] = ()
     """FastAPI dependencies of its own (``Depends(...)``), after its ``Require``."""
+    before_rules: Sequence[params.Depends] = ()
+    """FastAPI dependencies of its own that run before its ``Require``."""
 
 
 @dataclasses.dataclass(frozen=True, slots=True)

@@ -325,12 +325,18 @@ class ReceivedUpload:
         )
 
     async def store(
-        self, storage: Storage | str = "default", *, directory: str = ""
+        self,
+        storage: Storage | str = "default",
+        *,
+        directory: str = "",
+        keep: bool = False,
     ) -> StoredUpload:
         """Store it under a new name, streamed through ``UPLOAD_SCANNER`` if set.
 
         The temporary file is dropped whatever happens, an alias
-        ``STORAGES`` lacks included.
+        ``STORAGES`` lacks included. With ``keep`` (New in 2.8), it is
+        dropped only if storing fails, and is otherwise left open at its
+        start: its caller reads it, then closes it.
 
         Raises:
             UploadRefused: 422 ``infected_file``; nothing is stored.
@@ -348,7 +354,12 @@ class ReceivedUpload:
                 max_size=self.size,
                 filename=self.filename,
             )
-        finally:
+        except BaseException:
+            self.close()
+            raise
+        if keep:
+            self.file.seek(0)
+        else:
             self.close()
         return replace(stored, sha256=self.sha256)
 

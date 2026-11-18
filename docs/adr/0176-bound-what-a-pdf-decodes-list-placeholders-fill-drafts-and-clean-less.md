@@ -1,6 +1,6 @@
 # 0176. Bound what a PDF decodes, list placeholders, fill drafts, and clean less
 
-- Status: Accepted
+- Status: Accepted; amended by [0181](0181-decide-a-body-limit-per-request-count-before-the-rules-hand-over-the-file-received-and-bound-the-xml-parsed.md)
 - Date: 2026-11-17
 - Amends: [0168](0168-render-documents-through-a-port-with-gotenberg-and-fill-them-locally.md)
 

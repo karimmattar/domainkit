@@ -1,4 +1,4 @@
-"""An upload route decides its bounds per request, and checks a file once (U3, U5).
+"""An upload route decides its bounds per request, and checks a file once (U3, U5, U7).
 
 ``upload_route`` fixed its types, size and storage when it was declared,
 and took no ``dependencies=``; and an act's twin checked the file, then
@@ -6,10 +6,16 @@ the act checked the same file again, each in a process of its own. The
 bounds may now be callables of the request and the aggregate reached,
 ``dependencies=`` are the act's alone, and the act takes the verdict its
 twin's check gave the same caller on the same content (ADR 0175).
+
+2.7 decided the body limit when the route was declared only, ran every
+dependency of a route after its rules, and gave its service the stored
+file only. The body limit may now be decided per request too,
+``before_rules`` run before the rules, and a service that asks is given
+the file received (ADR 0181).
 """
 
 import hashlib
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from datetime import timedelta
 from typing import IO, Any, Final
 from uuid import UUID
@@ -17,20 +23,43 @@ from uuid import UUID
 import pytest
 from fastapi import Depends, FastAPI, Request
 from fastapi.testclient import TestClient
+from starlette.requests import HTTPConnection
 
 from domainkit import signing
 from domainkit.cache import Cache, CacheUnavailable, caches
+from domainkit.conf import override_settings
 from domainkit.contrib.auth import AnyUser
+from domainkit.contrib.devices import DeviceSigned
+from domainkit.ddd.exceptions import ConcurrentUpdate, PermissionDenied
+from domainkit.ddd.uow import Retry
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import uploads
-from domainkit.http.errors import install_exception_handlers
-from domainkit.http.middleware import RequestBodyLimitMiddleware
-from domainkit.http.uploads import CHECKED_PDF, IMAGES, PDF, FileType, receive_upload
+from domainkit.http.access import AllowAny, BasePermission
+from domainkit.http.errors import APIError, install_exception_handlers
+from domainkit.http.middleware import (
+    MAX_ROUTE_BODY_SIZE,
+    RequestBodyLimitMiddleware,
+    hold_body,
+)
+from domainkit.http.uploads import (
+    CHECKED_PDF,
+    IMAGES,
+    PDF,
+    FileType,
+    ReceivedUpload,
+    receive_upload,
+)
 from domainkit.inspection import PdfCheck, run_checks
 from domainkit.resources import ResourceRouter, asking_authorization
+from domainkit.resources.routing import uploading
 from domainkit.storage import MemoryStorage
 from domainkit_tests.conftest import UseAuth
-from domainkit_tests.gadgets import InMemoryGadgets, make_gadget
+from domainkit_tests.gadgets import (
+    FakeGadgetsUnitOfWork,
+    Gadget,
+    InMemoryGadgets,
+    make_gadget,
+)
 from domainkit_tests.support.documents import one_page
 from domainkit_tests.test_resource_authorizations import AUTHORIZED, Asks
 from domainkit_tests.test_resource_uploads import (
@@ -42,7 +71,16 @@ from domainkit_tests.test_resource_uploads import (
     Run,
     ids,
 )
-from domainkit_tests.test_resources import LOCATION, Users, as_, everyone, gadgets
+from domainkit_tests.test_resources import (
+    LOCATION,
+    MakeGadget,
+    MakeIn,
+    Users,
+    as_,
+    everyone,
+    gadgets,
+    make,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -93,7 +131,7 @@ class App:
         self.client = TestClient(self.app)
 
 
-def asking(store: InMemoryGadgets, rule: Asks, **options: Any) -> App:  # noqa: ANN401 - upload_route's.
+def asking(store: InMemoryGadgets, rule: BasePermission, **options: Any) -> App:  # noqa: ANN401 - upload_route's.
     """The gadgets' manual route, which asks for an authorization of its act."""
     resource = gadgets(store)
     resource.upload_route(
@@ -544,3 +582,604 @@ def test_dependencies_are_the_acts_and_not_the_twins(
 
     assert (twin.status_code, done.status_code, refused.status_code) == (201, 200, 403)
     assert counted == ["POST"]
+
+
+# A body limit decided per request (U7) -----------------------------------------------
+
+
+class Limits:
+    """A body limit decided per gadget, as a project's setting would be, recorded."""
+
+    def __init__(self, **by_name: int) -> None:
+        """The limit of each gadget, by its name."""
+        self.by_name = by_name
+        self.decided: list[str] = []
+
+    async def __call__(self, request: Request, gadget: Any) -> int:  # noqa: ANN401 - the aggregate.
+        """The gadget's limit; the twin's ask noted with ``?``."""
+        self.decided.append(
+            f"{gadget.name}{'?' if asking_authorization(request) else ''}"
+        )
+        return self.by_name[gadget.name]
+
+
+def padded(size: int) -> bytes:
+    """A PDF of ``size`` bytes: ``PDF`` reads its first bytes only."""
+    return PDF_FILE + b"\0" * (size - len(PDF_FILE))
+
+
+def limited(store: InMemoryGadgets, limits: Limits, **options: Any) -> App:  # noqa: ANN401 - upload_route's.
+    """The gadgets' manual route, its body limit decided per request by ``limits``."""
+    resource = gadgets(store, body_limits=options.pop("body_limits", None))
+    resource.upload_route(
+        AttachManual,
+        service=Run().attach,
+        field="manual",
+        path="/manual",
+        **{
+            "types": [PDF],
+            "max_size": 1_000_000,
+            "storage": MemoryStorage(),
+            "body_limit": limits,
+            **options,
+        },
+    )
+    return App(resource)
+
+
+def chunked(data: bytes) -> Iterator[bytes]:
+    """``data`` in parts of 1000 bytes, sent without ``Content-Length``."""
+    for start in range(0, len(data), 1000):
+        yield data[start : start + 1000]
+
+
+def test_a_body_limit_is_decided_per_request(
+    store: InMemoryGadgets, use_auth: UseAuth, counted: Counted
+) -> None:
+    """Over it, declared or streamed: 413 before the file is checked or stored.
+
+    Gadget a takes 3,000 bytes, b 400; the route stores files up to 1 MB.
+    """
+    use_auth()
+    limits = Limits(a=3_000, b=400)
+    app = limited(store, limits, types=[CHECKED_PDF])
+    found = ids(store)
+
+    def sent(name: str, body: bytes | Iterator[bytes]) -> tuple[int, str | None]:
+        answer = app.client.post(
+            f"{LOCATION}{found[name]}/manual", content=body, headers=as_("changer")
+        )
+        return answer.status_code, answer.json().get("code")
+
+    assert sent("b", padded(3_000)) == (413, "content_too_large")
+    assert sent("b", chunked(padded(3_000))) == (413, "content_too_large")
+    assert sent("a", padded(3_001)) == (413, "content_too_large")
+    assert counted.files == []
+    assert sent("b", PDF_FILE)[0] == 200
+    assert sent("a", padded(3_000))[0] == 200
+    assert limits.decided == ["b", "b", "a", "b", "a"]
+
+
+def test_a_body_limit_decided_per_request_may_pass_the_global_one(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """Before routing, a declared length is held to the most a route may decide.
+
+    2.7 checked it against the largest limit declared: with none declared
+    but the global, a body the route's own limit takes was refused before
+    the route could decide it.
+    """
+    use_auth()
+    resource = gadgets(store)
+    resource.command_route(MakeGadget, service=make, body=MakeIn)
+    resource.upload_route(
+        AttachManual,
+        service=Run().attach,
+        field="manual",
+        path="/manual",
+        types=[PDF],
+        max_size=1_000_000,
+        storage=MemoryStorage(),
+        body_limit=Limits(a=50_000),
+    )
+    with override_settings(MAX_REQUEST_BODY_SIZE=1_000):
+        client = App(resource).client
+        taken = client.post(
+            f"{LOCATION}{ids(store)['a']}/manual",
+            content=padded(20_000),
+            headers=as_("changer"),
+        )
+        other = client.post(
+            "/gadgets",
+            content=b'{"name": "c", "price": "1"}' + b" " * 1_000,
+            headers={"Content-Type": "application/json", **as_("adder")},
+        )
+
+    assert taken.status_code == 200
+    assert (other.status_code, other.json()["code"]) == (413, "content_too_large")
+
+
+def test_a_body_limit_decided_on_the_twin_too(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """The twin decides it once the reach holds, as the act does."""
+    use_auth()
+    limits = Limits(a=3_000)
+    app = asking(store, Asks(), types=[PDF], body_limit=limits)
+    act = f"{LOCATION}{ids(store)['a']}/manual"
+
+    refused = app.client.post(
+        f"{act}/authorization", content=padded(3_001), headers=as_("changer")
+    )
+    asked = app.client.post(
+        f"{act}/authorization", content=PDF_FILE, headers=as_("changer")
+    )
+    done = app.client.post(act, content=PDF_FILE, headers=as_("changer", **AUTHORIZED))
+
+    assert (refused.status_code, refused.json()["code"]) == (413, "content_too_large")
+    assert (asked.status_code, done.status_code) == (201, 200)
+    assert limits.decided == ["a?", "a?", "a"]
+
+
+class ReadsBody(BasePermission):
+    """A rule that reads the body, as ``DeviceSigned`` does, and allows; recorded."""
+
+    def __init__(self, seen: list[str]) -> None:
+        """Record in ``seen``."""
+        self.seen = seen
+
+    async def has_permission(self, request: HTTPConnection, user: AnyUser) -> bool:
+        """Read the whole body; allow."""
+        assert isinstance(request, Request)
+        self.seen.append(f"rule {len(await request.body())}")
+        return True
+
+
+def test_a_body_read_before_the_limit_is_decided_is_held_as_a_commands(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """The resource's limit for commands, or the global one; the file, to the decided.
+
+    A rule that reads the body reads it before the route decides: the
+    body is held then as a command route's without a limit of its own.
+    The file is still never more than the limit decided: 2,000 bytes
+    read under the resource's 10,000 are refused for gadget b's 1,000.
+    """
+    use_auth()
+    seen: list[str] = []
+    app = limited(
+        store,
+        Limits(a=50_000, b=1_000),
+        rule=ReadsBody(seen),
+        body_limits={"command": 10_000},
+    )
+    found = ids(store)
+
+    def sent(name: str, size: int) -> tuple[int, str | None]:
+        answer = app.client.post(
+            f"{LOCATION}{found[name]}/manual",
+            content=padded(size),
+            headers=as_("changer"),
+        )
+        return answer.status_code, answer.json().get("code")
+
+    assert sent("a", 10_001) == (413, "content_too_large")  # Before the decision.
+    assert sent("b", 2_000) == (413, "file_too_large")
+    assert sent("a", 2_000)[0] == 200
+    assert seen == ["rule 2000", "rule 2000"]
+
+
+class SaysItReads(ReadsBody):
+    """``ReadsBody``, saying so, as ``DeviceSigned`` does."""
+
+    reads_body = True
+
+    def __init__(self, seen: list[str] | None = None) -> None:
+        """Record in ``seen``, or nowhere."""
+        super().__init__([] if seen is None else seen)
+
+
+@pytest.mark.parametrize(
+    "rule",
+    [SaysItReads, SaysItReads() & Asks(), ~SaysItReads(), AllowAny() | SaysItReads()],
+    ids=["class", "all of", "not", "any of"],
+)
+def test_a_rule_that_reads_the_body_is_refused_with_a_limit_decided(
+    store: InMemoryGadgets,
+    rule: Any,  # noqa: ANN401 - a rule, or its class.
+) -> None:
+    """It reads the body before the limit is decided: the limit never holds it.
+
+    A number still goes with it; ``DeviceSigned`` says it reads the body.
+    """
+    with pytest.raises(
+        ImproperlyConfigured, match="reads the body before it is decided"
+    ):
+        limited(store, Limits(), rule=rule)
+    limited(store, Limits(), rule=rule, body_limit=10_000)
+
+    assert DeviceSigned.reads_body
+    assert DeviceSigned().reads_the_body()
+    assert not Asks().reads_the_body()
+
+
+def test_a_probe_for_a_disconnect_fixes_no_limit(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """``is_disconnected`` before the decision reads nothing, and refuses nothing.
+
+    2.8.0's first cut fixed the limit at the first ``receive()``: a
+    dependency that probed for a disconnect held a 50 KB body to the
+    resource's 10 KB, under a decided limit of 500 KB.
+    """
+    use_auth()
+    probed: list[bool] = []
+
+    async def probe(request: Request) -> None:
+        probed.append(await request.is_disconnected())
+
+    app = limited(
+        store,
+        Limits(a=500_000, b=40_000),
+        body_limits={"command": 10_000},
+        before_rules=[Depends(probe)],
+    )
+    found = ids(store)
+
+    taken = app.client.post(
+        f"{LOCATION}{found['a']}/manual", content=padded(50_000), headers=as_("changer")
+    )
+    refused = app.client.post(
+        f"{LOCATION}{found['b']}/manual", content=padded(50_000), headers=as_("changer")
+    )
+
+    assert taken.status_code == 200
+    assert (refused.status_code, refused.json()["code"]) == (413, "content_too_large")
+    assert probed == [False, False]
+
+
+@pytest.mark.parametrize("decided", [0, True, 2.5, MAX_ROUTE_BODY_SIZE + 1, "10"])
+def test_a_body_limit_decided_is_checked(
+    store: InMemoryGadgets, use_auth: UseAuth, counted: Counted, decided: object
+) -> None:
+    """A whole number of bytes up to a route's most: else a 500, the body unread."""
+    use_auth()
+    app = limited(
+        store, Limits(), types=[CHECKED_PDF], body_limit=lambda request, gadget: decided
+    )
+
+    with pytest.raises(ValueError, match="A body limit is 1 to"):
+        app.client.post(
+            f"{LOCATION}{ids(store)['a']}/manual",
+            content=PDF_FILE,
+            headers=as_("changer"),
+        )
+    assert counted.files == []
+
+
+def test_hold_body_takes_a_routes_bounds() -> None:
+    """As ``body_limit`` does: 1 byte to 1 GiB."""
+    scope: dict[str, Any] = {}
+
+    for size in (0, MAX_ROUTE_BODY_SIZE + 1):
+        with pytest.raises(ValueError, match="1 to"):
+            hold_body(scope, size)
+    hold_body(scope, MAX_ROUTE_BODY_SIZE)
+
+    assert scope == {"domainkit.body_limit": MAX_ROUTE_BODY_SIZE}
+
+
+# Dependencies before the rules (U7) --------------------------------------------------
+
+
+class Order:
+    """What ran, in order: dependencies, and a rule that reads the body."""
+
+    def __init__(self) -> None:
+        """Nothing ran yet."""
+        self.ran: list[str] = []
+        self.refuse = False
+
+    def dependency(self, name: str) -> Any:  # noqa: ANN401 - FastAPI's Depends.
+        """A dependency that records ``name``, and refuses with 429 when told."""
+
+        async def record(request: Request) -> None:
+            ask = "?" if asking_authorization(request) else ""
+            self.ran.append(f"{name}{ask}")
+            if self.refuse and name == "before":
+                raise APIError(429, "Slow down.", code="rate_limited")
+
+        return Depends(record)
+
+
+def test_before_rules_run_before_the_rules_and_on_the_twin(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """A limit there counts a request before a rule reads its body.
+
+    Requests the rules refuse are counted too, and the twin's asks: the
+    twin runs the rules, so a rule reads its body too. ``dependencies``
+    still run after the rules, on the act alone.
+    """
+    use_auth()
+    order = Order()
+    reads = ReadsBody(order.ran)
+    app = asking(
+        store,
+        Asks() & reads,
+        types=[PDF],
+        before_rules=[order.dependency("before")],
+        dependencies=[order.dependency("after")],
+    )
+    act = f"{LOCATION}{ids(store)['a']}/manual"
+
+    twin = app.client.post(
+        f"{act}/authorization", content=PDF_FILE, headers=as_("changer")
+    )
+    done = app.client.post(act, content=PDF_FILE, headers=as_("changer", **AUTHORIZED))
+    refused = app.client.post(act, content=PDF_FILE, headers=as_("viewer"))
+    order.refuse = True
+    limited_ = app.client.post(
+        act, content=PDF_FILE, headers=as_("changer", **AUTHORIZED)
+    )
+
+    assert (twin.status_code, done.status_code, refused.status_code) == (201, 200, 403)
+    assert limited_.status_code == 429
+    size = len(PDF_FILE)
+    assert order.ran == [
+        "before?",
+        f"rule {size}",
+        "before",
+        f"rule {size}",
+        "after",
+        "before",
+        "before",
+    ]
+
+
+def test_a_command_route_takes_before_rules(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """As an upload route does: before its ``Require``, then ``dependencies``."""
+    use_auth()
+    order = Order()
+    resource = gadgets(store)
+    resource.command_route(
+        MakeGadget,
+        service=make,
+        body=MakeIn,
+        rule=ReadsBody(order.ran),
+        before_rules=[order.dependency("before")],
+        dependencies=[order.dependency("after")],
+    )
+    client = App(resource).client
+    body = b'{"name": "c", "price": "1"}'
+    json = {"Content-Type": "application/json"}
+
+    made = client.post("/gadgets", content=body, headers={**json, **as_("adder")})
+    refused = client.post("/gadgets", content=body, headers={**json, **as_("viewer")})
+
+    assert (made.status_code, refused.status_code) == (201, 403)
+    assert order.ran == ["before", f"rule {len(body)}", "after", "before"]
+
+
+# The file received, for the service (U7) ---------------------------------------------
+
+
+class Reads:
+    """A service given the file received: it reads it, as a page count would."""
+
+    def __init__(self) -> None:
+        """Nothing read yet; every run succeeds."""
+        self.read: list[bytes] = []
+        self.files: list[IO[bytes]] = []
+        self.fail: Exception | None = None
+        self.runs = 0
+
+    async def attach(
+        self,
+        command: AttachManual,
+        uow: FakeGadgetsUnitOfWork,
+        *,
+        received: ReceivedUpload,
+    ) -> Gadget:
+        """Read the file; name the gadget after it, as ``Run.attach`` does."""
+        assert received.sha256 == command.manual.sha256
+        self.files.append(received.file)
+        self.read.append(received.file.read())
+        self.runs += 1
+        if self.fail is not None:
+            raise self.fail
+        return await Run().attach(command, uow)
+
+
+def reading(store: InMemoryGadgets, reads: Reads, **options: Any) -> App:  # noqa: ANN401 - upload_route's.
+    """The gadgets' manual route, its service given the file received."""
+    resource = gadgets(store)
+    resource.upload_route(
+        AttachManual,
+        service=reads.attach,
+        field="manual",
+        path="/manual",
+        **{
+            "types": [PDF],
+            "max_size": 4 * 1024 * 1024,
+            "storage": MemoryStorage(),
+            **options,
+        },
+    )
+    return App(resource)
+
+
+def test_a_service_that_asks_is_given_the_file_received(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """Open at its start, as stored; closed once the service is done.
+
+    A file large enough to be spooled to disk reads the same.
+    """
+    use_auth()
+    reads = Reads()
+    storage = MemoryStorage()
+    app = reading(store, reads, storage=storage)
+    act = f"{LOCATION}{ids(store)['a']}/manual"
+    large = padded(2 * 1024 * 1024)
+
+    small = app.client.post(act, content=PDF_FILE, headers=as_("changer"))
+    big = app.client.post(act, content=large, headers=as_("changer"))
+
+    assert (small.status_code, big.status_code) == (200, 200)
+    assert reads.read == [PDF_FILE, large]
+    assert sorted(storage.files.values(), key=len) == [PDF_FILE, large]
+    assert all(each.closed for each in reads.files)
+
+
+@pytest.mark.parametrize("failure", [PermissionDenied("No."), RuntimeError("A bug.")])
+def test_the_file_received_is_closed_however_the_service_ends(
+    store: InMemoryGadgets, use_auth: UseAuth, failure: Exception
+) -> None:
+    """A service that refuses, or fails as a bug does, leaves no file open."""
+    use_auth()
+    reads = Reads()
+    reads.fail = failure
+    app = reading(store, reads)
+    act = f"{LOCATION}{ids(store)['a']}/manual"
+
+    if isinstance(failure, PermissionDenied):
+        answer = app.client.post(act, content=PDF_FILE, headers=as_("changer"))
+        assert answer.status_code == 403
+    else:
+        with pytest.raises(RuntimeError, match="A bug"):
+            app.client.post(act, content=PDF_FILE, headers=as_("changer"))
+
+    assert reads.read == [PDF_FILE]
+    assert reads.files[0].closed
+
+
+def test_a_retried_service_reads_the_file_from_its_start(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """Each run is given it from its start."""
+    use_auth()
+    reads = Reads()
+    lost = ConcurrentUpdate("Lost a race.")
+    runs = 0
+
+    async def loses_once(
+        command: AttachManual, uow: FakeGadgetsUnitOfWork, *, received: ReceivedUpload
+    ) -> Gadget:
+        nonlocal runs
+        runs += 1
+        reads.fail = lost if runs == 1 else None
+        return await reads.attach(command, uow, received=received)
+
+    resource = gadgets(store)
+    resource.upload_route(
+        AttachManual,
+        service=loses_once,
+        field="manual",
+        path="/manual",
+        types=[PDF],
+        max_size=10_000,
+        storage=MemoryStorage(),
+        retry=Retry(attempts=2, backoff=0, max_backoff=0, retry_on=(ConcurrentUpdate,)),
+    )
+    answer = App(resource).client.post(
+        f"{LOCATION}{ids(store)['a']}/manual", content=PDF_FILE, headers=as_("changer")
+    )
+
+    assert answer.status_code == 200
+    assert reads.read == [PDF_FILE, PDF_FILE]
+
+
+class Failing(MemoryStorage):
+    """A storage that cannot store."""
+
+    async def _write(self, name: str, chunks: AsyncIterator[bytes]) -> None:
+        """Fail, as a full disk does."""
+        raise OSError("The disk is full.")
+
+
+def test_a_file_that_cannot_be_stored_is_closed_before_the_service(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """The service never runs; the temporary file is dropped."""
+    use_auth()
+    reads = Reads()
+    opened: list[ReceivedUpload] = []
+    real = uploads.receive_upload
+
+    async def receive(*args: Any, **options: Any) -> ReceivedUpload:  # noqa: ANN401 - receive_upload's.
+        received = await real(*args, **options)
+        opened.append(received)
+        return received
+
+    app = reading(store, reads, storage=Failing())
+    act = f"{LOCATION}{ids(store)['a']}/manual"
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(uploading, "receive_upload", receive)
+        with pytest.raises(OSError, match="full"):
+            app.client.post(act, content=PDF_FILE, headers=as_("changer"))
+
+    assert reads.read == []
+    assert [each.file.closed for each in opened] == [True]
+
+
+def test_the_twin_runs_no_service_and_hands_nothing(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """It stores nothing and runs no service: the file it received is closed."""
+    use_auth()
+    reads = Reads()
+    resource = gadgets(store)
+    resource.upload_route(
+        AttachManual,
+        service=reads.attach,
+        field="manual",
+        path="/manual",
+        rule=Asks(),
+        types=[PDF],
+        max_size=10_000,
+        storage=MemoryStorage(),
+    )
+    client = App(resource).client
+    act = f"{LOCATION}{ids(store)['a']}/manual"
+
+    asked = client.post(
+        f"{act}/authorization", content=PDF_FILE, headers=as_("changer")
+    )
+    done = client.post(act, content=PDF_FILE, headers=as_("changer", **AUTHORIZED))
+
+    assert (asked.status_code, done.status_code) == (201, 200)
+    assert reads.read == [PDF_FILE]
+
+
+async def test_a_file_kept_by_store_stays_open_at_its_start() -> None:
+    """``keep=True``: open after storing, until its caller closes it."""
+    received = await receive_upload(PNG_FILE, types=IMAGES, max_size=1000)
+    storage = MemoryStorage()
+
+    stored = await received.store(storage, keep=True)
+
+    assert not received.file.closed
+    assert received.file.read() == PNG_FILE == storage.files[stored.name]
+    received.close()
+    failing = await receive_upload(PNG_FILE, types=IMAGES, max_size=1000)
+    with pytest.raises(ImproperlyConfigured, match="nowhere"):
+        await failing.store("nowhere", keep=True)
+    assert failing.file.closed
+
+
+def test_a_service_that_asks_nothing_is_called_as_before() -> None:
+    """Only a parameter named ``received``, given by name, asks."""
+
+    async def plain(command: object, uow: object) -> None: ...
+
+    async def positional(command: object, uow: object, received: object, /) -> None: ...
+
+    async def keyword(command: object, uow: object, *, received: object) -> None: ...
+
+    assert not uploading._asks_received(plain)
+    assert not uploading._asks_received(positional)
+    assert uploading._asks_received(keyword)
+    assert not uploading._asks_received(type)  # No signature to read.

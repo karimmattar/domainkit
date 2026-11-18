@@ -490,7 +490,11 @@ but stores nothing. It returns a `ReceivedUpload`, held in a temporary
 file: `store(storage, directory=)` stores it, drops the temporary file,
 and returns the `StoredUpload`; `unstored()` says what `store` would
 return but its name; and `close()` drops it without storing. Store it,
-or close it.
+or close it. `store(..., keep=True)` (*new in 2.8*) leaves the temporary
+file open at its start once it is stored, to read what it holds without
+reading the storage; close it once read. A store that fails drops it all
+the same. An `upload_route` hands it so to a service that asks
+([resources.md](resources.md#the-file-received)).
 
 `remember=` names who receives the file, a route and its caller (*new in
 2.7*). A file its checks took under that name in the last 30 minutes,
@@ -593,7 +597,10 @@ A request of 2,200,179 bytes to this route gets 413
   `command`, `batch`). `command_route` and `batch_route` take
   `body_limit=` per route ([resources.md](resources.md)). `upload_route`
   holds its body to its `max_size` and 64 KiB for a form, unless it is
-  given a `body_limit`.
+  given a `body_limit`, which it may decide per request (*new in 2.8*,
+  [Bounds decided per request](resources.md#bounds-decided-per-request)).
+  Before routing, a declared length is then checked against 1 GiB, the
+  most a route may decide.
 - A small limit suits the routes that anonymous callers reach. A login or
   a sign-up takes a few hundred bytes, and does not need the global
   limit.

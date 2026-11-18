@@ -141,6 +141,23 @@ relied on 2.7's behaviour changes, and what to run.
   checks of such text register on `on_typed_text`, in place of twin
   dependencies that read the body again ([Text a person
   typed](auth/actions.md#text-a-person-typed)).
+- **A Word document's XML is bounded before it is parsed, and what
+  `fill_docx` writes in it** (security). `placeholders` and `fill_docx`
+  refuse, with `DocumentError`, a document whose content types and
+  filled parts pass 12 MiB of XML, or 1,000,000 elements, texts,
+  attributes, and placeholders, in all; `fill_docx` counts the values it
+  writes too, their bytes and three nodes for each line break or tab. Text
+  with little formatting reaches the bounds at some 2,100 to 2,900
+  pages; formatted text (bold, italics, links, tables, lists) at some 270
+  to 330. 2.7 parsed what `ArchiveLimits` let inflate, 256 MiB, in the
+  process that called it, at up to 90 times its size in memory
+  ([The XML parsed](documents.md#the-xml-parsed)). A project that fills
+  larger templates passes larger bounds, and has the memory for them,
+  up to 340 bytes a node:
+  `fill_docx(template, values, limits=ArchiveLimits(max_xml_bytes=24 * 1024 * 1024, max_nodes=2_000_000))`,
+  and the same to `placeholders`. A project that checked limits of its
+  own at upload, in the check's process, may keep doing so, with these
+  bounds: a template refused there is never stored.
 
 ## 2.6 to 2.7
 
