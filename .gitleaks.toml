@@ -30,7 +30,7 @@ paths = ['''^benchmarks/compare/run\.py$''']
 regexes = ['''^compare-key-0123456789$''']
 
 [[allowlists]]
-description = "Example output in the documentation: tokens from a throwaway test database, a TOTP secret from a probe run, a sample UUID, and the Standard Webhooks test vector"
+description = "Example output in the documentation: tokens from a throwaway test database, a TOTP secret from a probe run, sample UUIDs used as idempotency keys, and the Standard Webhooks test vector"
 condition = "AND"
 paths = ['''^docs/''']
 regexes = [
@@ -40,5 +40,10 @@ regexes = [
   '''^eyJhbGciOiJIUzI1NiIsImtpZCI6IjJaRWVIcmVZNWxTUzA4NUR2OThVa3ciLCJ0eXAiOiJKV1QifQ''',
   '''^HH3QQ2LGSPSCO3SIFRBV5QWWQPSHEZAE$''',
   '''^4f0c3c6e-0d55-4a6e-9a3f-1b2c3d4e5f60$''',
+  '''^6f0e8a52-3c1d-4b7e-9a0f-2d5c8e1b7a40$''',
+  '''^0b9d4c21-77e5-4f3a-8c6d-5e2a1f9b3c07$''',
+  '''^4b1f9c7e-2a3d-4e5f-8a6b-7c8d9e0f1a2b$''',
+  '''^3e5d7a10-9b2c-4f6e-8d1a-7c4b2e9f0a63$''',
+  '''^9a7c5e31-4b2d-4f60-8e1a-2c3d4e5f6a7b$''',
   '''^whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw$''',
 ]
