@@ -41,8 +41,8 @@ from domainkit.broker.pull import Fetched, PullBroker, Puller
 from domainkit.broker.redis_streams import RedisStreamsBroker
 from domainkit.broker.sqs import SqsBroker
 from domainkit.conf import BrokerConfig
-from domainkit.http import client as client_module
-from domainkit.http.client import stub
+from domainkit.outbound import client as client_module
+from domainkit.outbound.client import stub
 from domainkit_tests.support.waiting import WAIT
 
 pytestmark = pytest.mark.anyio

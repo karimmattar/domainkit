@@ -47,7 +47,6 @@ from domainkit.context import RequestContext, bind_request, current_request
 from domainkit.contrib.audit.recorder import Outcome, audit_row
 from domainkit.contrib.auth import throttling
 from domainkit.contrib.idempotency.middleware import _caller_of
-from domainkit.http.guard import lookup_owner
 from domainkit.http.middleware import (
     PEER,
     UNIX_PEER,
@@ -55,6 +54,7 @@ from domainkit.http.middleware import (
     RequestContextMiddleware,
 )
 from domainkit.http.ratelimit import address_key
+from domainkit.outbound.guard import lookup_owner
 from domainkit_tests.support.servers import UnixHTTPConnection
 
 ROOT: Final = Path(__file__).parents[1]

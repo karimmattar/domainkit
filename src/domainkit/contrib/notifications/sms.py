@@ -11,7 +11,7 @@ Name one in ``NOTIFICATIONS``, with its settings in ``SMS_OPTIONS``::
         },
     }
 
-Each calls its provider's HTTP API through ``domainkit.http.client``
+Each calls its provider's HTTP API through ``domainkit.outbound.client``
 (the ``httpclient`` extra), with no SDK. A message's ``sender`` replaces
 the configured one where the provider allows it. A refusal raises
 ``NotificationFailed`` with the provider's error code, never the number
@@ -43,7 +43,7 @@ from .settings import NotificationsSettings
 if TYPE_CHECKING:
     import httpx2
 
-    from domainkit.http.client import HttpClient
+    from domainkit.outbound.client import HttpClient
 
 
 __all__ = [
@@ -66,7 +66,7 @@ def shared_client(timeout: float, *, http2: bool = False) -> "HttpClient":
 
     Text messages and push share it; its metrics call it ``notifications``.
     """
-    from domainkit.http.client import HttpClient
+    from domainkit.outbound.client import HttpClient
 
     key = (timeout, http2)
     if key not in _clients:

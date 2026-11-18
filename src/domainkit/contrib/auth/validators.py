@@ -254,7 +254,7 @@ class BreachedPasswordValidator:
     ``Add-Padding: true`` so the answer's size does not tell them; the
     API answers every suffix it knows under them, and the rest of the
     hash is compared here (k-anonymity). The call goes through
-    ``domainkit.http.client`` (the ``httpclient`` extra): bounded by
+    ``domainkit.outbound.client`` (the ``httpclient`` extra): bounded by
     ``TIMEOUT`` and the request's deadline, retried, and failing at once
     while the API's circuit is open. Logs name its origin, never the
     prefix. An answer that does not come in time, or does not read as
@@ -273,7 +273,7 @@ class BreachedPasswordValidator:
         """
         self.config = BreachedPasswordSettings() if config is None else config
         try:
-            from domainkit.http.client import HttpClient
+            from domainkit.outbound.client import HttpClient
         except ImportError as exc:
             raise ImproperlyConfigured(
                 "AUTH.BREACHED_PASSWORDS needs the httpclient extra: "

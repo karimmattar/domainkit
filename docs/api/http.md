@@ -1,14 +1,15 @@
 # Public API: HTTP
 
 `domainkit.http` and its modules: the application, access rules,
-middleware, responses, routing, live connections, uploads, and outgoing
-calls. Part of the [public API](../api.md), under its compatibility
-policy.
+middleware, responses, routing, live connections, uploads, and the 2.8
+path of the outgoing client ([outgoing calls](outbound.md)). Part of the
+[public API](../api.md), under its compatibility policy.
 
 ## `domainkit.http`
 
 FastAPI integration: application factory, middleware, and error mapping.
 
+- `CURSOR_PATTERN`: Cursors are base64url; use as `Query(pattern=CURSOR_PATTERN)`.
 - `MAX_CURSOR_LENGTH`: Longest cursor accepted; use as `Query(max_length=MAX_CURSOR_LENGTH)`.
 - `APIError`: An HTTP error outside the domain (a bad cursor, an oversized body).
 - `ErrorResponse`: Body of every error response; also the schema documented in OpenAPI.
@@ -91,7 +92,10 @@ Find code that blocks the event loop before production does.
 
 ## `domainkit.http.client`
 
-Outgoing HTTP calls, bounded by the request's deadline (`domainkit[httpclient]`).
+Outgoing HTTP calls: `domainkit.outbound.client`, under its 2.8 path. Each
+name is the same object as the one [`domainkit.outbound.client`](outbound.md#domainkitoutboundclient)
+lists; import it from there (*since 2.9*). A later minor release may
+deprecate this path.
 
 - `CallTimeout`: A call took longer than its `timeout`, retries included.
 - `CircuitBreaker`: Circuits per host: open after failures in a row, then one trial at a time.

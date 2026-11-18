@@ -76,7 +76,7 @@ and the language from `LANGUAGE_CODE`. `server-timing` is the
 | `REQUEST_QUEUE_TIMEOUT` | `1.0` | Seconds (at most 60) a request past the cap waits for a slot, before it is answered 503 `overloaded`. |
 | `CONCURRENCY_EXEMPT_PATHS` | `()` | Exact paths never counted against the cap, besides `PROBE_PATHS`. They are compared without the root path the application is mounted at (`--root-path`). Until 2.9 its default named the probes. |
 | `GUARD_LOOKUP_THREADS` | `16` | Threads (1 to 256) that look host names up for guarded calls and webhooks, in each process. One owner (a request's user or address, or a webhook delivery's subscription) may hold a quarter of them, so hosts that one owner chose and that never answer leave the rest to others ([runtime.md](../runtime.md#outgoing-http-calls)). |
-| `HTTP_CLIENT` | see [Outgoing HTTP calls](#outgoing-http-calls) | The defaults of outgoing calls through `domainkit.http.client`. |
+| `HTTP_CLIENT` | see [Outgoing HTTP calls](#outgoing-http-calls) | The defaults of outgoing calls through `domainkit.outbound.client`. |
 
 ### Compression
 
@@ -206,7 +206,7 @@ after `SecurityHeadersMiddleware`, before `RequestContextMiddleware`.
 ## Outgoing HTTP calls
 
 `HTTP_CLIENT` holds the defaults of every
-`domainkit.http.client.HttpClient` (the `httpclient` extra). A client may
+`domainkit.outbound.client.HttpClient` (the `httpclient` extra). A client may
 change its own timeout and retries. See
 [runtime.md](../runtime.md#outgoing-http-calls).
 

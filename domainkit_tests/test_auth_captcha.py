@@ -7,7 +7,7 @@ import httpx2
 import pytest
 
 from domainkit.contrib.auth.captcha import VERIFY, CaptchaUnavailable
-from domainkit.http.client import stub
+from domainkit.outbound.client import stub
 from domainkit_tests.conftest import Api, UseAuth, domain_warnings
 from domainkit_tests.support.auth import PASSWORD, create_user
 

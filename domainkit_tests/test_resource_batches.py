@@ -16,9 +16,9 @@ from domainkit.ddd import Command, NotFound, Retry
 from domainkit.ddd.query import F
 from domainkit.exceptions import ServiceBusy
 from domainkit.http.access import BasePermission
-from domainkit.http.client import CallTimeout
 from domainkit.http.errors import APIError
 from domainkit.http.middleware import RequestContextMiddleware
+from domainkit.outbound.client import CallTimeout
 from domainkit.reporting import flush_reports
 from domainkit.resources import PatchModel
 from domainkit.resources.batches import Enlisted, failure, not_applied

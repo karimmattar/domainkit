@@ -29,12 +29,13 @@ The adapters:
 A project's own subclasses ``KeyProvider`` (and may override
 ``from_options``), named by ``KEYS.CUSTOM``.
 
-The cloud adapters call through ``domainkit.http.client`` (``domainkit[httpclient]``),
-which logs a call's method, origin and path only: never a body, so never a
-key. No adapter logs, repeats in an error, or ``repr``s key material, and
-each is safe to share between the tasks of an event loop. A wrapped key is
-text that names its provider (``local:``, ``aws-kms:``, ``vault:``), so a
-key wrapped by one is never handed to another. See ADR 0119.
+The cloud adapters call through ``domainkit.outbound.client``
+(``domainkit[httpclient]``), which logs a call's method, origin and path
+only: never a body, so never a key. No adapter logs, repeats in an error,
+or ``repr``s key material, and each is safe to share between the tasks of
+an event loop. A wrapped key is text that names its provider (``local:``,
+``aws-kms:``, ``vault:``), so a key wrapped by one is never handed to
+another. See ADR 0119.
 """
 
 import base64

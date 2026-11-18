@@ -1,6 +1,6 @@
 # 0003. Layer rules enforced by `check`
 
-- Status: Accepted; amended by [0037](0037-one-clock-frozen-per-context.md), [0166](0166-let-a-domain-layer-mark-its-texts-extract-the-projects-own-and-add-a-translation-alone.md), [0167](0167-check-an-upload-whole-and-let-a-resource-take-one.md), [0182](0182-let-a-gateway-raise-a-routes-problems-and-name-users-by-the-fields-a-project-chooses.md), [0188](0188-write-down-the-cores-layering-and-hold-the-boundaries-it-draws.md), and 2026-10-25, 2026-11-15, 2026-11-16, 2026-11-17 and 2026-11-18 (at the end)
+- Status: Accepted; amended by [0037](0037-one-clock-frozen-per-context.md), [0166](0166-let-a-domain-layer-mark-its-texts-extract-the-projects-own-and-add-a-translation-alone.md), [0167](0167-check-an-upload-whole-and-let-a-resource-take-one.md), [0182](0182-let-a-gateway-raise-a-routes-problems-and-name-users-by-the-fields-a-project-chooses.md), [0188](0188-write-down-the-cores-layering-and-hold-the-boundaries-it-draws.md), [0195](0195-move-the-outgoing-client-below-the-adapters-and-hold-module-state-to-its-resets.md), and 2026-10-25, 2026-11-15, 2026-11-16, 2026-11-17 and 2026-11-18 (at the end)
 - Date: 2026-10-14
 
 ## Context
@@ -89,3 +89,9 @@ packages are exempt from the cross-domain rule.
   ([0188](0188-write-down-the-cores-layering-and-hold-the-boundaries-it-draws.md)): `architecture.W001`, which `check --deploy` fails on. 3.0
   refuses them, as `domainkit.http.problems` is refused today. Every
   other name of the two modules' `__all__` stays allowed.
+
+- The outgoing client moved to `domainkit.outbound` ([0195](0195-move-the-outgoing-client-below-the-adapters-and-hold-module-state-to-its-resets.md)), which no
+  rule names in the infrastructure layer: an adapter imports it with no
+  exception. The application layer may not import it, as it could not
+  import `domainkit.http.client`. The exception for
+  `domainkit.http.client`, the client's 2.8 path, stays.

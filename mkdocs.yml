@@ -170,6 +170,7 @@ nav:
           - api.md
           - api/core.md
           - api/data.md
+          - api/outbound.md
           - api/documents.md
           - api/http.md
           - api/auth.md

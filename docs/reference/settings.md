@@ -233,11 +233,16 @@ domains' own models keep those keys as secrets.
   `domainkit.clock`, `domainkit.money`, `domainkit.i18n.lazy` (*new in
   2.5*: marks and lazy strings, [i18n.md](../i18n.md#messages-of-the-domain-layer)),
   and itself;
-- the application layer uses no web or database library, and the
-  infrastructure layer no web library but the outgoing HTTP client
-  (`domainkit.http.client`), which adapters call other services with,
-  and the uploads' checks and storing (`domainkit.http.uploads`), which
-  a file gateway runs on the bytes its route hands it (*New in 2.5*),
+- the application layer uses no web or database library, and calls no
+  other service (`domainkit.outbound`): it reaches one through a port;
+- the infrastructure layer calls other services through
+  `domainkit.outbound` (the outgoing HTTP client and its guard), which is
+  no web library, so no rule names it there (*new in 2.9*,
+  [ADR 0195](../adr/0195-move-the-outgoing-client-below-the-adapters-and-hold-module-state-to-its-resets.md)).
+  It uses no web library but the client's path until 2.9
+  (`domainkit.http.client`, the same objects), and the uploads' checks
+  and storing (`domainkit.http.uploads`), which a file gateway runs on
+  the bytes its route hands it (*New in 2.5*),
   typed as `domainkit.http.uploads.Upload` rather than Starlette's
   `UploadFile` (*New in 2.7*), and the problems a route raises
   (`domainkit.http.problems`: `APIError` and `FieldError`), so that a
@@ -260,7 +265,7 @@ another name they hold, such as Starlette's `UploadFile` or
 | `ARCHITECTURE` key | Default | Meaning |
 | --- | --- | --- |
 | `DOMAIN_ALLOWED` | `()` | More packages a domain layer may import, such as a shared kernel (`"myproject.kernel"`). Up to 64 dotted names. |
-| `FORBIDDEN_LIBRARIES` | `{}` | More libraries a layer must not import, by layer: `{"application": ("httpx",)}`. Not the domain layer, which is an allowlist: use `DOMAIN_ALLOWED`. Up to 12 layers, each with up to 64 names. |
+| `FORBIDDEN_LIBRARIES` | `{}` | More libraries a layer must not import, by layer: `{"application": ("httpx",)}`. Not the domain layer, which is an allowlist: use `DOMAIN_ALLOWED`. Up to 12 layers, each with up to 64 names. A name of 2.8's paths, `domainkit.http.client` or `domainkit.http.guard`, or `domainkit.http`, which held them, covers their home in `domainkit.outbound` too, wherever it covered the old path, unless the defaults hold the entry already (*new in 2.9*). |
 | `EXTRA_LAYERS` | `()` | Layer packages of the project's own, such as `ports`, so the two tables here can name them. Up to 8, none a built-in layer. |
 | `FORBIDDEN_LAYERS` | `{}` | More layers of the same domain a layer must not import: `{"ports": ("infrastructure", "api")}`. Every layer named must be built in or in `EXTRA_LAYERS`, and none may forbid itself. Up to 12 layers, each forbidding up to 12. |
 | `PUBLIC_SURFACE` | `()` | More parts of a domain that other domains may import, each starting with a layer: `("domain.values",)`. |

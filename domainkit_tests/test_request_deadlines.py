@@ -426,6 +426,36 @@ async def test_a_commit_in_doubt_is_answered_without_retry_after(
     assert (answer.json()["code"], answer.json()["detail"]) == (code, detail)
 
 
+@pytest.mark.parametrize(
+    ("in_task", "middleware"),
+    [
+        ("false", ()),
+        ("true", ()),  # A task group's task.
+        ("false", ("domainkit_tests.deadline_routes.InATask",)),
+    ],
+    ids=["in-the-request", "in-a-task-group", "under-base-http-middleware"],
+)
+async def test_a_commit_cut_off_in_any_task_is_answered_without_retry_after(
+    in_task: str, middleware: tuple[str, ...]
+) -> None:
+    """The deadline cuts a commit off in a task the request started: no retry.
+
+    The commit's error is that task's own, and the request's cancellation
+    another error; the deadline they share notes the commit in doubt
+    (``Deadline.in_doubt``), so the 503 says to check, as in the request's
+    own task.
+    """
+    with override_settings(
+        ROOT_ROUTER=ROUTES, MIDDLEWARE=[*MIDDLEWARE, *middleware], REQUEST_TIMEOUT=0.2
+    ):
+        async with AsyncTestClient(get_asgi_application(), lifespan=False) as client:
+            answer = await client.post(f"/commit-unanswered?in_task={in_task}")
+    assert answer.status_code == 503
+    assert "Retry-After" not in answer.headers
+    said = answer.json()
+    assert (said["code"], said["detail"]) == ("deadline_exceeded", CUT)
+
+
 async def test_an_after_commit_hook_that_hangs_is_cut_off(
     database_url: str,
     caplog: pytest.LogCaptureFixture,

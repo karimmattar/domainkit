@@ -42,9 +42,8 @@ from uuid import UUID
 
 from domainkit import setup
 from domainkit.apps import registry
-from domainkit.conf import settings
+from domainkit.conf import DEPLOYED_ENVIRONMENTS, settings
 from domainkit.conf.env import Env
-from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.exceptions import DomainkitError
 from domainkit.i18n import override
 from domainkit.management.base import BaseCommand, CommandError, run_async

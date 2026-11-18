@@ -531,7 +531,7 @@ it belongs to none of them (ADR 0071):
 - **No caller's deadline reaches it**, so one short request never fails
   the others. Its limit is the cache's own `COMPUTE_TIMEOUT`. Its
   transactions lower `statement_timeout` to the time it has left, and
-  its outgoing calls through `domainkit.http.client` keep to it. When the
+  its outgoing calls through `domainkit.outbound.client` keep to it. When the
   time runs out, every caller that waits gets the same `TimeoutError`.
   `COMPUTE_TIMEOUT` is `None` (no limit) by default, as in 0.9.0. Set it,
   for example to `REQUEST_TIMEOUT`'s value. `check` warns where deployed

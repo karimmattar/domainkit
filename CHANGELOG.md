@@ -128,6 +128,13 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   `after_commit` listener can raise once the `COMMIT` landed, are in
   doubt (audit A28-REL-04).
 
+- `domainkit.ddd.mark_in_doubt(exc)` and `failed_in_doubt(exc)`, and
+  `domainkit.db.refused_commit(exc)`, for a commit made outside a unit of
+  work, as `enqueue`'s is: `refused_commit` says whether the database
+  refused it; `mark_in_doubt` marks its error, and the work's deadlines,
+  when it may have been applied; `failed_in_doubt` says so of an error,
+  or of one raised from it (audit A28-REL-04).
+
 - `apps.E003`: `check` refuses an optional app's middleware in
   `MIDDLEWARE` without the app in `INSTALLED_DOMAINS`, and names the app;
   staging and production refuse to start with it (audit A28-DX-04).
@@ -141,7 +148,10 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 
 - `probes.W001`: `check` warns of a list of exempt paths that names some of
   `PROBE_PATHS`, not all: the probes it leaves out are exempt from it
-  since 2.9 (audit A28-ARCH-01).
+  since 2.9. The auth app warns so of `AUTH.AUTHENTICATION_EXEMPT_PATHS`,
+  and an app of a list of its own with
+  `domainkit.checks.probes_left_out(name, listed, probes)` (audit
+  A28-ARCH-01).
 
 - Three parts continue the tutorial's bank, each walked by
   `domainkit_tests/test_walkthroughs.py`: money that moves (a transfer
@@ -196,7 +206,9 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   name must be lowercase letters, digits, and underscores, of at most 42
   characters, with no schema of its own, or each refuses it with
   `ValueError`; `contrib.audit`'s `protect` and `unprotect`, which
-  revisions call, take any table as in 2.8
+  revisions call, take any table as in 2.8. A name that PostgreSQL 16
+  reserves is quoted: SQLAlchemy's list, and `collation`, `concurrently`,
+  `lateral`, `system_user`, and `tablesample`, which it lacks
   ([Append-only tables](docs/databases.md#append-only-tables), ADR 0188)
   (audit A28-ARCH-07).
 
@@ -230,6 +242,30 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   plugin calls around each test, so neither reaches the next test
   ([What each test starts from](docs/testing.md#what-each-test-starts-from),
   ADR 0113) (audit A28-ARCH-14).
+
+- `domainkit.outbound`: the outgoing HTTP client
+  (`domainkit.outbound.client`) and its guard (`domainkit.outbound.guard`),
+  in a package of their own below the adapters that call through them.
+  The guard's checks are public, for an app that takes URLs from its
+  users: `checked_url`, `checked_host`, `checked_address`, `lookups_for`,
+  `tls_context`, `UnsafeURL`, `MAX_URL_LENGTH`, and the `Address`,
+  `Network`, and `Resolver` types ([Outgoing calls](docs/api/outbound.md),
+  ADR 0195) (audit A28-ARCH-04, A28-ARCH-06).
+
+- Public names the contrib apps used before they were published:
+  `domainkit.conf.DEPLOYED_ENVIRONMENTS`, `domainkit.http.CURSOR_PATTERN`,
+  and `domainkit.context.client_group`, the address a caller is counted
+  by (an IPv6 network for an IPv6 address), which rate limits, auth's
+  throttles, and the guard's lookups share. It is the rate limit's, moved:
+  `domainkit.http.ratelimit.client_group` is the same function (ADR 0195)
+  (audit A28-ARCH-06).
+
+- `domainkit.contrib.messaging.unregister_task(key)`, which forgets one
+  task, as a test of a worker that does not know it needs, and
+  `domainkit.contrib.notifications.push.reset_tokens()`, which forgets the
+  push services' tokens and which the pytest plugin calls before each
+  test ([What each test starts from](docs/testing.md#what-each-test-starts-from),
+  ADR 0195) (audit A28-ARCH-14).
 
 - `domainkit.http.access.OfflineContext(user, method=..., path=...,
   scopes=...)`: a call made outside any request, to ask access rules on,
@@ -288,9 +324,14 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   of the ordering (`>=` ascending, `<=` descending, a money field's
   currency), so a database reads an index from the position instead of
   from its first row. It selects the same rows. A middle page of 300,000
-  rows took 13 to 20 ms on PostgreSQL, and now 0.03 to 0.1 ms. Ascending
-  on a field that may be missing still reads from the start (ADR 0185)
-  (audit A28-PERF-01).
+  rows took 13 to 20 ms on PostgreSQL, and now 0.03 to 0.1 ms. On a field
+  that may be missing, a page whose position's group is followed by the
+  other group (past a value ascending, past a missing one descending)
+  reads the rest of its group, then the other one in a second statement
+  while the page is not full, each from its own start; `explain` shows
+  one plan per part. With an index in the ordering's directions, such a
+  page of 300,000 rows took 12 to 39 ms on PostgreSQL and 10 to 22 ms on
+  SQLite, and now 0.02 to 0.4 ms (ADR 0185) (audit A28-PERF-01).
 
 - The admin API's bound on grants on objects reads only the grants that
   count: none for a superuser, and for staff none of a permission they
@@ -466,6 +507,34 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   arguments (PLR0913, over 10), and statements (PLR0915, over 50) (audit
   A28-ARCH-04, A28-ARCH-05, A28-ARCH-06, A28-ARCH-E1, A28-ARCH-E3).
 
+- `domainkit.http.client` and `domainkit.http.guard` are views of
+  `domainkit.outbound.client` and `domainkit.outbound.guard`: every name
+  reads from the new module, the same object, with one set of clients,
+  circuits, metrics, and lookup threads, and a name a test sets on an old
+  path (`monkeypatch.setattr`, `mock.patch`) is set where the code reads
+  it, and put back as the patch ends. The framework imports the new paths;
+  the calls still log as `domainkit.http.client`. Shutdown closes the
+  guard's lookup threads as one of the framework's kinds, `guard
+  lookups`. The layer rules keep `domainkit.outbound` out of the
+  application layer, let the infrastructure layer import it with no
+  exception, and read a project's rule that names `domainkit.http`,
+  `domainkit.http.client`, or `domainkit.http.guard` as naming the new
+  path too ([upgrading.md](docs/upgrading.md#28-to-29), ADR 0195) (audit
+  A28-ARCH-04).
+
+- Loading the settings no longer imports the layer checker,
+  `domainkit.architecture`: the four built-in layer names are the
+  settings' own (`domainkit.conf.global_settings.LAYERS`), which
+  `domainkit.architecture.LAYERS` imports, the same object (ADR 0195)
+  (audit A28-ARCH-04).
+
+- The framework's guards shrink: the core has 4 imports up its layers,
+  from 21, and the apps use 90 unpublished core names, from 101.
+  `domainkit_tests/test_module_state.py` fails on module state a test can
+  leave behind that has no public reset, beside a list of 2.9's that may
+  only shrink, and on a new module-level function behind a cache, beside
+  another (ADR 0195) (audit A28-ARCH-04, A28-ARCH-06, A28-ARCH-14).
+
 - `RATE_LIMIT_BACKEND` is checked before it counts: a value that is
   neither a dotted path nor a name is refused with the settings, and one
   that does not import, or names a class without `hit`, is refused by
@@ -588,8 +657,13 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 
 - A request whose commit is in doubt (the deadline passed, or the
   connection was lost, as its `COMMIT` was sent) answers 503 without
-  `Retry-After`, with a detail that says the change may have been made
-  (audit A28-REL-01, A28-REL-03).
+  `Retry-After`, with a detail that says the change may have been made.
+  A request cut off by its deadline while a task it started committed
+  (a task group's, the one a `BaseHTTPMiddleware` serves the route in)
+  answers so too (`Deadline.in_doubt`), and so does one whose `enqueue`
+  was cut off as it committed. Only that commit's error is in doubt, not
+  another equal to it ([The request flow](docs/request-flow.md#8-commit))
+  (audit A28-REL-01, A28-REL-03, A28-REL-04).
 
 - A database that cannot be reached, or cannot serve now (class `08`,
   `57P01` to `57P03`, `53300`, or a connection refused as the pool opens

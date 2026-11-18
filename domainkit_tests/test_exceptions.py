@@ -19,10 +19,10 @@ from domainkit.ddd.fields import InvalidQuery
 from domainkit.deadlines import DeadlineExceeded
 from domainkit.deprecation import DomainkitDeprecationWarning
 from domainkit.exceptions import DomainkitError, ImproperlyConfigured, ServiceBusy
-from domainkit.http.client import CircuitOpen
 from domainkit.http.errors import APIError, busy_refusal
 from domainkit.http.websockets import ConnectionClosed
 from domainkit.ledger.base import LedgerKeyNotFound
+from domainkit.outbound.client import CircuitOpen
 from domainkit.resources.batches import failure
 
 ROOT: Final = Path(__file__).parents[1]

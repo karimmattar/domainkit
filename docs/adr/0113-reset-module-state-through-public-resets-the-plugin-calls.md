@@ -1,6 +1,6 @@
 # 0113. Reset module state through public resets the plugin calls
 
-- Status: Accepted
+- Status: Accepted; amended by [0195](0195-move-the-outgoing-client-below-the-adapters-and-hold-module-state-to-its-resets.md) on 2026-11-18 (at the end)
 - Date: 2026-10-29
 
 ## Context
@@ -72,3 +72,12 @@ the run.
   project's own module state is the project's to reset; a registry
   remains the way to let projects join, and would supersede this record.
 - The resets are public names: they follow the deprecation policy.
+
+## Amendment (2026-11-18, 2.9)
+
+- `domainkit_tests/test_module_state.py` finds module state by reading
+  the source, and fails on a piece that has no public reset and is not
+  on the list of 2.9's, which only shrinks ([0195](0195-move-the-outgoing-client-below-the-adapters-and-hold-module-state-to-its-resets.md)). New resets:
+  `domainkit.contrib.messaging.unregister_task(key)` and
+  `domainkit.contrib.notifications.push.reset_tokens()`, which the plugin
+  calls before each test.

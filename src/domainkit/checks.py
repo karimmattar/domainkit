@@ -35,6 +35,7 @@ __all__ = [
     "CheckMessage",
     "Level",
     "describe",
+    "probes_left_out",
     "silence",
     "validate_silenced",
 ]
@@ -167,3 +168,31 @@ def validate_silenced(ids: Sequence[str]) -> tuple[str, ...]:
                 "configuration instead"
             )
     return tuple(ids)
+
+
+def probes_left_out(
+    name: str, listed: Iterable[str], probes: Sequence[str]
+) -> CheckMessage | None:
+    """``probes.W001``: the list ``name`` names some of ``probes``, not all.
+
+    ``probes`` is ``PROBE_PATHS``, which each list of exact paths exempted
+    from a concern adds to (ADR 0186). Before 2.9 such a list left the
+    other probes out on purpose, or kept the old default; since, they are
+    exempt from it too, whatever it says. ``check`` asks it of the
+    framework's lists; an app asks it of its own, from a
+    ``deployment_warnings`` hook, as the auth app does of
+    ``AUTH.AUTHENTICATION_EXEMPT_PATHS``.
+    """
+    held = set(listed)
+    named = [path for path in probes if path in held]
+    left = [path for path in probes if path not in held]
+    if not named or not left:
+        return None
+    others = ", ".join(left)
+    return CheckMessage(
+        "probes.W001",
+        f"{name} names {', '.join(named)} of PROBE_PATHS, but not {others}: "
+        "since 2.9, PROBE_PATHS exempts every probe it names from it too. To "
+        f"leave {others} out, take it out of PROBE_PATHS, and add it to each "
+        "list that should still exempt it.",
+    )

@@ -9,8 +9,8 @@ The application's lifespan (``serving``) and management commands
    publisher sending the messages it holds.
 3. ``tasks``: the loop's background tasks (``domainkit.tasks.spawn`` and
    ``supervise``) are cancelled and awaited.
-4. ``resources``: caches, HTTP clients, databases, ledgers, brokers, and the
-   kinds others register close, all at once.
+4. ``resources``: caches, HTTP clients and the guard's lookups, databases,
+   ledgers, brokers, and the kinds others register close, all at once.
 5. ``flush``: closers registered to run last; then the counts of security
    lines held back (``domainkit.log.ThrottledLog``), error reports, and
    last of all the logs, so what closing the others logged is written too.
@@ -128,6 +128,9 @@ _FRAMEWORK_CLOSERS: Final[Mapping[str, _FrameworkCloser]] = MappingProxyType(
         "caches": _FrameworkCloser(Phase.RESOURCES, 0, lambda: caches.close_all),
         "HTTP clients": _FrameworkCloser(
             Phase.RESOURCES, 0, lambda: close_http_clients
+        ),
+        "guard lookups": _FrameworkCloser(
+            Phase.RESOURCES, 0, lambda: close_guard_lookups
         ),
         "databases": _FrameworkCloser(
             Phase.RESOURCES, 0, lambda: connections.close_all
@@ -312,13 +315,24 @@ async def _close_all(closers: Mapping[str, Closer], deadline: float) -> None:
 
 
 async def close_http_clients() -> None:
-    """Close ``domainkit.http.client``'s pools, if anything imported it.
+    """Close ``domainkit.outbound.client``'s pools, if anything imported it.
 
     Looked up, not imported, so the lifespan needs no ``httpclient`` extra.
     """
-    client = sys.modules.get("domainkit.http.client")
+    client = sys.modules.get("domainkit.outbound.client")
     if client is not None:
         await client.close_all()
+
+
+async def close_guard_lookups() -> None:
+    """Stop the threads of ``domainkit.outbound.guard``'s lookups, if it was imported.
+
+    Looked up, not imported, as the HTTP clients are: the guard sits below
+    this module, and registers nothing with it.
+    """
+    guard = sys.modules.get("domainkit.outbound.guard")
+    if guard is not None:
+        await guard.resolver.close()
 
 
 async def close_ledgers() -> None:

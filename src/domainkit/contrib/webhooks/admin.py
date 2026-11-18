@@ -31,7 +31,7 @@ from domainkit.contrib.auth.admin import staff
 from domainkit.db import connections
 from domainkit.ddd import NotFound
 from domainkit.http import error_responses
-from domainkit.http.guard import MAX_URL_LENGTH
+from domainkit.outbound.guard import MAX_URL_LENGTH
 
 from .delivery import replay, webhooks_alias
 from .guard import checked_url

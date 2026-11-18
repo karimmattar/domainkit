@@ -109,7 +109,11 @@ two ways:
   `delay=` (a `timedelta` before it runs), `dedupe_key=` (a second
   message with the same key is not queued), and `ordering_key=`.
 - **Outside one**: `await enqueue(task, **arguments)` queues it now, in
-  its own transaction, in the home outbox (`MESSAGING.DATABASE`).
+  its own transaction, in the home outbox (`MESSAGING.DATABASE`). A
+  commit the deadline cuts off, or whose connection is lost, may have
+  queued it: its error is in doubt, as a unit of work's, and the request
+  answers 503 without `Retry-After`
+  ([The request flow](../request-flow.md#8-commit)).
 
 ```python
 from domainkit.contrib.messaging import enqueue
@@ -511,7 +515,7 @@ async def push_invoice(invoice_id: UUID) -> None:
   refuses to start: a claim that ends while the task still runs would run
   it twice. A run's timeout is its deadline (`domainkit.deadlines`). On
   PostgreSQL its transactions lower `statement_timeout` to the time left,
-  and its calls through `domainkit.http.client` are limited by it, as in
+  and its calls through `domainkit.outbound.client` are limited by it, as in
   a request. What follows each of its commits (the in-process handlers
   and the domains' after-commit hooks, up to `EVENT_HANDLER_TIMEOUT` each)
   does not count against it, since 2.9, so the timeout no longer bounds a

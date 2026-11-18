@@ -216,7 +216,7 @@ again whatever the reply: an operator may fix them meanwhile
 ([ADR 0156](adr/0156-refusals-that-last-push-tokens-checked-and-commands-that-start-the-domains.md)).
 
 **Providers.** The provider backends call their HTTP API through
-`domainkit.http.client` (the `httpclient` extra), with no SDK. They read
+`domainkit.outbound.client` (the `httpclient` extra), with no SDK. They read
 their settings from `MAIL.OPTIONS`; wrong ones stop the application at
 startup. A refusal raises `MailDeliveryFailed` with the provider's error
 code (`code`), never an address. The codes each provider documents for a
@@ -523,7 +523,7 @@ await send_push(
 ### Providers
 
 `SmsBackend` and `PushBackend` are ports. These adapters call the
-providers' HTTP APIs through `domainkit.http.client`, with no SDK:
+providers' HTTP APIs through `domainkit.outbound.client`, with no SDK:
 
 | Backend | Provider | Options (`SMS_OPTIONS`, or `PUSH_OPTIONS[name]`) |
 | --- | --- | --- |

@@ -11,8 +11,7 @@ from domainkit.apps.hooks import (
     on_export_subject,
 )
 from domainkit.checks import CheckMessage
-from domainkit.conf import settings
-from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
+from domainkit.conf import DEPLOYED_ENVIRONMENTS, settings
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import AllOf, AnyOf, BasePermission, Not
 

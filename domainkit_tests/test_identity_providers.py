@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 from domainkit.conf import override_settings
 from domainkit.contrib.identity import providers as providers_module
 from domainkit.contrib.identity.binding import binding
-from domainkit.http.client import stub
+from domainkit.outbound.client import stub
 from domainkit_tests.conftest import (
     IDENTITY,
     IDENTITY_DOMAINS,

@@ -29,7 +29,7 @@ from domainkit.http.errors import APIError
 from .settings import CaptchaAction, auth_settings
 
 if TYPE_CHECKING:
-    from domainkit.http.client import HttpClient
+    from domainkit.outbound.client import HttpClient
 
 __all__ = ["CaptchaUnavailable", "captcha"]
 
@@ -104,7 +104,7 @@ def _verifier() -> "HttpClient":
     Its pool is kept, and a provider that is down opens its circuit: the
     requests after are refused at once, 503 as before (audit A28-ARCH-02).
     """
-    from domainkit.http.client import HttpClient
+    from domainkit.outbound.client import HttpClient
 
     return HttpClient(propagate=False, name="captcha")
 

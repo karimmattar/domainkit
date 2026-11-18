@@ -26,7 +26,6 @@ from pydantic import (
     model_validator,
 )
 
-from domainkit.architecture import LAYERS
 from domainkit.checks import (
     MAX_SILENCED_CHECKS,
     CheckFailed,
@@ -1006,7 +1005,7 @@ class LiveFanoutConfig(BaseModel):
 
 
 class HttpClientConfig(BaseModel):
-    """``HTTP_CLIENT``: what ``domainkit.http.client`` clients do by default.
+    """``HTTP_CLIENT``: what ``domainkit.outbound.client`` clients do by default.
 
     Each ``HttpClient`` may change the timeout and the retries for itself.
     """
@@ -1043,6 +1042,8 @@ MODULE_NAME: Final = r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*){0,15}$"
 """A dotted module name, as ``myproject.kernel`` (16 parts at most)."""
 LAYER_NAME: Final = r"^[A-Za-z_][A-Za-z0-9_]{0,63}$"
 """A layer package's name, as ``ports``."""
+LAYERS: Final = ("domain", "application", "infrastructure", "api")
+"""Layer packages of a domain, innermost first; ``domainkit.architecture``'s."""
 MAX_ARCHITECTURE_ENTRIES: Final = 64
 """The most names one ``ARCHITECTURE`` list may hold."""
 MAX_EXTRA_LAYERS: Final = 8
@@ -1274,7 +1275,7 @@ class Settings(BaseModel):
     CONCURRENCY_EXEMPT_PATHS: tuple[str, ...] = ()
     """Exact paths never counted against the cap, besides ``PROBE_PATHS``."""
     HTTP_CLIENT: HttpClientConfig = Field(default_factory=HttpClientConfig)
-    """Defaults of outgoing calls through ``domainkit.http.client``."""
+    """Defaults of outgoing calls through ``domainkit.outbound.client``."""
     GUARD_LOOKUP_THREADS: int = Field(default=16, ge=1, le=MAX_LOOKUP_THREADS)
     """Threads that look host names up for guarded calls and webhooks, per process."""
     READINESS_TIMEOUT: float = Field(default=5.0, gt=0, le=60)

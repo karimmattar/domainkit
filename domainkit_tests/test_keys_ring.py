@@ -11,7 +11,6 @@ from sqlalchemy.util import greenlet_spawn
 
 from domainkit.encryption import DecryptionFailed
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.http.client import stub
 from domainkit.keys import LocalKeyProvider
 from domainkit.keys.ring import (
     Keyring,
@@ -23,6 +22,7 @@ from domainkit.keys.ring import (
     use_keyring,
 )
 from domainkit.keys.vault import VaultTransitKeyProvider
+from domainkit.outbound.client import stub
 from domainkit_tests.fake_kms import FakeVault
 
 CONTEXT: Final = b"cards\x00number\x001"

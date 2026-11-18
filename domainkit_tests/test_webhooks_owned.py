@@ -14,7 +14,7 @@ import pytest
 from fastapi import APIRouter
 from fastapi.testclient import TestClient
 
-from domainkit import lifecycle, setup
+from domainkit import setup
 from domainkit.apps import registry
 from domainkit.conf import override_settings
 from domainkit.context import RequestContext, bind_request
@@ -33,11 +33,11 @@ from domainkit.contrib.webhooks.tables import FAILED, SUCCEEDED, deliveries
 from domainkit.contrib.webhooks.uow import WebhooksUnitOfWork
 from domainkit.ddd import BusinessRuleViolation, DomainEvent
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.http import get_asgi_application, guard
+from domainkit.http import get_asgi_application
 from domainkit.http.access import open_routes
-from domainkit.lifecycle import Phase
 from domainkit.management import call_command
 from domainkit.management.base import run_async
+from domainkit.outbound import guard
 from domainkit_tests.conftest import (
     ALPHA,
     AUTH,
@@ -478,7 +478,6 @@ async def test_one_owners_hung_hosts_share_one_quarter_of_the_lookups(
     dns = HungDns(hung=4)
     monkeypatch.setattr(socket, "getaddrinfo", dns)
     monkeypatch.setattr(guard, "resolver", guard.GuardResolver())
-    saved = dict(lifecycle._registered[Phase.RESOURCES])
     hung = [
         await owned_subscription(f"http://s{i}.hang.test:{hooks.port}/hook", "tenant")
         for i in range(8)
@@ -503,8 +502,6 @@ async def test_one_owners_hung_hosts_share_one_quarter_of_the_lookups(
     finally:
         dns.release.set()
         await guard.resolver.close()
-        lifecycle._registered[Phase.RESOURCES].clear()
-        lifecycle._registered[Phase.RESOURCES].update(saved)
 
     statuses = {row.subscription_id: row.status for row in await rows(deliveries)}
     assert owners == {"webhook-owner:tenant": 4}

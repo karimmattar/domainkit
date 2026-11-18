@@ -1,7 +1,7 @@
 """Fixtures: the bank, faked; a receiver served on 127.0.0.1; a clerk and staff.
 
 Nothing leaves the machine. The bank's API is a function that every call
-of ``domainkit.http.client`` goes to (``stub``), and the receiver is served
+of ``domainkit.outbound.client`` goes to (``stub``), and the receiver is served
 on a port of the test process (``LiveServer``), where the worker, run here
 by ``drain``, delivers the webhooks over HTTP.
 """
@@ -11,7 +11,7 @@ from collections.abc import Iterator
 import httpx2
 import pytest
 from domainkit.contrib.webhooks import new_secret
-from domainkit.http.client import stub
+from domainkit.outbound.client import stub
 from domainkit.testing import ClientFor, LiveServer, SettingsOverrides, TestClient
 
 from receiver import Receiver

@@ -8,7 +8,7 @@
 
 Data keys come from ``transit/datakey/plaintext/<key>``, are unwrapped by
 ``transit/decrypt/<key>``, and moved to the key's newest version by
-``transit/rewrap/<key>``: plain HTTPS through ``domainkit.http.client``,
+``transit/rewrap/<key>``: plain HTTPS through ``domainkit.outbound.client``,
 with the token in ``X-Vault-Token`` (and ``X-Vault-Namespace`` for Vault
 Enterprise). A wrapped key is Vault's own ciphertext, ``vault:v<N>:...``,
 which names the version of the transit key that wrapped it. After
@@ -60,7 +60,7 @@ class VaultTransitKeyProvider(KeyProvider):
         Raises:
             ValueError: ``key`` or ``mount`` is empty.
         """
-        from domainkit.http.client import HttpClient
+        from domainkit.outbound.client import HttpClient
 
         if not key or not mount:
             raise ValueError("A Vault transit key needs a key name and a mount.")

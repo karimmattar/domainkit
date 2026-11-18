@@ -756,7 +756,7 @@ async def test_an_owners_deadline_never_fails_a_caller_with_time_left() -> None:
     release = asyncio.Event()
 
     async def outgoing() -> str:
-        await deadlines.within(release.wait())  # As domainkit.http.client bounds.
+        await deadlines.within(release.wait())  # As domainkit.outbound.client bounds.
         return "rates"
 
     async def owner() -> str:

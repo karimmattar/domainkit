@@ -125,9 +125,10 @@ jobs:
     needs: changes
     if: ${{ !cancelled() && !failure() && github.event_name != 'schedule' }}
     runs-on: ubuntu-24.04
-    # The suite takes about 4 minutes on the runner's 4 cores; a
-    # slower runner must not fail it.
-    timeout-minutes: 30
+    # Under coverage, which follows the processes the tests start (ADR
+    # 0191), the suite takes 14 to 26 minutes on a hosted runner; it has as
+    # long as integration's suite, so a slow runner does not fail it.
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -1261,7 +1262,7 @@ jobs:
             mutants: >-
               domainkit.http.application.* domainkit.http.blocking.*
               domainkit.http.errors.* domainkit.http.problems.* domainkit.http.filters.*
-              domainkit.http.guard.*
+              domainkit.http.guard.* domainkit.outbound.guard.*
               domainkit.http.live_events.* domainkit.http.live_fanout.*
               domainkit.http.locale.*
               domainkit.http.metrics.* domainkit.http.openapi.* domainkit.http.tracing.*
@@ -1270,7 +1271,9 @@ jobs:
               domainkit.http.access.*
           - name: http-2
             mutants: >-
-              domainkit.http.client.* domainkit.http.deadlines.* domainkit.http.health.*
+              domainkit.http.client.* domainkit.outbound.client.*
+              domainkit.http._moved.*
+              domainkit.http.deadlines.* domainkit.http.health.*
               domainkit.http.live.* domainkit.http.middleware.*
               domainkit.http.pagination.* domainkit.http.responses.*
               domainkit.http.routers.*

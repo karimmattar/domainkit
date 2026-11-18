@@ -1,7 +1,7 @@
 """How the transfers domain is stored, and how it reaches the bank.
 
 ``table_for`` makes the table from the aggregate's fields. ``HttpBank``
-calls the bank's API through ``domainkit.http.client``: pooled, bounded by
+calls the bank's API through ``domainkit.outbound.client``: pooled, bounded by
 the work's deadline, behind a circuit breaker, and stubbed in tests. A
 failed call is not tried again here: the worker runs the whole message
 again later, which is the one place retries are counted. ``send_transfer``
@@ -12,7 +12,7 @@ with these adapters, under the inbox.
 from domainkit.apps import registry
 from domainkit.contrib.messaging import inbox
 from domainkit.db import SqlAlchemyUnitOfWork, map_imperatively, table_for
-from domainkit.http.client import HttpClient
+from domainkit.outbound.client import HttpClient
 from pydantic import BaseModel
 
 from domains.transfers import controllers

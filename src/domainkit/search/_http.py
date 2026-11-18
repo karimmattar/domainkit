@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 from . import SearchError
 
 if TYPE_CHECKING:
-    from domainkit.http.client import HttpClient
+    from domainkit.outbound.client import HttpClient
 
 
 @cache
@@ -17,13 +17,13 @@ def shared_client(url: str, timeout: float) -> "HttpClient":
     ``search_backend()`` makes a backend per call: they share the client,
     so its pool and its circuits are kept (audit A28-ARCH-02).
     """
-    from domainkit.http.client import HttpClient
+    from domainkit.outbound.client import HttpClient
 
     return HttpClient(base_url=url, timeout=timeout, propagate=False)
 
 
 async def call(
-    client: Any,  # noqa: ANN401 - domainkit.http.client's HttpClient.
+    client: Any,  # noqa: ANN401 - domainkit.outbound.client's HttpClient.
     engine: str,
     method: str,
     path: str,

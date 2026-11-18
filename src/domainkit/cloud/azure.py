@@ -73,7 +73,7 @@ class EntraApplication(TokenSource):
 
     async def _fetch(self, scope: str) -> tuple[str, float]:
         """The client credentials grant."""
-        from domainkit.http.client import HttpClient
+        from domainkit.outbound.client import HttpClient
 
         endpoint = HttpClient(propagate=False)
         try:
@@ -105,7 +105,7 @@ class ManagedIdentity(TokenSource):
 
     async def _fetch(self, scope: str) -> tuple[str, float]:
         """``GET`` the metadata service's token, with ``Metadata: true``."""
-        from domainkit.http.client import HttpClient
+        from domainkit.outbound.client import HttpClient
 
         params = {
             "api-version": "2018-02-01",

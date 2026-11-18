@@ -5,8 +5,7 @@ from importlib import import_module
 from domainkit.apps import DomainConfig, registry
 from domainkit.apps.hooks import on_deployment_warnings
 from domainkit.checks import CheckFailed, CheckMessage
-from domainkit.conf import settings
-from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
+from domainkit.conf import DEPLOYED_ENVIRONMENTS, settings
 from domainkit.db.routing import DatabaseRouter
 from domainkit.ledger import ledgers
 

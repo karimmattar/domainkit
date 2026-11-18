@@ -25,7 +25,7 @@ from domainkit.contrib.identity.settings import ProviderSettings
 from domainkit.contrib.notifications import NotificationFailed, get_sms_backend
 from domainkit.contrib.notifications.messages import SmsMessage
 from domainkit.contrib.notifications.sms import TwilioSmsBackend
-from domainkit.http.client import (
+from domainkit.outbound.client import (
     HttpClient,
     close_all,
     every_client,
@@ -310,7 +310,7 @@ async def test_reset_circuits_closes_every_clients_circuits() -> None:
     reset_circuits()
 
     assert api.breaker.open_circuits() == 0
-    assert ("domainkit.http.client", "reset_circuits") in RESETS
+    assert ("domainkit.outbound.client", "reset_circuits") in RESETS
     unbroken = HttpClient(breaker=False)
     reset_circuits()  # A client without circuits is passed over.
     assert unbroken.breaker is None

@@ -36,10 +36,10 @@ from domainkit.contrib.auth.validators import (
     PasswordValidator,
 )
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.http.client import CallTimeout, stub
 from domainkit.i18n import override
 from domainkit.management import CommandError, call_command
 from domainkit.management.base import run_async
+from domainkit.outbound.client import CallTimeout, stub
 from domainkit_tests.conftest import FAST_HASHER, Api, UseAuth
 from domainkit_tests.support.auth import PASSWORD, bearer, create_user, login
 from domainkit_tests.support.passwords import BREACHED_ON, LEAKED, pwned, sha1
@@ -285,7 +285,7 @@ def test_without_the_httpclient_extra_it_refuses_to_start(
     use_auth: UseAuth, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Turned on, it needs ``domainkit[httpclient]``; off, nothing is imported."""
-    monkeypatch.setitem(sys.modules, "domainkit.http.client", None)
+    monkeypatch.setitem(sys.modules, "domainkit.outbound.client", None)
     use_auth()
     with pytest.raises(ImproperlyConfigured, match=r"domainkit\[httpclient\]"):
         BreachedPasswordValidator()

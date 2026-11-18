@@ -84,7 +84,7 @@ from domainkit.ddd.personal import (
 )
 from domainkit.encryption import DecryptionFailed
 from domainkit.exceptions import DomainkitError, ImproperlyConfigured
-from domainkit.http.guard import lookups_for
+from domainkit.outbound.guard import lookups_for
 from domainkit.reporting import report_error
 from domainkit.utils.decimals import jsonable
 

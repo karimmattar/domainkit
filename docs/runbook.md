@@ -428,7 +428,7 @@ Two breakers protect the service from a dependency that fails:
   the relaying worker runs its outbox's due messages itself, until the
   broker answers again: `the relay of 'default' runs its due messages
   itself` in its log, then `the relay of 'default' publishes again`.
-- **The HTTP client's** (`domainkit.http.client`): after
+- **The HTTP client's** (`domainkit.outbound.client`): after
   `HTTP_CLIENT.BREAKER_FAILURES` failures in a row from one host, calls
   to that host fail at once with `CircuitOpen` for `BREAKER_COOLDOWN`
   seconds. The opening is logged once. `http_client_circuits_open`

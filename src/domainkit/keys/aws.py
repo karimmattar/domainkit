@@ -8,7 +8,7 @@
 
 Each call is one HTTPS request to KMS's JSON API (``GenerateDataKey``,
 ``Decrypt``, ``ReEncrypt``), signed with Signature Version 4 here, through
-``domainkit.http.client``: no AWS SDK is needed (ADR 0119). Every call
+``domainkit.outbound.client``: no AWS SDK is needed (ADR 0119). Every call
 names the key, and carries the encryption context
 ``{"domainkit": "data-key"}``, which KMS binds to the wrapped key and
 CloudTrail records.
@@ -77,7 +77,7 @@ class AwsKmsKeyProvider(KeyProvider):
         endpoint, FIPS, or a test double); ``credentials`` replaces
         ``default_credentials(region)``; ``timeout`` bounds each call.
         """
-        from domainkit.http.client import HttpClient
+        from domainkit.outbound.client import HttpClient
 
         self.key_id = key_id
         self.region = region

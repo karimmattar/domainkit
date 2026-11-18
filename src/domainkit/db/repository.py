@@ -257,7 +257,11 @@ class SqlAlchemyRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
         Django's ``explain()``: ``EXPLAIN`` on PostgreSQL (``analyze=True``
         runs the query and adds what it cost), ``EXPLAIN QUERY PLAN`` on
         SQLite. The values stay bound parameters. Nothing is loaded or
-        tracked; a locking query is planned without its lock.
+        tracked; a locking query is planned without its lock. A page that
+        ``filter`` reads in two parts (``following_parts``) gets the plan
+        of each, in turn: the second's is the statement ``filter`` runs
+        only while the first leaves the page short (there with the limit
+        that is left).
 
         Raises:
             ValueError: ``analyze`` on a database that cannot.
@@ -265,11 +269,13 @@ class SqlAlchemyRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
         dialect = self.session.get_bind().dialect.name
         if analyze and dialect != "postgresql":
             raise ValueError(f"EXPLAIN ANALYZE is PostgreSQL's, not {dialect!r}'s.")
-        prepared = self._prepare(as_query(query))
-        rows = await self.session.execute(
-            Explain(self._select(prepared.replace(lock=None)), analyze=analyze)
-        )
-        return "\n".join(_plan_line(row) for row in rows)
+        lines: list[str] = []
+        for part in self._parts(as_query(query)):
+            rows = await self.session.execute(
+                Explain(self._select(part.replace(lock=None)), analyze=analyze)
+            )
+            lines += (_plan_line(row) for row in rows)
+        return "\n".join(lines)
 
     async def _values(
         self, query: Selection, fields: Sequence[str]

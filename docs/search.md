@@ -117,7 +117,7 @@ SEARCH = {
 | `domainkit.search.opensearch.OpenSearchBackend` | OpenSearch or Elasticsearch | `url`, `username` and `password` (HTTP Basic, optional), `timeout` (10.0 seconds) |
 | `domainkit.search.MemorySearchBackend` | None: indexes in the process, for tests | None |
 
-Both servers are called through `domainkit.http.client` (the
+Both servers are called through `domainkit.outbound.client` (the
 `httpclient` extra), with no SDK. The backends of one server and timeout
 share one client, so its connections are reused and its circuit opens
 while the server is down, however many backends `search_backend()`

@@ -24,7 +24,7 @@ statuses, and the amendments they name.
 | --- | --- | --- |
 | [0001](0001-record-architecture-decisions.md) | Record architecture decisions | Accepted |
 | [0002](0002-django-conventions-for-ddd-services.md) | Django's conventions for domain-driven services | Accepted |
-| [0003](0003-enforced-layer-rules.md) | Layer rules enforced by `check` | Accepted; amended by [0037](0037-one-clock-frozen-per-context.md), [0166](0166-let-a-domain-layer-mark-its-texts-extract-the-projects-own-and-add-a-translation-alone.md), [0167](0167-check-an-upload-whole-and-let-a-resource-take-one.md), [0182](0182-let-a-gateway-raise-a-routes-problems-and-name-users-by-the-fields-a-project-chooses.md), [0188](0188-write-down-the-cores-layering-and-hold-the-boundaries-it-draws.md), and 2026-10-25, 2026-11-15, 2026-11-16, 2026-11-17 and 2026-11-18 (at the end) |
+| [0003](0003-enforced-layer-rules.md) | Layer rules enforced by `check` | Accepted; amended by [0037](0037-one-clock-frozen-per-context.md), [0166](0166-let-a-domain-layer-mark-its-texts-extract-the-projects-own-and-add-a-translation-alone.md), [0167](0167-check-an-upload-whole-and-let-a-resource-take-one.md), [0182](0182-let-a-gateway-raise-a-routes-problems-and-name-users-by-the-fields-a-project-chooses.md), [0188](0188-write-down-the-cores-layering-and-hold-the-boundaries-it-draws.md), [0195](0195-move-the-outgoing-client-below-the-adapters-and-hold-module-state-to-its-resets.md), and 2026-10-25, 2026-11-15, 2026-11-16, 2026-11-17 and 2026-11-18 (at the end) |
 | [0004](0004-async-sqlalchemy-imperative-mapping.md) | Async SQLAlchemy with imperative mapping | Accepted; amended 2026-10-25 (at the end) |
 | [0005](0005-transactional-outbox.md) | A transactional outbox instead of a broker | Accepted; amended by [0118](0118-run-a-keys-messages-in-commit-order-by-holding-the-later-ones-in-the-outbox.md), and 2026-11-01 (at the end) |
 | [0006](0006-environment-prefix-from-project-name.md) | Environment variable prefix from the project name | Accepted |
@@ -71,7 +71,7 @@ statuses, and the amendments they name.
 | [0047](0047-seal-from-a-high-water-mark.md) | Seal the audit trail from a high-water mark, with a short late window | Accepted; amended 2026-10-21, 2026-10-25 and 2026-10-26 (at the end) |
 | [0048](0048-request-deadlines.md) | Give every request a deadline, answer 503 when it passes, and pass it on | Accepted; amended 2026-10-25, 2026-10-26 and 2026-10-28 (at the end); amended by [0186](0186-answer-a-commit-as-committed-a-lost-database-as-unavailable-start-loudly-and-name-the-probes-once.md) |
 | [0049](0049-shed-load-past-a-concurrency-cap.md) | Shed load in the application: a cap per event loop, a short queue, and a fast 503 | Accepted; amended 2026-10-21 and 2026-10-25 (at the end) |
-| [0050](0050-outgoing-http-client.md) | Call other services through pooled clients that keep to the deadline | Accepted; amended 2026-10-21 (at the end) |
+| [0050](0050-outgoing-http-client.md) | Call other services through pooled clients that keep to the deadline | Accepted; amended 2026-10-21 (at the end); amended by [0195](0195-move-the-outgoing-client-below-the-adapters-and-hold-module-state-to-its-resets.md) on 2026-11-18 (at the end) |
 | [0051](0051-logs-and-error-reports-leave-the-loop.md) | Write logs and error reports from threads, dropping what does not fit | Accepted; amended 2026-10-21, 2026-10-26 and 2026-11-17 (at the end) |
 | [0052](0052-keep-the-immudb-sdk-on-threads.md) | Keep immudb's SDK, on threads, rather than an async-native client | Accepted |
 | [0053](0053-stay-on-fastapi.md) | Stay on FastAPI and Starlette | Accepted |
@@ -123,7 +123,7 @@ statuses, and the amendments they name.
 | [0108](0108-keep-the-full-domain-as-the-default-and-give-new-projects-an-image-and-ci.md) | Keep the full domain as `startdomain`'s default; give new projects an image and CI | Accepted; amended 2026-10-28 (at the end) |
 | [0111](0111-refuse-a-removed-hook-method-until-1-0-wherever-the-domain-defines-it.md) | Refuse a removed hook method until 1.0, wherever the domain defines it | Accepted; amended 2026-11-01 (at the end) by [0125](0125-freeze-the-public-api-for-1-0-renaming-what-was-never-published.md) |
 | [0112](0112-refuse-the-test-databases-to-a-test-that-did-not-request-them.md) | Refuse the test databases to a test that did not request them | Accepted |
-| [0113](0113-reset-module-state-through-public-resets-the-plugin-calls.md) | Reset module state through public resets the plugin calls | Accepted |
+| [0113](0113-reset-module-state-through-public-resets-the-plugin-calls.md) | Reset module state through public resets the plugin calls | Accepted; amended by [0195](0195-move-the-outgoing-client-below-the-adapters-and-hold-module-state-to-its-resets.md) on 2026-11-18 (at the end) |
 | [0114](0114-split-the-reference-and-the-public-api-into-pages-by-area.md) | Split the reference and the public API into pages by area | Accepted |
 | [0115](0115-store-money-as-an-exact-amount-and-a-currency-code.md) | Store money as an exact amount and a currency code | Accepted |
 | [0116](0116-keep-double-entry-books-locked-in-id-order-and-append-only.md) | Keep double-entry books: post under locks taken in id order, and append only | Accepted; amended 2026-10-31 and 2026-11-01 (at the end) |
@@ -194,14 +194,15 @@ statuses, and the amendments they name.
 | [0181](0181-decide-a-body-limit-per-request-count-before-the-rules-hand-over-the-file-received-and-bound-the-xml-parsed.md) | Decide a body limit per request, count before the rules, hand over the file received, and bound the XML parsed | Accepted; amended 2026-11-18 (at the end) |
 | [0182](0182-let-a-gateway-raise-a-routes-problems-and-name-users-by-the-fields-a-project-chooses.md) | Let a gateway raise a route's problems, and name users by the fields a project chooses | Accepted; amended by [0188](0188-write-down-the-cores-layering-and-hold-the-boundaries-it-draws.md) on 2026-11-18 (at the end) |
 | [0183](0183-keep-live-events-and-approval-requests-to-their-tenant-and-rows-of-no-tenant-to-keys-held-everywhere.md) | Keep live events and approval requests to their tenant, and rows of no tenant to keys held everywhere | Accepted; amended 2026-11-18 (at the end) |
-| [0185](0185-bound-keyset-pages-index-the-user-lookups-and-read-fewer-grants.md) | Bound keyset pages, index the user lookups, and read fewer grants | Accepted |
-| [0186](0186-answer-a-commit-as-committed-a-lost-database-as-unavailable-start-loudly-and-name-the-probes-once.md) | Answer a commit as committed, a lost database as unavailable, start loudly, and name the probes once | Accepted |
+| [0185](0185-bound-keyset-pages-index-the-user-lookups-and-read-fewer-grants.md) | Bound keyset pages, index the user lookups, and read fewer grants | Accepted; amended 2026-11-18 (at the end) |
+| [0186](0186-answer-a-commit-as-committed-a-lost-database-as-unavailable-start-loudly-and-name-the-probes-once.md) | Answer a commit as committed, a lost database as unavailable, start loudly, and name the probes once | Accepted; amended 2026-11-18 (at the end) |
 | [0187](0187-keep-the-workers-heartbeat-to-its-liveness-fail-deliveries-whose-task-ended-and-share-provider-clients.md) | Keep the worker's heartbeat to its liveness, fail deliveries whose task ended, and share provider clients | Accepted |
-| [0188](0188-write-down-the-cores-layering-and-hold-the-boundaries-it-draws.md) | Write down the core's layering, and hold the boundaries it draws | Accepted |
+| [0188](0188-write-down-the-cores-layering-and-hold-the-boundaries-it-draws.md) | Write down the core's layering, and hold the boundaries it draws | Accepted; amended by [0195](0195-move-the-outgoing-client-below-the-adapters-and-hold-module-state-to-its-resets.md) on 2026-11-18 (at the end) |
 | [0189](0189-publish-the-documentation-site-from-the-newest-releases-tag.md) | Publish the documentation site from the newest release's tag | Accepted |
 | [0190](0190-keep-runnable-examples-as-projects-that-domainkits-tests-run.md) | Keep runnable examples as projects that domainkit's tests run | Accepted |
 | [0191](0191-gate-the-lines-a-change-adds.md) | Gate the lines a change adds | Accepted |
 | [0192](0192-start-a-contrib-routers-route-names-with-its-app.md) | Start a contrib router's route names with its app | Accepted |
+| [0195](0195-move-the-outgoing-client-below-the-adapters-and-hold-module-state-to-its-resets.md) | Move the outgoing client below the adapters, and hold module state to its resets | Accepted |
 | [0196](0196-ask-rules-on-a-call-of-their-own-and-load-backend-settings-one-way.md) | Ask rules on a call of their own, and load backend settings one way | Accepted |
 
 ### Decisions still without a record

@@ -46,7 +46,7 @@ from starlette.requests import HTTPConnection, Request
 from starlette.types import Message, Receive, Scope, Send
 
 from domainkit import clock as clock_module
-from domainkit import setup, tasks
+from domainkit import context, setup, tasks
 from domainkit.apps import registry
 from domainkit.apps.hooks import Hook, HookPoint
 from domainkit.broker import Broker, BrokerHandler, MemoryBroker
@@ -95,12 +95,8 @@ from domainkit.db.models import InstalledModel
 from domainkit.db.models import model_key as content_type_key
 from domainkit.ddd import DomainEvent, EventBus
 from domainkit.http import access, live, metrics, ratelimit
-from domainkit.http import client as http_client
-from domainkit.http import guard as guard_module
 from domainkit.http import middleware as body_limits
 from domainkit.http.access import AllowAny
-from domainkit.http.client import BREAKER_HOSTS, CircuitBreaker, HttpClient
-from domainkit.http.guard import GuardResolver, lookups_for
 from domainkit.http.live import Slots
 from domainkit.http.live_events import LiveEvents
 from domainkit.http.metrics import REQUESTS, MetricsMiddleware
@@ -109,6 +105,10 @@ from domainkit.http.ratelimit import Backend, MemoryBackend, client_group
 from domainkit.http.shedding import QUEUE_FULL, ConcurrencyLimitMiddleware, ShedReport
 from domainkit.http.websockets import WebSocketLimitsMiddleware
 from domainkit.log import JsonFormatter, ThrottledLog, flush_throttled
+from domainkit.outbound import client as http_client
+from domainkit.outbound import guard as guard_module
+from domainkit.outbound.client import BREAKER_HOSTS, CircuitBreaker, HttpClient
+from domainkit.outbound.guard import GuardResolver, lookups_for
 from domainkit.testing import CapturedQueries
 from domainkit.utils.loops import PerLoop
 from domainkit_tests.conftest import UseAuth
@@ -1477,8 +1477,8 @@ def test_importing_domainkit_keeps_the_gil_off_where_it_is_off() -> None:
 
 def test_client_groups_are_remembered_alike_from_every_thread() -> None:
     """Threads filling one memory of groups at once each get the parsed group."""
-    ratelimit._cached_address_group.cache_clear()
-    ratelimit._cached_network.cache_clear()
+    context._cached_address_group.cache_clear()
+    context._cached_network.cache_clear()
     networks = {
         f"2001:db8:{n:x}::1": str(ipaddress.IPv6Network(f"2001:db8:{n:x}::/64"))
         for n in range(100)
@@ -1491,8 +1491,8 @@ def test_client_groups_are_remembered_alike_from_every_thread() -> None:
         return all(client_group(host) == groups[host] for host in order)
 
     assert all(on_threads(group_all))
-    assert ratelimit._cached_address_group.cache_info().currsize == len(groups)
-    assert ratelimit._cached_network.cache_info().currsize == len(networks)
+    assert context._cached_address_group.cache_info().currsize == len(groups)
+    assert context._cached_network.cache_info().currsize == len(networks)
 
 
 def test_a_proxys_remembered_addresses_hold_from_every_thread() -> None:

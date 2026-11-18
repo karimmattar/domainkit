@@ -63,6 +63,7 @@ System checks: what `check` and startup find, each with an id and a level.
 - `CheckMessage`: One finding of a check: the message, with an `id` and a `hint`.
 - `Level`: How serious a check's finding is, read from its id's letter.
 - `describe`: One finding as `check` prints it: the id, the message, the hint.
+- `probes_left_out`: `probes.W001`: the list `name` names some of `probes`, not all.
 - `silence`: `messages` without those whose id `SILENCED_CHECKS` lists.
 - `validate_silenced`: Check `SILENCED_CHECKS`: ids of warnings, each once, and not too many.
 
@@ -109,6 +110,7 @@ Django-style settings access.
 
 - `DEFAULT_CACHE_ALIAS`: The alias of the cache used when none is named: `"default"`.
 - `DEFAULT_DB_ALIAS`: The alias of the database used when none is named: `"default"`.
+- `DEPLOYED_ENVIRONMENTS`: Environments held to the deployment checks in `Settings`.
 - `SETTINGS_MODULE_VARIABLE`: The environment variable naming the settings module, after the project's prefix.
 - `UNSET`: Pass to `override_settings` to remove a setting (Django's `del settings.X`); the same object as `domainkit.ddd.UNSET`.
 - `ArchitectureConfig`: `ARCHITECTURE`: what the project adds to the layer rules `check` enforces.
@@ -117,7 +119,7 @@ Django-style settings access.
 - `DatabaseConfig`: One `DATABASES` entry: an SQLAlchemy async URL plus connection options.
 - `DebugToolbarConfig`: `DEBUG_TOOLBAR`: what `DebugToolbarMiddleware` adds while `DEBUG`.
 - `Env`: Read prefixed variables and convert them, failing with the variable name.
-- `HttpClientConfig`: `HTTP_CLIENT`: what `domainkit.http.client` clients do by default.
+- `HttpClientConfig`: `HTTP_CLIENT`: what `domainkit.outbound.client` clients do by default.
 - `LedgerConfig`: One `LEDGERS` entry: write once, read many, verified on the client.
 - `SearchConfig`: `SEARCH`: the search engine documents are indexed in (`domainkit.search`).
 - `ServeConfig`: `SERVE`: the server `manage.py serve` starts, and its limits.
@@ -145,6 +147,7 @@ Per-request context shared by logging and error responses.
 - `SYSTEM_ACTOR`: The actor of work no caller asked for: periodic tasks, commands' messages.
 - `RequestContext`: Facts about the request or job being served; no personal data.
 - `bind_request`: Make `context` current for the duration of the block.
+- `client_group`: The address a client is counted by: IPv4 as is, IPv6 by its network.
 - `current_request`: Return the request being served, or None outside a request.
 
 ## `domainkit.deadlines`

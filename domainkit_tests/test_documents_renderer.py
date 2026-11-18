@@ -37,11 +37,11 @@ from domainkit.documents.gotenberg import (
     encode_form,
 )
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.http.client import ResponseTooLarge, stub
 from domainkit.http.errors import upstream_refusal
 from domainkit.i18n import gettext, override
 from domainkit.management import call_command
 from domainkit.management.base import CommandError
+from domainkit.outbound.client import ResponseTooLarge, stub
 from domainkit.reporting import flush_reports
 
 pytestmark = pytest.mark.anyio

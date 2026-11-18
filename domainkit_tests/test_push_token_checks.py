@@ -74,9 +74,7 @@ CHECKED = "domainkit_tests.test_push_token_checks.Service"
 def fresh_accounts() -> Iterator[None]:
     """Forget the provider tokens a test's backends kept."""
     yield
-    push_module._google_accounts.clear()
-    push_module._huawei_apps.clear()
-    push_module._apns_tokens.clear()
+    push_module.reset_tokens()
 
 
 def metadata_token() -> httpx2.Response:
@@ -381,3 +379,33 @@ def test_the_checks_timeout_is_bounded() -> None:
     assert DevicesSettings().PUSH_TOKEN_CHECK.ENABLED is False
     with pytest.raises(ValidationError):
         DevicesSettings.model_validate({"PUSH_TOKEN_CHECK": {"TIMEOUT": 30}})
+
+
+class ResetAtOnce(dict[str | None, Any]):
+    """The tokens kept, as a ``reset_tokens()`` from another task leaves them."""
+
+    def __setitem__(self, key: str | None, value: Any) -> None:  # noqa: ANN401
+        """Keep ``value``, and be reset at once."""
+        super().__setitem__(key, value)
+        self.clear()
+
+    def setdefault(self, key: str | None, value: Any = None) -> Any:  # noqa: ANN401
+        """Keep ``value`` unless one is kept, and be reset at once."""
+        kept = super().setdefault(key, value)
+        self.clear()
+        return kept
+
+
+def test_a_reset_between_making_and_reading_an_account_leaves_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The account FCM's send uses is the one made, whatever a reset did meanwhile.
+
+    2.9's ``reset_tokens`` can run from another task between keeping an
+    account and reading it back, which raised ``KeyError`` (review).
+    """
+    from domainkit.cloud.google import MetadataAccount
+
+    monkeypatch.setattr(push_module, "_google_accounts", ResetAtOnce())
+
+    assert isinstance(push_module._google_account(None), MetadataAccount)

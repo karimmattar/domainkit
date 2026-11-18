@@ -82,6 +82,9 @@ same way [2].
   about two to two and a half times on the end-to-end tests
   (`test_proof.py` 22.5 s to 55.4 s, `test_init.py` 14.2 s to 26.4 s, in
   review). Those tests are a minority of the suite, but its longest.
+  The `test` job's suite took 14 to 26 minutes on hosted runners once
+  they were measured, and one run of 3.15 met the 30-minute limit at 99%:
+  the job has 45 minutes, as integration's has.
 - The gate can refuse a change for a line that ran in no CI job for a
   reason other than a missing test: a branch only a timing reaches, an
   old line partly covered that the change edits (it counts as added), or
