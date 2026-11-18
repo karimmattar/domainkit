@@ -104,30 +104,38 @@ For the clients:
 
 1. **The heartbeat is the worker's liveness.** `--heartbeat-file` is
    rewritten every `--heartbeat-interval` seconds, from the worker's own
-   event loop, before the round's checks and whatever they find. A stuck
-   loop lets it age; a broker, a database, or a cache away does not.
-2. **Readiness is a file of its own.** `--ready-file` is rewritten in the
-   same round while `/ready`'s checks and the broker's hold, and removed
-   when one fails. A failing check is logged, with or without the file.
-   Both files go when the worker stops. A project that wants the old
-   restarts points its health check at the ready file.
+   event loop, on a schedule of its own: the checks run in another task,
+   so none holds it up, however long `READINESS_TIMEOUT` is. A stuck
+   loop lets it age; a broker, a database, or a cache away does not, nor
+   a check that raises.
+2. **Readiness is a file of its own.** Rounds of checks run
+   `--heartbeat-interval` apart, beside the heartbeat. `--ready-file` is
+   rewritten while `/ready`'s checks and the broker's hold, and removed
+   when one round fails or raises. Either is logged, with or without the
+   file, and the rounds go on. A round under way at the stop is cut
+   short, and both files go. A project that wants the old restarts
+   points its health check at the ready file, and sets the tolerance
+   with the check's retries.
 3. **A stopping relay waits for the drain only while it runs the
    outbox.** It gets what is left of `DRAIN_TIMEOUT`, then
    `HELPER_GRACE`, when it still runs messages it claimed while the
-   broker was away. A relay that is publishing, to a broker that
-   answers, gets `HELPER_GRACE` alone, as the code's comment said
-   (A28-TEST-07).
+   broker was away, or its breaker is open or probing (it may be
+   claiming them). A relay that is publishing, to a broker that answers,
+   gets `HELPER_GRACE` alone, as the code's comment said (A28-TEST-07).
 4. **Every way a delivery's task ends marks it failed.** A last attempt
    that raises marks its delivery `failed` before the task dies, if the
-   database lets it. The hourly purge first marks `failed` each pending
-   delivery with no task waiting to run (dead, cancelled, or dropped),
-   with a `last_error` that says the attempt ended without an outcome,
-   and logs how many. A delivery and its task are written in one
-   transaction, and so are a replay and its task, so a pending delivery
-   without one has no attempt to come. The purge matches a task to its
-   delivery by the id in its arguments, in one statement on PostgreSQL
-   and SQLite, through `messaging.admin.unfinished_arguments`: webhooks
-   reads the outbox through messaging's public names.
+   database lets it. An hourly task of its own, apart from the purge so
+   that neither holds up the other, marks `failed` each pending delivery
+   with no task waiting to run (dead, cancelled, or dropped), with a
+   `last_error` that says the attempt ended without an outcome, and logs
+   how many. A delivery and its task are written in one transaction, and
+   so are a replay and its task, so a pending delivery without one has
+   no attempt to come. The task matches a task to its delivery by the id
+   in its arguments, in one statement on PostgreSQL and SQLite: an
+   uncorrelated `NOT IN` over the waiting tasks' ids, NULLs left out,
+   read through `messaging.admin.unfinished_arguments`, so webhooks
+   reads the outbox through messaging's public names. A task that finds
+   its delivery no longer pending logs that it sent nothing.
 5. **An outcome stays.** An attempt's outcome is written only to a
    delivery still `pending`. A late duplicate run counts and logs its
    attempt, and leaves `succeeded` or `failed` as it was.
@@ -135,11 +143,14 @@ For the clients:
    `shared_client(TIMEOUT)`, as push does; the search engines share one
    client per URL and timeout; identity providers share one client; and
    captcha checks share one. Each is an ordinary `HttpClient`:
-   `close_all`, which shutdown runs, closes its pool.
+   `close_all`, which shutdown runs, closes its pool. Each is named in
+   its metrics: `notifications` (text messages and push), `identity`,
+   `captcha`, and mail's `mail`.
 7. **Tests start with closed circuits.** `domainkit.http.client.
    reset_circuits()` and `CircuitBreaker.reset()` forget every failure.
    The test plugin calls the first before each test, so a client shared
-   between tests carries no open circuit into the next.
+   between tests carries no open circuit into the next; a suite without
+   the plugin calls it itself.
 
 ## Consequences
 
@@ -149,23 +160,28 @@ For the clients:
   to the ready file. `upgrading.md` says so.
 - A degraded worker is visible: a fresh heartbeat beside a missing
   ready file, and a warning each round.
-- `beat` touches its path whatever the checks find, and takes `ready`;
-  `heartbeat`'s path may be None when only the ready file is wanted.
+- `beat` touches its path whatever the checks find, takes `ready`, and
+  never raises for a check; `heartbeat`'s path may be None when only the
+  ready file is wanted.
+- The ready file goes after one failed round, where 2.8's heartbeat had
+  to age past the health check's limit: the probe's retries give the
+  tolerance.
 - A delivery whose task died is `failed` and replayable with
   `webhooks replay`. Retrying its dead task with `messages retry` sends
-  nothing, since the task finds the delivery finished. Deliveries stuck
-  `pending` by an earlier release are marked failed by the first hourly
-  purge after the upgrade.
+  nothing, since the task finds the delivery finished, and it says so.
+  Deliveries stuck `pending` by an earlier release are marked failed by
+  the new task's first run after the upgrade.
 - The sweep reads every pending delivery and every waiting `deliver`
-  task once an hour. On PostgreSQL it is a hash anti-join; on SQLite, a
-  scan per pending delivery.
+  task once an hour, each once. On SQLite, 6,000 pending deliveries took
+  0.07 s, against 11 s for a correlated `NOT EXISTS`.
 - A provider that is down now fails fast after `BREAKER_FAILURES`
   failures, with `CircuitOpen` in the error's text (`Twilio could not be
   reached (CircuitOpen).`), for `BREAKER_COOLDOWN` seconds. Text
   messages retry as before; a captcha answers 503 as before, at once;
   an identity login fails at once.
 - The circuits of the shared clients count every caller's failures: one
-  per host, as for mail and push.
+  per host, as for mail and push. Dashboards on `client="other"` follow
+  the new names.
 - The worker's log lines about a failing message name its id
   (A28-REL-08): log rules that match their whole text change.
 

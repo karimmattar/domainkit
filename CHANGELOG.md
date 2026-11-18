@@ -31,8 +31,9 @@ and a status.
 ### Changed
 
 - `runworker --heartbeat-file` is the worker's liveness: its event loop
-  rewrites the file every `--heartbeat-interval` seconds, whatever its
-  checks find, and a failing check is logged. Before, the file aged
+  rewrites the file every `--heartbeat-interval` seconds, on a schedule
+  no check holds up, whatever the checks find; a failing check, or one
+  that raises, is logged. Before, the file aged
   while the broker, a database, or a cache was away, and the documented
   health check restarted the relaying workers that run the outbox during
   a broker outage (ADR 0142). To restart on a failing dependency, as
@@ -51,11 +52,14 @@ and a status.
 - A webhook delivery whose last attempt ends without an outcome is
   marked failed, where it stayed `pending` for good: listed by
   `webhooks deliveries --status failed`, replayed by `webhooks replay`,
-  and purged. Its last attempt marks it, if the database lets it, and the
-  hourly purge marks each pending delivery whose task died, was
-  cancelled, or was dropped (its worker killed, its time limit passed, or
-  its outcome not written), those of earlier releases included. A late
-  duplicate run no longer overwrites a finished delivery's outcome
+  and purged. Its last attempt marks it, if the database lets it, and an
+  hourly task of its own (`domainkit.contrib.webhooks.fail_abandoned`)
+  marks each pending delivery whose task died, was cancelled, or was
+  dropped (its worker killed, its time limit passed, or its outcome not
+  written), those of earlier releases included. A task that finds its
+  delivery no longer pending, such as a dead task retried with `messages
+  retry`, logs that it sent nothing. A late duplicate run no longer
+  overwrites a finished delivery's outcome
   ([How a delivery runs](docs/contrib/webhooks.md#how-a-delivery-runs),
   ADR 0187) (audit A28-REL-05).
 - Text message providers, the search engines, identity providers, and
@@ -63,12 +67,15 @@ and a status.
   each backend made per call had its own. A provider that is down opens
   its circuit after `HTTP_CLIENT.BREAKER_FAILURES` failures and is called
   no more until `BREAKER_COOLDOWN` has passed, connections are reused,
-  and shutdown closes them (ADR 0187) (audit A28-ARCH-02).
+  and shutdown closes them. Their calls and circuits are counted as
+  `notifications` (text messages and push), `identity`, and `captcha`,
+  and mail's as `mail`, where they were `other` (ADR 0187) (audit
+  A28-ARCH-02).
 - A stopping relay that is still publishing to a broker that answers is
   cancelled after `HELPER_GRACE` (5 seconds), and its messages are given
-  back. Only a relay running messages from the outbox, while the broker
-  is away, waits for what is left of `DRAIN_TIMEOUT` first; every relay
-  did, so shutdown took up to 25 seconds (audit A28-TEST-07).
+  back. Only a relay running the outbox, its breaker open, waits for what
+  is left of `DRAIN_TIMEOUT` first, even while it is still claiming;
+  every relay did, so shutdown took up to 25 seconds (audit A28-TEST-07).
 
 ## [2.8.0] - 2026-11-18
 

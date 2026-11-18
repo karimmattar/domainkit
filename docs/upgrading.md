@@ -50,22 +50,36 @@ No migration is needed for these items.
   logs each failing check. To keep the restart, run the worker with
   `--ready-file /tmp/worker-ready`, which is removed while a check
   fails, and point the health check at it
-  ([The worker](operations.md#the-worker)).
+  ([The worker](operations.md#the-worker)). The ready file goes after
+  one failed round of checks, where 2.8's heartbeat had to age past the
+  health check's 60 seconds: set the tolerance with the check's retries
+  (`HEALTHCHECK --retries`, or a probe's `failureThreshold`).
+- **`heartbeat.beat()` always touches its path**, then runs the checks,
+  and takes the ready file as `ready`. Code that called it to touch a
+  file only while the checks hold passes that file as `ready`, and
+  `None` as the path.
 - **Webhook deliveries whose task ended are marked failed.** The first
-  hourly purge after the upgrade marks failed every delivery that 2.8
-  left `pending` with no task to run it (the worker killed during the
-  last attempt, the attempt past its time limit, or its outcome not
-  written), and logs how many. Send them again with `webhooks replay
-  --failed`. Retrying such a delivery's dead task with `messages retry`
-  sends nothing now: replay the delivery.
+  run of the new hourly task `domainkit.contrib.webhooks.fail_abandoned`
+  marks failed every delivery that 2.8 left `pending` with no task to
+  run it (the worker killed during the last attempt, the attempt past
+  its time limit, or its outcome not written), and logs how many. Send
+  them again with `webhooks replay --failed`. Retrying such a delivery's
+  dead task with `messages retry` sends nothing now, and logs so:
+  replay the delivery.
 - **Text messages, search, identity, and captcha open their circuits.**
   After `HTTP_CLIENT.BREAKER_FAILURES` failures in a row (5), a provider
   is not called for `BREAKER_COOLDOWN` seconds (30): text messages fail
   with `... could not be reached (CircuitOpen).` and are retried, a
   search raises `SearchError` at once, a login through an identity
   provider fails at once, and a captcha check answers 503
-  `captcha_unavailable` at once, as it did after waiting. The test
-  plugin closes every client's circuits before each test.
+  `captcha_unavailable` at once, as it did after waiting. Their calls
+  and circuits are counted under the client names `notifications` (text
+  messages and push), `identity`, `captcha`, and `mail`, where they were
+  `other`: change a dashboard or an alert on `client="other"`. The test
+  plugin closes every client's circuits before each test; a test suite
+  that does not use it calls `domainkit.http.client.reset_circuits()`
+  between tests, or a circuit one test opens refuses the next one's
+  calls.
 - **The worker's log lines about a failing message name its id**, after
   its target: `Dead-lettered task shop.flaky (message 0f8e...) after 2
   attempts`. Change a log rule or an alert that matches the whole line.
