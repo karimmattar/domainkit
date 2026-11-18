@@ -278,6 +278,17 @@ and `protobuf` in `immudb`). CI's lint job checks it with deptry
 
 This section is for maintainers.
 
+Changes gather on `stg`, where every pull request goes; `main` holds the
+last release. A release goes from `stg` to `main`:
+
+- Make the release commit (steps 1 and 2 below) on a branch from `stg`,
+  and merge it into `stg` once CI passes.
+- Open a pull request from `stg` to `main`, and squash-merge it once CI
+  passes: that commit on `main` is the release commit, and step 4 tags
+  it.
+- Merge `main` back into `stg`, so the next release starts from the
+  commit the tag is on.
+
 Before the release commit, refresh the data the package copies from
 others, in a pull request of its own: `python3 .github/scripts/screen_data.py`
 downloads IANA's list of top-level domains and Unicode's confusables, and
@@ -291,7 +302,7 @@ the changelog if it changes what is refused.
    date (`## [X.Y.Z] - YYYY-MM-DD`), and leave **Unreleased** empty.
 2. Update `version` in `pyproject.toml`. Steps 1 and 2 make the release
    commit; the tag goes on it, and on no other commit.
-3. Merge to `main` once CI passes. The push to `main` runs the whole CI
+3. Merge `stg` to `main` once CI passes. The push to `main` runs the whole CI
    workflow on the merged commit: lint, types, tests on every Python,
    integration against real servers, coverage, the benchmark ladder, the
    wheel's smoke test and bill of materials, Semgrep, pip-audit, and
