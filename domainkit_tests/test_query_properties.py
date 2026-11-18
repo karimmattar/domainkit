@@ -19,7 +19,15 @@ from sqlalchemy import delete
 
 from domainkit.conf import override_settings
 from domainkit.db import connections
-from domainkit.ddd.query import TEXT_LOOKUPS, Criteria, F, Ordering, Selection
+from domainkit.ddd.query import (
+    TEXT_LOOKUPS,
+    Criteria,
+    F,
+    Ordering,
+    Selection,
+    position_of,
+    total_ordering,
+)
 from domainkit_tests.gadgets import (
     MADE,
     Color,
@@ -258,3 +266,30 @@ async def page_alike(items: list[Gadget], query: Selection, limit: int) -> None:
                 break
             after = page.next_position
     assert seen == everything
+
+
+@EXAMPLES
+@given(items=st.lists(gadget_values, max_size=8), ordering=orderings)
+def test_what_follows_each_position_is_what_the_database_sorts_after_it(
+    loop: asyncio.Runner, items: list[Gadget], ordering: list[Ordering]
+) -> None:
+    """After each row's position comes exactly what the database orders after it.
+
+    The keyset criteria start with a bound on the first field (ADR 0185);
+    with ties, missing values, and either direction, they select the same
+    rows as the whole ordering does, from every position, not only a page's.
+    """
+    loop.run(follow_each(items, Selection(ordering=total_ordering(ordering))))
+
+
+async def follow_each(items: list[Gadget], query: Selection) -> None:
+    """For each row, the rows ``following`` its position select, in order."""
+    await replace_rows(items)
+    async with GadgetsUnitOfWork(readonly=True) as uow:
+        everything = await uow.gadgets.filter(query)
+        for index, item in enumerate(everything):
+            after = position_of(item, query.ordering)
+            found = await uow.gadgets.filter(query.replace(after=after))
+            assert [each.id for each in found] == [
+                each.id for each in everything[index + 1 :]
+            ]

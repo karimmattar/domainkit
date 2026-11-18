@@ -9,15 +9,15 @@ the command too.
 
 from argparse import ArgumentParser
 from collections.abc import Callable, Iterable
-from typing import Any
+from typing import Any, Final
 
 from fastapi import FastAPI
 
 from domainkit.apps import registry
 from domainkit.apps.hooks import on_deployment_warnings, unregistered_methods
-from domainkit.architecture import check_domains
+from domainkit.architecture import check_domains, layer_warnings
 from domainkit.cache.handler import deployment_warnings as cache_deployment_warnings
-from domainkit.checks import CheckMessage, Level, describe, silence
+from domainkit.checks import CheckMessage, Level, describe, probes_left_out, silence
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db import migrations
@@ -25,7 +25,11 @@ from domainkit.db.connections import pool_sizing_warnings
 from domainkit.ddd import event_bus
 from domainkit.documents.base import flags_statement
 from domainkit.http import websockets
-from domainkit.http.application import application_problems, build_application
+from domainkit.http.application import (
+    application_problems,
+    backend_warnings,
+    build_application,
+)
 from domainkit.http.blocking import awaited_sync, sync_calls
 from domainkit.http.live import unchecked_routes
 from domainkit.http.live_events import fanout_warnings
@@ -44,7 +48,8 @@ class Command(BaseCommand):
     help = (
         "Validate settings, installed domains, routes and their access rules, "
         "middleware, the dependency rules between domain layers, and the "
-        "migration history; warn about route handlers and dependencies that "
+        "migration history; warn about migrations a database does not have yet "
+        "(outside staging and production), route handlers and dependencies that "
         "run on the thread pool, and event handlers and tasks that would "
         "block the event loop, and about weak choices in staging and "
         "production, and say how HTTPS reaches the application there. With "
@@ -135,6 +140,14 @@ def _warnings(app: FastAPI) -> list[str]:
     warnings += _tagged("blocking.W001", sync_calls(app, _project_domains()))
     warnings += _tagged("blocking.W002", awaited_sync(_event_handlers()))
     warnings += _tagged("tenancy.W001", unsaid_throttles(app))
+    warnings += _tagged(
+        "architecture.W001",
+        map(str, layer_warnings(settings.INSTALLED_DOMAINS)),
+    )
+    warnings += _partial_probe_lists()
+    warnings += backend_warnings(app)
+    if not deployed:  # A deployment migrates as it rolls out, after its checks.
+        warnings += _tagged("migrations.W001", migrations.unapplied_warnings())
     warnings += shared_apps()
     return warnings
 
@@ -185,6 +198,29 @@ def https_statement() -> CheckMessage:
 def _is_info(message: str) -> bool:
     """Whether ``message`` is an info (``<label>.I001``), which never fails a check."""
     return isinstance(message, CheckMessage) and message.level is Level.INFO
+
+
+PROBE_LISTS: Final = (
+    "RATE_LIMIT_EXEMPT_PATHS",
+    "CONCURRENCY_EXEMPT_PATHS",
+    "ACCESS_LOG_QUIET_PATHS",
+)
+"""The framework's lists of exact paths that add to ``PROBE_PATHS`` (ADR 0186)."""
+
+
+def _partial_probe_lists() -> list[str]:
+    """``probes.W001``: a list that names some of ``PROBE_PATHS``, not all.
+
+    Before 2.9 such a list left the others out on purpose, or kept the old
+    default (``/metrics`` was logged at INFO); since, ``PROBE_PATHS``
+    exempts them all, whatever it says (``probes_left_out``). The auth app
+    checks ``AUTH.AUTHENTICATION_EXEMPT_PATHS`` so (``on_deployment_warnings``).
+    """
+    probes = settings.PROBE_PATHS
+    found = (
+        probes_left_out(name, getattr(settings, name), probes) for name in PROBE_LISTS
+    )
+    return [each for each in found if each is not None]
 
 
 def _tagged(check_id: str, messages: Iterable[str]) -> list[str]:

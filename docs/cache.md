@@ -531,7 +531,7 @@ it belongs to none of them (ADR 0071):
 - **No caller's deadline reaches it**, so one short request never fails
   the others. Its limit is the cache's own `COMPUTE_TIMEOUT`. Its
   transactions lower `statement_timeout` to the time it has left, and
-  its outgoing calls through `domainkit.http.client` keep to it. When the
+  its outgoing calls through `domainkit.outbound.client` keep to it. When the
   time runs out, every caller that waits gets the same `TimeoutError`.
   `COMPUTE_TIMEOUT` is `None` (no limit) by default, as in 0.9.0. Set it,
   for example to `REQUEST_TIMEOUT`'s value. `check` warns where deployed
@@ -716,7 +716,10 @@ shutdown call.
 `RATE_LIMIT` limits the requests of each caller to the whole service. A
 caller is the authenticated actor, or else the client address. Staff
 acting as a user ([impersonation](auth/routes.md#impersonation)) count as
-themselves, whomever they act as: one person, one budget.
+themselves, whomever they act as: one person, one budget. Rate limits
+count requests; to bound how much money moves, per payment or per day,
+use [limits](contrib/limits.md), which count movements in the use case's
+transaction:
 
 ```python
 RATE_LIMIT = "300/minute"
@@ -742,8 +745,9 @@ MIDDLEWARE = [
   a close with code 1013 (try again later) where it cannot.
 - IPv6 callers are counted per network of `RATE_LIMIT_IPV6_PREFIX` bits
   (a /64 by default), because one customer usually holds a whole /64.
-- The paths in `RATE_LIMIT_EXEMPT_PATHS` (`/health`, `/ready`, `/metrics`)
-  are never counted, so probes and scrapers are not refused.
+- The probes and the metrics scrape (`PROBE_PATHS`: `/health`, `/ready`,
+  `/metrics`), and the paths in `RATE_LIMIT_EXEMPT_PATHS`, are never
+  counted, so probes and scrapers are not refused.
 
 `check` warns while `RATE_LIMIT` is not set, or the middleware is not
 listed.
@@ -792,7 +796,9 @@ resets these counters too.
 ### A backend of your own
 
 `RATE_LIMIT_BACKEND` is the dotted path to a class with one method,
-`hit(key, limit, period)`, that returns a `Decision`:
+`hit(key, limit, period)`, that returns a `Decision`, or the name an
+installed package offers it by
+([Backends from an installed package](reference/extension-points.md#backends-from-an-installed-package)):
 
 ```python
 from domainkit.http.ratelimit import Decision
@@ -813,6 +819,17 @@ fails). A backend that can also give a counted request back, with
 `refund(key, limit, period)`, is a `RefundingBackend`: the login
 throttles of `domainkit.contrib.auth` then count only the attempts that
 fail. `MemoryBackend` and `RedisBackend` are both refunding backends.
+
+A path that does not import, or a class without `hit`, is refused by
+`check` and as the application starts where something counts with it
+(`backends.E001`, since 2.9: `RATE_LIMIT`, a `Throttle`, or auth's
+attempt throttles): in staging and production it does not start. Where
+nothing counts with it yet, `check` warns (`backends.W001`). Each counter makes its own
+instance, once: the global limit and the throttles of an application,
+the counts of refused credentials and of attempts of
+`domainkit.contrib.auth`, and the worker's task rates. Their counts stay
+apart in a `MemoryBackend`, so a flood of one kind never pushes another
+kind's callers out.
 
 ## Throttles for one route
 
@@ -981,7 +998,7 @@ the full rows:
 | `RATE_LIMIT` | `None` | Requests per caller, such as `"300/minute"`; `None` turns the limit off. |
 | `RATE_LIMIT_BACKEND` | `domainkit.http.ratelimit.MemoryBackend` | Where the counts live; `RedisBackend` shares them. |
 | `RATE_LIMIT_CACHE` | `"default"` | The Redis cache that `RedisBackend` counts in. |
-| `RATE_LIMIT_EXEMPT_PATHS` | `("/health", "/ready", "/metrics")` | Exact paths that are never counted. |
+| `RATE_LIMIT_EXEMPT_PATHS` | `()` | Exact paths that are never counted, besides `PROBE_PATHS`. |
 | `RATE_LIMIT_FALLBACK_REPLICAS` | `None` | While Redis is down, count in each process at the limit divided by this (1 to 1,024). |
 | `RATE_LIMIT_IPV6_PREFIX` | `64` | IPv6 callers are counted per network of this many bits (1 to 128). |
 

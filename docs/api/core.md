@@ -52,6 +52,7 @@ Enforce the dependency rules of a domain-driven package layout.
 - `Violation`: One import that breaks a rule.
 - `check_domain`: Return the rule violations in domain `package`.
 - `check_domains`: Check every domain in `installed`, under `rules` (the project's).
+- `layer_warnings`: Imports the rules let through in 2.x and 3.0 refuses (`architecture.W001`).
 
 ## `domainkit.checks`
 
@@ -62,6 +63,7 @@ System checks: what `check` and startup find, each with an id and a level.
 - `CheckMessage`: One finding of a check: the message, with an `id` and a `hint`.
 - `Level`: How serious a check's finding is, read from its id's letter.
 - `describe`: One finding as `check` prints it: the id, the message, the hint.
+- `probes_left_out`: `probes.W001`: the list `name` names some of `probes`, not all.
 - `silence`: `messages` without those whose id `SILENCED_CHECKS` lists.
 - `validate_silenced`: Check `SILENCED_CHECKS`: ids of warnings, each once, and not too many.
 
@@ -108,6 +110,7 @@ Django-style settings access.
 
 - `DEFAULT_CACHE_ALIAS`: The alias of the cache used when none is named: `"default"`.
 - `DEFAULT_DB_ALIAS`: The alias of the database used when none is named: `"default"`.
+- `DEPLOYED_ENVIRONMENTS`: Environments held to the deployment checks in `Settings`.
 - `SETTINGS_MODULE_VARIABLE`: The environment variable naming the settings module, after the project's prefix.
 - `UNSET`: Pass to `override_settings` to remove a setting (Django's `del settings.X`); the same object as `domainkit.ddd.UNSET`.
 - `ArchitectureConfig`: `ARCHITECTURE`: what the project adds to the layer rules `check` enforces.
@@ -116,7 +119,7 @@ Django-style settings access.
 - `DatabaseConfig`: One `DATABASES` entry: an SQLAlchemy async URL plus connection options.
 - `DebugToolbarConfig`: `DEBUG_TOOLBAR`: what `DebugToolbarMiddleware` adds while `DEBUG`.
 - `Env`: Read prefixed variables and convert them, failing with the variable name.
-- `HttpClientConfig`: `HTTP_CLIENT`: what `domainkit.http.client` clients do by default.
+- `HttpClientConfig`: `HTTP_CLIENT`: what `domainkit.outbound.client` clients do by default.
 - `LedgerConfig`: One `LEDGERS` entry: write once, read many, verified on the client.
 - `SearchConfig`: `SEARCH`: the search engine documents are indexed in (`domainkit.search`).
 - `ServeConfig`: `SERVE`: the server `manage.py serve` starts, and its limits.
@@ -131,13 +134,31 @@ Django-style settings access.
 - `settings`: Typed, lazily loaded settings for the selected module.
 - `use_settings`: Temporarily load another settings module, then restore the current one.
 
+## `domainkit.conf.backends`
+
+The backend classes a setting names, loaded one way (ADR 0196, new in 2.9).
+
+- `BackendHandler`: The classes one setting names, imported, checked, and made once per settings.
+
+## `domainkit.context`
+
+Per-request context shared by logging and error responses.
+
+- `SYSTEM_ACTOR`: The actor of work no caller asked for: periodic tasks, commands' messages.
+- `RequestContext`: Facts about the request or job being served; no personal data.
+- `bind_request`: Make `context` current for the duration of the block.
+- `client_group`: The address a client is counted by: IPv4 as is, IPv6 by its network.
+- `current_request`: Return the request being served, or None outside a request.
+
 ## `domainkit.deadlines`
 
 Deadlines: how long the work of a request, or of a block, may take.
 
+- `AfterCommit`: What follows a commit, free of the task's deadlines (see `after_commit`).
 - `Deadline`: When the work of a request, or of a `timeout` block, must be done.
 - `DeadlineExceeded`: The deadline ran out: the request's, or that of a `timeout` block.
 - `Timeout`: A block bounded by its seconds and the deadline (see `timeout`).
+- `after_commit`: Run what follows a commit in a `with` block no deadline cuts off.
 - `current_deadline`: Return the deadline of the work being done, or None outside one.
 - `enforced`: Whether a timer cuts the running task off when its deadline passes.
 - `remaining`: Return the seconds left before the deadline; None without one.
@@ -299,6 +320,7 @@ Shutting a process down, in phases, within one budget (`SHUTDOWN_TIMEOUT`).
 
 Structured logging: JSON for log pipelines, escaped text for terminals.
 
+- `SECURITY_LOGGER`: The logger of rejected requests and other security events (`domainkit.security`).
 - `WARNING_RESERVE`: Part of a logging queue only records at `WARNING` and above may fill.
 - `BackgroundHandler`: Put records on a bounded queue for `BackgroundListener` to write.
 - `BackgroundListener`: The logging thread: takes records off the queue and writes them.
@@ -450,11 +472,18 @@ OpenTelemetry spans and log correlation (`domainkit[tracing]`).
 - `span`: Run the block inside a span named `name` (a no-op without OpenTelemetry).
 - `trace_headers`: The active span's W3C trace context, as headers; empty without one.
 
+## `domainkit.utils.canonical`
+
+One text per JSON value, for digests and signatures: RFC 8785's (JCS).
+
+- `canonical_json`: `value` as RFC 8785 canonical JSON, in UTF-8.
+
 ## `domainkit.utils.decimals`
 
 One text form for a `Decimal`: fixed point, never an exponent.
 
 - `decimal_text`: `value` in fixed point (`"1000"` for `Decimal("1E+3")`), at its places.
+- `jsonable`: `value` as JSON-ready data, each `Decimal` in it as `decimal_text`.
 
 ## `domainkit.utils.loops`
 
@@ -463,12 +492,36 @@ Event loops for the framework's own entry points: uvloop when it is there.
 - `PerLoop`: One value per event loop, made on the loop's first use.
 - `loop_factory`: The factory of `kind`'s loops; None stands for asyncio's own.
 
+## `domainkit.utils.module_loading`
+
+Import objects by dotted path (`django.utils.module_loading`).
+
+- `backend_class`: The class `path` names, by dotted path or by name, checked to be a `base` (New in 2.9).
+- `import_string`: Return the attribute named by `package.module.attr` or `package.module:attr`.
+- `lazy_names`: A module `__getattr__` that imports `names` on first use: name to module.
+
+## `domainkit.utils.rates`
+
+Parse rates such as `"100/minute"`.
+
+- `PERIODS`: The periods a rate may name, in seconds.
+- `parse_rate`: Return `(count, period in seconds)`; raise ValueError when malformed.
+
 ## `domainkit.cloud.aws`
 
-Calls to AWS's APIs, signed with SigV4 (`domainkit.keys.aws`).
+Calls to AWS's APIs: Signature Version 4, and the credential chain.
 
+- `ALGORITHM`: SigV4's algorithm, as `Authorization` and presigned URLs name it.
+- `AwsCredentials`: An access key, its secret, and for temporary ones a session token.
+- `CredentialSource`: An async callable that gives the credentials to sign with, fresh ones when due.
+- `container_credentials`: Credentials from the container's endpoint (ECS, EKS Pod Identity).
 - `credential_source`: The key pair given, or the environment's credentials.
+- `default_credentials`: The first source the environment sets up (see the module).
+- `environment_credentials`: Credentials from the `AWS_*` variables (access key, secret, token).
+- `sign`: `headers` with SigV4's: `X-Amz-Date`, the token, `Authorization`.
 - `signed_request`: Send `body` to `url`, signed for `service` in `region`.
+- `signing_key`: SigV4's key for one day, region, and service.
+- `web_identity_credentials`: Credentials for `role_arn`, assumed with the token in `token_file`.
 
 ## `domainkit.keys.gcp`
 

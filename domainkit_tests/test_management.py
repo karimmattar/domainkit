@@ -1,16 +1,22 @@
 """Management commands: discovery, dispatch, and the built-in commands."""
 
+import asyncio
 import io
 import logging
 import os
+import socket
 import subprocess
 import sys
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
 
+import domainkit
 from domainkit import setup
 from domainkit.apps import registry
 from domainkit.apps.hooks import on_deployment_warnings
@@ -153,6 +159,36 @@ def test_command_line_dispatch(
     with override_settings(ALPHA={"GREETING": 5}), pytest.raises(SystemExit):
         execute_from_command_line(["manage.py", "check"])
     assert "Configuration error: Invalid ALPHA settings" in capsys.readouterr().err
+
+
+def test_the_command_line_prints_its_version_and_a_commands_help(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--version`` prints domainkit's; ``help <command>`` its options."""
+    for argv in (["manage.py", "--version"], ["manage.py", "help", "--version"]):
+        execute_from_command_line(argv)
+        assert capsys.readouterr().out == f"{domainkit.__version__}\n"
+
+    with pytest.raises(SystemExit) as exit_info:
+        execute_from_command_line(["manage.py", "help", "greet"])
+    assert exit_info.value.code == 0
+    printed = capsys.readouterr().out
+    assert printed.startswith("usage: manage.py greet ")
+    assert "--shout" in printed
+
+    with pytest.raises(SystemExit) as exit_info:
+        execute_from_command_line(["manage.py", "help", "nope"])
+    assert exit_info.value.code == 1
+    assert "Error: Unknown command 'nope'" in capsys.readouterr().err
+
+    for argv in (["manage.py", "help"], ["manage.py", "help", "--all"]):
+        execute_from_command_line(argv)  # Options of help's own are left aside.
+        assert "Run 'manage.py help <command>' for a command's options" in (
+            capsys.readouterr().out
+        )
+    with pytest.raises(SystemExit):
+        execute_from_command_line(["manage.py", "help", "-v", "greet"])
+    assert capsys.readouterr().out.startswith("usage: manage.py greet ")
 
 
 def test_base_command_contract() -> None:
@@ -789,6 +825,150 @@ def test_branches_must_be_merged(migration_project: Path) -> None:
     applied = run("showmigrations").splitlines()
     assert [line[:3] for line in applied] == ["[X]"] * 4
     assert "Notes." in applied[0]
+
+
+def test_check_and_runserver_say_which_migrations_a_database_lacks(
+    migration_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``migrations.W001`` until ``migrate``; ``runserver`` says it before it serves.
+
+    Without it, the first request that reads the table failed with a raw
+    SQL error, while both said nothing.
+    """
+    run("makemigrations", "-m", "notes")
+    run("makemigrations", "--empty", "-m", "fill")
+    first, second = (each.revision for each in migrations_module.status())
+    said = (
+        f"migrations.W001: 2 unapplied migrations on 'default' ({first} to "
+        f"{second}): requests that use their tables will fail. Run 'python "
+        "manage.py migrate'."
+    )
+    monkeypatch.setattr("uvicorn.run", lambda *args, **kwargs: None)
+    errors = io.StringIO()
+    with override_settings(ASGI_APPLICATION="config.asgi:application"):
+        call_command("runserver", "8001", reload=False, stderr=errors)
+        checked = run("check")
+
+    assert errors.getvalue() == f"Warning: {said}\n"
+    assert f"  Warning: {said}" in checked.splitlines()
+    run("migrate")
+    assert "migrations.W001" not in run("check")
+
+
+def test_unapplied_migrations_say_nothing_where_they_cannot_tell(
+    migration_project: Path, tmp_path: Path
+) -> None:
+    """A database out of reach, or in memory; a SQLite file not made yet lacks all.
+
+    Asking makes no file.
+    """
+    run("makemigrations", "-m", "notes")
+    unmade = tmp_path / "unmade.sqlite3"
+    away = "postgresql+asyncpg://postgres@127.0.0.1:1/postgres"
+    for url, said in (
+        (f"sqlite+aiosqlite:///{unmade}", ["1 unapplied migration on 'default'"]),
+        ("sqlite+aiosqlite:///:memory:", []),
+        (away, []),
+    ):
+        with override_settings(DATABASES={"default": {"URL": url}}):
+            found = [
+                each.split(" (")[0] for each in migrations_module.unapplied_warnings()
+            ]
+        assert found == said
+    assert not unmade.exists()
+
+
+def test_a_database_whose_migrations_cannot_be_read_is_said_so(
+    migration_project: Path, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A file that is no database: a warning, never a traceback; no Alembic line."""
+    run("makemigrations", "-m", "notes")
+    broken = tmp_path / "broken.sqlite3"
+    broken.write_bytes(b"not a database, " * 64)
+    url = f"sqlite+aiosqlite:///{broken}"
+    caplog.set_level(logging.INFO, logger="alembic")
+    caplog.clear()  # makemigrations' own lines are not the check's.
+    with override_settings(DATABASES={"default": {"URL": url}}):
+        found = migrations_module.unapplied_warnings()
+        checked = run("check")
+
+    said = (
+        "The migrations applied to 'default' cannot be read (DatabaseError: file "
+        "is not a database): check the database, then run 'python manage.py "
+        "migrate'."
+    )
+    assert found == [said]
+    assert f"  Warning: migrations.W001: {said}" in checked.splitlines()
+    assert [r for r in caplog.records if r.name.startswith("alembic")] == []
+
+
+def test_unapplied_lists_what_a_database_lacks_until_migrate(
+    migration_project: Path,
+) -> None:
+    """``unapplied`` alone, with the database's own ``CONNECT_TIMEOUT``."""
+    run("makemigrations", "-m", "notes")
+    (revision,) = migrations_module.heads()
+
+    assert migrations_module.unapplied() == [revision]
+    run("migrate")
+    assert migrations_module.unapplied() == []
+
+
+def test_a_database_at_a_revision_the_project_lacks_is_said_so(
+    migration_project: Path, database_url: str
+) -> None:
+    """A revision the project does not have (another branch's): read, not raised."""
+    run("makemigrations", "-m", "notes")
+    run("migrate")
+
+    async def stamp() -> None:
+        engine = create_async_engine(database_url)
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text("UPDATE alembic_version SET version_num = '9999_dead'")
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(stamp())
+    (said,) = migrations_module.unapplied_warnings()
+
+    assert said.startswith(
+        "The migrations applied to 'default' cannot be read (ResolutionError: "
+        "No such revision or branch '9999_dead'"
+    )
+    assert said.endswith("check the database, then run 'python manage.py migrate'.")
+
+
+def test_a_database_that_never_answers_costs_the_check_little(
+    migration_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``CHECK_CONNECT_TIMEOUT`` caps ``CONNECT_TIMEOUT`` for the check.
+
+    A host that takes the connection and never answers costs the check
+    that, then says nothing.
+    """
+    run("makemigrations", "-m", "notes")
+    monkeypatch.setattr(migrations_module, "CHECK_CONNECT_TIMEOUT", 0.2)
+    with socket.socket() as silent:
+        silent.bind(("127.0.0.1", 0))
+        silent.listen(1)  # Takes the connection, never says a word.
+        port = silent.getsockname()[1]
+        url = f"postgresql+asyncpg://postgres@127.0.0.1:{port}/postgres"
+        database = {"URL": url, "CONNECT_TIMEOUT": 30}
+        with override_settings(DATABASES={"default": database}):
+            started = time.monotonic()
+            found = migrations_module.unapplied_warnings()
+            took = time.monotonic() - started
+
+    assert found == []
+    assert took < 5
+
+
+def test_unapplied_migrations_are_not_asked_of_databases_refused() -> None:
+    """A test that did not ask for the databases: nothing is said, nothing reached."""
+    assert migrations_module.unapplied_warnings() == []
 
 
 def test_downgrades_need_consent_in_deployments(

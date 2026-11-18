@@ -15,10 +15,10 @@ R2 (``region="auto"``), SeaweedFS, RustFS, and Versity's gateway
 Storage's interoperability API (HMAC keys). MinIO speaks it too, but
 its community edition is no longer maintained, and publishes source
 only. Every request is signed with Signature Version 4 here and sent
-through ``domainkit.http.client`` (pooled, retried, bounded by the
+through ``domainkit.outbound.client`` (pooled, retried, bounded by the
 deadline): no AWS SDK is needed. Credentials come from
 ``access_key_id`` and ``secret_access_key``, else from the environment
-as AWS's tools read it (``domainkit.keys.aws.default_credentials``:
+as AWS's tools read it (``domainkit.cloud.aws.default_credentials``:
 variables, a web identity, the container's).
 
 Files of up to 8 MiB are one ``PUT``; larger ones a multipart upload,
@@ -52,14 +52,14 @@ from urllib.parse import quote, urlsplit
 from weakref import WeakKeyDictionary
 
 from domainkit import clock
-from domainkit.exceptions import UpstreamError
-from domainkit.keys.aws import (
+from domainkit.cloud.aws import (
     ALGORITHM,
     AwsCredentials,
     CredentialSource,
     default_credentials,
     signing_key,
 )
+from domainkit.exceptions import UpstreamError
 from domainkit.storage.base import StorageError, new_name
 from domainkit.storage.remote import ObjectStorage, PresignedUpload
 
@@ -89,6 +89,7 @@ class WriteOnceIgnored(StorageError, UpstreamError):
 
     status_code: ClassVar[int] = 503
     code: ClassVar[str] = "direct_upload_unavailable"
+    retryable: ClassVar[bool] = False  # The store ignores the header every time.
     detail: ClassVar[str] = (
         "Uploads straight to storage are not available; upload through the API."
     )
@@ -99,7 +100,7 @@ class S3Storage(ObjectStorage):
 
     write_once: ClassVar[Mapping[str, str]] = {"If-None-Match": "*"}  # Signed.
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         bucket: str,
         *,
@@ -163,7 +164,7 @@ class S3Storage(ObjectStorage):
 
             credentials = fixed
         self.credentials = credentials or default_credentials(region)
-        from domainkit.http.client import HttpClient
+        from domainkit.outbound.client import HttpClient
 
         self.client = HttpClient(timeout=timeout, propagate=False)
         self.check_write_once = check_write_once

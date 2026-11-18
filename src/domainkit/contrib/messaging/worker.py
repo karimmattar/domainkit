@@ -71,7 +71,6 @@ from domainkit import clock, deadlines
 from domainkit.apps import registry
 from domainkit.broker import Broker, BrokerError
 from domainkit.broker.base import publish_with_priority
-from domainkit.conf import settings
 from domainkit.context import SYSTEM_ACTOR, RequestContext, bind_request
 from domainkit.db import connections, dbclock
 from domainkit.db.routing import router
@@ -81,7 +80,6 @@ from domainkit.exceptions import DomainkitError, ImproperlyConfigured
 from domainkit.reporting import report_error
 from domainkit.tasks import spawn
 from domainkit.tracing import remote_parent, span, trace_headers
-from domainkit.utils.module_loading import import_string
 
 from . import ordering
 from .budget import Budget
@@ -1003,10 +1001,11 @@ class Worker:
                 raise
             except Exception as exc:  # The lock runs the message again later.
                 logger.error(
-                    "Could not record the outcome of %s %s; it runs again once "
-                    "its lock expires",
+                    "Could not record the outcome of %s %s (message %s); it runs "
+                    "again once its lock expires",
                     message.kind,
                     message.target,
+                    message.id,
                     exc_info=exc,
                 )
                 outcome = UNRECORDED
@@ -1108,7 +1107,9 @@ class Worker:
         comes due at the rate instead of all at once.
         """
         if self._limiter is None:
-            self._limiter = import_string(settings.RATE_LIMIT_BACKEND)()
+            from domainkit.http.ratelimit import rate_limit_backend
+
+            self._limiter = rate_limit_backend.create()
         limit, period = rate
         decision = await self._limiter.hit(f"task:{spec.key}", limit, period)
         if decision.allowed:
@@ -1159,10 +1160,11 @@ class Worker:
             headers={**message.headers, UNKNOWN_SINCE: since.isoformat()},
         )
         logger.warning(
-            "%s %s: %s Waiting for a worker that knows it (a deploy rolling "
-            "out?); trying again in %.1fs, dead-lettered after %s",
+            "%s %s (message %s): %s Waiting for a worker that knows it (a deploy "
+            "rolling out?); trying again in %.1fs, dead-lettered after %s",
             message.kind,
             message.target,
+            message.id,
             exc,
             delay,
             (since + timedelta(seconds=self.config.UNKNOWN_TARGET_GRACE)).isoformat(),
@@ -1198,10 +1200,11 @@ class Worker:
     def _superseded(self, message: Claimed) -> str:
         """Log a run that lost its lease; the worker holding the message runs it."""
         logger.warning(
-            "%s %s lost its lease while it ran: another worker took it over and "
-            "runs it",
+            "%s %s (message %s) lost its lease while it ran: another worker took "
+            "it over and runs it",
             message.kind,
             message.target,
+            message.id,
         )
         return SUPERSEDED
 
@@ -1364,9 +1367,10 @@ class Worker:
                 **blanked,
             )
             logger.error(
-                "Dead-lettered %s %s after %d attempts",
+                "Dead-lettered %s %s (message %s) after %d attempts",
                 message.kind,
                 message.target,
+                message.id,
                 message.attempts,
                 exc_info=exc,
             )
@@ -1384,9 +1388,10 @@ class Worker:
             started_at=None,
         )
         logger.warning(
-            "%s %s failed (attempt %d of %d); retrying in %.1fs",
+            "%s %s (message %s) failed (attempt %d of %d); retrying in %.1fs",
             message.kind,
             message.target,
+            message.id,
             message.attempts,
             message.max_attempts,
             delay,
@@ -1411,10 +1416,11 @@ class Worker:
                 )
         except Exception as exc:  # Logged; the message's lock expires.
             logger.error(
-                "Could not give back %s %s after stopping it; it runs again once "
-                "its lock expires",
+                "Could not give back %s %s (message %s) after stopping it; it runs "
+                "again once its lock expires",
                 message.kind,
                 message.target,
+                message.id,
                 exc_info=exc,
             )
 

@@ -1,6 +1,6 @@
 # 0048. Give every request a deadline, answer 503 when it passes, and pass it on
 
-- Status: Accepted; amended 2026-10-25, 2026-10-26, 2026-10-28 and 2026-11-18 (at the end)
+- Status: Accepted; amended 2026-10-25, 2026-10-26, 2026-10-28 and 2026-11-18 (at the end); amended by [0186](0186-answer-a-commit-as-committed-a-lost-database-as-unavailable-start-loudly-and-name-the-probes-once.md)
 - Date: 2026-10-20
 
 ## Context
@@ -387,12 +387,12 @@ Rejected:
   server runs that statement to its end, with its locks and its process,
   and logs an unexpected EOF for the missing `Terminate`.
 
-Costs, measured with the ladder against 2.8.1:
+Costs, measured with the ladder against the branch point:
 
 - 5 or 6 more Python calls per request for each unit of work, from the
   close's read of the session's transaction and the check for a
-  cancellation: `read` 1,669 to 1,675, `write` 2,010 to 2,015,
-  `resource-command` (two units of work) 2,681 to 2,691. No statement,
+  cancellation: `read` 1,669 to 1,675, `write` 2,049 to 2,054,
+  `resource-command` (two units of work) 2,720 to 2,730. No statement,
   round trip, checkout or module more; the rungs without a unit of work
   are unchanged.
 - A task only for work already being cancelled.

@@ -2,7 +2,7 @@
 
 from importlib import import_module
 
-from domainkit.apps import DomainConfig
+from domainkit.apps import DomainConfig, Requirement
 from domainkit.db.routing import DatabaseRouter
 
 from .tables import start_mappers
@@ -13,7 +13,11 @@ class ObjectPermissionsConfig(DomainConfig):
 
     label = "objectpermissions"
     verbose_name = "Object permissions"
-    requires = ()
+    requires = (
+        Requirement(
+            "domainkit.contrib.auth", "grants are auth's permissions on one object"
+        ),
+    )
 
     def ready(self) -> None:
         """Map the aggregate; compile ``VisibleTo``; delete grants with objects."""

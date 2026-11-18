@@ -154,7 +154,7 @@ once, in the language active then.
 | other `DomainError` | 400 | from the class |
 | `domainkit.http.APIError(status, detail, code=…)` | as given | as given |
 | `domainkit.exceptions.ServiceBusy(message, retry_after=…)`: something the operation needs is busy, raised below the HTTP layer (a full hashing queue is `PasswordChecksBusy`) | 503 | from the class (`password_checks_busy`), with `Retry-After` |
-| `domainkit.exceptions.UpstreamError`: an outgoing call failed (`domainkit.http.client`'s `CircuitOpen`, `CallTimeout`, `ResponseTooLarge`) | 503, 504, 502 | `upstream_unavailable` with `Retry-After`, `upstream_timeout`, `upstream_response_too_large`; the detail names no host, and nothing is reported ([runtime.md](../runtime.md#outgoing-http-calls)) |
+| `domainkit.exceptions.UpstreamError`: an outgoing call failed (`domainkit.outbound.client`'s `CircuitOpen`, `CallTimeout`, `ResponseTooLarge`) | 503, 504, 502 | `upstream_unavailable` with `Retry-After`, `upstream_timeout`, `upstream_response_too_large`; the detail names no host, and nothing is reported ([runtime.md](../runtime.md#outgoing-http-calls)) |
 | over `RATE_LIMIT`, a route's `Throttle`, or a throttle of `domainkit.contrib.auth` | 429 | `rate_limited`, with `Retry-After` |
 | `domainkit.money.MoneyError`: amounts of two currencies added or compared, an amount with more places than its currency, an unknown currency, money set on an attribute whose column cannot hold it | 422 | `currency_mismatch`, `inexact_amount`, `unknown_currency`, `amount_out_of_range`; the detail names no amount ([money.md](../money.md#over-http)) |
 | request validation | 422 | `validation_error` |
@@ -281,6 +281,14 @@ route's name alone: its function's name, or `name=`. Names must then be
 unique. `check` lists clashes (`openapi.E001`), and staging and
 production refuse to start with any. A route with several methods has one
 id, as FastAPI makes it (and warns). See ADR 0031.
+
+The routes of the contrib apps that serve a project's records start
+with their app's name, so a resource of the project's own named as
+theirs clashes with none: `accounting_list_accounts`,
+`approvals_approve_request`, `limits_set_limit`,
+`webhooks_list_subscriptions`, `flags_list_settings`, the auth admin's
+`auth_admin_list_users`, and the audit trail's `audit_read_history`
+(since 2.9, ADR 0192).
 
 ### Breaking changes: `openapi --diff`
 

@@ -6,9 +6,10 @@
   or a managed identity, and Azure Storage's Shared Key (Blob storage, Key
   Vault).
 
-AWS's Signature Version 4 and credential chain are in
-``domainkit.keys.aws``, which S3, SQS, SNS, and SES use. Every call goes
-through ``domainkit.http.client``; no cloud SDK is needed.
+- ``domainkit.cloud.aws``: AWS's Signature Version 4 and credential chain
+  (S3, SQS, SNS, SES, KMS).
+
+Every call goes through ``domainkit.outbound.client``; no cloud SDK is needed.
 """
 
 from abc import ABC, abstractmethod

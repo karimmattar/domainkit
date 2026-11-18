@@ -683,3 +683,47 @@ def test_maker_fields_must_be_fields_of_the_command() -> None:
             maker_fields=["inviter"],
             domain="alpha",
         )
+
+
+def test_a_run_refuses_a_command_naming_another_actor_than_its_maker(
+    client: TestClient,
+) -> None:
+    """The run asks again whose the command is, as the guard now says.
+
+    A request submitted before its guard named ``invited_by`` the maker's
+    field holds someone else there. Approved, it fails as it is run, with
+    ``invalid_arguments``, and its service never runs (A28-TEST-02).
+    """
+    ran: list[Invite] = []
+
+    async def remember(command: Invite, uow: AccountingUnitOfWork) -> None:
+        ran.append(command)
+
+    registered = guard(
+        "tests.invite_late",
+        requires_approval("tests.invite_late")(remember),
+        unit_of_work=AccountingUnitOfWork,
+        policies=[Policy("tests.invites", permission="accounting.add_account")],
+        domain="alpha",
+    )
+    maker = user("maker", *CLERK)
+    someone = str(uuid4())
+    made = submit(
+        client,
+        maker,
+        "tests.invite_late",
+        {"email": "x@example.com", "invited_by": someone},
+    )
+    assert made.status_code == 201, made.json()
+    # The project names the actor's field in a later release: the run reads
+    # the guard of the code that runs it. Guards are frozen; this one is the
+    # test's own.
+    object.__setattr__(registered, "maker_fields", ("invited_by",))
+    approver = user("approver", *CLERK)
+    assert decide(client, made.json(), approver).json()["status"] == "approved"
+
+    run_async(drain())
+
+    done = client.get(f"{API}/{made.json()['id']}", headers=approver).json()
+    assert (done["status"], done["reason"]) == ("failed", "invalid_arguments")
+    assert ran == []

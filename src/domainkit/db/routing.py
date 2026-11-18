@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from domainkit.apps import DomainConfig
 
 __all__ = [
+    "DatabaseRouter",
     "bucket_for",
     "for_each_shard",
     "router",

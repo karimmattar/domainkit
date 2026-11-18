@@ -21,7 +21,7 @@ from domainkit.conf import UNSET, Settings, override_settings
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import call_command
 from domainkit.management.base import CommandError
-from domainkit_tests.conftest import MakePackage
+from domainkit_tests.conftest import MakePackage, UseAuth
 
 SECRET_KEY: Final = "tests-only-6Zq3b1Jw8RkV0yXc5MnHf2LpT9sDg4AeU7oKiWx3N"
 DEPLOYED: Final = {
@@ -354,3 +354,107 @@ def test_check_says_where_https_ends_and_whose_word_the_scheme_is(
     assert printed[2] == f"    Hint: {statement.hint}"
     with override_settings(**change):  # Locally, nothing is said of it.
         assert "security.I001" not in run("check")
+
+
+def test_check_names_the_app_an_optional_middleware_needs() -> None:
+    """``apps.E003``: an optional app's middleware without the app, by name.
+
+    It passed ``check`` before 2.9, and every request then answered 500.
+    Staging and production refuse to start with it, as with any problem of
+    the application.
+    """
+    from domainkit.checks import CheckFailed
+    from domainkit.conf.global_settings import DEFAULT_MIDDLEWARE
+    from domainkit.http import get_asgi_application
+
+    keyed = "domainkit.contrib.idempotency.middleware.IdempotencyMiddleware"
+    with override_settings(MIDDLEWARE=[*DEFAULT_MIDDLEWARE, keyed]):
+        with pytest.raises(CommandError) as refused:
+            run("check")
+        with override_settings(**DEPLOYED), pytest.raises(CheckFailed) as stopped:
+            get_asgi_application()
+
+    said = (
+        f"apps.E003: MIDDLEWARE lists {keyed!r}, but 'domainkit.contrib.idempotency' "
+        "is not in INSTALLED_DOMAINS: every request would fail. Install "
+        "'domainkit.contrib.idempotency', or remove the middleware."
+    )
+    assert str(refused.value) == f"System check found problems:\n  {said}"
+    assert said in str(stopped.value)
+
+
+@pytest.mark.parametrize(
+    ("change", "said"),
+    [
+        ({}, None),
+        (
+            {"RATE_LIMIT_EXEMPT_PATHS": ["/health", "/ready", "/metrics", "/hooks"]},
+            None,
+        ),
+        ({"RATE_LIMIT_EXEMPT_PATHS": ["/hooks"]}, None),
+        (
+            {"RATE_LIMIT_EXEMPT_PATHS": ["/health"]},
+            (
+                "RATE_LIMIT_EXEMPT_PATHS names /health of PROBE_PATHS, but not "
+                "/ready, /metrics"
+            ),
+        ),
+        (
+            {"ACCESS_LOG_QUIET_PATHS": ["/health", "/ready"]},
+            (
+                "ACCESS_LOG_QUIET_PATHS names /health, /ready of PROBE_PATHS, "
+                "but not /metrics"
+            ),
+        ),
+        ({"PROBE_PATHS": ["/health"], "CONCURRENCY_EXEMPT_PATHS": ["/health"]}, None),
+    ],
+)
+def test_a_list_that_leaves_a_probe_out_is_warned_of(
+    change: dict[str, Any], said: str | None
+) -> None:
+    """``probes.W001``: since 2.9 ``PROBE_PATHS`` exempts each probe it names.
+
+    A list that names some of them, not all, left the others out in 2.8, or
+    kept 2.8's default; now they are exempt anyway.
+    """
+    with override_settings(**change):
+        checked = run("check")
+    lines = [line for line in checked.splitlines() if "probes.W001" in line]
+    if said is None:
+        assert lines == []
+        return
+    (line,) = lines
+    assert line.startswith(f"  Warning: probes.W001: {said}: since 2.9, PROBE_PATHS")
+
+
+@pytest.mark.parametrize(
+    ("exempt", "said"),
+    [
+        ((), None),
+        (("/health", "/ready", "/metrics", "/hooks"), None),
+        (
+            ("/health", "/ready"),
+            (
+                "AUTH.AUTHENTICATION_EXEMPT_PATHS names /health, /ready of "
+                "PROBE_PATHS, but not /metrics"
+            ),
+        ),
+    ],
+)
+def test_the_auth_apps_exempt_list_is_warned_of_as_the_others(
+    use_auth: UseAuth, exempt: tuple[str, ...], said: str | None
+) -> None:
+    """``probes.W001`` of ``AUTH.AUTHENTICATION_EXEMPT_PATHS``, said by the auth app.
+
+    2.8 asked credentials of a probe that list left out; since 2.9
+    ``PROBE_PATHS`` exempts it from authentication too. The core reads no
+    app's settings: the app warns through ``on_deployment_warnings``, in
+    every environment, as ``check`` does of the framework's lists.
+    """
+    use_auth(AUTHENTICATION_EXEMPT_PATHS=list(exempt))
+    lines = [line for line in run("check").splitlines() if "probes.W001" in line]
+    if said is None:
+        assert lines == []
+        return
+    (line,) = lines
+    assert line.startswith(f"  Warning: probes.W001: {said}: since 2.9, PROBE_PATHS")

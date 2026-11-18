@@ -216,7 +216,7 @@ again whatever the reply: an operator may fix them meanwhile
 ([ADR 0156](adr/0156-refusals-that-last-push-tokens-checked-and-commands-that-start-the-domains.md)).
 
 **Providers.** The provider backends call their HTTP API through
-`domainkit.http.client` (the `httpclient` extra), with no SDK. They read
+`domainkit.outbound.client` (the `httpclient` extra), with no SDK. They read
 their settings from `MAIL.OPTIONS`; wrong ones stop the application at
 startup. A refusal raises `MailDeliveryFailed` with the provider's error
 code (`code`), never an address. The codes each provider documents for a
@@ -523,7 +523,7 @@ await send_push(
 ### Providers
 
 `SmsBackend` and `PushBackend` are ports. These adapters call the
-providers' HTTP APIs through `domainkit.http.client`, with no SDK:
+providers' HTTP APIs through `domainkit.outbound.client`, with no SDK:
 
 | Backend | Provider | Options (`SMS_OPTIONS`, or `PUSH_OPTIONS[name]`) |
 | --- | --- | --- |
@@ -538,7 +538,12 @@ providers' HTTP APIs through `domainkit.http.client`, with no SDK:
 
 `...` stands for `domainkit.contrib.notifications`. Every adapter also
 takes `TIMEOUT` (10 seconds, at most 60) and `URL`, which replaces the
-provider's address.
+provider's address. The worker makes a backend per message, and the
+backends of one `TIMEOUT` share one client: its connections are reused,
+and after `HTTP_CLIENT.BREAKER_FAILURES` failures in a row a provider
+that is down is not called again for `BREAKER_COOLDOWN` seconds. Text
+messages shared it from 2.9, as push did before. Its metrics name it
+`notifications`, and mail's client `mail`.
 
 ```python
 NOTIFICATIONS = {

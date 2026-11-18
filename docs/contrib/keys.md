@@ -24,6 +24,22 @@ The decisions are in
 [ADR 0120](../adr/0120-seal-encrypted-fields-in-the-orm-bound-to-their-row-and-shred-a-person-by-destroying-their-key.md)
 (fields, blind indexes, crypto-shredding).
 
+## When to use it, and when not to
+
+- **Use it when** a field must not be read from the database, a replica,
+  a backup, or a dump: a card number, a national id, a secret. Or when
+  erasing a person must reach the backups: seal their fields under their
+  own key.
+- **Do not use it** for a field you search by text, range, or order:
+  only equality works, through a blind index
+  ([querying encrypted fields](#querying-encrypted-fields)). A password
+  is hashed, never encrypted ([passwords](../auth/users.md#passwords)).
+- **It needs a key service** in production, one of the
+  [providers](#providers): AWS KMS, Vault, Google Cloud KMS, Azure Key
+  Vault, Huawei Cloud KMS, an HSM over PKCS #11, or one of your own. It
+  also needs a plan for backups
+  ([what a backup holds](#what-the-database-a-dump-and-a-backup-hold)).
+
 ## Install
 
 Install the extra, which brings `cryptography` for AES-GCM and the HTTP
@@ -87,11 +103,24 @@ api_secret        = dk1:k.dev:e4USRz46AAu8rz8dfl5bPK6BisO_uzPv6NewWt0b2Q93HA
 ```
 
 `dk1:s.<id>` names a subject's key; `dk1:k.dev` names the data key
-`dev`. Find the holder by the card number, then erase the holder's key:
+`dev`. Store Ann's card, find her by the card number, then erase her
+key. `CardsUnitOfWork` is the domain's unit of work on the database,
+with a `cardholders` repository, as `startdomain` writes one
+([part 1 of the tutorial](../tutorial/1-first-resource.md)):
 
 ```python
+from uuid import UUID
+
 from domainkit.contrib.keys import shred_subject
 from domainkit.ddd import F
+
+ann = UUID("00000000-0000-4000-8000-00000000000a")
+async with CardsUnitOfWork() as uow:
+    holder = Cardholder(
+        id=ann, name="Ann", card_number="4111111111111111", api_secret=b"s3cr3t"
+    )
+    await uow.cardholders.add(holder)
+    await uow.commit()
 
 async with CardsUnitOfWork() as uow:
     found = await uow.cardholders.filter(F("card_number") == "4111111111111111")
@@ -105,7 +134,7 @@ async with CardsUnitOfWork() as uow:
 ```
 
 ```text
-Cardholder(id=UUID('00000000-0000-4000-8000-00000000000a'), version=1, name='Ann', passport=None, card_number=<encrypted>, api_secret=<encrypted>)
+Cardholder(id=UUID('00000000-0000-4000-8000-00000000000a'), version=1, name='Ann', card_number=<encrypted>, api_secret=<encrypted>)
 1
 None b's3cr3t'
 ```

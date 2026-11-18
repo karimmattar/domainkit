@@ -19,6 +19,20 @@ On this page you learn how to:
 - run workers, on the outbox alone or with a broker such as RabbitMQ;
 - inspect, retry, and cancel messages, and test code that queues them.
 
+## When to use it, and when not to
+
+- **Use it when** work must happen after a commit and must not be lost:
+  a mail, a call to another service, a reaction that may be slow or
+  fail.
+- **Do not use it** for work you can lose on a restart, such as warming
+  a cache: [`spawn` and `supervise`](../runtime.md#background-tasks-spawn-and-supervise)
+  need no table and no worker. A handler without `durable=True` runs in
+  the request's process after the commit, and is lost if the process
+  stops first ([tutorial part 4](../tutorial/4-events.md)).
+- **Delivery is at least once.** For a message that runs twice, use
+  [the inbox](#once-in-the-database-the-inbox). For an HTTP request that
+  a client sends twice, use [idempotency keys](idempotency.md).
+
 ## Install
 
 ```python
@@ -40,23 +54,31 @@ The app brings three tables, in every database that hosts a domain:
 ## A first example
 
 A task is an async function marked `@task`. A use case queues it with
-`uow.defer`, and it is stored only if the change commits:
+`uow.defer`, and it is stored only if the change commits. `uow` is the
+use case's unit of work: any `UnitOfWork`, such as the one `startdomain`
+writes for a domain:
 
 ```python
 from uuid import UUID
 
 from domainkit.contrib.messaging import task
+from domainkit.ddd import UnitOfWork
 
 
 @task(name="shop.send_welcome")
 async def send_welcome(user_id: UUID) -> None: ...  # send the mail
 
 
-async with uow:
-    ...
-    uow.defer(send_welcome, user_id=user.id)
-    await uow.commit()
+async def sign_up(uow: UnitOfWork, user_id: UUID) -> None:
+    """A use case: its change, and the task queued with it."""
+    async with uow:
+        ...  # store the new user
+        uow.defer(send_welcome, user_id=user_id)
+        await uow.commit()
 ```
+
+[Part 4 of the tutorial](../tutorial/4-events.md) queues a durable
+handler from a use case the same way, and runs it with the worker.
 
 After the commit, the message waits in the outbox:
 
@@ -87,7 +109,11 @@ two ways:
   `delay=` (a `timedelta` before it runs), `dedupe_key=` (a second
   message with the same key is not queued), and `ordering_key=`.
 - **Outside one**: `await enqueue(task, **arguments)` queues it now, in
-  its own transaction, in the home outbox (`MESSAGING.DATABASE`).
+  its own transaction, in the home outbox (`MESSAGING.DATABASE`). A
+  commit the deadline cuts off, or whose connection is lost, may have
+  queued it: its error is in doubt, as a unit of work's, and the request
+  answers 503 without `Retry-After`
+  ([The request flow](../request-flow.md#8-commit)).
 
 ```python
 from domainkit.contrib.messaging import enqueue
@@ -166,11 +192,12 @@ A failure is retried with exponential backoff and jitter, up to
 `max_attempts`. Then the message is dead-lettered and sent to
 `ERROR_REPORTERS`. A message whose worker died (a crash, or a kill)
 during its last attempt is dead-lettered too, as `AttemptsExhausted`: it
-is not run again after `max_attempts`.
+is not run again after `max_attempts`. Each line names the message's id,
+as `messages list` shows it and `messages retry` takes it:
 
 ```text
-task shop.flaky failed (attempt 1 of 2); retrying in 0.0s
-Dead-lettered task shop.flaky after 2 attempts
+task shop.flaky (message 0f8e2c4a-5b7d-4e1f-9a3c-6d2b8e7f1a90) failed (attempt 1 of 2); retrying in 0.0s
+Dead-lettered task shop.flaky (message 0f8e2c4a-5b7d-4e1f-9a3c-6d2b8e7f1a90) after 2 attempts
 ```
 
 A task or handler that finds the world not ready yet, such as a provider
@@ -488,8 +515,13 @@ async def push_invoice(invoice_id: UUID) -> None:
   refuses to start: a claim that ends while the task still runs would run
   it twice. A run's timeout is its deadline (`domainkit.deadlines`). On
   PostgreSQL its transactions lower `statement_timeout` to the time left,
-  and its calls through `domainkit.http.client` are limited by it, as in
-  a request.
+  and its calls through `domainkit.outbound.client` are limited by it, as in
+  a request. What follows each of its commits (the in-process handlers
+  and the domains' after-commit hooks, up to `EVENT_HANDLER_TIMEOUT` each)
+  does not count against it, since 2.9, so the timeout no longer bounds a
+  run's whole time. A commit renews the claim; keep `VISIBILITY_TIMEOUT`
+  above what follows a commit too, or another worker may claim a run
+  still in its handlers, and run it again.
 - **Priorities** order the due messages of a queue: higher first, then
   the oldest. They do not reorder queues; give urgent work a queue of its
   own. On RabbitMQ, each message also carries its priority, and the
@@ -819,7 +851,7 @@ and a full outbox drained at 950 tasks per second instead of 470.
 before the workers start; run it with an account that may configure the
 virtual host if the workers' account may not. `broker check` tells
 whether each broker answers: on RabbitMQ it opens and closes a channel,
-a round trip, as `runworker --heartbeat-file` does. In staging and production, brokers must use
+a round trip, as `runworker --ready-file` does. In staging and production, brokers must use
 `amqps://` with certificate checks, and a user other than `guest`;
 `memory://`, an in-process broker for tests and development, is refused
 there.
@@ -1011,7 +1043,7 @@ other settings.
 | `RETRY_BASE_SECONDS` | `2.0` | The first retry's delay; it doubles per attempt (at most 365 days). |
 | `RETRY_MAX_SECONDS` | `3600.0` | The longest retry delay (at most 365 days). |
 | `TASK_TIMEOUT` | `240.0` | Seconds a message may run; longer counts as a failure (at most a day). |
-| `VISIBILITY_TIMEOUT` | `300.0` | Seconds a claim lasts; must be more than `TASK_TIMEOUT` (at most 2 days). A message whose worker died runs again after it: with auth's codes, keep it under half of `AUTH.CODE_TTL`, or a code cut short arrives expired (`auth.W009` where deployed). |
+| `VISIBILITY_TIMEOUT` | `300.0` | Seconds a claim lasts; must be more than `TASK_TIMEOUT` (at most 2 days), and, since 2.9, more than what follows a commit of a task: its in-process handlers and the domains' after-commit hooks, up to `EVENT_HANDLER_TIMEOUT` each. A message whose worker died runs again after it: with auth's codes, keep it under half of `AUTH.CODE_TTL`, or a code cut short arrives expired (`auth.W009` where deployed). |
 | `POLL_INTERVAL` | `1.0` | Seconds an idle worker waits before looking again (at most an hour). |
 | `POLL_INTERVAL_IDLE` | `None` | While commits wake the worker (`NOTIFY`, on PostgreSQL), or publish themselves to the broker (`PUBLISH_ON_COMMIT`, for the relay): the longest it waits between polls, from `POLL_INTERVAL` to an hour. Each poll that finds nothing doubles the wait up to this; work or a commit starts again from `POLL_INTERVAL`. A message that no commit announces (a retry, a delay, an expired lock) can wait this long. `None`: every wait is `POLL_INTERVAL`. |
 | `BATCH_SIZE` | `50` | The most messages claimed at once (1 to 10,000). |

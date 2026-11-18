@@ -2,15 +2,19 @@
 
 import asyncio
 import json
+import logging
 import math
 import re
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any, ClassVar
+from types import TracebackType
+from typing import Any, ClassVar, Final
 
 import pytest
 from prometheus_client import REGISTRY
 from sqlalchemy import text, update
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import AsyncTransaction
 
 from domainkit import deadlines
 from domainkit.broker import MemoryBroker
@@ -28,6 +32,7 @@ from domainkit.contrib.messaging import (
     task,
 )
 from domainkit.contrib.messaging import admin as outbox_admin
+from domainkit.contrib.messaging import outbox as messaging_outbox
 from domainkit.contrib.messaging import registry as tasks
 from domainkit.contrib.messaging import retry as retry_module
 from domainkit.contrib.messaging import worker as worker_module
@@ -45,10 +50,14 @@ from domainkit.contrib.messaging.tables import (
     messages,
 )
 from domainkit.db import connections
+from domainkit.db.hooks import on_stage_transaction, on_transaction_committed
+from domainkit.ddd import EventBus, HandlerTimedOut
+from domainkit.ddd.uow import failed_in_doubt
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.ratelimit import Decision
 from domainkit.management import CommandError
-from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork
+from domainkit_tests.deadline_routes import past
+from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork, NoteWritten
 from domainkit_tests.test_messaging import (  # noqa: F401 - fixtures.
     FAST,
     NO_GRACE,
@@ -328,8 +337,8 @@ def test_periodic_tasks_need_one_schedule() -> None:
         assert schedules["tests.utc_hourly"].tz.key == "UTC"
         assert "tests.nightly" not in [spec.key for spec, _ in tasks.periodic_tasks()]
     finally:
-        tasks._tasks.pop("tests.nightly")
-        tasks._tasks.pop("tests.utc_hourly")
+        tasks.unregister_task("tests.nightly")
+        tasks.unregister_task("tests.utc_hourly")
 
 
 @pytest.mark.usefixtures("messaging")
@@ -345,7 +354,7 @@ def test_contrib_cron_tasks_follow_their_app() -> None:
     try:
         assert "tests.contrib_cron" not in [spec.key for spec, _ in tasks.cron_tasks()]
     finally:
-        tasks._tasks.pop("tests.contrib_cron")
+        tasks.unregister_task("tests.contrib_cron")
 
 
 # The worker's use of per-task policies ----------------------------------------
@@ -420,6 +429,177 @@ async def test_a_task_runs_under_its_own_timeout() -> None:
 
 
 @pytest.mark.usefixtures("tables")
+async def test_a_task_that_committed_is_not_failed_by_its_slow_handlers() -> None:
+    """What follows a task's commit does not count against its timeout.
+
+    The task commits a note whose event's first in-process handler runs
+    until past the task's timeout. It and the next handler run, free of
+    the deadline, and the message is done, run once: not failed, so not
+    run and committed again.
+    """
+    bus = EventBus()
+    given: list[deadlines.Deadline] = []
+
+    async def slow(event: NoteWritten) -> None:
+        await asyncio.sleep(past(given[0]))
+        ran.append(("slow", deadlines.remaining()))
+
+    async def after(event: NoteWritten) -> None:
+        ran.append(("after", deadlines.remaining()))
+
+    bus.subscribe(NoteWritten, slow)
+    bus.subscribe(NoteWritten, after)
+
+    @task(name="tests.commits", timeout=0.5, max_attempts=2)
+    async def commits() -> None:
+        deadline = deadlines.current_deadline()
+        assert deadline is not None
+        given.append(deadline)
+        note = Note(id=NoteId(uuid.uuid4()), text="once")
+        note.record(NoteWritten(note_id=note.id))
+        async with NotesUnitOfWork(events=bus) as uow:
+            await uow.notes.add(note)
+            await uow.commit()
+        ran.append("committed")
+
+    await enqueue(commits)
+    await Worker(MessagingSettings(**{**FAST, "VISIBILITY_TIMEOUT": 60})).run_once()
+
+    assert [row["status"] for row in await rows()] == [DONE]
+    assert ran == [("slow", None), ("after", None), "committed"]
+
+
+@pytest.mark.usefixtures("tables")
+async def test_what_follows_enqueue_runs_free_of_the_deadline() -> None:
+    """``enqueue`` commits on its own; its after-commit hooks are not cut off.
+
+    A hook runs until past the deadline, which the commit lifts: it runs
+    to the end, sees no deadline, and the block ends without raising.
+    """
+    seen: list[float | None] = []
+    bound = deadlines.timeout(0.5, until_commit=True)
+
+    async def slow(database: str) -> None:
+        assert bound.deadline is not None
+        await asyncio.sleep(past(bound.deadline))
+        seen.append(deadlines.remaining())
+
+    on_transaction_committed(slow, domain="messaging")
+    async with bound:
+        await enqueue(low, label="queued")
+        left = deadlines.remaining()
+
+    assert (seen, left, bound.expired()) == ([None], None, False)
+    assert [row["target"] for row in await rows()] == ["tests.low"]
+
+
+@pytest.mark.usefixtures("tables")
+async def test_an_after_commit_hook_of_enqueue_that_hangs_is_cut_off(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``on_transaction_committed`` gets ``EVENT_HANDLER_TIMEOUT``, then is cut off.
+
+    The task is queued; the hook that hangs is logged and reported as
+    ``HandlerTimedOut``.
+    """
+    reports: list[tuple[BaseException, dict[str, object]]] = []
+    monkeypatch.setattr(
+        messaging_outbox,
+        "report_error",
+        lambda exc, **context: reports.append((exc, context)),
+    )
+
+    async def hangs(database: str) -> None:
+        await asyncio.Event().wait()
+
+    on_transaction_committed(hangs, domain="messaging")
+    with (
+        override_settings(EVENT_HANDLER_TIMEOUT=0.1),
+        caplog.at_level(logging.ERROR, "domainkit.contrib.messaging"),
+    ):
+        async with asyncio.timeout(5):
+            await enqueue(low, label="queued")
+
+    cut = "After-commit work of 'messaging' took more than 0.1s"
+    assert caplog.messages == [f"{cut}; cut off"]
+    [(exc, context)] = reports
+    assert (type(exc), str(exc), context) == (
+        HandlerTimedOut,
+        cut,
+        {"domain": "messaging"},
+    )
+    assert [row["target"] for row in await rows()] == ["tests.low"]
+
+
+async def never_answers(
+    transaction: AsyncTransaction,
+    kind: type[BaseException] | None,
+    error: BaseException | None,
+    traceback: TracebackType | None,
+) -> None:
+    """End a transaction's block: its ``COMMIT`` never answers; else as before."""
+    if kind is not None:
+        await TRANSACTION_EXIT(transaction, kind, error, traceback)
+        return
+    try:
+        await asyncio.Event().wait()
+    except asyncio.CancelledError as cut:  # Rolled back: nothing was sent.
+        await TRANSACTION_EXIT(transaction, type(cut), cut, cut.__traceback__)
+        raise
+
+
+async def refused(
+    transaction: AsyncTransaction,
+    kind: type[BaseException] | None,
+    error: BaseException | None,
+    traceback: TracebackType | None,
+) -> None:
+    """End a transaction's block: the database refuses its ``COMMIT``."""
+    refusal = DBAPIError("COMMIT", {}, Exception("deferred constraint"))
+    await TRANSACTION_EXIT(transaction, type(refusal), refusal, None)
+    raise refusal
+
+
+TRANSACTION_EXIT: Final = AsyncTransaction.__aexit__
+"""How SQLAlchemy ends a transaction's block: it commits, or rolls back."""
+
+
+@pytest.mark.usefixtures("tables")
+async def test_enqueue_cut_off_as_it_commits_is_in_doubt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``enqueue`` commits on its own: a cut ``COMMIT`` may have queued the task.
+
+    Its error is marked as a unit of work's is, and so is the deadline of
+    the work: a request is not told to retry. A ``COMMIT`` the database
+    refused, and a failure before it, are not in doubt.
+    """
+    monkeypatch.setattr(AsyncTransaction, "__aexit__", never_answers)
+    bound = deadlines.timeout(0.1, until_commit=True)
+    with pytest.raises(TimeoutError) as cut:
+        async with bound:
+            await enqueue(low, label="queued")
+    assert bound.deadline is not None
+    assert (failed_in_doubt(cut.value), bound.deadline.in_doubt) == (True, True)
+
+    monkeypatch.setattr(AsyncTransaction, "__aexit__", refused)
+    with pytest.raises(DBAPIError) as refusal:
+        await enqueue(low, label="refused")
+    assert failed_in_doubt(refusal.value) is False
+
+    monkeypatch.setattr(AsyncTransaction, "__aexit__", TRANSACTION_EXIT)
+
+    async def fails(connection: object, database: str) -> None:
+        raise ConnectionError("before the commit")
+
+    on_stage_transaction(fails, domain="messaging")
+    with pytest.raises(ConnectionError) as before:
+        await enqueue(low, label="never")
+    assert failed_in_doubt(before.value) is False
+    assert await rows() == []
+
+
+@pytest.mark.usefixtures("tables")
 async def test_a_task_runs_under_a_deadline_of_its_timeout() -> None:
     """What a task waits on is bounded by the time it has left.
 
@@ -460,7 +640,7 @@ async def test_task_timeouts_must_stay_under_the_visibility_timeout() -> None:
             Worker()
         Worker(MessagingSettings(**{**FAST, "VISIBILITY_TIMEOUT": 1.5}))
     finally:
-        tasks._tasks.pop("tests.too_long")
+        tasks.unregister_task("tests.too_long")
 
 
 @pytest.mark.usefixtures("tables")
@@ -509,7 +689,7 @@ async def test_scheduled_runs_keep_their_priority() -> None:
     try:
         await Worker()._schedule_periodic()
     finally:
-        tasks._tasks.pop("tests.urgent_hourly")
+        tasks.unregister_task("tests.urgent_hourly")
 
     (row,) = [row for row in await rows() if row["target"] == "tests.urgent_hourly"]
     assert row["priority"] == 9
@@ -765,7 +945,7 @@ async def test_cron_runs_are_queued_ahead_once(monkeypatch: pytest.MonkeyPatch) 
         clock[0] = run_at
         await first._schedule_periodic()  # Due now: the next one is queued.
     finally:
-        tasks._tasks.pop("tests.cairo")
+        tasks.unregister_task("tests.cairo")
 
     assert [row["available_at"] for row in await rows()] == [
         run_at,
@@ -800,7 +980,7 @@ async def test_cron_runs_survive_a_failed_write_and_a_schedule_without_runs(
         monkeypatch.setattr(Cron, "next_after", lambda self, instant: None)
         await Worker()._schedule_periodic()
     finally:
-        tasks._tasks.pop("tests.five")
+        tasks.unregister_task("tests.five")
     assert len(await rows()) == 1
 
 

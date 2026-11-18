@@ -39,16 +39,16 @@ project's own tests of its controls:
 | --- | --- |
 | PCI DSS v4.0's passwords, second factors, step-up, and transactions authorized for one amount and payee | `AUTH` in `config/settings/base.py`; the `mfa`, `stepup`, and `sca` routers in `config/urls.py` |
 | The audit trail, sealed by the worker, anchored on the ledger where deployed, append-only in PostgreSQL after every `migrate`, kept a year at least (PCI DSS v4.0 10.5.1) | `domainkit.contrib.audit`, whose triggers `migrate` makes; `AUDIT` in `production.py`, with `MIN_RETENTION` of 365 days, which the PCI preset holds too |
-| Evidence on immudb | `domainkit.contrib.evidence`; `LEDGERS` and `EVIDENCE` in `production.py` |
+| Evidence on immudb | `domainkit.contrib.evidence`; `LEDGERS` and `EVIDENCE` in `production.py`; each transfer's facts recorded once it commits (`defer_evidence` in `domains/payments/application/services.py`) |
 | Idempotency keys, required where money moves | `IdempotencyMiddleware`, last in `MIDDLEWARE`; the transfer route refuses a request without one (`400 idempotency_key_required`) |
 | Messaging: the outbox, its inbox, ordering keys, and the worker that runs approved commands | `domainkit.contrib.messaging` |
 | Encrypted fields under AWS KMS or Vault; the development key only in development and tests | `KEYS` in `base.py` (`local`) and `production.py` (`KEYS_PROVIDER`: `aws-kms` or `vault`) |
-| Double-entry books, postings, captures, and reversals over a threshold approved by two clerks; a currency the thresholds do not name always needs approval | `domainkit.contrib.accounting`; `APPROVALS.ENTRY_THRESHOLDS`. The sample transfer posts nothing to them: book a project's movements there in its own use case |
+| Double-entry books, postings, captures, and reversals over a threshold approved by two clerks; a currency the thresholds do not name always needs approval | `domainkit.contrib.accounting`; `APPROVALS.ENTRY_THRESHOLDS`. The sample transfer is posted to them as a balanced entry, once, by a durable handler (`domains/payments/application/handlers.py`) |
 | Maker-checker, with a step-up to approve | `domainkit.contrib.approvals`; `APPROVALS.APPROVE_RULE = "config.rules.RECENT_PROOF"` (`StepUp(max_age=timedelta(minutes=5))`) |
 | Limits per customer, per transaction and per day, in each currency transfers are made in (USD and EUR); a movement in a currency no limit names is refused | `domainkit.contrib.limits`; `LIMITS.DEFAULTS`; `CURRENCIES` in `domains/payments/domain/model.py` |
 | Export and erasure, which destroys a person's keys, held while they have an account with money on it, and keeping the books and the evidence of who approved what, pseudonymised | `domainkit.contrib.privacy`; `on_retain_subject` |
 | Deny by default | every route names its rule; `check` lists any that does not, and staging and production refuse to start |
-| A sample transfer through the customer's controls | `domains/payments`: a card registered after a step-up, its number sealed with a blind index; a transfer in `Money`, in USD or EUR only, confirmed by the maker for its amount and card, sent with an `Idempotency-Key`, counted against the maker's limit in its own transaction, and over 1,000.00 submitted for another person's approval (`202`); with its tests in `tests/`. It books nothing in the double-entry books and records no evidence: the books and evidence are installed for the project's own use cases |
+| A sample transfer through the customer's controls | `domains/payments`: a card registered after a step-up, its number sealed with a blind index; a transfer in `Money`, in USD or EUR only, confirmed by the maker for its amount and card, sent with an `Idempotency-Key`, counted against the maker's limit in its own transaction, and over 1,000.00 submitted for another person's approval (`202`); refused if the books would hold its entry for their own approvals (`422 transfer_too_large`); once it commits, booked as a balanced entry in the double-entry books, and its facts recorded as evidence on the ledger; with its tests in `tests/` |
 
 The production settings read their secrets from the environment. The
 docstring of `config/settings/production.py` lists each one:
@@ -96,7 +96,7 @@ row below is an item that is answered, with its id from the audit:
 | FIN-01 | Money: an exact amount and its currency | [money.md](money.md) | `domainkit.money.Money`; a field hinted `Money` | `domainkit_tests/test_money.py::test_amounts_hold_exactly_their_currencys_places`, `domainkit_tests/test_money_db.py::test_money_round_trips_exactly` |
 | FIN-02 | Named rounding | [money.md](money.md) | `Rounding`, `multiply(..., rounding=...)` | `domainkit_tests/test_money.py::test_multiply_is_exact_or_rounds_as_named` |
 | FIN-03 | Allocation that loses no cent | [money.md](money.md) | `amount.allocate(ratios)` | `domainkit_tests/test_money.py::test_allocation_never_loses_or_creates_a_minor_unit` |
-| FIN-07 | Double-entry books, append-only, corrected by reversal; no account overdrawn unless opened so; what each entry moved in the audit trail | [contrib/accounting.md](contrib/accounting.md) | `post_entry`, `reverse_entry`; `ACCOUNTING.REQUIRE_PROTECTION`; `may_go_negative` | `domainkit_tests/test_accounting.py::test_concurrent_transfers_keep_every_entry_balanced_and_lose_no_update`, `domainkit_tests/test_accounting_ledger.py::test_entries_are_append_only_on_postgresql`, `domainkit_tests/test_accounting_ledger.py::test_a_reversal_undoes_an_entry_once`, `domainkit_tests/test_accounting_models.py::test_an_account_may_not_go_negative_by_default`, `domainkit_tests/test_accounting_models.py::test_an_entry_balances_per_currency` |
+| FIN-07 | Double-entry books, append-only, corrected by reversal; no account overdrawn unless opened so; what each entry moved in the audit trail | [contrib/accounting.md](contrib/accounting.md) | `post_entry`, `reverse_entry`; `ACCOUNTING.REQUIRE_PROTECTION`; `may_go_negative` | `domainkit_tests/test_accounting.py::test_concurrent_transfers_keep_every_entry_balanced_and_lose_no_update`, `domainkit_tests/test_accounting_ledger.py::test_entries_are_append_only_on_postgresql`, `domainkit_tests/test_accounting_ledger.py::test_a_reversal_undoes_an_entry_once`, `domainkit_tests/test_accounting_models.py::test_an_account_may_not_go_negative_by_default`, `domainkit_tests/test_accounting_models.py::test_an_entry_balances_per_currency`, `src/domainkit/management/templates/profiles/fintech/tests/payments/test_transfers.py-tpl::test_a_transfer_is_booked_and_its_evidence_recorded`, `src/domainkit/management/templates/profiles/fintech/tests/payments/test_transfers.py-tpl::test_a_transfer_the_books_would_hold_is_refused_at_once`, `src/domainkit/management/templates/profiles/fintech/tests/payments/test_transfers.py-tpl::test_a_transfer_approved_after_the_thresholds_fell_moves_nothing` |
 | FIN-08 | Holds and available balances | [contrib/accounting.md](contrib/accounting.md) | `place_hold`, `capture_hold` | `domainkit_tests/test_accounting_ledger.py::test_a_capture_posts_its_entry_and_releases_the_rest` |
 | FIN-10 | Periods, closed in date order and for good; trial balance, general ledger | [contrib/accounting.md](contrib/accounting.md#periods) | `manage.py accounting trialbalance`, `ledger` | `domainkit_tests/test_accounting_ledger.py::test_no_entry_is_dated_in_a_closed_period`, `domainkit_tests/test_accounting_ledger.py::test_periods_close_in_date_order`, `domainkit_tests/test_audit15_fin_87_closed_period_changed.py::test_a_period_opened_before_a_closed_one_leaves_it_as_reported`, `domainkit_tests/test_audit15_fin_87_closed_period_changed.py::test_an_entry_outside_every_period_leaves_a_closed_one_as_reported`, `domainkit_tests/test_accounting_reports.py::test_the_general_ledger_is_the_same_bytes_every_time` |
 | FIN-11 | Reconciliation against statements | [contrib/accounting.md](contrib/accounting.md) | `manage.py accounting import`, `reconcile`; `ACCOUNTING.MATCHING_RULES` | `domainkit_tests/test_accounting_reconciliation.py::test_reconciliation_matches_and_records_breaks` |
@@ -136,10 +136,22 @@ row below is an item that is answered, with its id from the audit:
   a year, the PCI DSS floor; raise `AUDIT.MIN_RETENTION` to the
   regulator's period
   ([threat-model.md](threat-model.md#what-a-project-must-do-itself)).
-- Booking its own movements in the double-entry books, and recording
-  their evidence: the sample transfer does neither. A use case that
-  posts its entry under its own guard passes the ledger's thresholds
-  when its policy asks at least `ENTRY_APPROVALS` approvals.
+- Its own chart of accounts and its periods. The sample books each
+  transfer from an account of what customers owe to one of what the bank
+  owes card networks, one of each per currency, opened on first use. It
+  opens the month's period when none covers the date (`open_month` in
+  `domains/payments/application/handlers.py`): delete that once the
+  bank's finance team opens periods itself, as it closes them.
+- Its thresholds with its limits. A posting over
+  `APPROVALS.ENTRY_THRESHOLDS` needs `ENTRY_APPROVALS` approvals of its
+  own, which the transfer's policy does not ask, so its entry would be
+  refused once the money had left. The sample refuses such a transfer
+  before anything moves (`422 transfer_too_large`), and checks again as
+  an approved one runs, so thresholds lowered meanwhile fail the request
+  and move nothing: raise the thresholds with the limits
+  (`LIMITS.DEFAULTS`, `limits set`). A use case that posts its entry
+  under its own guard passes the ledger's thresholds when its policy asks
+  at least `ENTRY_APPROVALS` approvals.
 - Who may run `manage.py` commands where deployed. An operator names
   themselves, and nothing verifies the name. domainkit records what they
   do (their consoles as they open, each downgrade before it runs), not

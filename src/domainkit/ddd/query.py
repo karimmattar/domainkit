@@ -1200,7 +1200,30 @@ def following(
 
     ``ordering`` is total (see ``total_ordering``), and ``position`` has a
     value for each of its fields. Missing values sort last, as ``order``
-    sorts them.
+    sorts them: after the present ones ascending, before them descending.
+    The parts of ``following_parts``, joined.
+
+    Raises:
+        InvalidQuery: The position does not fit the ordering.
+    """
+    return Or.of(*following_parts(model, ordering, position))
+
+
+def following_parts(
+    model: type, ordering: Sequence[Ordering], position: Sequence[object]
+) -> tuple[Criteria, ...]:
+    """What sorts after ``position`` in ``ordering``, in parts that follow in turn.
+
+    The alternatives come after a bound on the first field that everything
+    after the position meets: ``>=`` the value ascending, ``<=`` descending
+    (``_from``), ``IS NULL`` past a missing value ascending. It selects
+    nothing more, but lets a database read an index from the position on,
+    not from its first row. One part, then. Two where no bound holds it
+    all: the first field may be missing, and the rest of the position's
+    group is followed by the whole other group (the missing values,
+    ascending, after a present one; the present ones, descending, after a
+    missing one). Each part has a bound of its own; a repository reads
+    them one after the other, while its page is not full.
 
     Raises:
         InvalidQuery: The position does not fit the ordering.
@@ -1223,7 +1246,39 @@ def following(
         same.append(name.isnull() if value is None else name == value)
     if not alternatives:
         raise InvalidQuery("Nothing sorts after a position whose values are missing.")
-    return Or.of(*alternatives)
+    if len(ordering) == 1:  # The id alone: its one alternative is a range already.
+        return (Or.of(*alternatives),)
+    first, value = ordering[0], position[0]
+    name = F(first.field)
+    if value is None and not first.descending:  # The missing values come last.
+        return (_under(name.isnull(), Or.of(*alternatives)),)
+    if value is None:  # The rest of the missing values, then the present ones.
+        rest = Or.of(*alternatives[1:])  # The first is the first field's.
+        return (_under(name.isnull(), rest), name.isnull(value=False))
+    bound = _from(name, value, first.descending)
+    if first.descending or not fields[first.field].nullable:
+        return (And.of(bound, Or.of(*alternatives)),)
+    # Ascending past a present value of a field that may be missing: the rest
+    # of the present values, then every missing one.
+    after = _past(name, value, False)
+    return (And.of(bound, Or.of(after, *alternatives[1:])), name.isnull())
+
+
+def _under(bound: Criteria, rest: Criteria) -> Criteria:
+    """``rest`` within ``bound``, which a lone alternative already starts with."""
+    if isinstance(rest, And) and rest.parts[0] == bound:
+        return rest
+    return And.of(bound, rest)
+
+
+def _from(name: F, value: object, descending: bool) -> Criteria:
+    """``value`` and the present values past it: ``>=``, or ``<=`` if ``descending``.
+
+    On a money field, of its currency: amounts sort within their currency.
+    """
+    if isinstance(value, Money):
+        name, value = F(f"{name.name}.currency"), value.currency
+    return name <= value if descending else name >= value
 
 
 def _beyond(

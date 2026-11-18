@@ -31,7 +31,7 @@ from domainkit.contrib.auth.admin import staff
 from domainkit.db import connections
 from domainkit.ddd import NotFound
 from domainkit.http import error_responses
-from domainkit.http.guard import MAX_URL_LENGTH
+from domainkit.outbound.guard import MAX_URL_LENGTH
 
 from .delivery import replay, webhooks_alias
 from .guard import checked_url
@@ -218,7 +218,11 @@ def checked_host(url: str) -> str:
     return parsed.raw_host.decode("ascii")
 
 
-@router.get("/subscriptions", responses=_errors(*COMMON, 422))
+@router.get(
+    "/subscriptions",
+    name="webhooks_list_subscriptions",
+    responses=_errors(*COMMON, 422),
+)
 async def list_subscriptions(
     actor: Annotated[AnyUser, _staff("view")],
     limit: PageSize = 50,
@@ -231,7 +235,10 @@ async def list_subscriptions(
 
 
 @router.post(
-    "/subscriptions", status_code=status.HTTP_201_CREATED, responses=_errors(*CHANGE)
+    "/subscriptions",
+    name="webhooks_create_subscription",
+    status_code=status.HTTP_201_CREATED,
+    responses=_errors(*CHANGE),
 )
 async def create_subscription(
     body: SubscriptionIn,
@@ -257,7 +264,11 @@ async def create_subscription(
     )
 
 
-@router.get("/subscriptions/{subscription_id}", responses=_errors(*ONE))
+@router.get(
+    "/subscriptions/{subscription_id}",
+    name="webhooks_read_subscription",
+    responses=_errors(*ONE),
+)
 async def read_subscription(
     subscription_id: UUID, actor: Annotated[AnyUser, _staff("view")]
 ) -> SubscriptionOut:
@@ -266,7 +277,11 @@ async def read_subscription(
         return SubscriptionOut.of(await _subscription(uow, subscription_id))
 
 
-@router.patch("/subscriptions/{subscription_id}", responses=_errors(*CHANGE))
+@router.patch(
+    "/subscriptions/{subscription_id}",
+    name="webhooks_update_subscription",
+    responses=_errors(*CHANGE),
+)
 async def update_subscription(
     subscription_id: UUID,
     body: SubscriptionPatch,
@@ -291,7 +306,9 @@ async def update_subscription(
 
 
 @router.post(
-    "/subscriptions/{subscription_id}/rotate-secret", responses=_errors(*CHANGE)
+    "/subscriptions/{subscription_id}/rotate-secret",
+    name="webhooks_rotate_secret",
+    responses=_errors(*CHANGE),
 )
 async def rotate_secret(
     subscription_id: UUID,
@@ -319,6 +336,7 @@ async def rotate_secret(
 
 @router.delete(
     "/subscriptions/{subscription_id}",
+    name="webhooks_delete_subscription",
     status_code=status.HTTP_204_NO_CONTENT,
     responses=_errors(*ONE),
 )
@@ -333,7 +351,11 @@ async def delete_subscription(
         await uow.commit()
 
 
-@router.get("/subscriptions/{subscription_id}/deliveries", responses=_errors(*ONE, 422))
+@router.get(
+    "/subscriptions/{subscription_id}/deliveries",
+    name="webhooks_list_deliveries",
+    responses=_errors(*ONE, 422),
+)
 async def list_deliveries(
     subscription_id: UUID,
     actor: Annotated[AnyUser, _staff("view")],
@@ -361,7 +383,9 @@ async def list_deliveries(
     return [DeliveryOut.of(row) for row in rows]
 
 
-@router.get("/deliveries/{delivery_id}", responses=_errors(*ONE))
+@router.get(
+    "/deliveries/{delivery_id}", name="webhooks_read_delivery", responses=_errors(*ONE)
+)
 async def read_delivery(
     delivery_id: UUID, actor: Annotated[AnyUser, _staff("view")]
 ) -> DeliveryDetailOut:
@@ -399,6 +423,7 @@ async def read_delivery(
 
 @router.post(
     "/deliveries/{delivery_id}/replay",
+    name="webhooks_replay_delivery",
     status_code=status.HTTP_202_ACCEPTED,
     responses=_errors(*ONE),
 )

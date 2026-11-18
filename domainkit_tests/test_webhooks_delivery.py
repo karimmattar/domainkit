@@ -12,9 +12,10 @@ from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import insert, select, update
 
-from domainkit import clock, lifecycle, setup
+from domainkit import clock, setup
 from domainkit.apps import registry
 from domainkit.conf import UNSET, override_settings
 from domainkit.context import RequestContext, bind_request
@@ -23,12 +24,14 @@ from domainkit.contrib.messaging import worker as worker_module
 from domainkit.contrib.messaging.retry import Backoff
 from domainkit.contrib.messaging.tables import DONE, messages
 from domainkit.contrib.messaging.testing import drain
+from domainkit.contrib.webhooks import client as client_module
 from domainkit.contrib.webhooks import delivery as delivery_module
 from domainkit.contrib.webhooks import expose, queue_deliveries, verify
 from domainkit.contrib.webhooks.delivery import KEY_LOST
 from domainkit.contrib.webhooks.models import Subscription, SubscriptionId, secret_box
 from domainkit.contrib.webhooks.tables import (
     CANCELLED,
+    ERASED,
     FAILED,
     PENDING,
     SUCCEEDED,
@@ -40,8 +43,7 @@ from domainkit.contrib.webhooks.uow import WebhooksUnitOfWork
 from domainkit.db import connections
 from domainkit.ddd import DomainEvent
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.http import guard
-from domainkit.lifecycle import Phase
+from domainkit.outbound import guard
 from domainkit.reporting import flush_reports
 from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork, NoteWritten, notes
 from domainkit_tests.test_messaging import FAST, reported
@@ -258,7 +260,7 @@ async def test_refused_targets_fail_at_once(
 ) -> None:
     """A URL that resolves to a refused address is never retried."""
     resolver = FakeResolver({"rebind.example": ["169.254.169.254"]})
-    monkeypatch.setattr("domainkit.contrib.webhooks.guard.lookup", resolver)
+    monkeypatch.setattr("domainkit.outbound.guard.lookup", resolver)
     await subscribe("http://rebind.example/hook", "note.written")
     await write_note()
 
@@ -371,18 +373,39 @@ async def test_finished_deliveries_can_be_replayed(hooks: Receiver) -> None:
 
 
 async def test_deliveries_that_are_not_pending_are_left_alone(
-    hooks: Receiver,
+    hooks: Receiver, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A duplicate run of a finished delivery, or of a missing one, does nothing."""
+    """A duplicate run of a finished delivery, or of a missing one, does nothing.
+
+    It says so: a dead task retried with ``messages retry`` sends nothing.
+    """
     await subscribe(hooks.url(), "note.written")
     await write_note()
     await drain(delayed=True)
     (row,) = await rows(deliveries)
+    missing = uuid.uuid4()
+    await queue_deliveries("note.written", {}, key="k", occurred_at=clock.now())
+    (erased,) = [each.id for each in await rows(deliveries) if each.id != row.id]
+    async with connections.engine().begin() as connection:
+        await connection.execute(
+            update(deliveries).where(deliveries.c.id == erased).values(body=ERASED)
+        )
 
-    await delivery_module.deliver(row.id)
-    await delivery_module.deliver(uuid.uuid4())
+    with caplog.at_level(logging.INFO, "domainkit.contrib.webhooks.delivery"):
+        await delivery_module.deliver(row.id)
+        await delivery_module.deliver(missing)
+        await delivery_module.deliver(erased)
 
     assert len(hooks.requests) == 1
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "domainkit.contrib.webhooks.delivery"
+    ] == [
+        f"Webhook delivery {each} is not pending ({state}): nothing sent; "
+        "webhooks replay sends a finished one again"
+        for each, state in ((row.id, SUCCEEDED), (missing, "gone"), (erased, "erased"))
+    ]
 
 
 async def test_a_failed_attempt_with_attempts_left_stays_pending(
@@ -403,6 +426,194 @@ async def test_a_failed_attempt_with_attempts_left_stays_pending(
     (pending,) = await rows(deliveries)
     assert (pending.status, pending.attempts, pending.finished_at) == (PENDING, 1, None)
     assert pending.last_attempt_at is not None
+
+
+async def test_a_last_attempt_that_raises_marks_its_delivery_failed(
+    hooks: Receiver, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Not left pending for good: listed as failed, and replayed (A28-REL-05).
+
+    The receiver took the last attempt, then the database went away as the
+    outcome was written. Unsure, the delivery is failed: a replay sends it
+    again, under the same ``webhook-id``.
+    """
+    await subscribe(hooks.url(), "note.written")
+    hooks.answers.extend([(500, b"", {})] * 2 + [(200, b"", {})])
+    record = delivery_module._record
+    calls: list[int] = []
+
+    async def lost_at_the_last(*args: Any, **options: Any) -> int:  # noqa: ANN401
+        calls.append(1)
+        if len(calls) == 3:
+            raise ConnectionError("the database went away")
+        return await record(*args, **options)
+
+    monkeypatch.setattr(delivery_module, "_record", lost_at_the_last)
+    await write_note()
+    await drain(delayed=True)
+
+    (row,) = await rows(deliveries)
+    assert (row.status, row.last_error) == (FAILED, delivery_module.ABANDONED)
+    assert row.finished_at is not None
+    task_rows = [r for r in await rows(messages) if r.kind == "task"]
+    assert [r.status for r in task_rows] == ["dead"]
+    assert await delivery_module.failed_deliveries(10) == [row.id]
+    monkeypatch.setattr(delivery_module, "_record", record)
+    assert await delivery_module.replay([row.id]) == [row.id]
+    await drain(delayed=True)
+    (replayed,) = await rows(deliveries)
+    assert replayed.status == SUCCEEDED
+    assert len({request.headers["webhook-id"] for request in hooks.requests}) == 1
+
+
+async def test_a_delivery_left_unmarked_says_so_and_raises_what_its_attempt_did(
+    hooks: Receiver,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """With the database still away, the hourly check is left to mark it."""
+    await subscribe(hooks.url(), "note.written")
+    await queue_deliveries("note.written", {}, key="k", occurred_at=datetime.now(UTC))
+    (row,) = await rows(deliveries)
+
+    async def away(*args: Any, **options: Any) -> None:  # noqa: ANN401
+        raise ConnectionError("the database went away")
+
+    monkeypatch.setattr(delivery_module, "_record", away)
+    monkeypatch.setattr(delivery_module, "_finish", away)
+
+    with pytest.raises(ConnectionError):
+        await delivery_module.deliver(row.id)  # Outside a worker: the last.
+
+    (pending,) = await rows(deliveries)
+    assert pending.status == PENDING
+    assert (
+        f"Could not mark webhook delivery {row.id} failed after its last attempt "
+        "raised; the hourly check for abandoned deliveries will"
+    ) in caplog.messages
+
+
+async def test_an_hourly_task_fails_deliveries_whose_task_ended(
+    hooks: Receiver, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A task that died, was cancelled, or was dropped leaves its delivery failed.
+
+    Its worker was killed during the last attempt: the next claim
+    dead-letters the task (``AttemptsExhausted``) and never runs it.
+    Deliveries whose task still waits, and finished ones, are left alone,
+    whatever other tasks wait, one that names no delivery among them.
+    """
+    from domainkit.contrib.messaging import registry as tasks
+
+    await subscribe(hooks.url(), "*")
+    for key in ("killed", "cancelled", "dropped", "waiting", "done"):
+        await queue_deliveries("x", {"key": key}, key=key, occurred_at=clock.now())
+    by_key = {
+        json.loads(row.body)["data"]["key"]: row.id for row in await rows(deliveries)
+    }
+    task_of = {row.payload["delivery_id"]: row.id for row in await rows(messages)}
+    killed, cancelled, dropped, waiting, done = (
+        task_of[str(by_key[key])]
+        for key in ("killed", "cancelled", "dropped", "waiting", "done")
+    )
+    async with connections.engine().begin() as connection:
+        await connection.execute(  # Its last attempt claimed, then the kill.
+            update(messages)
+            .where(messages.c.id == killed)
+            .values(attempts=messages.c.max_attempts)
+        )
+        await connection.execute(
+            update(messages)
+            .where(messages.c.id == cancelled)
+            .values(status="cancelled")
+        )
+        await connection.execute(sa_delete(messages).where(messages.c.id == dropped))
+        await connection.execute(
+            update(messages).where(messages.c.id == done).values(status=DONE)
+        )
+        await connection.execute(
+            update(deliveries)
+            .where(deliveries.c.id == by_key["done"])
+            .values(status=SUCCEEDED, finished_at=clock.now())
+        )
+        await connection.execute(  # Not due: it waits.
+            update(messages)
+            .where(messages.c.id == waiting)
+            .values(available_at=clock.now() + timedelta(hours=1))
+        )
+        (waits,) = (
+            await connection.execute(select(messages).where(messages.c.id == waiting))
+        ).all()
+        await connection.execute(  # NOT IN finds nothing if a NULL is listed.
+            insert(messages).values(
+                {
+                    **waits._mapping,
+                    "id": uuid.uuid4(),
+                    "payload": {},
+                    "dedupe_key": None,
+                }
+            )
+        )
+    await drain()
+    assert {row.id: row.status for row in await rows(messages)}[killed] == "dead"
+    assert len(hooks.requests) == 0
+    abandoned_ids = {by_key[key] for key in ("killed", "cancelled", "dropped")}
+    async with connections.engine().connect() as connection:
+        for dialect in ("postgresql", "sqlite"):  # Each form, on either database.
+            chosen = select(deliveries.c.id).where(
+                deliveries.c.status == PENDING,
+                delivery_module._without_task(dialect),
+            )
+            assert set((await connection.execute(chosen)).scalars()) == abandoned_ids
+    spec = tasks.get_task(delivery_module.FAIL_ABANDONED)
+    assert spec is not None
+    assert spec.every == timedelta(hours=1)
+
+    with caplog.at_level(logging.WARNING, "domainkit.contrib.webhooks.delivery"):
+        await spec.function()
+
+    found = {row.id: (row.status, row.last_error) for row in await rows(deliveries)}
+    abandoned = (FAILED, delivery_module.ABANDONED)
+    assert found == {
+        by_key["killed"]: abandoned,
+        by_key["cancelled"]: abandoned,
+        by_key["dropped"]: abandoned,
+        by_key["waiting"]: (PENDING, None),
+        by_key["done"]: (SUCCEEDED, None),
+    }
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "domainkit.contrib.webhooks.delivery"
+    ] == [
+        (
+            "Marked 3 webhook delivery(ies) failed: their task ended without an "
+            "outcome. Replay them with webhooks replay --failed"
+        )
+    ]
+    assert await delivery_module.fail_abandoned() == 0
+    assert await delivery_module.replay([by_key["killed"]]) == [by_key["killed"]]
+    assert await delivery_module.fail_abandoned() == 0  # Its new task waits.
+
+
+async def test_a_duplicate_run_leaves_a_finished_delivery_as_it_was(
+    hooks: Receiver,
+) -> None:
+    """A late run's attempt is counted and logged; the outcome stays."""
+    await subscribe(hooks.url(), "note.written")
+    await write_note()
+    await drain(delayed=True)
+    (row,) = await rows(deliveries)
+    assert (row.status, row.attempts) == (SUCCEEDED, 1)
+
+    failed = client_module.Outcome(500, 0.01, "HTTP 500.")
+    engine = connections.engine()
+    number = await delivery_module._record(engine, row.id, clock.now(), failed, FAILED)
+
+    (late,) = await rows(deliveries)
+    assert (late.status, late.attempts, late.last_error) == (SUCCEEDED, 2, None)
+    assert number == 2
+    assert sorted(attempt.number for attempt in await rows(attempts)) == [1, 2]
 
 
 async def test_a_fan_out_that_runs_twice_queues_once(hooks: Receiver) -> None:
@@ -474,7 +685,6 @@ async def test_one_subscribers_hung_hosts_leave_lookups_for_the_others(
     dns = HungDns(hung=4)
     monkeypatch.setattr(socket, "getaddrinfo", dns)
     monkeypatch.setattr(guard, "resolver", guard.GuardResolver())
-    saved = dict(lifecycle._registered[Phase.RESOURCES])
     hung = [
         (await subscribe(f"http://s{i}.hang.test:{hooks.port}/hook", "note.written"))[0]
         for i in range(4)
@@ -497,8 +707,6 @@ async def test_one_subscribers_hung_hosts_leave_lookups_for_the_others(
     finally:
         dns.release.set()
         await guard.resolver.close()
-        lifecycle._registered[Phase.RESOURCES].clear()
-        lifecycle._registered[Phase.RESOURCES].update(saved)
 
     statuses = {row.subscription_id: row.status for row in await rows(deliveries)}
     assert statuses[victim.id] == SUCCEEDED
@@ -555,7 +763,6 @@ async def test_hosts_one_owner_slows_down_hold_the_lookups_one_round_only(
     dns = SlowDns(16, succeed=succeed)
     monkeypatch.setattr(socket, "getaddrinfo", dns)
     monkeypatch.setattr(guard, "resolver", guard.GuardResolver())
-    saved = dict(lifecycle._registered[Phase.RESOURCES])
     slow = {
         (await subscribe(f"http://s{i}.slow.test:{hooks.port}/hook", "note.written"))[
             0
@@ -605,8 +812,6 @@ async def test_hosts_one_owner_slows_down_hold_the_lookups_one_round_only(
         dns.release.set()
         dns.all_waiting.set()
         await guard.resolver.close()
-        lifecycle._registered[Phase.RESOURCES].clear()
-        lifecycle._registered[Phase.RESOURCES].update(saved)
 
     assert outcomes == [(FAILED, 16), (SUCCEEDED, 0)]
 
@@ -895,9 +1100,20 @@ async def test_old_finished_deliveries_are_purged(
     assert await delivery_module.purge(timedelta(days=30)) == 0
 
 
-async def test_the_purge_runs_hourly(hooks: Receiver) -> None:
-    """The periodic task deletes what is older than RETENTION_SECONDS (30 days)."""
+async def test_the_purge_runs_hourly(
+    hooks: Receiver, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The periodic task deletes what is older than RETENTION_SECONDS (30 days).
+
+    It runs apart from the failing of abandoned deliveries: that one failing
+    holds up no deletion.
+    """
     from domainkit.contrib.messaging import registry as tasks
+
+    async def broken() -> int:
+        raise RuntimeError("the sweep failed")
+
+    monkeypatch.setattr(delivery_module, "fail_abandoned", broken)
 
     await subscribe(hooks.url(), "*")
     for key in ("old", "recent"):

@@ -197,7 +197,7 @@ def task(
 ) -> Callable[[Task], Task]: ...
 
 
-def task(
+def task(  # noqa: PLR0913
     function: Task | None = None,
     /,
     *,
@@ -251,7 +251,7 @@ def task(
     return register(function) if function is not None else register
 
 
-def periodic(
+def periodic(  # noqa: PLR0913
     every: timedelta | None = None,
     *,
     cron: str | None = None,
@@ -318,6 +318,16 @@ def tasks_kept() -> Iterator[None]:
     finally:
         _tasks.clear()
         _tasks.update(kept)
+
+
+def unregister_task(key: str) -> None:
+    """Forget the task registered as ``key``; an unknown key is ignored (*new in 2.9*).
+
+    For tests: one that plays a worker which does not know a task, as an
+    old release's would not, registers it, queues it, and forgets it.
+    ``tasks_kept`` puts back every task a block registered.
+    """
+    _tasks.pop(key, None)
 
 
 def queues() -> frozenset[str]:

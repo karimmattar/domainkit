@@ -48,7 +48,7 @@ async def test_a_cancelled_error_from_the_handler_spends_attempts() -> None:
         async with asyncio.timeout(20):
             await Worker().run_once()
     finally:
-        tasks._tasks.pop("tests.audit15.cancels_itself")
+        tasks.unregister_task("tests.audit15.cancels_itself")
 
     (row,) = await outbox()
     # Safe behaviour: three counted attempts, then dead. On d126394 it ran

@@ -21,7 +21,8 @@ import domainkit_tests.sample_routes  # noqa: F401
 from domainkit import testing as plugin
 from domainkit.conf import override_settings
 from domainkit.contrib.messaging import registry as task_registry
-from domainkit.contrib.messaging import task, tasks_kept
+from domainkit.contrib.messaging import task, tasks_kept, unregister_task
+from domainkit.contrib.notifications import push
 from domainkit.ddd import DomainEvent, EventBus
 from domainkit.http import metrics
 from domainkit.http.metrics import refreshers_kept
@@ -197,6 +198,49 @@ def test_the_principal_cache_starts_empty_in_every_test(
     run_plugin(pytester).assert_outcomes(passed=2)
 
 
+def test_dynamic_settings_and_admin_reports_end_with_their_test(
+    prefix: str, pytester: pytest.Pytester
+) -> None:
+    """A setting one test declares is gone in the next; reports start afresh.
+
+    New in 2.9: ``declared_kept()`` and ``reset_reports()``, public, as
+    ADR 0113 asks of module state a test can leave behind.
+    """
+    pytester.makepyfile(
+        test_reset="""
+        from domainkit import setup
+        from domainkit.contrib.flags import declared_settings, dynamic_setting
+        from domainkit.contrib.mail import admins
+
+        resets = []
+        reset_reports = admins.reset_reports
+
+        def counted():
+            resets.append(1)
+            reset_reports()
+
+        admins.reset_reports = counted
+
+        def keys():
+            return [each.key for each in declared_settings()]
+
+        def test_loads_the_domains():
+            setup()
+            assert resets == [1]
+
+        def test_declares():
+            dynamic_setting("shop.limit", int, default=1)
+            assert "shop.limit" in keys()
+
+        def test_sees_none():
+            assert "shop.limit" not in keys()
+            assert resets == [1, 1, 1]
+        """
+    )
+
+    run_plugin(pytester).assert_outcomes(passed=3)
+
+
 def test_modules_never_imported_are_passed_over(
     prefix: str, pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -273,6 +317,31 @@ def test_each_reset_puts_back_what_the_block_changed(
     reset_throttled()
     throttled.flush()
     assert caplog.messages == []
+
+
+def test_a_task_and_the_push_tokens_are_forgotten_on_demand() -> None:
+    """``unregister_task`` and ``push.reset_tokens``, public since 2.9.
+
+    A test plays a worker that does not know a task without the registry's
+    private table; the plugin forgets the push services' tokens before each
+    test (audit A28-ARCH-14).
+    """
+
+    @task(name="tests.isolation.once")
+    async def once() -> None:
+        pass  # pragma: no cover - never called.
+
+    assert task_registry.get_task("tests.isolation.once") is not None
+    unregister_task("tests.isolation.once")
+    unregister_task("tests.isolation.once")  # Gone already: nothing to do.
+    assert task_registry.get_task("tests.isolation.once") is None
+
+    push._apns_tokens[("team", "key")] = ("token", 0.0)
+    push._google_accounts[None] = object()
+    push._huawei_apps["1234"] = cast("push.HuaweiApp", object())
+    push.reset_tokens()
+    assert (push._apns_tokens, push._google_accounts, push._huawei_apps) == ({}, {}, {})
+    assert ("domainkit.contrib.notifications.push", "reset_tokens") in plugin.RESETS
 
 
 def test_a_ledger_reset_forgets_memory_ledgers_only() -> None:

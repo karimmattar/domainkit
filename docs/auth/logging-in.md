@@ -119,7 +119,8 @@ address: a second one gets `409 email_taken`. An address that two users
 already shared before (rows written before 1.8) logs in neither of them,
 until you change one. Wrong passwords count against one account however
 its number or address is written. Startup refuses a field the user model
-does not have (`auth.E011`).
+does not have, or one its table keeps no column for, such as `groups`
+(`auth.E011`).
 
 Without `AUTH.IDENTIFIERS`, only the `USERNAME_FIELD` logs in, as in
 1.7. [Users](users.md) shows the `mobile_number` field and the optional
@@ -1053,7 +1054,10 @@ reCAPTCHA, or hCaptcha), and sends the token it gives in the
 - a missing or refused token is `400 captcha_failed`;
 - a provider that cannot be reached refuses the request with
   `503 captcha_unavailable` (`CaptchaUnavailable`), so bots never pass
-  while it is down;
+  while it is down. Every check shares one client: after
+  `HTTP_CLIENT.BREAKER_FAILURES` failures in a row, the requests are
+  refused at once, without waiting on the provider, for
+  `BREAKER_COOLDOWN` seconds;
 - reCAPTCHA v3 scores each token: below `MIN_SCORE` (0.5) it is refused;
 - with `HOSTNAMES`, a token solved on another site's page that shows your
   site key is refused, and with `CHECK_ACTION`, one solved for another

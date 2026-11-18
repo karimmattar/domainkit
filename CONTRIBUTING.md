@@ -23,9 +23,9 @@ Each `make` command runs what CI runs, the same way:
 | Command | What it runs | CI job |
 | --- | --- | --- |
 | `make lint` | `poetry check --lock`, `ruff check`, `ruff format --check`, `mypy` (strict), `deptry` | `lint` |
-| `make test` | the suite on SQLite and in-memory fakes, in random order, with coverage | `test (3.13)`, `test (3.14)` |
-| `make integration` | the suite against PostgreSQL, PostGIS, immudb, Redis, Valkey, and RabbitMQ from `compose.yaml`, with `redis-server`, `nats-server`, and SoftHSM installed (the broker and key tests start their own); a skipped test fails | `integration` |
-| `make cov` | both runs combined, which must cover 98% | `coverage` |
+| `make test` | the suite on SQLite and in-memory fakes, in random order, with coverage | `test (3.13)`, `test (3.14)`, `test (3.15)` |
+| `make integration` | the suite against PostgreSQL, PostGIS, immudb, Redis, Valkey, RabbitMQ, Kafka, and ElasticMQ (SQS) from `compose.yaml`, with `redis-server`, `nats-server`, and SoftHSM installed (the broker and key tests start their own); a skipped test fails | `integration` |
+| `make cov` | both runs combined, which must cover 98%, and every line the change adds since `origin/stg` (`BASE=`) | `coverage` |
 | `make bench` | Python calls and round trips per request against `benchmarks/budgets.toml`; then the rungs under load against `benchmarks/load.toml` | `bench` |
 | `make docs` | the documentation site, with every link and public name checked | `docs-site` |
 | `make audit` | pip-audit of the lock, and gitleaks over the history | `audit` |
@@ -45,18 +45,36 @@ to `.ci/`. `make services-down` stops them and drops their data.
   error, in random order. Async tests use `@pytest.mark.anyio`. Never wait
   on the wall clock: use `domainkit.clock.freeze_time`, events, or fakes
   that block until released. New code is covered 100%, branches included,
-  by the runs with and without servers together. A helper
+  by the runs with and without servers together: on a pull request to
+  `stg`, CI's `coverage` job fails on a line it adds or changes under
+  `src/` that no job ran, or that left a branch untaken
+  ([ADR 0191](docs/adr/0191-gate-the-lines-a-change-adds.md)); the
+  release's pull request to `main` is not held to it (`make cov
+  BASE=origin/main` checks a release by hand). An old line partly covered
+  that you edit counts as added; a branch only a timing reaches, or a line
+  only `test (3.14t)`, `newest` or `oldest` runs (they gather no
+  coverage), takes a test or `# pragma: no cover` with its reason. A helper
   more than one test file needs goes in `domainkit_tests/support/`, by
   area, not in the test file that used it first (`test_support.py`
-  checks the ones that are there).
-- **Mutation testing.** For the functions you changed:
+  checks the ones that are there); so does a fixture two files need.
+- **Test files.** A test goes in the file of the module it tests,
+  `domainkit_tests/test_<module>.py`, or `test_<module>_<topic>.py` once
+  that file is long. A regression test names the finding or the report it
+  answers in its docstring (`(A28-TEST-02)`), not in the file's name: the
+  files named after findings (`test_sec16b_8_*`, `test_audit15_*`) are
+  folded into their module's file when that file is next changed.
+- **Mutation testing.** Run it yourself for the functions you changed:
   `make mutants MUTANTS="domainkit.http.middleware*"`. Kill the survivors
-  that point at a missing test, and say why each one left stays. A new
-  module goes in one of the weekly shards in `.github/workflows/ci.yml`
-  (`test_ci.py` checks it). A pull request's `mutation (changed)` check
-  runs the mutants of the functions it changed and lists those that lived
-  ([ADR 0106](docs/adr/0106-mutate-what-a-pull-request-changes.md)); for
-  a release-size change, it hands what it did not reach to the shards
+  that point at a missing test, and say in the pull request why each one
+  left stays. CI runs mutation testing only on request: the jobs below run
+  while the repository variable `MUTATION` is `on`, which it has not been
+  since 1.5.0, and the weekly shards can be started by hand
+  ([ADR 0106](docs/adr/0106-mutate-what-a-pull-request-changes.md)'s
+  amendment of 2026-11-18). A new module goes in one of the weekly shards in
+  `.github/workflows/ci.yml` (`test_ci.py` checks it). When it is on, a
+  pull request's `mutation (changed)` check runs the mutants of the
+  functions it changed and lists those that lived; for a release-size
+  change, it hands what it did not reach to the shards
   `mutation (changed, N)`, and `mutation (changed, summary)` lists them. A
   test that reads domainkit's source text, or the frames of its calls,
   carries `@pytest.mark.reads_own_source`: mutmut rewrites both, and
@@ -85,7 +103,7 @@ to `.ci/`. `make services-down` stops them and drops their data.
   or setting is named on its page of `docs/reference/` (`docs/reference.md`
   lists them). The pages describe the release they ship with, as of its
   tag: what a 1.x minor adds says *New in 1.x* where it is described, and a
-  fix to the pages of a released version goes to `main` and its next patch
+  fix to the pages of a released version goes to `stg` and its next patch
   release. Pages link to each other by relative paths; the README links to
   the files of `main` by absolute URLs, which CI's `build` points at the
   release's tag before it builds, so the PyPI page opens that release's
@@ -97,6 +115,16 @@ to `.ci/`. `make services-down` stops them and drops their data.
 - **Layers.** `domainkit.architecture` keeps each layer to its own imports,
   and the core never imports `domainkit.contrib`
   ([ADR 0080](docs/adr/0080-access-rules-are-core-auth-is-one-provider.md)).
+  The core's own packages sit in five layers, and import their own and
+  those below: foundations, settings and the model, adapters, serving,
+  and tools (`domainkit_tests/test_core_layers.py`,
+  [ADR 0188](docs/adr/0188-write-down-the-cores-layering-and-hold-the-boundaries-it-draws.md)).
+  A contrib app imports another app's public names, the core's public
+  names, and no ring of apps (`test_contrib_boundaries.py`). Module state
+  a test can leave behind comes with a public reset
+  (`test_module_state.py`, ADR 0113). A function
+  stays under ruff's complexity gates (`pyproject.toml`); the few that
+  were over them in 2.9 say so with a `# noqa` on their `def` line.
 
 ## Writing it up
 
@@ -111,5 +139,9 @@ to `.ci/`. `make services-down` stops them and drops their data.
   never rewritten: add a dated "Amendment" section and update its status.
 - **Commits.** Small and logical, each with a subject in the imperative
   ("Add ...", "Refuse ...") and a body that says why.
-- **Pull requests.** The template asks what changed, why, and how it was
-  tested. Every check must pass; `main` takes squash merges only.
+- **Pull requests.** Branch from `stg` and open the pull request against
+  `stg`: it gathers the changes of the next release. `main` holds what was
+  last released, and changes only by a pull request from `stg` when a
+  release is made ([Making a release](docs/versioning.md#making-a-release)).
+  The template asks what changed, why, and how it was tested. Every check
+  must pass; `stg` and `main` take squash merges only.

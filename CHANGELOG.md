@@ -5,9 +5,784 @@ All notable changes to domainkit. The format follows
 [Semantic Versioning](https://semver.org/); see `docs/versioning.md`.
 Entries end with the ids of the review findings they answer, such as
 `(FIN-77)`: [docs/audit/0.9.0.md](docs/audit/0.9.0.md) gives each a title
-and a status.
+and a status. Ids that start with `A28-` name the 2.8 audit's findings,
+listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 
 ## [Unreleased]
+
+## [2.9.0] - 2026-11-18
+
+2.9 follows up the audit of 2.8: with 2.8.1 and 2.8.2, it fixes 58 of
+the audit's 63 findings, and part of four of the other five
+([docs/audit/2.8.0.md](docs/audit/2.8.0.md)). A request that committed
+is answered as committed, a commit in doubt says so, and a database out
+of reach answers 503; the probes are named once, in `PROBE_PATHS`, a new
+setting (ADR 0186). The worker's heartbeat is its liveness and
+`--ready-file` its readiness, a webhook delivery whose task ended is
+marked failed, and providers share their clients and circuits (ADR
+0187). Keyset pages start at their position, the user lookups are
+indexed, and grants and exports read less (ADR 0185). The core's layers
+are written down and held, append-only tables are protected one way, and
+`check` warns of a web name a gateway imports, which 3.0 refuses (ADR
+0188); the outgoing client moves to `domainkit.outbound` (ADR 0195);
+rules asked outside a request get a call of their own, and backend
+settings load one way (ADR 0196). The documentation site is
+published (ADR 0189), three runnable examples are tested as their CI
+runs them (ADR 0190), the tutorial gains three parts, and the contrib
+routers that serve a project's records name their routes after their
+app (ADR 0192). With `domainkit.contrib.approvals`
+installed, one migration, an index; on PostgreSQL, `migrate` makes the
+user table's lookup indexes: read
+[upgrading.md](docs/upgrading.md#28-to-29) before you deploy.
+
+### Added
+
+- `--version` prints domainkit's version (`python manage.py --version`,
+  `domainkit --version`), and `help <command>` prints the command's
+  options, as `<command> --help` does
+  ([Running a command](docs/reference/commands.md#running-a-command),
+  [upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-12).
+
+- [Choosing a feature](docs/choosing.md): which tool a need takes where
+  two look alike (idempotency keys or the inbox, money limits or rate
+  limits, a step-up, an authorization, or approvals, a balance field or
+  the ledger, rows, databases, or schemas per tenant), and which to
+  leave alone. Sixteen feature pages open with "When to use it, and when
+  not to", and link the tool to use instead (audit A28-DX-05).
+
+- Runbook entries for a write that ran past its deadline, a retry that
+  finds the request ran (`409 idempotency_response_unavailable`), webhook
+  deliveries that fail, codes and mail that do not arrive, and requests
+  that fail during a rollout; the request flow, request deadlines, and
+  the rollout checklist say what a deadline answer tells about a commit,
+  and how a stopping process keeps serving
+  ([Runbook](docs/runbook.md#find-the-entry)) (audit A28-REL-06).
+
+- `examples/`: three runnable projects, each made by `domainkit init`,
+  with a walkthrough that opens with the problem it solves, and tests.
+  `payments-ledger` keeps wallets in double-entry books: payments under
+  an `Idempotency-Key`, holds captured or released, refunds as
+  reversals, and the trial balance. `maker-checker` holds large payouts
+  for approval, the maker and the approver each confirming the act.
+  `outbox-webhooks` sends transfers through a durable handler, with
+  retries and dead letters, and signed webhooks to a receiver that
+  verifies them. domainkit's tests play each one's CI workflow, on
+  SQLite and on PostgreSQL, so a change that breaks one fails CI; the
+  wheel and the sdist leave them out (ADR 0190). README.md and
+  `docs/learning.md` link them (audit A28-DX-06).
+
+- `Repository.count(criteria, at_most=n)`: a count that stops at `n`.
+  SQL counts a subquery with `LIMIT n`, so a database reads no further
+  matches; a repository of one's own counts all and stops
+  (`_count_at_most`), as does a subclass that overrides `_count`. An
+  export now counts at most `max_export + 1`: refusing one of 1,000,000
+  rows took 35 to 57 ms, and now 1 to 7 ms. A repository that overrides
+  `count` is asked as before, and counts every match (ADR 0185)
+  (audit A28-PERF-08).
+
+- `BaseBackend.object_grants_beyond(holder, permissions)`, and
+  `object_grants(holder, beyond=...)`: a holder's grants on objects, less
+  those of the permissions given. The default filters what
+  `object_grants` answers; `ObjectPermissionBackend` leaves them out in
+  its query. It is asked only of a class that defines both methods, or
+  neither, so a backend that overrides `object_grants` alone keeps every
+  grant it adds (ADR 0185) (audit A28-PERF-05).
+
+- `runworker --ready-file PATH`: the worker's readiness. Each round of
+  `--heartbeat-interval` rewrites the file while `/ready`'s checks and
+  the broker's hold, and removes it when one fails; it goes when the
+  worker stops. A fresh heartbeat without it is a degraded worker
+  ([The worker](docs/operations.md#the-worker), ADR 0187) (audit
+  A28-REL-02).
+
+- `domainkit.http.client.reset_circuits()` and `CircuitBreaker.reset()`:
+  close every client's circuits. The test plugin calls the first before
+  each test, so a client that backends share carries no open circuit
+  into the next test ([What each test starts from](docs/testing.md#what-each-test-starts-from))
+  (audit A28-ARCH-02).
+
+- `unfinished_arguments(target, argument)`
+  (`domainkit.contrib.messaging.admin`): a query of one argument of each
+  message of a task that has not finished (pending, running, or held),
+  for a statement on another table of the outbox's database to tell
+  whether a task still waits for one of its rows (audit A28-REL-05).
+
+- `PROBE_PATHS` (`/health`, `/ready`, `/metrics`) names the probes and the
+  metrics scrape once. The rate limit, the concurrency cap, the access
+  log's quiet paths, authentication, and `TenantMiddleware` each exempt
+  them, and their own lists add paths of the project's
+  ([HTTP settings](docs/reference/http.md#probe-paths), ADR 0186) (audit
+  A28-ARCH-01).
+
+- `domainkit.deadlines.after_commit()` runs what follows a commit free of
+  the deadlines, and `timeout(seconds, until_commit=True)` makes a
+  deadline that a commit lifts for good, with every block it bounds, from
+  whichever task commits, as `DeadlineMiddleware` does for each request
+  ([Keeping to the deadline](docs/runtime.md#keeping-to-the-deadline))
+  (audit A28-REL-01).
+
+- `HandlerCancelled`, reported for in-process handlers that a cancellation
+  of their work cut off, or kept from running (audit A28-REL-01).
+
+- `UnitOfWork.in_doubt` counts commits that failed without the database's
+  refusal, so they may have been applied: a lost connection, a timeout,
+  or a cut as it committed. SQLAlchemy's own errors that come before a
+  `COMMIT` is sent are refusals; its others, which a session's
+  `after_commit` listener can raise once the `COMMIT` landed, are in
+  doubt (audit A28-REL-04).
+
+- `domainkit.ddd.mark_in_doubt(exc)` and `failed_in_doubt(exc)`, and
+  `domainkit.db.refused_commit(exc)`, for a commit made outside a unit of
+  work, as `enqueue`'s is: `refused_commit` says whether the database
+  refused it; `mark_in_doubt` marks its error, and the work's deadlines,
+  when it may have been applied; `failed_in_doubt` says so of an error,
+  or of one raised from it (audit A28-REL-04).
+
+- `apps.E003`: `check` refuses an optional app's middleware in
+  `MIDDLEWARE` without the app in `INSTALLED_DOMAINS`, and names the app;
+  staging and production refuse to start with it (audit A28-DX-04).
+
+- `migrations.W001`: outside staging and production, `check` warns of each
+  database that lacks revisions of its target, or whose revisions cannot
+  be read, and `runserver` says so before it serves. Each database gets 2
+  seconds at most to answer
+  ([Deployment checks](docs/reference/checks.md#warnings)) (audit
+  A28-DX-08).
+
+- `probes.W001`: `check` warns of a list of exempt paths that names some of
+  `PROBE_PATHS`, not all: the probes it leaves out are exempt from it
+  since 2.9. The auth app warns so of `AUTH.AUTHENTICATION_EXEMPT_PATHS`,
+  and an app of a list of its own with
+  `domainkit.checks.probes_left_out(name, listed, probes)` (audit
+  A28-ARCH-01).
+
+- Three parts continue the tutorial's bank, each walked by
+  `domainkit_tests/test_walkthroughs.py`: money that moves (a transfer
+  under an `Idempotency-Key`, a locked row, a daily limit, and entries in
+  double-entry books), four eyes (large transfers held for another
+  clerk's approval, confirmed as one act with a code, and the audit
+  trail), and telling others (each transfer sent as a signed webhook
+  through the outbox, and a receiver that verifies it)
+  ([the tutorial](docs/tutorial.md)) (audit A28-DX-07).
+
+- Two recipes, walked by `domainkit_tests/test_recipes.py`:
+  organizations in the path (`PathTenant`, `TenantOwned` rows, and
+  members' permissions), and an upload with checks (a checked PDF or a
+  picture, typed by its content, of 2 MB at most)
+  ([recipes](docs/recipes.md)) (audit A28-DX-07).
+
+- `.github/workflows/docs.yml` publishes the documentation site to GitHub
+  Pages when a release tag is pushed: whatever tag starts it, the site
+  of the newest final release, once `release.yml`'s tag checks pass that
+  release with every tag of a newer version left out, pushed before the
+  release or after (`release_check.py --as-pushed`): a tag that the other
+  checks refuse publishes nothing. The workflow's one job that writes may
+  write to Pages alone, and it reads no secret. The repository's owner
+  turns Pages on once
+  ([One-time setup](docs/versioning.md#one-time-setup), ADR 0189)
+  (audit A28-DX-02).
+
+- On PostgreSQL, `migrate` makes indexes on the user table, a project's
+  own too, in its schema where it names one, where missing: `lower()` of
+  the address and of the username, where each is text, and the field the
+  admin API lists users by, then the id. It reads the table's indexes
+  first and makes only those missing, so with none to make it takes no
+  lock. Logins by address, signups, the checks for a taken address or
+  username, and the admin API's list of users each read the whole table
+  before (30 to 60 ms at 300,000 users, 0.01 ms now). Revisions leave
+  them alone, by name; SQLite gets none (ADR 0185) (audit A28-PERF-02).
+
+- [Webhook deliveries fail](docs/runbook.md#webhook-deliveries-fail)
+  says to `ANALYZE` the deliveries and the outbox tables on PostgreSQL
+  after `migrate` made them, a restore, or a bulk load: until autovacuum
+  analyses them, the hourly check for abandoned deliveries may be
+  planned as a nested loop, 15.7 s over 6,000 deliveries (found in
+  review).
+
+- `domainkit.db.protection`: one way to keep a table append-only on
+  PostgreSQL, which the audit trail and the ledger's entries now share.
+  `append_only_statements` writes the triggers of 2.8, the same function
+  names and bodies, so triggers made then still count;
+  `protect_append_only` makes them afresh after `migrate`;
+  `missing_append_only` and `unprotected` check them, in a database's own
+  schema and in each tenant's (`TENANCY.SCHEMA_DATABASES`). A table's
+  name must be lowercase letters, digits, and underscores, of at most 42
+  characters, with no schema of its own, or each refuses it with
+  `ValueError`; `contrib.audit`'s `protect` and `unprotect`, which
+  revisions call, take any table as in 2.8. A name that PostgreSQL 16
+  reserves is quoted: SQLAlchemy's list, and `collation`, `concurrently`,
+  `lateral`, `system_user`, and `tablesample`, which it lacks
+  ([Append-only tables](docs/databases.md#append-only-tables), ADR 0188)
+  (audit A28-ARCH-07).
+
+- `domainkit.db.affected_rows(result)`: the rows an `UPDATE` or `DELETE`
+  changed, without reading `rowcount` under `# type: ignore`; a
+  `TypeError` for a result that counts none
+  ([Units of work](docs/databases.md#units-of-work-and-their-repositories))
+  (audit A28-ARCH-E4).
+
+- `domainkit.utils.canonical.canonical_json(value)`: RFC 8785's canonical
+  JSON, in UTF-8, for new digests and signatures. It refuses NaN, the
+  infinities, integers past 2**53 - 1, lone surrogates, and keys that are
+  not strings. The digests the framework already stores keep their own
+  encoders ([Digests](docs/databases.md#digests), ADR 0188) (audit
+  A28-ARCH-E7).
+
+- Public names the contrib apps used before they were published:
+  `domainkit.context` (`current_request`, `bind_request`,
+  `RequestContext`, `SYSTEM_ACTOR`), `domainkit.utils.module_loading`
+  (`import_string`, `lazy_names`), `domainkit.utils.rates` (`parse_rate`,
+  `PERIODS`), `domainkit.utils.decimals.jsonable`,
+  `domainkit.db.routing.DatabaseRouter`, and
+  `domainkit.log.SECURITY_LOGGER`. `domainkit.http.errors` lists its
+  public names in `__all__`: `APIError`, `FieldError`, `ErrorResponse`,
+  `error_response`, `error_responses` (ADR 0188) (audit A28-ARCH-06,
+  A28-ARCH-E10).
+
+- `domainkit.contrib.mail.admins.reset_reports()` and
+  `domainkit.contrib.flags.declared_kept()`: public resets of the admins'
+  error reports and the declared dynamic settings, which the pytest
+  plugin calls around each test, so neither reaches the next test
+  ([What each test starts from](docs/testing.md#what-each-test-starts-from),
+  ADR 0113) (audit A28-ARCH-14).
+
+- `domainkit.outbound`: the outgoing HTTP client
+  (`domainkit.outbound.client`) and its guard (`domainkit.outbound.guard`),
+  in a package of their own below the adapters that call through them.
+  The guard's checks are public, for an app that takes URLs from its
+  users: `checked_url`, `checked_host`, `checked_address`, `lookups_for`,
+  `tls_context`, `UnsafeURL`, `MAX_URL_LENGTH`, and the `Address`,
+  `Network`, and `Resolver` types ([Outgoing calls](docs/api/outbound.md),
+  ADR 0195) (audit A28-ARCH-04, A28-ARCH-06).
+
+- Public names the contrib apps used before they were published:
+  `domainkit.conf.DEPLOYED_ENVIRONMENTS`, `domainkit.http.CURSOR_PATTERN`,
+  and `domainkit.context.client_group`, the address a caller is counted
+  by (an IPv6 network for an IPv6 address), which rate limits, auth's
+  throttles, and the guard's lookups share. It is the rate limit's, moved:
+  `domainkit.http.ratelimit.client_group` is the same function (ADR 0195)
+  (audit A28-ARCH-06).
+
+- `domainkit.contrib.messaging.unregister_task(key)`, which forgets one
+  task, as a test of a worker that does not know it needs, and
+  `domainkit.contrib.notifications.push.reset_tokens()`, which forgets the
+  push services' tokens and which the pytest plugin calls before each
+  test ([What each test starts from](docs/testing.md#what-each-test-starts-from),
+  ADR 0195) (audit A28-ARCH-14).
+
+- `domainkit.http.access.OfflineContext(user, method=..., path=...,
+  scopes=...)`: a call made outside any request, to ask access rules on,
+  each of its own: no client, headers, query, or credentials, the user in
+  its scope, and a `state` of its own. `RuleContext` is what a rule may
+  read of both kinds of call (`scope`, `user`, `state`): `HTTPConnection`
+  is one, and a rule that annotates its `request` with it answers offline
+  as on a route; `scopes_of` takes one.
+  `domainkit.http.errors.transient(exc)` says whether an error is one
+  worth trying again after, read on the error and on what it was raised
+  from: a connection that failed, a timeout, a host name that did not
+  resolve, `ServiceBusy`, a cache, ledger, or broker out of reach, a 5xx
+  answer, an `UpstreamError` that may succeed later (not one whose
+  `retryable` is False, as an answer too large to read, nor one from a
+  4xx answer but 408 and 429, or from a refusal), or a database busy or
+  out of reach, a driver's own error of one included. An exception group
+  is transient if an error it holds is; no error is read twice.
+  `UpstreamError.retryable` says whether trying again may help
+  ([Rules asked outside a request](docs/auth/routes.md#rules-asked-outside-a-request),
+  ADR 0196) (audit A28-ARCH-08).
+
+- `domainkit.conf.backends.BackendHandler`: the classes one setting
+  names, imported by dotted path or by the name an installed package
+  offers them by, checked to be of the setting's kind, and made once per
+  settings object, which `override_settings` replaces.
+  `domainkit.utils.module_loading.backend_class` is its import and check,
+  which `utils.delivery.load_backend` uses too, and
+  `domainkit.http.ratelimit.rate_limit_backend` is `RATE_LIMIT_BACKEND`'s.
+  `RATE_LIMIT_BACKEND` and `AUTH`'s `BACKENDS`, `PASSWORD_HASHERS`,
+  `AUTHENTICATION_CLASSES`, and `PASSWORD_VALIDATORS` take the names
+  packages offer
+  ([Backends from an installed package](docs/reference/extension-points.md#backends-from-an-installed-package),
+  ADR 0196) (audit A28-ARCH-09).
+
+### Changed
+
+- In development and tests, each problem the application finds at its
+  build or start (a route without an access rule, say) is logged as a
+  warning of its own, on one line; 2.8 logged them in one record, which
+  the log escaped onto one line with `\n` between them
+  ([upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-12).
+
+- `createsuperuser`'s note on a superuser that no code can reach says
+  "no verification code can be sent to the superuser ... until its email
+  address is verified" (audit A28-DX-12).
+
+- PyPI's "Documentation" link opens the first page, `docs/index.md`, not
+  `docs/reference.md` (audit A28-DX-02).
+
+- The site's navigation keeps the pages for those who make domainkit
+  (decisions, the style guide, the roadmap, the audits) under "Project",
+  apart from the reference; their addresses do not change. The feature
+  inventory says that it records the review of 1.5 (audit A28-DX-13).
+
+- What follows a keyset position starts with a bound on the first field
+  of the ordering (`>=` ascending, `<=` descending, a money field's
+  currency), so a database reads an index from the position instead of
+  from its first row. It selects the same rows. A middle page of 300,000
+  rows took 13 to 20 ms on PostgreSQL, and now 0.03 to 0.1 ms. On a field
+  that may be missing, a page whose position's group is followed by the
+  other group (past a value ascending, past a missing one descending)
+  reads the rest of its group, then the other one in a second statement
+  while the page is not full, each from its own start; `explain` shows
+  one plan per part. With an index in the ordering's directions, such a
+  page of 300,000 rows took 12 to 39 ms on PostgreSQL and 10 to 22 ms on
+  SQLite, and now 0.02 to 0.4 ms (ADR 0185) (audit A28-PERF-01).
+
+- The admin API's bound on grants on objects reads only the grants that
+  count: none for a superuser, and for staff none of a permission they
+  hold on the whole model; their own are read only when some remain.
+  `ObjectPermissionBackend` reads the grants' columns instead of loading
+  them. An admin change, or an impersonated request, for a user of
+  10,000 grants cost 117 to 138 ms of CPU, and now 0.5 to 17 ms; the
+  refusal and its count are as before (ADR 0185) (audit A28-PERF-05).
+
+- Flags' `GET /settings` reads every stored value in one statement, not
+  one per declared setting: 100 settings took 76 ms, now 9 ms
+  (audit A28-PERF-07).
+
+- An approver's list of approval requests reads through an index of the
+  tenant, the action, the policy, and the time submitted
+  (`ix_domainkit_approval_requests_scope`). An approver of a rare policy
+  read the whole table on every page: 29 ms a page at 300,000 requests on
+  PostgreSQL, 0.08 ms with the index. Run `makemigrations` and `migrate`
+  (audit A28-PERF-04).
+
+- An approval screen reads the names of the groups a change holds in one
+  statement, where it read one per group, up to 1,000 of them (audit
+  A28-PERF-07).
+
+- `runworker --heartbeat-file` is the worker's liveness: its event loop
+  rewrites the file every `--heartbeat-interval` seconds, on a schedule
+  no check holds up, whatever the checks find; a failing check, or one
+  that raises, is logged. Before, the file aged
+  while the broker, a database, or a cache was away, and the documented
+  health check restarted the relaying workers that run the outbox during
+  a broker outage (ADR 0142). To restart on a failing dependency, as
+  before, check `--ready-file` instead. `heartbeat.beat` touches its path
+  first and takes `ready`
+  ([upgrading.md](docs/upgrading.md#28-to-29), ADR 0187) (audit
+  A28-REL-02).
+
+- The worker's log lines about a failing message name its id, as
+  `messages list` shows it and `messages retry` takes it: a retry, a dead
+  letter, an outcome that could not be written, a lost lease, a message
+  that could not be given back, and one whose target no worker knows
+  (audit A28-REL-08).
+
+- Tests cover two refusals that none reached: an act's authorization
+  spent a second time in code off auth's database, refused and told to
+  the trail as `used`, and a relay's probe that finds the broker away,
+  which opens the breaker again before any row is leased (audit
+  A28-TEST-02).
+
+- The routes of the ledger, approvals, limits, the webhooks admin and
+  owner's API, the flags admin, the auth admin, and the audit trail's
+  history are renamed: each new name is the 2.8 name with its app's
+  prefix, `accounting_`, `approvals_`, `limits_`, `webhooks_`, `flags_`,
+  `auth_admin_`, or `audit_` (`list_accounts` is
+  `accounting_list_accounts`), and so is each operation id. Code that
+  calls `url_path_for` with a 2.8 name, and a client generated from the
+  OpenAPI document, use the new names. A project's resource named
+  `accounts` beside the ledger failed `check` (`openapi.E001`), and its
+  `Location` and links could name the ledger's routes; a resource named
+  as a contrib app's now clashes with none of them
+  ([upgrading.md](docs/upgrading.md#28-to-29), ADR 0192) (audit
+  A28-DX-06).
+
+- `RATE_LIMIT_EXEMPT_PATHS`, `CONCURRENCY_EXEMPT_PATHS`,
+  `ACCESS_LOG_QUIET_PATHS`, and `AUTH.AUTHENTICATION_EXEMPT_PATHS` default
+  to `()`, and add to `PROBE_PATHS`: they exempt what they did by default,
+  and the paths a project listed stay exempt. A list that left a probe out
+  no longer does: that probe is exempt from it too (a `/metrics` counted
+  by the rate limit, say). To keep it out, take it out of `PROBE_PATHS`,
+  and add it to each list that should still exempt it. Successful scrapes
+  of `/metrics` are logged at DEBUG, as the probes are (audit
+  A28-ARCH-01).
+
+- The domains' after-commit hooks (`on_committed`,
+  `on_transaction_committed`) run within `EVENT_HANDLER_TIMEOUT` each, now
+  that the request's deadline does not bound them: one still running then
+  is cut off, logged, and reported as `HandlerTimedOut` (audit
+  A28-REL-01).
+
+- `runserver` and `serve` run uvicorn with `lifespan="on"`: a lifespan
+  that raises stops the server, which exits 3, where uvicorn logged it at
+  INFO as unsupported and served every request a 500. Under Granian with
+  `SERVE["EXIT_ON_FAILED_START"]`, such a lifespan is a failed start
+  (audit A28-DX-04).
+
+- `domainkit init --profile fintech`: the sample transfer is booked in
+  the double-entry books once it commits, as a balanced entry posted by
+  a durable handler (`domains/payments/application/handlers.py`), which
+  opens the month's accounting period when none covers the date; and its
+  facts are recorded as evidence (`defer_evidence`). A transfer whose
+  entry the books would hold for their own approvals
+  (`APPROVALS.ENTRY_THRESHOLDS`) is refused before anything moves, `422
+  transfer_too_large`. Its tests prove each. `docs/learning.md` names the
+  profile as a complete example
+  ([fintech](docs/fintech.md)) (audit A28-DX-06).
+
+- `diffsettings` shows each installed domain's settings (`AUTH`,
+  `APPROVALS`, `LIMITS`, ...) as its schema validated them, defaults
+  filled in, and marks those left at their defaults under `--all`; 2.8
+  hid a domain's settings whole. It fails closed: values typed as
+  secrets, names that suggest one (`sid`, `pin`, and `pwd` now among
+  them), URL passwords and `password=` pairs, and all text in a mapping,
+  a value typed `Any` (a provider's options), or a value that is not a
+  model (a dataclass) stay hidden. A set's items print sorted, the same
+  in every process
+  ([diffsettings](docs/reference/commands.md#diffsettings-show-the-settings),
+  [upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-10).
+
+- `auth.E011` refuses an `AUTH.IDENTIFIERS` field that the user table has
+  no column for, `groups` or `user_permissions`, which link tables keep.
+  2.8 started with one, and failed later, at a login, a search, or a list
+  of users that read it ([upgrading.md](docs/upgrading.md#28-to-29))
+  (found in review).
+
+- CI's `coverage` job fails a pull request to `stg` with a line it adds or
+  changes under `src/` that ran in no job, or left a branch untaken
+  (`.github/scripts/changed_coverage.py`); `make cov` checks the same
+  against `origin/stg`. The package stays at 98%, as README.md and the
+  Makefile now say, and Python processes the tests start are measured too
+  (`patch = ["subprocess"]`); ADR 0191 records the gates (audit
+  A28-TEST-05).
+
+- ADR 0106, CONTRIBUTING.md, README.md and `docs/versioning.md` say that
+  mutation testing runs on request: `mutation (changed)` and the weekly
+  shards run while the repository variable `MUTATION` is `on`, which it
+  has not been since 1.5.0. `unmutated-functions.txt`, a CI output
+  committed by mistake, is removed, and git ignores what the mutation
+  jobs write (audit A28-TEST-04).
+
+- CI's integration job runs Kafka 4.4 and ElasticMQ 1.7, an SQS server,
+  and the Kafka and SQS brokers' contract and redelivery run against them
+  (`DOMAINKIT_TEST_KAFKA_URL`, `DOMAINKIT_TEST_SQS_URL`); `compose.yaml`
+  and `make integration` start and name them too. The fakes stay for the
+  failures (audit A28-TEST-03).
+
+- CI's test and integration runs list their 30 slowest tests
+  (`--durations=30`) (audit A28-TEST-07).
+
+- The `postgresql (16)` job runs on Python 3.15, while `integration` runs
+  on 3.13: each end of the Python range meets PostgreSQL (audit
+  A28-TEST-11).
+
+- CONTRIBUTING.md says where a new test goes: in its module's file, or
+  `test_<module>_<topic>.py`, naming the finding it answers in its
+  docstring rather than in the file's name. The key ring's and the
+  storages' fixtures, copied between test files, live once in
+  `domainkit_tests/support/` (audit A28-TEST-12).
+
+- AWS's Signature Version 4 and credential chain live in
+  `domainkit.cloud.aws`, which S3, SQS, SNS, SES, and KMS share, and are
+  public there: `sign`, `signing_key`, `ALGORITHM`, `AwsCredentials`,
+  `CredentialSource`, and the credential sources (`default_credentials`,
+  `environment_credentials`, `web_identity_credentials`,
+  `container_credentials`). `domainkit.keys.aws` still imports every
+  name it held, the same objects, and the chain raises the same errors
+  ([upgrading.md](docs/upgrading.md#28-to-29), ADR 0188) (audit
+  A28-ARCH-11).
+
+- `domainkit.contrib.objectpermissions` requires `domainkit.contrib.auth`:
+  without it, `setup()` refuses to start (`apps.E001`) rather than the
+  first grant failing ([What each app needs](docs/contrib.md#what-each-app-needs))
+  (audit A28-ARCH-10).
+
+- The ledger's startup check of its append-only triggers is the audit
+  trail's: a trigger given arguments counts as changed
+  (`accounting.E001`), and `migrate` makes it again (ADR 0188) (audit
+  A28-ARCH-07).
+
+- The framework's own guards: the core's packages import their own layer
+  and those below, by five layers ADR 0188 writes down; contrib apps
+  import no ring of apps of any length, and only the core names an
+  `__all__` publishes, each from a list of what 2.8 had that may only
+  shrink. CI's lint gates a function's complexity (ruff C901, over 15),
+  arguments (PLR0913, over 10), and statements (PLR0915, over 50) (audit
+  A28-ARCH-04, A28-ARCH-05, A28-ARCH-06, A28-ARCH-E1, A28-ARCH-E3).
+
+- `domainkit.http.client` and `domainkit.http.guard` are views of
+  `domainkit.outbound.client` and `domainkit.outbound.guard`: every name
+  reads from the new module, the same object, with one set of clients,
+  circuits, metrics, and lookup threads, and a name a test sets on an old
+  path (`monkeypatch.setattr`, `mock.patch`) is set where the code reads
+  it, and put back as the patch ends. The framework imports the new paths;
+  the calls still log as `domainkit.http.client`. Shutdown closes the
+  guard's lookup threads as one of the framework's kinds, `guard
+  lookups`. The layer rules keep `domainkit.outbound` out of the
+  application layer, let the infrastructure layer import it with no
+  exception, and read a project's rule that names `domainkit.http`,
+  `domainkit.http.client`, or `domainkit.http.guard` as naming the new
+  path too ([upgrading.md](docs/upgrading.md#28-to-29), ADR 0195) (audit
+  A28-ARCH-04).
+
+- Loading the settings no longer imports the layer checker,
+  `domainkit.architecture`: the four built-in layer names are the
+  settings' own (`domainkit.conf.global_settings.LAYERS`), which
+  `domainkit.architecture.LAYERS` imports, the same object (ADR 0195)
+  (audit A28-ARCH-04).
+
+- The framework's guards shrink: the core has 4 imports up its layers,
+  from 21, and the apps use 90 unpublished core names, from 101.
+  `domainkit_tests/test_module_state.py` fails on module state a test can
+  leave behind that has no public reset, beside a list of 2.9's that may
+  only shrink, and on a new module-level function behind a cache, beside
+  another (ADR 0195) (audit A28-ARCH-04, A28-ARCH-06, A28-ARCH-14).
+
+- `RATE_LIMIT_BACKEND` is checked before it counts: a value that is
+  neither a dotted path nor a name is refused with the settings, and one
+  that does not import, or names a class without `hit`, is refused by
+  `check` and as the application starts where something counts with it
+  (`backends.E001`: `RATE_LIMIT`, a route's `Throttle`, or auth's attempt
+  throttles); 2.8 failed on the first request that counted. Where nothing
+  counts with it, `check` warns (`backends.W001`). Each counter still
+  makes its own backend: the global limit, an application's throttles,
+  auth's counts, and the worker's task rates. A `PASSWORD_VALIDATORS`
+  class, or the function that makes one, must give a rule with
+  `validate` and `help_text`, or startup refuses it. Auth's backends,
+  hashers, authentication classes, and validators are made once per
+  settings object, and a class of them that refuses to be made is an
+  `ImproperlyConfigured` naming its setting
+  ([upgrading.md](docs/upgrading.md#28-to-29), ADR 0196) (audit
+  A28-ARCH-09).
+
+### Deprecated
+
+- A name the infrastructure layer imports from `domainkit.http.client`
+  or `domainkit.http.uploads` that their `__all__` does not list, such
+  as Starlette's `UploadFile` or `StreamingResponse`, and
+  `domainkit.http.uploads.serve`, which answers a request: `check` warns
+  of each (`architecture.W001`, `domainkit.architecture.layer_warnings`),
+  so `check --deploy` fails until the import changes or the warning is
+  silenced. 3.0 refuses them ([Layer rules](docs/reference/settings.md#layer-rules),
+  ADR 0188) (audit A28-ARCH-03).
+
+### Fixed
+
+- The tutorial and the recipes name the file each block makes or
+  changes in the text above it, which GitHub shows; a block's title, the
+  only place that named it, is shown by the site alone. `test_docs.py`
+  fails on a titled block whose file the text does not name (audit
+  A28-DX-01).
+
+- The README's quick start makes the four-file domain that `startdomain`
+  makes by default, and that the tutorial starts from, and describes
+  `--layered` and `--minimal` as they are. It counts the tutorial's six
+  parts, and says when a route answers 401, 403, or 404. The recipes
+  that make a layered domain say why (audit A28-DX-03).
+
+- The first example of [Authenticating requests](docs/auth/authentication.md#a-first-example)
+  runs in a project made by `init`: it logs in by email address, and
+  sends a host the local settings accept. `test_walkthroughs.py` runs it
+  (audit A28-DX-09).
+
+- The tutorial says that its commands need a POSIX shell, and to use WSL
+  or Git Bash on Windows
+  ([Before you start](docs/tutorial.md#before-you-start)) (audit
+  A28-DX-11).
+
+- [Free-threaded Python](docs/runtime.md#free-threaded-python) names
+  the `documents` (`fill_docx`, `placeholders`) and `saml` extras, whose
+  lxml turns the GIL back on for the rest of the process, beside
+  `immudb` (audit A28-PERF-06).
+
+- [What a request costs](docs/performance.md#what-a-request-costs) shows
+  each rung's calls, round trips, and modules as `benchmarks/budgets.toml`
+  holds them, and `test_docs.py` fails when the two differ (audit
+  A28-PERF-09).
+
+- A webhook delivery whose last attempt ends without an outcome is
+  marked failed, where it stayed `pending` for good: listed by
+  `webhooks deliveries --status failed`, replayed by `webhooks replay`,
+  and purged. Its last attempt marks it, if the database lets it, and an
+  hourly task of its own (`domainkit.contrib.webhooks.fail_abandoned`)
+  marks each pending delivery whose task died, was cancelled, or was
+  dropped (its worker killed, its time limit passed, or its outcome not
+  written), those of earlier releases included. A task that finds its
+  delivery no longer pending, such as a dead task retried with `messages
+  retry`, logs that it sent nothing. A late duplicate run no longer
+  overwrites a finished delivery's outcome
+  ([How a delivery runs](docs/contrib/webhooks.md#how-a-delivery-runs),
+  ADR 0187) (audit A28-REL-05).
+
+- Text message providers, the search engines, identity providers, and
+  captcha checks share one HTTP client each, as mail and push did, where
+  each backend made per call had its own. A provider that is down opens
+  its circuit after `HTTP_CLIENT.BREAKER_FAILURES` failures and is called
+  no more until `BREAKER_COOLDOWN` has passed, connections are reused,
+  and shutdown closes them. Their calls and circuits are counted as
+  `notifications` (text messages and push), `identity`, and `captcha`,
+  and mail's as `mail`, where they were `other` (ADR 0187) (audit
+  A28-ARCH-02).
+
+- A stopping relay that is still publishing to a broker that answers is
+  cancelled after `HELPER_GRACE` (5 seconds), and its messages are given
+  back. Only a relay running the outbox, its breaker open, waits for what
+  is left of `DRAIN_TIMEOUT` first, even while it is still claiming;
+  every relay did, so shutdown took up to 25 seconds (audit A28-TEST-07).
+
+- A memory ledger (`memory://`) keeps what it holds when the ledgers
+  close. `outbox.run_queued()` in a sync test, a command, and an
+  application's shutdown close them, and the evidence a queued handler
+  had recorded was gone when the test read it. `ledgers.reset()`, which
+  the test plugin calls before each test, still empties them
+  ([Ledgers](docs/databases.md#ledgers-immudb)) (audit A28-DX-06).
+
+- What a person deciding an approval request is shown of an argument
+  that is `Money`, or of a list's item that is, is its amount and
+  currency, `1500.00 USD`, as `Money` writes itself; 2.8 showed its JSON,
+  `{"amount":"1500.00","currency":"USD"}`. It holds for the approver's,
+  the maker's, and the rejecting and cancelling screens of a guard
+  without `show`
+  ([Approving with an authorization](docs/contrib/approvals.md#approving-with-an-authorization))
+  (audit A28-DX-06).
+
+- A request that commits a unit of work is answered as committed: the
+  commit lifts its deadline, from whichever of the request's tasks
+  commits (`asyncio.gather`, a task group, a `BaseHTTPMiddleware`), and
+  its in-process handlers all run, each within its own timeout. The
+  deadline cut them off and answered `503 deadline_exceeded` with
+  `Retry-After: 1` for a change that was made, and skipped the handlers
+  after the slow one with nothing logged. A worker's task no longer
+  counts its handlers against its timeout, so slow handlers do not fail a
+  task that committed, and run it again; `TASK_TIMEOUT` then no longer
+  bounds a run's whole time ([The request flow](docs/request-flow.md#8-commit),
+  ADR 0186) (audit A28-REL-01).
+
+- A request whose commit is in doubt (the deadline passed, or the
+  connection was lost, as its `COMMIT` was sent) answers 503 without
+  `Retry-After`, with a detail that says the change may have been made.
+  A request cut off by its deadline while a task it started committed
+  (a task group's, the one a `BaseHTTPMiddleware` serves the route in)
+  answers so too (`Deadline.in_doubt`), and so does one whose `enqueue`
+  was cut off as it committed. Only that commit's error is in doubt, not
+  another equal to it ([The request flow](docs/request-flow.md#8-commit))
+  (audit A28-REL-01, A28-REL-03, A28-REL-04).
+
+- A database that cannot be reached, or cannot serve now (class `08`,
+  `57P01` to `57P03`, `53300`, or a connection refused as the pool opens
+  it), answers `503 database_unavailable` with `Retry-After: 5`, and is
+  logged once per reason every 10 seconds, not reported as a bug. It
+  answered `500 internal_error`, with a traceback and an error report per
+  request. It is told from asyncpg's errors and SQLAlchemy's: through
+  psycopg, a connection that cannot be opened may still answer 500
+  ([Runbook](docs/runbook.md#the-database-is-unavailable)) (audit
+  A28-REL-03).
+
+- `upload_route` keeps a file whose request failed as it committed, when
+  the commit may have been applied, and logs its name and storage. It
+  deleted it, though the committed row named it (audit A28-REL-04).
+
+- A stored upload that cannot be deleted is logged with its name and its
+  storage (audit A28-REL-07).
+
+- With `TENANCY` and `TenantMiddleware`, `/ready` and `/metrics` are
+  served without a tenant; they answered `400 tenant_not_named`, so no
+  replica became ready and the scrape went dark (audit A28-ARCH-01).
+
+- An optional app's settings asked for without the app say which package
+  to install: `No installed domain declares IdempotencySettings: install
+  'domainkit.contrib.idempotency' in INSTALLED_DOMAINS.` (audit
+  A28-DX-04).
+
+- The first examples of approvals, action authorizations, messaging,
+  keys, sign-in approvals, phones, and identity define the names they
+  use, or say where each comes from and link the tutorial part that
+  makes one (audit A28-DX-06).
+
+- `diffsettings` reads a long text in a time that grows with its length.
+  The pattern of `password=` pairs read each name again from every
+  position within it, and that of a URL's password read the rest of a
+  word again at each `://`: 10 KB of dotted names took over 100 s; 100 KB
+  of any text now takes milliseconds (audit A28-DX-10).
+
+- `SqsBroker.close()` closes its connections to SQS, which it left open
+  (audit A28-TEST-03).
+
+- The test plugin numbers a module-scoped or session-scoped fixture's
+  factory objects from 0, whichever test runs first: it resets every
+  factory before a test's fixtures, as well as before the test's own.
+  `docs/testing.md`'s example of a module's rows passed or failed by the
+  order of the tests (audit A28-TEST-08).
+
+- The upload and PDF tests no longer time their checks with a stopwatch.
+  Each says which limit stopped a check: the clock or a signal, from the
+  log; the decoder's or the cross-reference reader's count; or a clock
+  that moves a fixed step each time it is read. A slow runner failed
+  them, and a limit firing in another's place passed them (audit
+  A28-TEST-01).
+
+- Refusals and destructive paths that no test ran have tests: an
+  impersonation ends when its staff member loses the staff flag, or its
+  user is gone; an approved command that names someone other than its
+  maker fails as it is run; an act asked under a JSON Web Token is bound
+  to that login; a malformed act subject is refused; a tenant's schema
+  is downgraded alone, and a tenant database out of reach is named; a
+  failed claim gives the messaging worker's slots back (audit
+  A28-TEST-02).
+
+- Tests that waited a fixed time, or raced a short timeout, wait for what
+  they test. The waits of a sign-in or an act on the phone are approved
+  once they wait, and only hearing of the approval ends them in time; the
+  worker's due task, a sub-second drain, and a connection that does not
+  settle are checked by what happened. Tests that wait for something
+  share one bound of 30 seconds (`domainkit_tests/support/waiting.py`)
+  (audit A28-TEST-06).
+
+- The Redis and NATS servers the broker tests start are each the test's
+  own: NATS picks its port and writes it to a file, and a Redis that fails
+  to start, or a port another Redis answers on, is tried again on another
+  port (audit A28-TEST-09).
+
+- A docs test wrote its probe page into the repository's `docs/`, which
+  other tests read at the same time; it writes it under a temporary
+  directory of its own (audit A28-TEST-10).
+
+- Approvals asks a guard's `maker_rule` and a policy's `approver_rule`
+  on an `OfflineContext` when an approved command runs and in
+  `approvers_of`: a complete request context, with an empty query, an
+  application, and the user asked about. A rule written for routes, which
+  reads the request's query, application, or user, answers there instead
+  of raising. A rule that raises an error of its own refuses: it is
+  logged by its class and its error's, and reported to the error
+  reporters. An approved command whose maker rule makes such a mistake
+  fails once (`maker_not_allowed`) instead of being run again until
+  dead-lettered, and `approvers_of` leaves that rule's users out instead
+  of raising for every caller. A transient error
+  (`domainkit.http.errors.transient`: a connection or a backend out of
+  reach, a timeout, an outgoing call that may succeed later, a database
+  busy) is still raised, so the run is tried again, and a maker rule's
+  `DomainError` still fails the request with its code
+  ([upgrading.md](docs/upgrading.md#28-to-29), ADR 0196) (audit
+  A28-ARCH-08).
+
+### Security
+
+- A failed approval request keeps the seal it had when that seal did not
+  hold: failing makes the seal again only if it held, as an erasure's
+  pseudonym does. The failed record of a request changed around the
+  application, failed by its run (`request_tampered`) or by `privacy
+  erase` (`maker_not_allowed`), still fails its seal
+  ([Approvals](docs/contrib/approvals.md),
+  [upgrading.md](docs/upgrading.md#28-to-29)) (found in review).
+
+- `diffsettings` hides the value after a name like a secret's and `=` or
+  `:`, spaced or not, the name quoted or not, in any text it prints:
+  `password = ...` in a libpq connection string, `"private_key": "..."`
+  in JSON, ODBC's `PWD=...`, and a header such as
+  `Authorization: Bearer ...`, its scheme with it. 2.8 hid `password=...`
+  alone, unquoted
+  ([diffsettings](docs/reference/commands.md#diffsettings-show-the-settings),
+  [upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-10).
 
 ## [2.8.2] - 2026-11-18
 
@@ -8941,7 +9716,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.8.2...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.9.0...HEAD
+[2.9.0]: https://github.com/karimmattar/domainkit/compare/v2.8.2...v2.9.0
 [2.8.2]: https://github.com/karimmattar/domainkit/compare/v2.8.1...v2.8.2
 [2.8.1]: https://github.com/karimmattar/domainkit/compare/v2.8.0...v2.8.1
 [2.8.0]: https://github.com/karimmattar/domainkit/compare/v2.7.0...v2.8.0

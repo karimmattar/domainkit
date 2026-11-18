@@ -18,7 +18,7 @@ from typing import Final
 
 import httpx2
 
-from domainkit.http.guard import tls_context
+from domainkit.outbound.guard import tls_context
 
 from .guard import UnsafeTarget, checked_address, checked_url
 from .settings import WebhooksSettings

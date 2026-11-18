@@ -256,6 +256,34 @@ def test_domain_settings_errors() -> None:
         domains.settings(AlphaSettings)
 
 
+def test_settings_of_an_app_not_installed_name_the_app() -> None:
+    """The error says what to install: the package that holds the settings' module.
+
+    A contrib app's middleware without the app asks for its settings on
+    its first call; the message names the app, not the class alone.
+    """
+    from domainkit.contrib.idempotency.settings import IdempotencySettings
+
+    with pytest.raises(ImproperlyConfigured) as caught:
+        DomainRegistry().settings(IdempotencySettings)
+    assert str(caught.value) == (
+        "No installed domain declares IdempotencySettings: install "
+        "'domainkit.contrib.idempotency' in INSTALLED_DOMAINS."
+    )
+
+    class InPackage(BaseModel):
+        """Settings declared in a package's own module."""
+
+    InPackage.__module__ = "domainkit_tests.sample_domains"
+    with pytest.raises(
+        ImproperlyConfigured, match=r"install 'domainkit_tests\.sample_domains' in"
+    ):
+        DomainRegistry().settings(InPackage)
+    InPackage.__module__ = "toplevel"
+    with pytest.raises(ImproperlyConfigured, match=r"install 'toplevel' in"):
+        DomainRegistry().settings(InPackage)
+
+
 def test_unknown_settings_are_rejected() -> None:
     """Names nothing declares fail at startup, with a suggestion when close."""
     with (
@@ -359,7 +387,7 @@ CONTRIB_APPS = {
     "domainkit.contrib.mail": ("domainkit.contrib.messaging",),
     "domainkit.contrib.messaging": (),
     "domainkit.contrib.notifications": ("domainkit.contrib.messaging",),
-    "domainkit.contrib.objectpermissions": (),
+    "domainkit.contrib.objectpermissions": ("domainkit.contrib.auth",),
     "domainkit.contrib.privacy": ("domainkit.contrib.audit",),
     "domainkit.contrib.webhooks": ("domainkit.contrib.messaging",),
 }

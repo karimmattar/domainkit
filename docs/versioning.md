@@ -261,8 +261,9 @@ lowers that range's top. Renovate widens a range when a new major
 appears, once CI passes with it.
 
 **PostgreSQL.** Each release supports PostgreSQL 16 to 18 (TEST-18). CI
-runs the suite against the newest (`integration`, on 18) and the oldest
-(`postgresql (16)`); both are required checks. Dropping a version is a
+runs the suite against the newest (`integration`, on 18, with Python 3.13)
+and the oldest (`postgresql (16)`, with Python 3.15), so each end of the
+Python range meets PostgreSQL; both are required checks. Dropping a version is a
 minor-release change, and appears in the changelog; a new major is added
 once both jobs pass with it. SQLite is for development and tests.
 
@@ -278,6 +279,17 @@ and `protobuf` in `immudb`). CI's lint job checks it with deptry
 
 This section is for maintainers.
 
+Changes gather on `stg`, where every pull request goes; `main` holds the
+last release. A release goes from `stg` to `main`:
+
+- Make the release commit (steps 1 and 2 below) on a branch from `stg`,
+  and merge it into `stg` once CI passes.
+- Open a pull request from `stg` to `main`, and squash-merge it once CI
+  passes: that commit on `main` is the release commit, and step 4 tags
+  it.
+- Merge `main` back into `stg`, so the next release starts from the
+  commit the tag is on.
+
 Before the release commit, refresh the data the package copies from
 others, in a pull request of its own: `python3 .github/scripts/screen_data.py`
 downloads IANA's list of top-level domains and Unicode's confusables, and
@@ -291,7 +303,7 @@ the changelog if it changes what is refused.
    date (`## [X.Y.Z] - YYYY-MM-DD`), and leave **Unreleased** empty.
 2. Update `version` in `pyproject.toml`. Steps 1 and 2 make the release
    commit; the tag goes on it, and on no other commit.
-3. Merge to `main` once CI passes. The push to `main` runs the whole CI
+3. Merge `stg` to `main` once CI passes. The push to `main` runs the whole CI
    workflow on the merged commit: lint, types, tests on every Python,
    integration against real servers, coverage, the benchmark ladder, the
    wheel's smoke test and bill of materials, Semgrep, pip-audit, and
@@ -335,6 +347,20 @@ the changelog if it changes what is refused.
    Before approving, the maintainer creates the GitHub Release for the
    tag by hand (Releases, Draft a new release), with the changelog's
    section for the version as its notes; the workflow makes none.
+
+   The same tag runs `.github/workflows/docs.yml`, which publishes the
+   documentation site to GitHub Pages
+   ([ADR 0189](adr/0189-publish-the-documentation-site-from-the-newest-releases-tag.md)).
+   Whatever tag starts it, it publishes the newest final release
+   (`.github/scripts/newest_release.py`), so a pre-release, or a patch
+   of an older line, leaves the site on that release. It first makes
+   release.yml's three tag checks on that release, with every tag of a
+   newer version left out (`release_check.py --as-pushed`), whether it
+   was pushed before the release or after: a newer tag, such as a later
+   line's pre-release, never refuses the release here, even one that
+   refused it in release.yml. A tag that the other checks refuse
+   publishes nothing. The site is built as CI's `docs-site` job builds
+   it.
 
    CI keeps a run's `dist` and `sbom` for 90 days. To release an older
    commit, run its CI run again first (`gh run rerun <id>`). Each tag
@@ -388,7 +414,8 @@ Before the first release:
       `test (3.14t)` leaves those tests out, and a release ignores
       `stress (3.14t)` (INFRA-14);
     - `mutation (changed)` (0.12), which runs the mutants of the
-      functions that a pull request changes, and fails when one lives. An
+      functions that a pull request changes, and fails when one lives,
+      while the repository variable `MUTATION` is `on` (off since 1.5.0). An
       equivalent mutant can live, which the author explains rather than
       kills ([ADR 0106](adr/0106-mutate-what-a-pull-request-changes.md));
       and the shards it hands a large change's mutants to,
@@ -413,6 +440,13 @@ Before the first release:
   bot proposes changes.
 - Turn on private vulnerability reporting, which `SECURITY.md` asks
   reporters to use.
+- Turn on GitHub Pages with GitHub Actions as its source (Settings,
+  Pages, Build and deployment, Source). Pages makes the `github-pages`
+  environment, which deploys from the default branch only: add a rule
+  for the tags `v*` to it (Settings, Environments, `github-pages`,
+  Deployment branches and tags). Until both are done, the deploy job of
+  `docs.yml` fails on each tag, and nothing else does. The site is then
+  at `https://karimmattar.github.io/domainkit/`.
 
 ## See also
 

@@ -26,6 +26,7 @@ from pydantic_core import PydanticSerializationError, to_jsonable_python
 
 __all__ = [
     "decimal_text",
+    "jsonable",
 ]
 
 MAX_FIXED_DIGITS: Final = 100

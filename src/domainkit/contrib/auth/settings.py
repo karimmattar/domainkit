@@ -113,7 +113,7 @@ class PasswordValidatorConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
     NAME: str
-    """Dotted path to the validator class."""
+    """The validator class: a dotted path, or a name an installed package offers."""
     OPTIONS: dict[str, Any] = Field(default_factory=dict)
     """Keyword arguments for the class, such as ``{"min_length": 12}``."""
 
@@ -583,8 +583,9 @@ class AuthSettings(BaseModel):
         default=(f"{AUTHENTICATION}.TokenAuthentication",), min_length=1
     )
     """How requests prove who sent them, tried in order; the first logs in."""
-    AUTHENTICATION_EXEMPT_PATHS: tuple[str, ...] = ("/health", "/ready", "/metrics")
-    """Paths served without looking at credentials (probes, ``METRICS_TOKEN``)."""
+    AUTHENTICATION_EXEMPT_PATHS: tuple[str, ...] = ()
+    """Paths served without looking at credentials, besides ``PROBE_PATHS``
+    (the probes, and the scrape that sends ``METRICS_TOKEN``)."""
     TOKEN_TTL: timedelta | None = Field(default=timedelta(days=14), gt=timedelta(0))
     """How long a token from logging in works (``TokenAuthentication``)."""
     TOKEN_PREFIX: str = Field(default="dkt_", pattern=r"^[A-Za-z][A-Za-z0-9]{1,15}_$")

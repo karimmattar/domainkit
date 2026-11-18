@@ -16,7 +16,7 @@ from decimal import Decimal
 from typing import Any, Final
 
 from sqlalchemy import Delete, Select, Update, delete, func, literal, select, update
-from sqlalchemy.engine import Row
+from sqlalchemy.engine import CursorResult, Result, Row
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.ext.compiler import compiles
@@ -125,6 +125,24 @@ def _computed(
         )
     column = column_of(mapper, value.field)
     return _OPERATORS[value.operator](column, operand)
+
+
+def affected_rows(result: Result[Any]) -> int:
+    """How many rows the ``UPDATE`` or ``DELETE`` that gave ``result`` changed.
+
+    ``AsyncSession.execute`` is typed to return any ``Result``; the result
+    of a change is a ``CursorResult``, whose ``rowcount`` counts them
+    (since 2.9).
+
+    Raises:
+        TypeError: ``result`` counts no rows: the ORM's objects, say.
+    """
+    if not isinstance(result, CursorResult):
+        raise TypeError(
+            f"A {type(result).__name__} counts no changed rows: pass the result "
+            "of an UPDATE or DELETE."
+        )
+    return int(result.rowcount)
 
 
 LOCK_NOT_AVAILABLE: Final = "55P03"
@@ -239,7 +257,11 @@ class SqlAlchemyRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
         Django's ``explain()``: ``EXPLAIN`` on PostgreSQL (``analyze=True``
         runs the query and adds what it cost), ``EXPLAIN QUERY PLAN`` on
         SQLite. The values stay bound parameters. Nothing is loaded or
-        tracked; a locking query is planned without its lock.
+        tracked; a locking query is planned without its lock. A page that
+        ``filter`` reads in two parts (``following_parts``) gets the plan
+        of each, in turn: the second's is the statement ``filter`` runs
+        only while the first leaves the page short (there with the limit
+        that is left).
 
         Raises:
             ValueError: ``analyze`` on a database that cannot.
@@ -247,11 +269,13 @@ class SqlAlchemyRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
         dialect = self.session.get_bind().dialect.name
         if analyze and dialect != "postgresql":
             raise ValueError(f"EXPLAIN ANALYZE is PostgreSQL's, not {dialect!r}'s.")
-        prepared = self._prepare(as_query(query))
-        rows = await self.session.execute(
-            Explain(self._select(prepared.replace(lock=None)), analyze=analyze)
-        )
-        return "\n".join(_plan_line(row) for row in rows)
+        lines: list[str] = []
+        for part in self._parts(as_query(query)):
+            rows = await self.session.execute(
+                Explain(self._select(part.replace(lock=None)), analyze=analyze)
+            )
+            lines += (_plan_line(row) for row in rows)
+        return "\n".join(lines)
 
     async def _values(
         self, query: Selection, fields: Sequence[str]
@@ -305,6 +329,20 @@ class SqlAlchemyRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
         """``SELECT count(*)`` of the matches."""
         counted = select(func.count()).select_from(self.aggregate_type)
         statement = self._where(counted, criteria)
+        return int(await self.session.scalar(statement) or 0)
+
+    async def _count_at_most(self, criteria: Criteria | None, limit: int) -> int:
+        """``SELECT count(*)`` of the first ``limit`` matches; none past is read.
+
+        A subclass that counts in a way of its own (``_count``) is asked
+        that way, and its answer stops at ``limit``.
+        """
+        if type(self)._count is not SqlAlchemyRepository._count:
+            return await super()._count_at_most(criteria, limit)
+        matches = self._where(
+            select(literal(1)).select_from(self.aggregate_type), criteria
+        ).limit(limit)
+        statement = select(func.count()).select_from(matches.subquery())
         return int(await self.session.scalar(statement) or 0)
 
     async def _exists(self, criteria: Criteria | None) -> bool:
@@ -386,7 +424,7 @@ class SqlAlchemyRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
             statement.execution_options(synchronize_session="fetch")
         )
         await reload_expired(self.session)  # The version was computed in SQL.
-        return int(result.rowcount)  # type: ignore[attr-defined]
+        return affected_rows(result)
 
     async def delete_rows(
         self, criteria: CriteriaLike | None, /, *, include_deleted: bool = False
@@ -402,7 +440,7 @@ class SqlAlchemyRepository[AggregateT: AggregateRoot[Any], IdT: Hashable](
         result = await self.session.execute(
             statement.execution_options(synchronize_session="fetch")
         )
-        return int(result.rowcount)  # type: ignore[attr-defined]
+        return affected_rows(result)
 
     def _where[StatementT: (Select[Any], Update, Delete)](
         self, statement: StatementT, criteria: Criteria | None

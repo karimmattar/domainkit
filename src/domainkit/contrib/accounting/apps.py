@@ -12,8 +12,7 @@ from domainkit.apps.hooks import (
     on_startup,
 )
 from domainkit.checks import CheckMessage
-from domainkit.conf import settings
-from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
+from domainkit.conf import DEPLOYED_ENVIRONMENTS, settings
 from domainkit.db.hooks import on_migrated
 
 from .settings import AccountingSettings

@@ -118,8 +118,8 @@ checks it. It does these steps, in order:
 6. It checks the application: every route must name its access rule
    (`security.E101`), and operation ids must not clash (`openapi.E001`).
    Installed domains add their own checks. In staging and production, a
-   problem stops the process with `CheckFailed`. Elsewhere, it is logged
-   as a warning.
+   problem stops the process with `CheckFailed`. Elsewhere, each problem
+   is logged as a warning of its own, on one line.
 7. In staging and production, it logs a warning for server options that
    read larger WebSocket messages than `MAX_REQUEST_BODY_SIZE`, and for a
    unix socket that `TRUSTED_PROXIES` does not trust.
@@ -128,8 +128,7 @@ A route without a rule shows what step 6 does. In development, the
 application starts and logs:
 
 ```text
-The application has problems:
-  security.E101: GET /reports declares no access rule: add Depends(Require(...)), or dependencies=[Public] if anyone may call it.
+The application has problems: security.E101: GET /reports declares no access rule: add Depends(Require(...)), or dependencies=[Public] if anyone may call it.
 ```
 
 With `ENVIRONMENT = "production"`, the same problem stops the import:
@@ -210,7 +209,7 @@ together take at most `SHUTDOWN_TIMEOUT` seconds (15 by default):
 | `domains` | Each started domain's `on_shutdown` hooks, in reverse domain order (the application only) | 30% |
 | `drain` | Closers registered to finish work in flight, such as a publisher sending the messages it holds | 50% |
 | `tasks` | The loop's background tasks: cancelled, and waited for | 60% |
-| `resources` | Caches, HTTP clients, databases, ledgers, brokers, and kinds others register, all at once | 90% |
+| `resources` | Caches, HTTP clients, the guard's lookup threads, databases, ledgers, brokers, and kinds others register, all at once | 90% |
 | `flush` | Closers registered to run last, then the counts of held-back log lines, then error reports, then logs | 100% |
 
 Each phase may run until its share of the budget has passed, counted
@@ -268,9 +267,10 @@ lifecycle.register("publishers", close_publishers, phase=Phase.DRAIN)
   running loop opened.
 - Registering a name again replaces its closer. `lifecycle.unregister(name)`
   removes it. An unknown name is ignored.
-- The framework's own kinds (`caches`, `HTTP clients`, `databases`,
-  `ledgers`, `brokers`, `held-back log lines`, `error reports`, `logs`)
-  are in the same table, so their names are taken. `register` raises
+- The framework's own kinds (`caches`, `HTTP clients`, `guard lookups`
+  since 2.9, `databases`, `ledgers`, `brokers`, `held-back log lines`,
+  `error reports`, `logs`) are in the same table, so their names are
+  taken. `register` raises
   `ValueError` for one of them, and for the `domains` and `tasks` phases.
 - `lifecycle.closers(phase)` lists what a phase will close, in the steps
   it runs them. A registered closer runs in the first step, at the same
@@ -285,7 +285,7 @@ print([list(step) for step in closers(Phase.FLUSH)])
 ```
 
 ```text
-[['caches', 'HTTP clients', 'databases', 'ledgers', 'brokers']]
+[['caches', 'HTTP clients', 'guard lookups', 'databases', 'ledgers', 'brokers']]
 [['held-back log lines'], ['error reports'], ['logs']]
 ```
 
@@ -490,8 +490,18 @@ In-process [event handlers](learning.md#words) run right after a unit of
 work commits, inside the request. Each runs within
 `EVENT_HANDLER_TIMEOUT` seconds (10 by default). A handler still running
 then is cancelled, logged, and reported to the error reporters as
-`HandlerTimedOut` (a `TimeoutError`). Then the next handler runs. A
-handler may have its own limit:
+`HandlerTimedOut` (a `TimeoutError`). Then the next handler runs.
+
+The request's deadline, and a worker task's timeout, do not cut the
+handlers off: what follows a commit runs free of them
+(`deadlines.after_commit`). A request is answered as committed, and a
+task keeps the time it had left when it committed. The domains'
+after-commit hooks (`on_committed`, `on_transaction_committed`) get
+`EVENT_HANDLER_TIMEOUT` each too, and one still running then is cut off
+and reported as `HandlerTimedOut`. When the work itself is cancelled (a
+shutdown, a task cancelled), the handler cut off and those that did not
+run are logged and reported as `HandlerCancelled`. A handler may have
+its own limit:
 
 ```python
 event_bus.subscribe(InvoicePaid, refresh_totals, timeout=2)
@@ -819,7 +829,7 @@ event loop while it serves:
 | RabbitMQ (`TLS_CA`, `TLS_CERT`, `TLS_KEY`) | at the first connection, on a worker thread |
 | Redis and Valkey (`rediss://`, `TLS_CA`, `TLS_CERT`, `TLS_KEY`) | at the first connection, on a worker thread, then shared by every connection of every pool with those settings (servers, Sentinel primaries, and Cluster nodes) |
 | immudb (`TLS_CA`) | on the ledger's own thread |
-| Outgoing calls (`HTTP_CLIENT.CA_BUNDLE`, `domainkit.http.client`) | at a client's first call on each loop, on a worker thread, then shared by every client with that bundle |
+| Outgoing calls (`HTTP_CLIENT.CA_BUNDLE`, `domainkit.outbound.client`) | at a client's first call on each loop, on a worker thread, then shared by every client with that bundle |
 
 A process keeps its contexts until it ends. Restart it to use renewed
 certificate files.
@@ -828,8 +838,27 @@ certificate files.
 
 domainkit runs on free-threaded CPython 3.14 (`python3.14t`, without the
 GIL). Importing domainkit and its runtime dependencies keeps the GIL off.
-The `immudb` extra is the exception, because grpcio publishes no
-free-threaded build yet.
+An extension module that does not declare that it runs without the GIL
+turns it back on when it is first imported, for the rest of the process,
+and Python prints a `RuntimeWarning` that names it. Three extras bring
+such a module:
+
+- `documents`: `fill_docx` and `placeholders` import lxml (6.1) on their
+  first call. Its other helpers, pypdf and nh3 (`clean_html`), keep the
+  GIL off.
+- `saml`: the SAML routes import signxml and lxml when the first SAML
+  response comes.
+- `immudb`: grpcio publishes no free-threaded build yet.
+
+So a free-threaded process that fills a document or takes a SAML login
+runs with the GIL from then on, and its threads no longer run Python in
+parallel. Fill documents in a worker that serves only their queue
+([queues](contrib/messaging.md#queues)), so the server keeps the GIL
+off. A service that takes SAML logins gains nothing from a free-threaded
+build until lxml supports one. The checks of uploaded PDF and Office
+documents run in processes of their own
+([checking documents](uploads.md#checking-documents)), so they leave the
+server's GIL off.
 
 CI runs these tests on 3.14t with the GIL off throughout: the tests of the
 shared state below, and of the framework's own threads. It also runs the
@@ -1235,6 +1264,14 @@ too. So with those drivers the close of a cut-off unit of work gives
 its connection back within 2 seconds (since 2.8.2). With psycopg, a
 discard waits for the connection to close, as SQLAlchemy does.
 
+A unit of work rolls back only what has not committed. When the deadline
+comes while the `COMMIT` is on its way, the database may have applied
+it, and the client still gets the 503. So the answer to a write does not
+tell the client whether it happened: `Retry-After` is safe on a write
+only with an `Idempotency-Key`, whose retry gets the stored answer or
+`409 idempotency_response_unavailable`
+([A write ran past its deadline](runbook.md#a-write-ran-past-its-deadline)).
+
 A route that needs more time, or less, says so with `RequestTimeout`.
 The time counts from when the request arrived, and `None` removes the
 deadline:
@@ -1289,6 +1326,16 @@ starts:
   own ([live.md](live.md)).
 - A long-lived endpoint that does slow work before it starts answering
   uses `RequestTimeout(None)`, or a longer deadline.
+- A request that commits a unit of work is answered as committed: the
+  commit lifts its deadline, as the response's start does, whichever of
+  the request's tasks commits (one it started with `asyncio.gather` or a
+  task group, or the one a `BaseHTTPMiddleware` serves the route in). Its
+  in-process event handlers and after-commit hooks run, each within its
+  own timeout. *New in 2.9*: before, the deadline could cut them off and
+  answer 503 for a change that was made.
+- A request cut off as its `COMMIT` was sent may have made its change: it
+  is answered 503 `deadline_exceeded` without `Retry-After`, with a
+  detail that says to check before sending it again.
 - Code can lift the deadline of the work it is doing with
   `domainkit.deadlines.current_deadline().clear()`.
 - Tasks a request starts share its deadline while the request runs, and
@@ -1330,6 +1377,25 @@ Workers and commands bound their own work the same way:
 `async with deadlines.timeout(60): await handle(message)`. Outside a
 request there is no deadline until a block sets one.
 
+A deadline cuts off work that has not committed. A unit of work runs
+what follows its commit in `deadlines.after_commit()`: no deadline cuts
+it off, and the code inside sees none.
+
+- A deadline made `until_commit` stays lifted, and so does every block it
+  bounds, in any task: the work committed, and its answer must say so.
+  This holds when the commit is made in a task that only shares the
+  deadline. `DeadlineMiddleware` makes each request's so:
+  `deadlines.timeout(seconds, until_commit=True)`.
+- The other deadlines the committing task enforces are put back when the
+  block ends, later by the time it took: what follows the commit does not
+  count against the work's time. A worker's task keeps the time it had
+  left. So is a route's own tighter `timeout()` around a commit: the
+  commit lifts the request's deadline, not a bound the route set itself,
+  and the block still raises `TimeoutError` when its seconds run out.
+  Put the commit last in such a block, or catch its `TimeoutError`.
+- Any other deadline, one that another task enforces and no commit ends,
+  is left as it is.
+
 The deadline itself is a `deadlines.Deadline`:
 
 - `deadlines.current_deadline()` returns the running work's deadline, or
@@ -1339,6 +1405,11 @@ The deadline itself is a `deadlines.Deadline`:
 - `deadline.reset(seconds)` moves it to `seconds` after the work
   started, and `deadline.clear()` removes it. The timer that enforces
   the deadline follows.
+- `deadline.in_doubt` says whether a commit of the work failed and may
+  have been applied (the deadline passed, or the connection was lost, as
+  it committed), in whichever task shares the deadline: a request cut
+  off then is answered without `Retry-After`
+  ([The request flow](request-flow.md#8-commit)).
 - `deadlines.enforced()` says whether a timer cuts the running task off
   when the deadline passes: true in the task that entered a `timeout`
   block (an HTTP request included), false in a task that only shares a
@@ -1391,11 +1462,18 @@ timers that cancel work run on the event loop's own clock.
   `disable`, and with `SSLMODE` unset over TCP, unless `PGSSLMODE` says
   otherwise. Under anyio's pytest plugin, the report fails the test or
   fixture running then.
-- **Outgoing HTTP calls** through `domainkit.http.client` are bounded by
+- **Outgoing HTTP calls** through `domainkit.outbound.client` are bounded by
   the deadline ([below](#outgoing-http-calls)).
 - **Worker tasks.** The messaging worker runs each message under a
   deadline of its timeout (the task's `timeout`, or `TASK_TIMEOUT`). So a
   task's transactions and outgoing calls keep to it as a request's do.
+  The in-process handlers of a commit it makes do not count against it,
+  so slow handlers no longer fail a task that committed, and run it, and
+  commit it, again. So `TASK_TIMEOUT` no longer bounds a run's whole
+  time: what follows each commit adds to it, up to `EVENT_HANDLER_TIMEOUT`
+  for each handler and hook. Keep `VISIBILITY_TIMEOUT` above both, or a
+  run still in its handlers may be claimed again
+  ([messaging.md](contrib/messaging.md)).
 - **Cache computations** run under the cache's `COMPUTE_TIMEOUT`, or,
   when they borrow their caller's resources, under that caller's
   deadline ([cache.md](cache.md#what-a-factory-may-use)).
@@ -1431,9 +1509,9 @@ Retry-After: 1
 ```
 
 - **Probes are never shed.** The health and readiness probes and the
-  metrics scrape (`CONCURRENCY_EXEMPT_PATHS`: `/health`, `/ready`,
-  `/metrics`) are never counted or refused, so a busy replica is not
-  taken for a dead one. Behind `--root-path`, the paths are compared
+  metrics scrape (`PROBE_PATHS`: `/health`, `/ready`, `/metrics`), and
+  the paths in `CONCURRENCY_EXEMPT_PATHS`, are never counted or refused,
+  so a busy replica is not taken for a dead one. Behind `--root-path`, the paths are compared
   without it.
 - **A slot is held until the response starts.** A request holds its slot
   until its response starts, or until it ends. A streamed response, an
@@ -1545,14 +1623,16 @@ or one whose `CONNECT_ARGS` turn the statement cache off by hand.
 
 ### Outgoing HTTP calls
 
-`domainkit.http.client` (the `httpclient` extra, on httpx2) calls other
+`domainkit.outbound.client` (the `httpclient` extra, on httpx2) calls other
 services from a request, a task, or a command, within the deadline of
-the work it serves:
+the work it serves. Until 2.9 it was `domainkit.http.client`, which still
+imports every name it had, the same objects
+([upgrading.md](upgrading.md#28-to-29)):
 
 ```python
 from decimal import Decimal
 
-from domainkit.http.client import HttpClient
+from domainkit.outbound.client import HttpClient
 
 rates = HttpClient(base_url="https://rates.example.com/v1", timeout=3.0)
 
@@ -1566,15 +1646,15 @@ async def euro_rate() -> Decimal:
 Make one client per service, at module level. Nothing opens until the
 first call. In a domain, call it from the infrastructure layer
 (`models.py`, or `infrastructure/`): the [layer rules](reference/settings.md#layer-rules)
-allow `domainkit.http.client` there, imported by that name, and keep it
+allow `domainkit.outbound` there, as any adapter's library, and keep it
 out of the application layer, which reaches the service through a port.
 
 - Each client keeps one pool of connections per process (per event
   loop), opened by its first call. The pool closes with the other
   resources when the application or a command ends.
-  `domainkit.http.client.close_all()` closes every client's connections
+  `domainkit.outbound.client.close_all()` closes every client's connections
   on the running loop.
-- `domainkit.http.client.client` is a ready client for one-off calls.
+- `domainkit.outbound.client.client` is a ready client for one-off calls.
 - A client has `get`, `head`, `options`, `post`, `put`, `patch`,
   `delete`, and `request(method, url, ...)`. Each takes `params`,
   `headers`, `content`, `data`, `files`, `json`, `timeout`, and `retry`.
@@ -1616,7 +1696,7 @@ user's failing URLs should not refuse another's calls. Give such a
 client `breaker=False`:
 
 ```python
-from domainkit.http.client import HttpClient
+from domainkit.outbound.client import HttpClient
 
 callbacks = HttpClient(guard=True, breaker=False, retries=0)
 ```
@@ -1670,7 +1750,7 @@ Every call:
 
 URLs someone else chose (a callback, a link to fetch) go through a
 client made with `guard=True`. It calls only public addresses, with the
-checks `domainkit.contrib.webhooks` uses (`domainkit.http.guard`):
+checks `domainkit.contrib.webhooks` uses (`domainkit.outbound.guard`):
 
 - `https` only (`allow_http=True` adds `http`);
 - no credentials in the URL;
@@ -1695,6 +1775,16 @@ host name. A guarded client:
 
 A refused URL raises `UnsafeURL`, which answers 422 `unsafe_url` when the
 request does not catch it.
+
+*New in 2.9:* the checks are public, for an app that takes URLs from its
+users as webhooks do. `checked_url(url, allow_http=...)` checks what the
+URL shows, as a subscription is saved; `checked_host` and
+`checked_address` resolve the host on the guard's threads and check every
+address, as a call is made; `lookups_for(owner)` counts the lookups of a
+block as one owner's. `MAX_URL_LENGTH`, `tls_context`, and the `Address`,
+`Network`, and `Resolver` types are public too
+([Outgoing calls](api/outbound.md)). The lookup alone, whose addresses
+nothing has checked, is not: `checked_host` resolves with it by default.
 
 **Lookups.** Host names are looked up on threads of the guard's own,
 never the event loop's default executor, which `asyncio.to_thread` and
@@ -1756,7 +1846,7 @@ from decimal import Decimal
 
 import httpx2
 
-from domainkit.http.client import stub
+from domainkit.outbound.client import stub
 
 
 def rates_api(request: httpx2.Request) -> httpx2.Response:
@@ -1789,7 +1879,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from domainkit.http.client import stub
+from domainkit.outbound.client import stub
 
 
 @pytest.fixture
@@ -1812,7 +1902,7 @@ Each setting has its full row on
 | `SLOW_CALLBACK_DURATION` | `0.1` | With `DEBUG`, log each loop step that holds the loop this long. `None` turns it off. |
 | `LOGGING` | minimal | The `dictConfig` mapping `setup()` applies. `build_logging_config` makes one. |
 | `ERROR_REPORTERS` | `()` | Reporters by dotted path, run on the reporting thread. |
-| `EVENT_HANDLER_TIMEOUT` | `10.0` | Seconds an in-process event handler may run. |
+| `EVENT_HANDLER_TIMEOUT` | `10.0` | Seconds an in-process event handler, or a domain's after-commit hook, may run. |
 | `ACCESS_LOG_SAMPLE_RATE` | `1.0` | The share of successful requests that write an access line. |
 | `ACCESS_LOG_SLOW_DURATION` | `1.0` | Seconds after which a request always writes its line. |
 | `ACCESS_LOG_PATH` | `"template"` | `"raw"` logs the path as sent. |
@@ -1823,7 +1913,7 @@ Each setting has its full row on
 | `MAX_CONCURRENT_REQUESTS` | `1000` | Requests each event loop works on at once. `None` turns shedding off. |
 | `MAX_QUEUED_REQUESTS` | `100` | Requests that may wait for a slot. |
 | `REQUEST_QUEUE_TIMEOUT` | `1.0` | Seconds a request may wait for a slot. |
-| `CONCURRENCY_EXEMPT_PATHS` | `("/health", "/ready", "/metrics")` | Paths never counted or shed. |
+| `CONCURRENCY_EXEMPT_PATHS` | `()` | Paths never counted or shed, besides `PROBE_PATHS`. |
 | `REQUEST_BODY_TIMEOUT` | `10.0` | Seconds a request body may take to arrive (408 after). |
 | `HTTP_CLIENT` | see below | The defaults of every `HttpClient`. |
 | `GUARD_LOOKUP_THREADS` | `16` | Threads for a guarded client's host lookups. |

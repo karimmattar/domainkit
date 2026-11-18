@@ -61,9 +61,12 @@ the pages of that release's tag; on GitHub, `main` describes the next
 release, and a release's pages are under its tag
 (`https://github.com/karimmattar/domainkit/tree/vX.Y.Z/docs`).
 
-- [docs/tutorial.md](https://github.com/karimmattar/domainkit/blob/main/docs/tutorial.md): getting started, in five
-  parts: a first resource, rules, permissions, events and the worker, and
-  tests and production; every command and code change run in CI
+- [docs/tutorial.md](https://github.com/karimmattar/domainkit/blob/main/docs/tutorial.md): getting started, in six
+  parts: a first route, a first resource, rules, permissions, events and
+  the worker, and tests and production; every command and code change run
+  in CI
+- [docs/choosing.md](https://github.com/karimmattar/domainkit/blob/main/docs/choosing.md): which feature to use for a
+  need, and when not to use it
 - [docs/operations.md](https://github.com/karimmattar/domainkit/blob/main/docs/operations.md): running in production:
   processes, configuration, sizing, migrations in a rollout, the worker,
   sealing, backups, and what to alert on; [docs/runbook.md](https://github.com/karimmattar/domainkit/blob/main/docs/runbook.md)
@@ -136,7 +139,7 @@ domainkit init billingAPI billing     # the name sets the variable prefix: BILLI
 cd billing
 pip install --group dev
 python manage.py check
-python manage.py startdomain invoices --aggregate Invoice --minimal   # installs and mounts it
+python manage.py startdomain invoices --aggregate Invoice   # installs and mounts it
 python manage.py makemigrations -m "create invoices" && python manage.py migrate
 read -rsp "Password: " PASSWORD && export PASSWORD    # admin's, typed, not echoed
 BILLING_API_SUPERUSER_PASSWORD="$PASSWORD" \
@@ -163,17 +166,22 @@ curl http://127.0.0.1:8000/api/v1/invoices/invoices -H "Authorization: Bearer $T
 The answer is the first page, empty: `{"items":[],"next_cursor":null}`. The
 domain's router is mounted at `/api/v1/invoices`, and its resource is
 `/invoices` within it; `startdomain` prints both commands for the domain it
-made. `--minimal` keeps the domain small: an `Invoice` with a name that
-must not be blank, a command to create one and one to rename it, its
-table, its resource, and two tests, in 13 files and the four layers `check`
-holds apart. `startaggregate`, `addcommand`, `addquery`, and `addevent`
-grow it. Without `--minimal`, `startdomain` writes a fuller example (notes
-as child entities, an owner, events and a handler, filters); the tutorial
-starts from that one. A route the caller may not reach answers 404, as an unknown path does,
-so check the path first (`/docs` lists every route). `createsuperuser`
-without options asks for each value instead. [docs/tutorial.md](https://github.com/karimmattar/domainkit/blob/main/docs/tutorial.md)
-goes on from here, in six parts from a first route: rules written by
-hand, permissions, events run by the worker, and tests.
+made. The domain is four files, one per layer, which `check` holds
+apart: `domain.py` (an `Invoice` with a name that must not be blank),
+`controllers.py` (a use case to create one and one to rename it),
+`models.py` (its table), and `routes.py` (its resource), with five tests.
+The tutorial starts from the same layout. `startdomain --layered` makes a
+package per layer instead (`domain/`, `application/`, `infrastructure/`,
+`api/`), which `startaggregate`, `addcommand`, `addquery`, and `addevent`
+grow; `--minimal` makes a smaller layered one. Without a login, a route
+answers 401, and without the permission 403 `permission_denied`. A 404
+means an unknown path, or an item outside the caller's scope: `/docs`
+lists every route. `createsuperuser` without options asks for each value
+instead. [docs/tutorial.md](https://github.com/karimmattar/domainkit/blob/main/docs/tutorial.md)
+goes on from here, in nine parts from a first route: a first resource,
+rules written by hand, permissions, events run by the worker, tests, and
+then a bank's controls: transfers booked in double-entry books, approvals
+by a second person, and signed webhooks.
 
 `domainkit init` creates a project that passes `check` and its tests as it is.
 Users, groups, and permissions are installed, requests are authenticated,
@@ -216,6 +224,14 @@ Serve it with one worker process per core, each on its own event loop:
 gives the whole command with its limits, and [docs/performance.md](https://github.com/karimmattar/domainkit/blob/main/docs/performance.md)
 how many cores a load needs.
 
+## Examples
+
+[examples/](https://github.com/karimmattar/domainkit/blob/main/examples/README.md)
+holds projects made with `domainkit init`, each solving one problem, with
+a walkthrough and tests that CI runs: payments in double-entry books under
+idempotency keys, large payouts approved with each act confirmed, and an
+outbox with signed webhooks.
+
 ## Developing domainkit
 
 [CONTRIBUTING.md](https://github.com/karimmattar/domainkit/blob/main/CONTRIBUTING.md)
@@ -229,26 +245,30 @@ make integration    # the tests against the servers of compose.yaml, as CI runs 
 make                # every command
 ```
 
-Without servers, the database tests use SQLite, the Redis and RabbitMQ
-tests use in-memory fakes, and the tests that need PostgreSQL, immudb, or a
-real Redis, Valkey, or RabbitMQ are skipped. `compose.yaml` starts the
-servers CI's integration job uses, at the same images and ports, with
-throwaway certificates in `.ci/`; `make integration` sets the variables
-that point the tests at them (the `DOMAINKIT_TEST_*` names at the top of
-`domainkit_tests/test_immudb.py`, `test_redis.py`, and `test_rabbitmq.py`).
+Without servers, the database tests use SQLite, the Redis, RabbitMQ,
+Kafka, and SQS tests use in-memory fakes, and the tests that need
+PostgreSQL, immudb, or a real Redis, Valkey, RabbitMQ, Kafka, or SQS are
+skipped. `compose.yaml` starts the servers CI's integration job uses, at
+the same images and ports, with throwaway certificates in `.ci/`; `make
+integration` sets the variables that point the tests at them (the
+`DOMAINKIT_TEST_*` names at the top of `domainkit_tests/test_immudb.py`,
+`test_redis.py`, `test_rabbitmq.py`, and `test_brokers_more.py`).
 Each run must cover 98%; CI also combines the runs with and without
-servers, which must cover 100% (`make cov`).
+servers, which must cover 98% of the package and every line a pull request
+adds (`make cov`).
 
 CI (`.github/workflows/ci.yml`) runs on every push and pull request, the
 suite on every core of the runner (`pytest -n auto`):
 
 - lint, strict typing, and deptry: every package the code imports is declared
-- the tests on Python 3.13 and 3.14
+- the tests on Python 3.13, 3.14, and 3.15
 - the tests again against PostgreSQL 18, immudb with TLS and a signing key,
-  Redis 8 (plain and TLS), Valkey 9, and RabbitMQ 4 (plain and TLS); no test
-  may be skipped there
-- the PostgreSQL tests on PostgreSQL 16, the oldest supported
-- coverage of both runs combined, which must be 100%
+  Redis 8 (plain and TLS), Valkey 9, RabbitMQ 4 (plain and TLS), Kafka 4,
+  and ElasticMQ for SQS; no test may be skipped there
+- the PostgreSQL tests on PostgreSQL 16, the oldest supported, and on
+  Python 3.15, the newest
+- coverage of both runs combined: 98% of the package, and every line a
+  pull request to `stg` adds or changes, its branches included
 - the benchmark ladder: Python calls and database round trips per request,
   against budgets (`python -m benchmarks`; docs/performance.md)
 - a wheel build, installed and imported in a clean environment, and its
@@ -265,9 +285,10 @@ of the repository runs lint, the audits, and the tests that read the docs,
 not the whole suite. A release reuses the run of its commit's push to
 `main` instead of running it again.
 
-A full mutation testing run happens weekly, in 17 shards that run side by
-side; each writes its score and the mutants no test caught to its job
-summary. Releases are published to PyPI
+Mutation testing runs on request: a full run, in 17 shards that run side
+by side, is started by hand, or weekly while the repository variable
+`MUTATION` is `on`; each shard writes its score and the mutants no test
+caught to its job summary. Releases are published to PyPI
 from a version tag; see [docs/versioning.md](https://github.com/karimmattar/domainkit/blob/main/docs/versioning.md).
 
 ## License

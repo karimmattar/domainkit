@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from domainkit import setup
+from domainkit import deadlines, setup
 from domainkit.apps import registry
 from domainkit.conf import override_settings
 from domainkit.ddd import (
@@ -20,6 +20,7 @@ from domainkit.ddd import (
     DomainEvent,
     Entity,
     EventBus,
+    HandlerCancelled,
     HandlerTimedOut,
     InMemoryRepository,
     NotFound,
@@ -29,6 +30,7 @@ from domainkit.ddd import (
     ValueObject,
     event_bus,
 )
+from domainkit.ddd.uow import failed_in_doubt
 
 pytestmark = pytest.mark.anyio
 
@@ -403,6 +405,250 @@ async def test_unit_of_work_publishes_after_commit() -> None:
     assert uow.log == ["commit", "rollback"]
     assert uow.repositories() == [uow.orders]
     assert FakeUnitOfWork().events is event_bus
+
+
+async def test_handlers_after_a_commit_run_free_of_the_deadline() -> None:
+    """A worker's task: its timeout does not count what follows the commit.
+
+    The first handler sleeps four times the block's seconds; it and the one
+    after it run, see no deadline, and the block ends without raising, with
+    what it had left at the commit still left.
+    """
+    bus = EventBus()
+    seen: list[object] = []
+
+    async def slow(event: OrderPaid) -> None:
+        await asyncio.sleep(0.2)
+        seen.append(("slow", deadlines.remaining()))
+
+    async def after(event: OrderPaid) -> None:
+        seen.append(("after", deadlines.remaining()))
+
+    bus.subscribe(OrderPaid, slow)
+    bus.subscribe(OrderPaid, after)
+    uow = FakeUnitOfWork(bus)
+    async with deadlines.timeout(0.05) as bound:
+        async with uow:
+            order = new_order()
+            await uow.orders.add(order)
+            order.pay()
+            await uow.commit()
+        left = deadlines.remaining()
+
+    assert seen == [("slow", None), ("after", None)]
+    assert not bound.expired()
+    assert left is not None
+    assert 0 < left <= 0.05
+
+
+class LosesItsAnswer(FakeUnitOfWork):
+    """Fails to commit with ``failure``: a refusal, or nothing said."""
+
+    def __init__(self, failure: BaseException) -> None:
+        """Fail every commit with ``failure``."""
+        super().__init__()
+        self.failure = failure
+
+    async def _commit(self) -> None:
+        raise self.failure
+
+
+@pytest.mark.parametrize(
+    ("failure", "in_doubt"),
+    [
+        (OrderTooLarge("refused"), 0),
+        (ConnectionError("the reply was lost"), 1),
+        (asyncio.CancelledError(), 1),
+    ],
+)
+async def test_a_commit_that_fails_unanswered_is_in_doubt(
+    failure: BaseException, in_doubt: int
+) -> None:
+    """A refusal stored nothing; a lost answer, or a cut, may have stored it."""
+    uow = LosesItsAnswer(failure)
+
+    async def commit() -> None:
+        async with uow:
+            await uow.commit()
+
+    with pytest.raises(type(failure)):
+        await commit()
+    assert (uow.committed, uow.in_doubt) == (0, in_doubt)
+
+
+async def test_an_error_raised_from_a_commit_in_doubt_is_in_doubt() -> None:
+    """``failed_in_doubt`` follows what an error was raised from, a while.
+
+    A timeout raised from the cancellation of a commit is in doubt; an
+    error of a refused commit is not; a chain that runs on for ever, or
+    loops, is followed 16 errors deep, then taken for none.
+    """
+    lost = LosesItsAnswer(ConnectionError("the reply was lost"))
+    refused = LosesItsAnswer(OrderTooLarge("refused"))
+    for uow in (lost, refused):
+        try:
+            async with uow:
+                await uow.commit()
+        except Exception as exc:  # noqa: BLE001 - the commit's error, whatever it is.
+            caught = exc
+        try:
+            raise TimeoutError("cut off") from caught
+        except TimeoutError as timeout:
+            wrapped = timeout
+        assert failed_in_doubt(wrapped) is (uow is lost)
+    loop = ValueError("first")
+    loop.__context__ = ValueError("second")
+    loop.__context__.__context__ = loop
+    assert failed_in_doubt(loop) is False
+
+
+@dataclasses.dataclass(frozen=True)
+class FrozenFailure(Exception):
+    """A driver's error that takes no attribute: a frozen dataclass."""
+
+    reason: str
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class SlottedFailure(Exception):
+    """An error that takes neither an attribute nor a weak reference."""
+
+    reason: str
+
+
+class Sealed(Exception):
+    """An error that takes no attribute and has no hash."""
+
+    __hash__ = None  # type: ignore[assignment]
+
+    def __setattr__(self, name: str, value: object) -> None:
+        """Refuse every attribute."""
+        raise AttributeError(name)
+
+
+@pytest.mark.parametrize(
+    ("failure", "marked"),
+    [
+        (FrozenFailure("the reply was lost"), True),
+        (Sealed("the reply was lost"), True),
+        (SlottedFailure("the reply was lost"), False),
+    ],
+    ids=["frozen-dataclass", "unhashable", "no-weak-reference"],
+)
+async def test_an_error_that_takes_no_attribute_is_raised_as_it_was(
+    failure: Exception, marked: bool
+) -> None:
+    """Marking the error in doubt never replaces it.
+
+    A frozen dataclass's error is marked aside, by its identity, and so is
+    one that is not hashable; one that takes no weak reference either
+    stays unmarked. Each is raised as it was, and counted.
+    """
+    uow = LosesItsAnswer(failure)
+
+    async def commit() -> None:
+        async with uow:
+            await uow.commit()
+
+    with pytest.raises(type(failure)) as caught:
+        await commit()
+    assert caught.value is failure
+    assert uow.in_doubt == 1
+    assert failed_in_doubt(failure) is marked
+
+
+async def test_an_error_equal_to_one_in_doubt_is_not_in_doubt() -> None:
+    """The mark is the error's own, not its value's.
+
+    A frozen dataclass's error equals, and hashes as, another of the same
+    fields. The commit's error is in doubt while it lives; an equal error
+    raised elsewhere, by a refused commit say, is not.
+    """
+    failure = FrozenFailure("the reply was lost")
+    twin = FrozenFailure("the reply was lost")
+    assert (twin == failure, hash(twin) == hash(failure)) == (True, True)
+    uow = LosesItsAnswer(failure)
+
+    with pytest.raises(FrozenFailure):
+        async with uow:
+            await uow.commit()
+    assert (failed_in_doubt(failure), failed_in_doubt(twin)) == (True, False)
+
+
+async def test_handlers_a_cancellation_stops_are_logged_and_reported(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The handler cut off, those after it, and the next events' are named.
+
+    A shutdown, or a task cancelled, cancels the work: the cancellation
+    goes on, and every handler it kept from finishing is said.
+    """
+    bus = EventBus()
+    reported: list[tuple[BaseException, DomainEvent]] = []
+    bus.error_hook = lambda exc, event: reported.append((exc, event))
+    started = asyncio.Event()
+
+    async def hung(event: OrderPaid) -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    async def after(event: OrderPaid) -> None:
+        raise AssertionError("never runs")  # pragma: no cover - cancelled before.
+
+    class Unhandled(DomainEvent):
+        """An event no handler takes."""
+
+    bus.subscribe(OrderPaid, hung)
+    bus.subscribe(OrderPaid, after)
+    first, second = OrderPaid(order_id=uuid4()), OrderPaid(order_id=uuid4())
+    events = [first, Unhandled(), second]
+    with caplog.at_level(logging.ERROR, "domainkit.ddd.events"):
+        publishing = asyncio.create_task(bus.publish_all(events))
+        await started.wait()
+        publishing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await publishing
+
+    hung_name, after_name = hung.__qualname__, after.__qualname__
+    messages = [
+        (
+            f"Handler {hung_name} was cancelled for OrderPaid {first.event_id}; "
+            f"{after_name} did not run"
+        ),
+        (
+            f"{hung_name}, {after_name} did not run for OrderPaid "
+            f"{second.event_id}: the work was cancelled"
+        ),
+    ]
+    assert caplog.messages == messages
+    assert [(str(exc), event) for exc, event in reported] == list(
+        zip(messages, [first, second], strict=True)
+    )
+    assert all(isinstance(exc, HandlerCancelled) for exc, _ in reported)
+
+
+async def test_a_lone_handler_cancelled_names_itself(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Cut off with none after it, the handler alone is named, without a hook."""
+    bus = EventBus()
+    started = asyncio.Event()
+
+    async def hung(event: OrderPaid) -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    bus.subscribe(OrderPaid, hung)
+    event = OrderPaid(order_id=uuid4())
+    with caplog.at_level(logging.ERROR, "domainkit.ddd.events"):
+        publishing = asyncio.create_task(bus.publish(event))
+        await started.wait()
+        publishing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await publishing
+    assert caplog.messages == [
+        f"Handler {hung.__qualname__} was cancelled for OrderPaid {event.event_id}"
+    ]
 
 
 async def test_pages_know_whether_more_follow() -> None:

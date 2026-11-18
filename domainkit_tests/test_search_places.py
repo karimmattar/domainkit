@@ -28,7 +28,7 @@ from domainkit.ddd.fields import InvalidQuery
 from domainkit.ddd.places import Point
 from domainkit.ddd.query import F
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.http import client as client_module
+from domainkit.outbound import client as client_module
 from domainkit.search import (
     MemorySearchBackend,
     SearchError,

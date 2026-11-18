@@ -109,7 +109,8 @@ unique constraint may name its own code
 | `currency_mismatch` | 422 | `CurrencyMismatch` (money): Amounts of two currencies were added, subtracted, or compared. |
 | `currency_not_limited` | 422 | `CurrencyNotLimited` (contrib.limits.exceptions): A movement in a currency none of its subject's limits names (FIN-89). |
 | `database_busy` | 503 | http.errors: The database is busy; try again shortly. |
-| `deadline_exceeded` | 503 | http.deadlines: The request took too long; try again shortly. |
+| `database_unavailable` | 503 | http.errors: The database is unavailable; try again shortly. It cannot be reached, or cannot serve now (a restart, a failover), with `Retry-After: 5`. Told from asyncpg's errors and SQLAlchemy's; through psycopg, a connection that cannot be opened may still answer 500. A connection lost as a change was committed gets no `Retry-After`: the change may have been made ([runbook](../runbook.md#the-database-is-unavailable)). *New in 2.9* |
+| `deadline_exceeded` | 503 | http.deadlines: The request took too long; try again shortly. With `Retry-After: 1`, unless the deadline passed as a change was committed: that change may have been made (since 2.9). |
 | `device_already_bound` | 409 | `DeviceAlreadyBound` (contrib.devices.exceptions): The user has a bound device: approve the new one from it. |
 | `device_login_off` | 404 | `DeviceLoginOff` (contrib.devices.exceptions): `DEVICES.DEVICE_LOGIN` is off: devices do not log in here. |
 | `device_logins_not_asked` | 422 | contrib.auth.api: This server decides what this change does to your devices' logins: leave keep_device_logins out. |
@@ -284,7 +285,7 @@ unique constraint may name its own code
 | `unknown_user_field` | 422 | `UnknownUserField` (contrib.auth.exceptions): The user model has no such field, or it changes another way. |
 | `unreadable_file` | 422 | `FileRefused` (inspection), through http.uploads: The file's type's check could not read it (a damaged PDF or ZIP, XML that is not), or its process took more time or memory than `UPLOAD_CHECKS` gives it. |
 | `unsafe_file` | 422 | `FileRefused` (inspection), through http.uploads: The file's type's check refused what it holds (scripts, actions, macros, embedded objects, outside links, a DTD, a password, too many pages or parts). |
-| `unsafe_url` | 422 | `UnsafeURL` (http.guard): A URL that may not be called; the message never quotes it. |
+| `unsafe_url` | 422 | `UnsafeURL` (outbound.guard): A URL that may not be called; the message never quotes it. |
 | `unsafe_webhook_url` | 422 | `UnsafeTarget` (contrib.webhooks.guard): A webhook URL that may not be called; the message never quotes it. |
 | `unsupported_device_key` | 422 | `UnsupportedKey` (contrib.devices.exceptions): Not a P-256 or Ed25519 public key. |
 | `unsupported_file_type` | 415 | http.uploads: This type of file is not accepted. |

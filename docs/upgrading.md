@@ -36,6 +36,425 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.8 to 2.9
+
+2.9 follows up the audit of 2.8. Each item of this list says what a
+project that relied on 2.8's behaviour changes, and what to run. With
+`domainkit.contrib.approvals` installed, make and apply its index's
+migration ([below](#make-and-apply-approvals-index)) before the new code
+serves. On PostgreSQL, `migrate` makes indexes on the user table, with
+no migration to make ([below](#migrate-makes-the-user-lookups-indexes-on-postgresql)).
+One setting is new, `PROBE_PATHS`, which `RATE_LIMIT_EXEMPT_PATHS`,
+`CONCURRENCY_EXEMPT_PATHS`, `ACCESS_LOG_QUIET_PATHS`, and
+`AUTH.AUTHENTICATION_EXEMPT_PATHS` now add to, each defaulting to `()`
+(below). A project on 2.8.0 or 2.8.1 first reads the patch releases'
+sections below, [2.8.0 to 2.8.1](#280-to-281) and
+[2.8.1 to 2.8.2](#281-to-282), which this list does not repeat.
+
+- **`diffsettings` shows each domain's settings.** `AUTH`, `APPROVALS`,
+  `LIMITS`, and every other installed domain's setting print as the
+  domain's schema validated them, with its defaults, where 2.8 printed
+  `'**********'`. A script that reads the command's output sees these
+  lines, and `--all` lists a domain's setting left at its defaults with
+  `###`. What stays hidden: values typed `SecretStr` or bytes, names that
+  suggest a secret, URL passwords, the values of `password=` and
+  `password:` pairs, and all text in a mapping, a value typed `Any`, or a
+  value that is not a model, such as a dataclass. A project whose own
+  domains declare settings types each secret among them as `SecretStr`,
+  as the framework's schemas do: a secret in a field typed `str`, under a
+  name such as `ENDPOINT`, would print
+  ([diffsettings](reference/commands.md#diffsettings-show-the-settings)).
+- **`diffsettings` hides more of the text it prints**, in every setting,
+  the project's own too: the value after a name like a secret's and `:`
+  or `=`, spaced or not, the name quoted or not. `password = ...` in a
+  libpq connection string, `"private_key": "..."` in JSON, and
+  `Authorization: Bearer ...` print with `**********` for their values,
+  where 2.8 printed them: it hid only `password=...`. A script that reads
+  such a value from the command's output reads it from the settings
+  instead.
+- **The application's problems are logged one to a record.** In
+  development and tests, each problem found as the application is built
+  or starts (`security.E101`, a route without an access rule, say) is a
+  warning of its own: `The application has problems: security.E101: GET
+  /reports declares no access rule: ...`. 2.8 logged one record for them
+  all. Change a log filter or alert that matched the record of 2.8.
+  Staging and production still refuse to start, with the same
+  `CheckFailed`.
+- **`manage.py help <command>` prints the command's options**, as
+  `<command> --help` does, where 2.8 printed the list of commands.
+  `manage.py help` alone still prints the list.
+- **`createsuperuser`'s note is reworded**: "Note: no verification code
+  can be sent to the superuser (to reset its password or enroll a phone)
+  until its email address is verified: run ...". A script that matched
+  2.8's wording matches this one instead.
+- **The worker's heartbeat no longer ages while a dependency is away.**
+  `runworker --heartbeat-file` is rewritten while the worker's event
+  loop runs, whatever the broker, the databases, or the caches do, so
+  the documented health check no longer restarts workers during their
+  outage. A worker that relied on such a restart keeps running, and
+  logs each failing check. To keep the restart, run the worker with
+  `--ready-file /tmp/worker-ready`, which is removed while a check
+  fails, and point the health check at it
+  ([The worker](operations.md#the-worker)). The ready file goes after
+  one failed round of checks, where 2.8's heartbeat had to age past the
+  health check's 60 seconds: set the tolerance with the check's retries
+  (`HEALTHCHECK --retries`, or a probe's `failureThreshold`).
+- **`heartbeat.beat()` always touches its path**, then runs the checks,
+  and takes the ready file as `ready`. Code that called it to touch a
+  file only while the checks hold passes that file as `ready`, and
+  `None` as the path.
+- **Webhook deliveries whose task ended are marked failed.** The first
+  run of the new hourly task `domainkit.contrib.webhooks.fail_abandoned`
+  marks failed every delivery that 2.8 left `pending` with no task to
+  run it (the worker killed during the last attempt, the attempt past
+  its time limit, or its outcome not written), and logs how many. Send
+  them again with `webhooks replay --failed`. Retrying such a delivery's
+  dead task with `messages retry` sends nothing now, and logs so:
+  replay the delivery.
+- **Text messages, search, identity, and captcha open their circuits.**
+  After `HTTP_CLIENT.BREAKER_FAILURES` failures in a row (5), a provider
+  is not called for `BREAKER_COOLDOWN` seconds (30): text messages fail
+  with `... could not be reached (CircuitOpen).` and are retried, a
+  search raises `SearchError` at once, a login through an identity
+  provider fails at once, and a captcha check answers 503
+  `captcha_unavailable` at once, as it did after waiting. Their calls
+  and circuits are counted under the client names `notifications` (text
+  messages and push), `identity`, `captcha`, and `mail`, where they were
+  `other`: change a dashboard or an alert on `client="other"`. The test
+  plugin closes every client's circuits before each test; a test suite
+  that does not use it calls `domainkit.outbound.client.reset_circuits()`
+  between tests, or a circuit one test opens refuses the next one's
+  calls.
+- **The worker's log lines about a failing message name its id**, after
+  its target: `Dead-lettered task shop.flaky (message 0f8e...) after 2
+  attempts`. Change a log rule or an alert that matches the whole line.
+- **Contrib routes are renamed, and so are their operation ids.** Each
+  new name is the 2.8 name with its app's prefix, for every route
+  renamed: `accounting_` on the ledger's, `approvals_` on approvals',
+  `limits_` on limits', `webhooks_` on the webhooks admin's and owner's,
+  `flags_` on the flags admin's, `auth_admin_` on the auth admin's, and
+  `audit_` on the audit trail's history (`list_accounts` is
+  `accounting_list_accounts`, `read_history` is `audit_read_history`).
+  The routes named so already keep their names: `accounting_trial_balance`,
+  `accounting_general_ledger`, `accounting_import_statement`,
+  `accounting_reconcile`, `accounting_breaks`, `approvals_submit`,
+  `approvals_submit_authorization`, and `limits_usage`. The paths, the
+  methods, and the answers are unchanged, so a client that calls the
+  URLs changes nothing, and `openapi --diff` reports nothing. Code that
+  builds a URL with `url_path_for` and a 2.8 name uses the new name, and
+  a client generated from the OpenAPI document calls each method by its
+  new name once you generate it again. With `OPENAPI_OPERATION_IDS =
+  "fastapi"`, FastAPI's ids start with the new name too. FastAPI writes
+  an operation's summary, and the title of a response schema declared
+  inline, from the name: 50 summaries ("Delete User" is "Auth Admin
+  Delete User") and 7 titles ("Response List Flags" is "Response Flags
+  List Flags") change with them. A project's resource named `accounts`,
+  `users`, or `subscriptions` failed `check` beside the ledger, the auth
+  admin, or the webhooks admin (`openapi.E001`), and its `Location` and
+  links could name the contrib route; it clashes with none now
+  ([Operation ids](reference/responses.md#operation-ids), ADR 0192).
+- **A memory ledger keeps what it holds when the ledgers close.** In
+  tests, evidence recorded before `outbox.run_queued()`, a command, or a
+  client's shutdown is still there after it. A test that relied on the
+  close to empty a `memory://` ledger calls `ledgers.reset()`; the test
+  plugin calls it before each test, as before.
+- **An approval screen shows money as its amount and currency.** A
+  guard without `show` lists the command's arguments, and an argument
+  that is `Money` now reads `1500.00 USD`, where 2.8 showed
+  `{"amount":"1500.00","currency":"USD"}`. A test that compared a
+  screen's details compares the new text.
+- **A failed approval request keeps a seal that did not hold**
+  (security). Failing makes the seal again only if it held, so a request
+  changed around the application, then failed, still fails its seal.
+  Code that reads `sealed()` on failed requests, to report them, finds
+  these.
+- **A request that committed is answered as committed**
+  ([ADR 0186](adr/0186-answer-a-commit-as-committed-a-lost-database-as-unavailable-start-loudly-and-name-the-probes-once.md)).
+  Once a unit of work commits, in the request's task or in one it
+  started, the request's deadline is lifted: its in-process handlers all
+  run, and it answers what it committed, past `REQUEST_TIMEOUT` if they
+  are slow. It no longer answers `503 deadline_exceeded` for a change
+  that was made. A request that commits, then calls out or commits again,
+  is no longer cut off either: bound such calls by their own timeouts.
+  Nothing to change; a handler that must not hold the answer belongs in
+  the outbox (`durable=True`).
+- **After-commit hooks get `EVENT_HANDLER_TIMEOUT` each.** A domain's
+  `on_committed` or `on_transaction_committed` hook was bounded by the
+  request's deadline, which the commit now lifts. One still running after
+  `EVENT_HANDLER_TIMEOUT` (10 seconds unless set) is cut off, logged, and
+  reported as `HandlerTimedOut`. A hook that needs longer belongs in the
+  outbox.
+- **A worker's task keeps the time it had when it committed**, and what
+  follows each commit (handlers and hooks, up to `EVENT_HANDLER_TIMEOUT`
+  each) adds to its run: `TASK_TIMEOUT` no longer bounds a run's whole
+  time. A commit renews the claim; keep `VISIBILITY_TIMEOUT` above
+  `TASK_TIMEOUT`, and above what follows a commit, or another worker may
+  claim a run still in its handlers and run it again.
+- **A 503 for a commit in doubt has no `Retry-After`.** When the deadline
+  passes, or the connection is lost, as a request's `COMMIT` is sent, the
+  change may have been made: the request answers `503 deadline_exceeded`
+  or `503 database_unavailable` without `Retry-After`, with a detail that
+  says to check before sending it again. A client that retries every 503
+  should look the change up first, or send an `Idempotency-Key`.
+- **`HandlerCancelled` in the error reports.** It names in-process
+  handlers that a cancellation of their work (a shutdown, a cancelled
+  task) cut off or kept from running. 2.8 lost them without a word.
+- **A database out of reach answers `503 database_unavailable`**, with
+  `Retry-After: 5`, where 2.8 answered `500 internal_error`. It is logged
+  once per reason every 10 seconds, as a warning, and not sent to
+  `ERROR_REPORTERS`. Move alerts on 500s or on error reports for a
+  database outage to `/ready` and to this code
+  ([Runbook](runbook.md#the-database-is-unavailable)). It is told from
+  asyncpg's errors and SQLAlchemy's: through psycopg, a connection that
+  cannot be opened may still answer 500.
+- **A failed upload whose commit is in doubt keeps its file.** The
+  warning `Kept the upload <name> on the <storage> storage` names it:
+  delete it by hand if no row names it.
+- **The probes are named once, in `PROBE_PATHS`.** `RATE_LIMIT_EXEMPT_PATHS`,
+  `CONCURRENCY_EXEMPT_PATHS`, `ACCESS_LOG_QUIET_PATHS`, and
+  `AUTH.AUTHENTICATION_EXEMPT_PATHS` default to `()`, and add to it. The
+  paths a list you set names stay exempt, and every probe is added to it.
+  - **A list that left a probe out on purpose no longer does.** With
+    `RATE_LIMIT_EXEMPT_PATHS = ("/health", "/ready")`, 2.8 counted
+    `/metrics`; 2.9 does not. To keep the old behaviour, take the probe
+    out of `PROBE_PATHS`, and add it to each list that should still
+    exempt it:
+
+    ```python
+    PROBE_PATHS = ("/health", "/ready")  # /metrics is counted again.
+    CONCURRENCY_EXEMPT_PATHS = ("/metrics",)
+    ACCESS_LOG_QUIET_PATHS = ("/metrics",)
+    AUTH = {..., "AUTHENTICATION_EXEMPT_PATHS": ["/metrics"]}  # Its token.
+    ```
+
+    `check` warns of such a list (`probes.W001`); with 2.8's default of
+    `ACCESS_LOG_QUIET_PATHS` set by hand, it says `/metrics` is now
+    logged at DEBUG.
+  - With `TENANCY`, `/ready` and `/metrics` need no tenant any more: a
+    `TENANCY.EXEMPT_PATHS` that lists them for that can drop them.
+  - Successful scrapes of `/metrics` are logged at DEBUG.
+  - Code that reads one of the four lists gets `()` by default: read
+    `PROBE_PATHS` too.
+  - Probes mounted elsewhere: set `PROBE_PATHS` to their paths. A probe
+    you want counted, authenticated, or given a tenant: leave it out of
+    `PROBE_PATHS`.
+- **A lifespan that raises stops the server.** `runserver` and `serve`
+  run uvicorn with `lifespan="on"`, and `serve` exits 3. Under 2.8,
+  uvicorn logged the error at INFO and served every request a 500. If a
+  release no longer starts, fix the error it prints.
+- **`check` refuses an optional app's middleware without the app**
+  (`apps.E003`), and staging and production refuse to start with one.
+  Install the app, or remove the middleware.
+- **`check` and `runserver` say which migrations a database lacks**
+  (`migrations.W001`), outside staging and production. `check` connects
+  to each database there to ask, and waits 2 seconds at most for each to
+  answer: a host that never answers adds that to `check`. Run `migrate`,
+  or list the id in `SILENCED_CHECKS`.
+- **`AUTH.IDENTIFIERS` names fields that the user table has a column
+  for.** Startup refuses `groups` and `user_permissions`, which link
+  tables keep (`auth.E011`). 2.8 started with them, and failed later, at
+  a login, a search, or a list of users that read the field: name the
+  fields the table stores instead.
+- **A wider fixture's factory objects start at 0.** The test plugin
+  resets every factory before a test's fixtures, as well as before the
+  test's own: objects a module-scoped or session-scoped fixture builds are
+  numbered from 0, whichever test runs first, where 2.8 went on from the
+  test before. A test that asserted the numbers such a fixture's objects
+  happened to get asserts the ones from 0 (`Product 0`, `Product 1`).
+- **`check` warns of web names a gateway takes through an allowed
+  module** (`architecture.W001`). The infrastructure layer may import
+  `domainkit.http.client` and `domainkit.http.uploads`, but from 2.9
+  only the names their `__all__` lists, and not `uploads.serve`, without
+  a warning; 3.0 refuses the rest. `check` passes, and `check --deploy`
+  fails until each import changes. `SILENCED_CHECKS` can silence the
+  warning, but only as a whole: there is no way to allow one import, so
+  silencing it also hides the next one. Change the imports instead. Type
+  a route's file as `domainkit.http.uploads.Upload`, not Starlette's
+  `UploadFile`. Import `StoredUpload` from `domainkit.storage`,
+  `UpstreamError` from `domainkit.exceptions`, and `httpx2` itself, not
+  through `domainkit.http.client`. Serve a file from its route, with
+  `serve` there ([Layer rules](reference/settings.md#layer-rules)).
+- **`domainkit.contrib.objectpermissions` needs `domainkit.contrib.auth`
+  in `INSTALLED_DOMAINS`.** It always did, at its first grant; now
+  `setup()` says so (`apps.E001`).
+- **The ledger's triggers are checked as the audit trail's are.** Where
+  deployed, a trigger on the entries or postings given arguments fails
+  the startup check (`accounting.E001`), as it did on the trail. `migrate`
+  makes the triggers again.
+- **AWS's signing and credentials are defined in `domainkit.cloud.aws`.**
+  `AwsCredentials`, `sign`, and the credential functions still import
+  from `domainkit.keys.aws`, the same objects; what prints a class by its
+  module prints the new one. A test that patches one of them in
+  `domainkit.keys.aws` no longer reaches the code that calls it:
+  `default_credentials` calls `environment_credentials` from
+  `domainkit.cloud.aws`, so patch it there
+  (`monkeypatch.setattr("domainkit.cloud.aws.environment_credentials", ...)`).
+- **The outgoing client is defined in `domainkit.outbound.client`, and its
+  guard in `domainkit.outbound.guard`.** Every name still imports from
+  `domainkit.http.client` and `domainkit.http.guard`, the same objects,
+  and neither path warns in 2.9; a later minor release may deprecate the
+  old ones. What prints a class by its module prints the new one
+  (`domainkit.outbound.client.CircuitOpen`, in a trace's
+  `exception.type` or an admins' report). A test that patches a name of
+  an old path still reaches the code, which reads it from the new one;
+  write new patches against `domainkit.outbound.client` and
+  `domainkit.outbound.guard`. The calls still log as
+  `domainkit.http.client`. The layer rules let an infrastructure layer
+  import `domainkit.outbound` with no exception, and keep it out of the
+  application layer, as the old path was; a rule of the project's that
+  names `domainkit.http`, `domainkit.http.client`, or
+  `domainkit.http.guard` covers the new path too. Webhooks no longer
+  imports the guard's lookup: a test that faked DNS by patching `lookup`
+  in `domainkit.contrib.webhooks.guard` patches it in
+  `domainkit.outbound.guard` instead, the module that calls it. `lifecycle.register("guard
+  lookups", ...)` raises `ValueError`: shutdown closes the guard's lookup
+  threads itself, under that name.
+- **The plugin forgets the push services' tokens before each test**
+  (`domainkit.contrib.notifications.push.reset_tokens()`). A test that
+  counted on a token an earlier test's stub answered gets asked for one
+  again: answer the token request in its own stub.
+- **Approvals asks maker and approver rules on an `OfflineContext`.** A
+  guard's `maker_rule`, when the approved command runs, and a policy's
+  `approver_rule`, in `approvers_of`, are asked on a new `OfflineContext`
+  each time: a call of its own, as since 2.8.2. The query, the headers,
+  and the cookies are empty, `request.user` is the user asked about,
+  `request.auth` is None, and `request.state` starts empty. A rule that
+  raises an error of its own refuses, is logged as a warning by its class
+  and its error's, and is reported to the error reporters: the request
+  fails with `maker_not_allowed` at once, where 2.8 ran it again until it
+  was dead-lettered, and `approvers_of` leaves that rule's users out,
+  where 2.8 raised. For a maker rule, a `DomainError` still fails the request
+  with its own code; for an approver rule, it leaves the user out, as
+  any other error of the rule's. A transient error (a connection, a
+  cache, ledger, or broker out of reach, a timeout, an outgoing call that
+  may succeed later, a database busy or out of reach) is still raised,
+  so the run is tried again; another `OSError`, such as a file not found,
+  is the rule's own
+  ([Rules asked outside a request](auth/routes.md#rules-asked-outside-a-request)).
+- **`RATE_LIMIT_BACKEND` is checked before it counts.** A value that is
+  neither a dotted path (`module.Class`, `module:Class`) nor a name a
+  package offers is refused with the settings. One that does not import,
+  or names a class without `hit(key, limit, period)`, is refused by
+  `check` and as the application starts where something counts with it
+  (`backends.E001`): `RATE_LIMIT`, a route's `Throttle`, or auth's attempt
+  throttles. Staging and production do not start, and elsewhere the
+  first request that counts is refused, with the reason. 2.8 refused
+  these only where a request was counted, with an error of the call.
+  Where nothing counts with it, `check` warns (`backends.W001`), and
+  `check --deploy` stops on the warning: remove the setting or name a
+  backend, or list `backends.W001` in `SILENCED_CHECKS`. The worker's
+  task rates count with it too, and fail where they first count.
+- **`domainkit.http.ratelimit.load_backend` is gone.** It was not public.
+  Call `domainkit.http.ratelimit.rate_limit_backend.create()` for a new
+  backend of `RATE_LIMIT_BACKEND`'s class, or
+  `rate_limit_backend.backend_class()` for the class.
+- **A password rule needs `validate` and `help_text`.** A
+  `PASSWORD_VALIDATORS` class without both is refused at startup
+  (`ImproperlyConfigured`), where 2.8 failed when the rules were listed.
+  A `NAME` may still name a function that makes the rule, as in 2.8;
+  what it makes is checked the same way.
+- **Auth's classes are made once per settings object.** The backends,
+  hashers, authentication classes, and password rules of `AUTH` are made
+  again when `override_settings` (or the `settings` fixture) changes any
+  setting, and kept while the settings stay the same, where 2.8 kept one
+  set per value for the process. A test that emptied the loaders' caches
+  (`load_authenticators.cache_clear()`) no longer needs to: the loaders
+  `load_backends`, `load_hashers`, `load_authenticators`, and
+  `load_validators`, which were not public, are gone; use
+  `get_backends()` and the other getters. A class among them that cannot
+  be made with its options raises `ImproperlyConfigured` naming its
+  setting, as 2.8 did for password rules only.
+
+### `migrate` makes the user lookups' indexes, on PostgreSQL
+
+Logins by address, signups, the checks for a taken address or username,
+and the admin API's list of users read the whole users table in 2.8. On
+PostgreSQL, `migrate` now makes, on the user table, a project's own too
+(`AUTH.USER_TABLE`), in the table's schema where it names one, those of
+these indexes that are missing:
+
+- `ix_<table>_<EMAIL_FIELD>_lower`, on `lower()` of the `EMAIL_FIELD`
+  (`ix_domainkit_users_email_lower` on the default table);
+- `ix_<table>_<USERNAME_FIELD>_lower`, on `lower()` of the
+  `USERNAME_FIELD` (`ix_domainkit_users_username_lower`);
+- `ix_<table>_<field>_id`, on the field the admin API lists users by,
+  then the id: the first of `AUTH.IDENTIFIERS` the table does not
+  encrypt, else the `USERNAME_FIELD` (`ix_domainkit_users_email_id` where
+  addresses come first). None where that column is unique, as its own
+  index serves the order, or the table has no `id`.
+
+A column kept as anything but text, such as bytes of a type of your
+own, gets no `lower()` index; an encrypted one gets none. No
+`makemigrations`: they are not declared on the table, and revisions
+leave them alone, by name. SQLite gets none, as it cannot reflect an
+index on `lower()` ([ADR 0185](adr/0185-bound-keyset-pages-index-the-user-lookups-and-read-fewer-grants.md)).
+
+`migrate` reads the table's indexes from the catalog first, and makes
+only those missing: with none to make, it takes no lock on the table.
+Building one holds writes to the table while it runs. On a large users
+table, make them before you deploy, without holding writes, under the
+same names; `migrate` then finds them and builds none. For the default
+table, with addresses first in `AUTH.IDENTIFIERS`:
+
+```sql
+CREATE INDEX CONCURRENTLY ix_domainkit_users_email_lower ON domainkit_users (lower(email));
+CREATE INDEX CONCURRENTLY ix_domainkit_users_username_lower ON domainkit_users (lower(username));
+CREATE INDEX CONCURRENTLY ix_domainkit_users_email_id ON domainkit_users (email, id);
+```
+
+A concurrent build that fails leaves an invalid index of that name, which
+`migrate` takes as made: drop it, and build it again.
+
+### A repository that overrides `count` counts every match in an export
+
+An export now asks its repository's `count` for at most `max_export + 1`
+matches: `count(criteria, include_deleted=..., at_most=...)`. A
+repository of the project's that overrides `count` keeps working: the
+export asks it as 2.8 did, without `at_most`, and it counts every match.
+The export does not read the override's signature, since a decorator's
+need not tell the truth.
+
+To count less, leave `count` alone and override the hooks under it.
+`_count(criteria)` counts every match. `_count_at_most(criteria, limit)`
+counts no more than `limit`, and by default answers the smaller of
+`_count` and `limit`. A repository that overrides only `_count` needs
+nothing more: a count that stops is asked of it, and its answer stops
+at `at_most`.
+
+### Keyset pages, admin changes, and exports read less
+
+Nothing to change; plans and costs change.
+
+- **A keyset page starts at its position.** What follows a position
+  begins with a bound on the ordering's first field, so an index whose
+  first column is that field is read from the position. On a field that
+  may be missing, a page whose position's group is followed by the other
+  group (past a value ascending, past a missing one descending) reads
+  the rest of its group, then the other group in a second statement if
+  it is not full yet. A test that counts that page's statements
+  (`assert_num_queries`) counts one more statement for the page, plus
+  one more for each child relationship it loads ([Pages](queries.md#pages)).
+- **The admin API reads only the grants on objects that count.** A
+  backend that reads its grants from a table can answer
+  `object_grants_beyond(holder, permissions)` to leave out, in its query,
+  the grants of the permissions staff hold on whole models
+  ([Backends](auth/users.md#backends)). One that does not keeps working:
+  its `object_grants` is filtered.
+- **An export counts at most `max_export + 1` matches**
+  (`count(at_most=...)`), and flags' `GET /settings` reads its values in
+  one statement.
+
+### Make and apply approvals' index
+
+With `domainkit.contrib.approvals` installed, the requests table
+(`domainkit_approval_requests`) gains an index,
+`ix_domainkit_approval_requests_scope`, of `(tenant_id, action, policy,
+submitted_at)`, which an approver's list reads through. Run
+`python manage.py makemigrations`, review the revision, then `migrate`
+it. The index is of 2.8.1's `tenant_id` column: from 2.8.0, the same
+`makemigrations` makes both
+([Make and apply approvals' migration](#make-and-apply-approvals-migration)).
+
 ## 2.8.1 to 2.8.2
 
 2.8.2 is a security release, with no migration and no setting: raise the

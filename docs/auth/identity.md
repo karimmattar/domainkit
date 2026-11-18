@@ -42,6 +42,10 @@ IDENTITY = {
 }
 ```
 
+Mount its routes in `src/config/urls.py`, on the project's `router`, as
+[part 0 of the tutorial](../tutorial/0-first-route.md#step-3-add-a-first-route)
+mounts its first route:
+
 ```python
 from domainkit.contrib.identity.api import router as identity_router
 
@@ -166,6 +170,10 @@ Answers that hold tokens are marked `Cache-Control: no-store`.
 - **Keys and discovery documents** are kept for an hour. A key id not
   seen before reads the keys again, once, so a provider's key rotation
   never refuses a login.
+- **One client** calls every provider, so its connections are reused,
+  and a provider that fails `HTTP_CLIENT.BREAKER_FAILURES` times in a
+  row is not called for `BREAKER_COOLDOWN` seconds: its logins fail at
+  once meanwhile.
 
 ### Where a login ends
 

@@ -32,7 +32,7 @@ python manage.py migrate
 A rule subclasses `BasePermission`, and answers `has_permission`. A
 refusal is a 403 with the rule's `message`. `Require` runs the rules in
 order, and `IsAuthenticated` first makes a caller who did not log in a
-401, not a 403:
+401, not a 403. Make a new file, `src/config/reports.py`:
 
 ```python title="src/config/reports.py (new file)"
 """Reports: for users who proved their email address."""
@@ -65,7 +65,7 @@ async def reports() -> dict[str, list[str]]:
 
 ### Step 3: mount the route
 
-Mount it with the others:
+Mount it with the others, at the end of `src/config/urls.py`:
 
 ```python title="src/config/urls.py"
 from config.reports import router as reports_router
@@ -76,7 +76,7 @@ router.include_router(reports_router, prefix="/reports")
 ### Step 4: test the rule
 
 The test makes two users, one verified and one not, and calls the route
-as each of them, and as nobody:
+as each of them, and as nobody. Make a new file, `tests/test_reports.py`:
 
 ```python title="tests/test_reports.py (new file)"
 """Verified users read reports; others are refused, and say why."""

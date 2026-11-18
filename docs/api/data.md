@@ -58,12 +58,14 @@ SQLAlchemy integration: connections, ORM metadata, repositories, migrations.
 - `SqlAlchemyUnitOfWork`: Open a session on enter, commit on `commit()`, close on exit.
 - `UTCDateTime`: Timezone-aware UTC timestamps, also on SQLite (which has no time zones).
 - `ValueObjectType`: A single-field value object, stored as its field (`ProductName.value`).
+- `affected_rows`: How many rows the `UPDATE` or `DELETE` that gave `result` changed.
 - `child`: A relationship to the one child entity an aggregate owns, or None.
 - `children`: A relationship to the child entities an aggregate owns (`list[Line]`).
 - `connections`: Process-wide connection handler.
 - `lock_key`: The 64-bit key `lock(name)` takes on PostgreSQL, signed, as `bigint`.
 - `map_imperatively`: Map `class_` to `table` once; later calls are ignored.
 - `metadata`: Every table of every domain; the target of `makemigrations`.
+- `refused_commit`: Whether `exc`, raised as a transaction committed, says it stored nothing.
 - `register_column_type`: Store fields of `cls` (and its subclasses) in `column_type`.
 - `table_for`: The table that stores `cls`: one column per field (see the module).
 
@@ -122,6 +124,21 @@ Range partitioning of large PostgreSQL tables, managed by the framework.
 - `Interval`: The length of one partition.
 - `partition_by_range`: Declare `table` range-partitioned by the timestamp `column`.
 
+## `domainkit.db.protection`
+
+Keep tables append-only in the database itself (PostgreSQL).
+
+- `MAX_TABLE_NAME`: The longest table name whose triggers' names PostgreSQL keeps whole (63 bytes).
+- `ROW_TRIGGER`: `pg_trigger.tgtype` of `BEFORE UPDATE OR DELETE ... FOR EACH ROW`.
+- `TRUNCATE_TRIGGER`: `pg_trigger.tgtype` of `BEFORE TRUNCATE ... FOR EACH STATEMENT`.
+- `append_only_body`: The body of the triggers' function for `table`: refuse, whatever the change.
+- `append_only_statements`: The statements that protect `table`, and those that undo them.
+- `migrate_command`: The command that makes the triggers of a place `unprotected` names.
+- `missing_append_only`: The triggers of `tables` the connection's schema lacks, disabled, or changed.
+- `protect_append_only`: Make the triggers of each of `tables` there is, afresh; the tables protected.
+- `trigger_names`: The triggers that protect `table`: of rows, and of truncation.
+- `unprotected`: The triggers of `tables` that `database` lacks, by where it lacks them.
+
 ## `domainkit.db.query`
 
 Compile domain queries (`domainkit.ddd.query`) to SQLAlchemy expressions.
@@ -132,6 +149,7 @@ Compile domain queries (`domainkit.ddd.query`) to SQLAlchemy expressions.
 
 Where each domain's data lives: routing targets, aliases, and shards.
 
+- `DatabaseRouter`: Answer where data lives, from `DATABASES`, `SHARDS`, and routing.
 - `bucket_for`: The bucket of `key` among `buckets`; stable across processes and hosts.
 - `for_each_shard`: Run `function(alias)` on every database of `group` at once.
 - `router`: The process-wide router; it reads settings on every call.
@@ -166,6 +184,7 @@ Domain-driven design building blocks ("seedwork").
 - `EventHandler`: An event handler: `async def handle(event) -> None`.
 - `F`: A field of an aggregate, by name, to build conditions and orderings.
 - `Generated`: `Annotated` metadata: the database computes the column (`GeneratedField`).
+- `HandlerCancelled`: In-process handlers did not finish: the work they ran in was cancelled.
 - `HandlerKey`: A key a worker runs messages of: the handler, and the event type it takes.
 - `HandlerTimedOut`: An in-process handler ran past its timeout and was cut off.
 - `IPAddress`: An IPv4 or IPv6 address (Django's `GenericIPAddressField`).
@@ -211,10 +230,12 @@ Domain-driven design building blocks ("seedwork").
 - `UseCase`: A use case: its command, and how to run it in a unit of work.
 - `ValueObject`: Immutable value defined only by its attributes; equal values are equal.
 - `event_bus`: Process-wide bus used by units of work unless they are given another.
+- `failed_in_doubt`: Whether `exc` comes from a commit that may have been applied.
 - `fields_about`: What `values` hold about `subject`, and about nobody else.
 - `fingerprint`: SHA-256 of the action and the arguments, as canonical JSON (64 hex digits).
 - `handles`: Mark a handler for `event_type` events (Django's `@receiver`).
 - `in_memory`: A unit of work whose repositories, made from its annotations, keep everything in memory.
+- `mark_in_doubt`: Mark `exc` as the error of a commit that may have been applied.
 - `use_case`: Make an async function a use case: its command is made from its parameters.
 
 ## `domainkit.ddd.choices`

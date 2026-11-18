@@ -10,8 +10,9 @@ import asyncio
 import ipaddress
 import socket
 import ssl
+import sys
 import threading
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator
 from concurrent.futures import Future
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
@@ -26,9 +27,10 @@ from domainkit.clock import freeze_time
 from domainkit.conf import Settings, override_settings
 from domainkit.context import RequestContext, bind_request
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.http import guard
-from domainkit.http.client import HttpClient
-from domainkit.http.guard import (
+from domainkit.lifecycle import Phase
+from domainkit.outbound import guard
+from domainkit.outbound.client import HttpClient
+from domainkit.outbound.guard import (
     FAILED_LOOKUP_SECONDS,
     HUNG_LOOKUP_BACKOFF,
     HUNG_LOOKUP_SECONDS,
@@ -39,7 +41,6 @@ from domainkit.http.guard import (
     system_trust,
     tls_context,
 )
-from domainkit.lifecycle import Phase
 from domainkit_tests.deadline_routes import Counter
 from domainkit_tests.test_webhooks import certificates  # noqa: F401 - fixture.
 
@@ -90,15 +91,6 @@ async def lookups(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Lookups]:
     fake.release.set()
 
 
-@pytest.fixture
-def registered() -> Iterator[None]:
-    """Forget the closers a test's resolvers register."""
-    saved = dict(lifecycle._registered[Phase.RESOURCES])
-    yield
-    lifecycle._registered[Phase.RESOURCES].clear()
-    lifecycle._registered[Phase.RESOURCES].update(saved)
-
-
 async def drained(resolver: GuardResolver) -> None:
     """Wait until a one-thread resolver's thread has finished its lookup."""
     assert resolver._executor is not None
@@ -113,7 +105,6 @@ def refused_at_once(resolver: GuardResolver, host: str) -> None:
         resolver._start(host, 443)  # What lookup() hands a thread, or refuses.
 
 
-@pytest.mark.usefixtures("registered")
 async def test_lookups_run_on_the_guards_threads(lookups: Lookups) -> None:
     """Never on the loop's default executor, which other work needs."""
     lookups.release.set()
@@ -129,7 +120,6 @@ async def test_lookups_run_on_the_guards_threads(lookups: Lookups) -> None:
     await guard.resolver.close()
 
 
-@pytest.mark.usefixtures("registered")
 async def test_lookups_past_the_bounds_fail_at_once(lookups: Lookups) -> None:
     """At most ``threads`` at once, ``per_host`` per host; the others fail fast.
 
@@ -154,7 +144,6 @@ async def test_lookups_past_the_bounds_fail_at_once(lookups: Lookups) -> None:
     await resolver.close()
 
 
-@pytest.mark.usefixtures("registered")
 async def test_a_lookup_counts_until_its_thread_ends(lookups: Lookups) -> None:
     """Its caller gave up, the thread still waits for the system's resolver."""
     resolver = GuardResolver(threads=1)
@@ -173,7 +162,6 @@ async def test_a_lookup_counts_until_its_thread_ends(lookups: Lookups) -> None:
     await resolver.close()
 
 
-@pytest.mark.usefixtures("registered")
 async def test_a_failed_lookup_is_remembered_for_a_while(lookups: Lookups) -> None:
     """Its error comes back at once, without a thread, until the time is up."""
     lookups.release.set()
@@ -210,7 +198,6 @@ async def test_a_failed_lookup_is_remembered_for_a_while(lookups: Lookups) -> No
     await resolver.close()
 
 
-@pytest.mark.usefixtures("registered")
 async def test_remembered_failures_are_bounded(
     lookups: Lookups, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -243,30 +230,39 @@ async def test_a_cancelled_lookup_is_neither_counted_nor_remembered() -> None:
 async def test_the_threads_stop_at_shutdown_and_start_again(
     lookups: Lookups,
 ) -> None:
-    """The first lookup registers the resolver; closing it lets a later one start."""
+    """Shutdown closes the guard's resolver; a later lookup starts threads again.
+
+    The framework closes it by name, as it does the HTTP clients: the guard
+    sits below ``domainkit.lifecycle`` and registers nothing with it.
+    """
     lookups.release.set()
-    resolver = GuardResolver()
-    saved = dict(lifecycle._registered[Phase.RESOURCES])
-    try:
-        await resolver.close()  # Nothing started: nothing to stop.
-        await resolver.lookup("a.test", 443)
-        first = resolver._executor
-        assert first is not None
-        assert lifecycle._registered[Phase.RESOURCES][LOOKUPS] == resolver.close
+    resolver = guard.resolver
+    await resolver.close()  # Nothing started: nothing to stop.
+    await resolver.lookup("a.test", 443)
+    first = resolver._executor
+    assert first is not None
+    assert LOOKUPS in lifecycle.closers(Phase.RESOURCES)[0]
 
-        await lifecycle.close_resources()
-        assert resolver._executor is None
-        assert first._shutdown
+    await lifecycle.close_resources()
+    assert resolver._executor is None
+    assert first._shutdown
 
-        await resolver.lookup("a.test", 443)
-        assert resolver._executor not in {None, first}
-        await resolver.close()
-    finally:
-        lifecycle._registered[Phase.RESOURCES].clear()
-        lifecycle._registered[Phase.RESOURCES].update(saved)
+    await resolver.lookup("a.test", 443)
+    assert resolver._executor not in {None, first}
+    await resolver.close()
 
 
-@pytest.mark.usefixtures("registered")
+async def test_shutdown_passes_over_a_guard_never_imported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without ``domainkit.outbound.guard`` loaded, there are no threads to stop."""
+    monkeypatch.delitem(sys.modules, "domainkit.outbound.guard")
+
+    await lifecycle.close_guard_lookups()
+
+    assert "domainkit.outbound.guard" not in sys.modules
+
+
 async def test_hung_lookups_leave_threads_for_other_callers(lookups: Lookups) -> None:
     """Four lookups that never answer no longer stop every guarded call.
 
@@ -298,7 +294,6 @@ async def test_hung_lookups_leave_threads_for_other_callers(lookups: Lookups) ->
     assert resolver._size == 0
 
 
-@pytest.mark.usefixtures("registered")
 async def test_the_lookup_threads_follow_the_setting(lookups: Lookups) -> None:
     """``GUARD_LOOKUP_THREADS`` bounds them; an owner gets a quarter, at least 1."""
     lookups.release.set()
@@ -323,7 +318,6 @@ class Unloaded:
         raise ImproperlyConfigured("No settings module.")
 
 
-@pytest.mark.usefixtures("registered")
 async def test_the_guard_needs_no_settings(
     lookups: Lookups, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -337,7 +331,6 @@ async def test_the_guard_needs_no_settings(
     await resolver.close()
 
 
-@pytest.mark.usefixtures("registered")
 async def test_running_threads_bound_lookups_whatever_the_setting_says_since(
     lookups: Lookups,
 ) -> None:
@@ -355,7 +348,6 @@ async def test_running_threads_bound_lookups_whatever_the_setting_says_since(
     await resolver.close()
 
 
-@pytest.mark.usefixtures("registered")
 async def test_one_owner_takes_at_most_a_quarter_of_the_threads(
     lookups: Lookups,
 ) -> None:
@@ -400,7 +392,6 @@ async def test_lookups_belong_to_the_requests_caller() -> None:
         assert lookup_owner() == "ip:unknown"
 
 
-@pytest.mark.usefixtures("registered")
 async def test_a_host_whose_lookup_hung_backs_off_longer(lookups: Lookups) -> None:
     """A failure after ``HUNG_LOOKUP_SECONDS`` keeps its host out for a minute.
 
@@ -453,7 +444,6 @@ async def test_a_host_whose_lookup_hung_backs_off_longer(lookups: Lookups) -> No
     await resolver.close()
 
 
-@pytest.mark.usefixtures("registered")
 async def test_kept_slow_answers_are_bounded(
     lookups: Lookups, monkeypatch: pytest.MonkeyPatch
 ) -> None:

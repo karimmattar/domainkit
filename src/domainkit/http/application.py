@@ -7,17 +7,19 @@ from contextlib import asynccontextmanager
 from typing import Any, Final
 
 from fastapi import APIRouter, FastAPI
+from fastapi.dependencies.models import Dependant
 from fastapi.telemetry import TelemetryConfig
 from starlette.types import Message, Receive, Scope, Send
 
 from domainkit import setup
+from domainkit.apps import registry
 from domainkit.apps.hooks import on_check_application
-from domainkit.checks import CheckFailed, CheckMessage
+from domainkit.checks import CheckFailed, CheckMessage, describe
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db.drivers import connect_args
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit.http.access import route_rule_problems
+from domainkit.http.access import route_rule_problems, served_routes
 from domainkit.http.apidocs import OPENAPI_PATH, docs_routes
 from domainkit.http.blocking import watch_event_loop
 from domainkit.http.errors import ErrorResponse, install_exception_handlers
@@ -26,6 +28,7 @@ from domainkit.http.openapi import (
     install_openapi,
     operation_id,
 )
+from domainkit.http.ratelimit import Throttle, rate_limit_backend
 from domainkit.http.routing import (
     flatten_routes,
     index_routes,
@@ -73,6 +76,8 @@ BUILT_PROBLEMS: Final = "domainkit_problems"
 """``app.state`` key: the problems found when the application was built."""
 SERVER: Final = b"server"
 """The ``Server`` header's name, as ASGI carries it."""
+CONTRIB: Final = "domainkit.contrib."
+"""The packages of the optional apps, each a domain to install."""
 
 
 class Application(FastAPI):
@@ -245,13 +250,18 @@ def application_problems(app: FastAPI) -> list[str]:
     Every route must declare who may call it (``REQUIRE_ROUTE_RULES``),
     whatever authenticates requests; a route that takes its tenant from
     its path must name a parameter it has, before its rules
-    (``tenancy.E001``, ``tenancy.E002``). Domains report through
+    (``tenancy.E001``, ``tenancy.E002``); an optional app's middleware
+    needs the app (``apps.E003``), and ``RATE_LIMIT_BACKEND`` a class with
+    ``hit`` where something counts with it (``backends.E001``). Domains
+    report through
     ``domainkit.apps.hooks.on_check_application``.
     """
     problems: list[str] = [
         CheckMessage("openapi.E001", problem)
         for problem in duplicate_operation_ids(app)
     ]
+    problems.extend(middleware_without_its_app())
+    problems.extend(backend_problems(app))
     if settings.REQUIRE_ROUTE_RULES:
         problems.extend(
             CheckMessage("security.E101", problem)
@@ -262,6 +272,95 @@ def application_problems(app: FastAPI) -> list[str]:
         problem for hook in on_check_application for problem in hook.call(app)
     )
     return problems
+
+
+def middleware_without_its_app() -> list[str]:
+    """``apps.E003``: each ``MIDDLEWARE`` entry of an optional app not installed.
+
+    Its settings, tables, and startup are the app's: without the app the
+    middleware fails on its first call, and every request with it.
+    """
+    problems: list[str] = []
+    for path in settings.MIDDLEWARE:
+        if not path.startswith(CONTRIB):
+            continue
+        app = ".".join(path.split(".")[:3])
+        if not registry.is_installed(app):
+            problems.append(
+                CheckMessage(
+                    "apps.E003",
+                    f"MIDDLEWARE lists {path!r}, but {app!r} is not in "
+                    f"INSTALLED_DOMAINS: every request would fail. Install "
+                    f"{app!r}, or remove the middleware.",
+                )
+            )
+    return problems
+
+
+BACKEND_HINT: Final = (
+    "Name a class with hit(key, limit, period), such as "
+    "domainkit.http.ratelimit.RedisBackend, or a name an installed package "
+    "offers in its domainkit.backends entry points."
+)
+"""How to mend a ``RATE_LIMIT_BACKEND`` that names no rate-limit backend."""
+
+
+def backend_problems(app: FastAPI) -> list[str]:
+    """``backends.E001``: something counts with a ``RATE_LIMIT_BACKEND`` that cannot.
+
+    The global limit (``RATE_LIMIT``) and a route's ``Throttle`` make one
+    where they first count, and would fail there: a path that does not
+    import, or a class without ``hit``, is refused before then (since
+    2.9, ADR 0196). Auth's attempt throttles say so of their own.
+    """
+    problem = _backend_problem()
+    if problem is None or not _counts_requests(app):
+        return []
+    return [CheckMessage("backends.E001", problem, BACKEND_HINT)]
+
+
+def backend_warnings(app: FastAPI) -> list[str]:
+    """``backends.W001``: a ``RATE_LIMIT_BACKEND`` that cannot count, unused yet.
+
+    Neither ``RATE_LIMIT`` nor a ``Throttle`` counts with it, so it fails
+    nothing yet: a deployment is not stopped over it. The worker's task
+    rates, and a throttle or a limit added later, would fail where they
+    first count.
+    """
+    problem = _backend_problem()
+    if problem is None or _counts_requests(app):
+        return []
+    return [
+        CheckMessage(
+            "backends.W001",
+            f"{problem} Nothing counts with it now: neither RATE_LIMIT nor a Throttle.",
+            BACKEND_HINT,
+        )
+    ]
+
+
+def _counts_requests(app: FastAPI) -> bool:
+    """Whether ``RATE_LIMIT`` is set, or a route of ``app`` has a ``Throttle``."""
+    return settings.RATE_LIMIT is not None or any(
+        dependant is not None and _throttles(dependant)
+        for _, dependant in served_routes(app.routes)
+    )
+
+
+def _throttles(dependant: Dependant) -> bool:
+    """Whether ``dependant`` depends on a ``Throttle``, at any depth."""
+    return isinstance(dependant.call, Throttle) or any(
+        _throttles(each) for each in dependant.dependencies
+    )
+
+
+def _backend_problem() -> str | None:
+    """What is wrong with ``RATE_LIMIT_BACKEND``; None if it names a backend."""
+    try:
+        rate_limit_backend.backend_class()
+    except ImproperlyConfigured as exc:
+        return str(exc)
+    return None
 
 
 def check_started(app: FastAPI) -> None:
@@ -289,10 +388,13 @@ def _report(problems: list[str], heading: str) -> None:
     """
     if not problems:
         return
-    failed = CheckFailed(heading, problems)
     if settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
-        raise failed
-    logger.warning("%s", failed)
+        raise CheckFailed(heading, problems)
+    # One record a problem: a record of several lines would be escaped onto
+    # one, as the log keeps a line break in a message from forging a line.
+    for problem in problems:
+        lines = describe(problem, indent="").splitlines()
+        logger.warning("%s: %s", heading, " ".join(line.strip() for line in lines))
 
 
 def _load[T](path: str, expected: type[T], setting: str) -> T:

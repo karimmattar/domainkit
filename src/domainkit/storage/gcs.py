@@ -12,7 +12,7 @@
         },
     }
 
-Speaks GCS's JSON API through ``domainkit.http.client``, with a service
+Speaks GCS's JSON API through ``domainkit.outbound.client``, with a service
 account's OAuth token (``domainkit.cloud.google``): from
 ``credentials_file``, else the metadata server (GKE's workload identity,
 Compute Engine). Files of up to 8 MiB are one media upload; larger ones a
@@ -85,7 +85,7 @@ class GCSStorage(ObjectStorage):
             )
         self.account = account
         self._offsets: dict[str, int] = {}
-        from domainkit.http.client import HttpClient
+        from domainkit.outbound.client import HttpClient
 
         self.client = HttpClient(timeout=timeout, propagate=False)
 

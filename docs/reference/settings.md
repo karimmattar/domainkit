@@ -22,6 +22,7 @@ On this page you find:
 | Databases, ledgers, shards, caches, storages, search, tenancy, brokers | [backends.md](backends.md) |
 | `DOCUMENTS`: the Gotenberg server that renders documents (new in 2.5) | [backends.md](backends.md#documents) |
 | HTTP, security headers, CORS, outgoing calls, live connections, middleware | [http.md](http.md) |
+| `PROBE_PATHS`: the paths of the probes and the metrics scrape, which every list of exempt paths adds to (new in 2.9) | [http.md](http.md#probe-paths) |
 | Each optional app's settings (`AUTH`, `MESSAGING`, `AUDIT`, ...) | the app's own page ([contrib.md](../contrib.md)) |
 | `AUTH`'s keys, `AUTH["BREACHED_PASSWORDS"]` (new passwords checked against data breaches) among them | [auth.md](../auth.md#settings) |
 | `AUTH["ADMIN_ACTION"]`, and `APPROVALS["SUBMIT_ACTION"]`, `["REJECT_ACTION"]`, and `["CANCEL_ACTION"]`: the admin API's changes and a request's steps, each authorized as one act | [auth.md](../auth.md#settings), [approvals.md](../contrib/approvals.md#settings) |
@@ -218,7 +219,7 @@ domains' own models keep those keys as secrets.
 | `SERVE` | see [The `serve` command](servers.md#the-serve-command) | The production server `manage.py serve` starts (`SERVER`: Granian where installed, else uvicorn), and its limits: `WORKERS`, `MAX_CONNECTIONS`, `BACKLOG`, `KEEP_ALIVE`, `GRACEFUL_TIMEOUT`, `MAX_HEADER_SIZE`, `WEBSOCKETS`; under Granian, its HTTP versions (`HTTP`) and whether a worker that fails as it starts stops it (`EXIT_ON_FAILED_START`). The defaults are the options of [Server limits](servers.md). |
 | `LOGGING` | minimal | A `logging.config.dictConfig` mapping, applied by `setup()`. `domainkit.log.build_logging_config(log_format="json", level="INFO")` makes one that writes from a thread, through a bounded queue ([runtime.md](../runtime.md#logging-and-error-reports)). The settings `init` writes use it. |
 | `ERROR_REPORTERS` | `()` | Callables `(exc, context) -> None` by dotted path, called for every unexpected error (500s, dead-lettered messages), on a reporting thread and in the caller's context. 100 reports may wait; more are dropped and counted. A reporter that raises is logged and skipped. |
-| `EVENT_HANDLER_TIMEOUT` | `10.0` | Seconds an in-process event handler may run after a commit, up to 3600. A handler still running then is cancelled, logged, and reported (`HandlerTimedOut`), and the request goes on. `event_bus.subscribe(..., timeout=30)` sets one handler's limit. `durable=True` runs a handler from the outbox instead ([runtime.md](../runtime.md#event-handlers)). |
+| `EVENT_HANDLER_TIMEOUT` | `10.0` | Seconds an in-process event handler may run after a commit, up to 3600, and so may each domain's after-commit hook (`on_committed`, `on_transaction_committed`, since 2.9). A handler or a hook still running then is cancelled, logged, and reported (`HandlerTimedOut`), and the request goes on. `event_bus.subscribe(..., timeout=30)` sets one handler's limit. `durable=True` runs a handler from the outbox instead ([runtime.md](../runtime.md#event-handlers)). |
 | `SHUTDOWN_TIMEOUT` | `15.0` | Seconds a shutdown may take in all, from 0 to 300: domain hooks, work in flight, background tasks, then connections, each phase within its share ([runtime.md](../runtime.md#shutting-down-within-a-budget)). Add the server's graceful shutdown (`SERVE["GRACEFUL_TIMEOUT"]`, 10 seconds), and keep the sum under the orchestrator's grace period: 30 seconds in Kubernetes. |
 
 ## Layer rules
@@ -232,11 +233,16 @@ domains' own models keep those keys as secrets.
   `domainkit.clock`, `domainkit.money`, `domainkit.i18n.lazy` (*new in
   2.5*: marks and lazy strings, [i18n.md](../i18n.md#messages-of-the-domain-layer)),
   and itself;
-- the application layer uses no web or database library, and the
-  infrastructure layer no web library but the outgoing HTTP client
-  (`domainkit.http.client`), which adapters call other services with,
-  and the uploads' checks and storing (`domainkit.http.uploads`), which
-  a file gateway runs on the bytes its route hands it (*New in 2.5*),
+- the application layer uses no web or database library, and calls no
+  other service (`domainkit.outbound`): it reaches one through a port;
+- the infrastructure layer calls other services through
+  `domainkit.outbound` (the outgoing HTTP client and its guard), which is
+  no web library, so no rule names it there (*new in 2.9*,
+  [ADR 0195](../adr/0195-move-the-outgoing-client-below-the-adapters-and-hold-module-state-to-its-resets.md)).
+  It uses no web library but the client's path until 2.9
+  (`domainkit.http.client`, the same objects), and the uploads' checks
+  and storing (`domainkit.http.uploads`), which a file gateway runs on
+  the bytes its route hands it (*New in 2.5*),
   typed as `domainkit.http.uploads.Upload` rather than Starlette's
   `UploadFile` (*New in 2.7*), and the problems a route raises
   (`domainkit.http.problems`: `APIError` and `FieldError`), so that a
@@ -249,10 +255,17 @@ domains' own models keep those keys as secrets.
 `ARCHITECTURE` adds to these rules, and only adds: a rule the framework
 states always holds. A broken rule is `architecture.E001`.
 
+From the two 2.x modules, `domainkit.http.client` and
+`domainkit.http.uploads`, the infrastructure layer imports the names
+their `__all__` lists, but `uploads.serve`, which answers a request:
+another name they hold, such as Starlette's `UploadFile` or
+`StreamingResponse`, or `serve`, is `architecture.W001`, a warning, which
+3.0 makes a refusal (*new in 2.9*, ADR 0188).
+
 | `ARCHITECTURE` key | Default | Meaning |
 | --- | --- | --- |
 | `DOMAIN_ALLOWED` | `()` | More packages a domain layer may import, such as a shared kernel (`"myproject.kernel"`). Up to 64 dotted names. |
-| `FORBIDDEN_LIBRARIES` | `{}` | More libraries a layer must not import, by layer: `{"application": ("httpx",)}`. Not the domain layer, which is an allowlist: use `DOMAIN_ALLOWED`. Up to 12 layers, each with up to 64 names. |
+| `FORBIDDEN_LIBRARIES` | `{}` | More libraries a layer must not import, by layer: `{"application": ("httpx",)}`. Not the domain layer, which is an allowlist: use `DOMAIN_ALLOWED`. Up to 12 layers, each with up to 64 names. A name of 2.8's paths, `domainkit.http.client` or `domainkit.http.guard`, or `domainkit.http`, which held them, covers their home in `domainkit.outbound` too, wherever it covered the old path, unless the defaults hold the entry already (*new in 2.9*). |
 | `EXTRA_LAYERS` | `()` | Layer packages of the project's own, such as `ports`, so the two tables here can name them. Up to 8, none a built-in layer. |
 | `FORBIDDEN_LAYERS` | `{}` | More layers of the same domain a layer must not import: `{"ports": ("infrastructure", "api")}`. Every layer named must be built in or in `EXTRA_LAYERS`, and none may forbid itself. Up to 12 layers, each forbidding up to 12. |
 | `PUBLIC_SURFACE` | `()` | More parts of a domain that other domains may import, each starting with a layer: `("domain.values",)`. |

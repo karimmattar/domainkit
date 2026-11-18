@@ -9,7 +9,7 @@ from domainkit import clock
 from domainkit.contrib import mail
 from domainkit.contrib.mail import MailSettings
 from domainkit.contrib.mail import admins as admins_module
-from domainkit.contrib.mail.admins import mail_admins, report_to_admins
+from domainkit.contrib.mail.admins import mail_admins, report_to_admins, reset_reports
 from domainkit_tests.test_mail import (
     Install,
     empty_outbox,
@@ -26,7 +26,7 @@ __all__ = ["empty_outbox", "immediate_retries", "install", "tables"]
 @pytest.fixture(autouse=True)
 def forget_reports() -> None:
     """Every test starts with no report sent lately."""
-    admins_module._last_sent.clear()
+    reset_reports()
 
 
 def failure(secret: str) -> ValueError:
@@ -55,6 +55,17 @@ def test_an_error_is_mailed_once_per_kind_and_place(install: Install) -> None:
     assert " in failure" in first.body
     assert "4111" not in first.body + first.subject
     assert later.subject == first.subject
+
+
+def test_a_reset_lets_the_next_report_go_at_once(install: Install) -> None:
+    """``reset_reports`` forgets what went out lately, as the plugin does per test."""
+    install(ADMINS=ADMINS, ADMINS_EVERY=timedelta(minutes=5))
+    report_to_admins(failure("first"), {})
+    report_to_admins(failure("held back"), {})
+    reset_reports()
+    report_to_admins(failure("sent again"), {})
+
+    assert len(mail.outbox) == 2
 
 
 def test_nobody_named_means_nothing_sent(install: Install) -> None:

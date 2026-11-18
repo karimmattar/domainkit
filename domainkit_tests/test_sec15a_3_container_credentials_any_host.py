@@ -15,9 +15,9 @@ import httpx2
 import pytest
 
 from domainkit.clock import freeze_time
-from domainkit.http.client import stub
 from domainkit.keys import KeyProviderError
 from domainkit.keys.aws import default_credentials
+from domainkit.outbound.client import stub
 from domainkit_tests.test_keys_providers import NOW, no_aws  # noqa: F401
 
 ALLOWED_HOSTS = {"127.0.0.1", "localhost", "169.254.170.2", "169.254.170.23"}

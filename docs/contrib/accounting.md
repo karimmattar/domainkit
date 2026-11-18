@@ -24,6 +24,18 @@ The decisions are ADRs
 and [0117](../adr/0117-reconcile-statements-through-a-port-with-rules-in-order-and-record-breaks.md).
 Amounts are `domainkit.money.Money` (ADR 0115, [money.md](../money.md)).
 
+## When to use it, and when not to
+
+- **Use it when** money must balance and be reported: customers'
+  wallets, a payment service, a lender. It gives entries that always
+  balance, holds, periods that close, a trial balance, and the
+  reconciliation of a bank's statements.
+- **Do not use it** for a balance with a rule or two and no reports, such
+  as credits in an app: a `Money` field on the aggregate, as in
+  [the payment recipe](../recipes/payments.md), is less to run.
+- **Its books are on one database**, never a shard group: an entry's
+  accounts commit together ([install](#install)).
+
 ## Install
 
 ```python
@@ -273,8 +285,10 @@ On PostgreSQL, triggers that `migrate` makes afresh each time refuse
 every update, delete, and truncation of entries and postings, the table
 owner's too. In staging and production the application refuses to start
 without them as `migrate` makes them: enabled, firing for every row (no
-`WHEN`, no column list), running their own function with its body
-(`accounting.E001`). `flush`, `dumpdata`, and `loaddata` leave the
+`WHEN`, no column list, no arguments, since 2.9), running their own
+function with its body (`accounting.E001`). They are the audit trail's
+triggers, made and checked the same way
+([Append-only tables](../databases.md#append-only-tables)). `flush`, `dumpdata`, and `loaddata` leave the
 ledger's tables alone.
 
 ### Hooks: checks before and while booking

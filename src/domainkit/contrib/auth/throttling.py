@@ -41,12 +41,16 @@ from fastapi import Request, status
 
 from domainkit import clock
 from domainkit.apps.hooks import HookPoint
-from domainkit.conf import settings
-from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
+from domainkit.conf import DEPLOYED_ENVIRONMENTS, settings
+from domainkit.context import client_group
 from domainkit.ddd.tenancy import shared_keys
 from domainkit.http.errors import APIError
-from domainkit.http.ratelimit import RATE_LIMITED, Backend, Decision, client_group
-from domainkit.utils.module_loading import import_string
+from domainkit.http.ratelimit import (
+    RATE_LIMITED,
+    Backend,
+    Decision,
+    rate_limit_backend,
+)
 from domainkit.utils.rates import parse_rate
 
 from .models import as_mobile_number
@@ -342,7 +346,7 @@ def limiter(request: Request) -> Backend:
         with _making_limiter:
             counter = getattr(state, "login_limiter", None)
             if counter is None:
-                counter = import_string(settings.RATE_LIMIT_BACKEND)()
+                counter = rate_limit_backend.create()
                 state.login_limiter = counter
     return counter
 

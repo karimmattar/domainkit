@@ -53,16 +53,24 @@ from weakref import WeakKeyDictionary
 
 import anyio
 from sqlalchemy import BigInteger, Connection, bindparam, event, func, select, text
-from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.exc import (
+    DBAPIError,
+    DisconnectionError,
+    IntegrityError,
+    PendingRollbackError,
+    ResourceClosedError,
+    StatementError,
+)
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, AsyncSessionTransaction
 from sqlalchemy.orm import SessionTransaction
-from sqlalchemy.orm.exc import StaleDataError
+from sqlalchemy.orm.exc import FlushError, StaleDataError
 
 from domainkit import tasks
 from domainkit.apps import registry
 from domainkit.conf import settings
 from domainkit.db.connections import INTERNAL, SETTLE_TIMEOUT, Reads, connections
-from domainkit.db.errors import duplicate_value
+from domainkit.db.errors import CONNECTION_EXCEPTION, duplicate_value
 from domainkit.db.hooks import on_committed, on_stage
 from domainkit.db.orm import mapper_registry, metadata
 from domainkit.db.repository import SqlAlchemyRepository, reload_expired, sqlstate_of
@@ -72,6 +80,7 @@ from domainkit.ddd import (
     DeferredTask,
     DomainEvent,
     EventBus,
+    HandlerTimedOut,
     LockNotAvailable,
     UnitOfWork,
 )
@@ -84,6 +93,17 @@ from domainkit.reporting import report_error
 from domainkit.tracing import span
 
 MESSAGING: Final = "domainkit.contrib.messaging"
+REFUSED_BEFORE_COMMIT: Final = (
+    StaleDataError,
+    FlushError,
+    PendingRollbackError,
+    ResourceClosedError,
+    PoolTimeout,
+    DisconnectionError,
+)
+"""SQLAlchemy's own errors that come before a ``COMMIT`` is sent: a stale
+version or a refused flush, a session or connection unusable, no connection
+to be had. A commit they fail stored nothing."""
 CONFLICTS: Final = frozenset({"40001", "40P01"})
 """PostgreSQL's SQLSTATEs of a transaction that lost a race and may succeed
 if run again: ``serialization_failure`` and ``deadlock_detected``."""
@@ -360,13 +380,28 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
             await hook.call(self, events, tasks)
 
     async def _committed(self) -> None:
-        """Run the ``on_committed`` hooks; a failure is reported, never raised."""
+        """Run the ``on_committed`` hooks; a failure is reported, never raised.
+
+        No deadline cuts them off any more (``deadlines.after_commit``), so
+        each runs within ``EVENT_HANDLER_TIMEOUT``, as an in-process handler
+        does: one still running then is cut off, logged and reported as
+        ``HandlerTimedOut``, and the next one runs.
+        """
+        seconds = settings.EVENT_HANDLER_TIMEOUT
         for hook in on_committed.hooks():
             try:
-                await hook.call(self)
+                async with asyncio.timeout(seconds) as limit:
+                    await hook.call(self)
             except Exception as exc:  # The data is committed: report, carry on.
-                logger.exception("After-commit work of %r failed", hook.domain)
-                report_error(exc, domain=hook.domain)
+                if not limit.expired():
+                    logger.exception("After-commit work of %r failed", hook.domain)
+                    report_error(exc, domain=hook.domain)
+                    continue
+                cut = HandlerTimedOut(
+                    f"After-commit work of {hook.domain!r} took more than {seconds:g}s"
+                )
+                logger.error("%s; cut off", cut)
+                report_error(cut, domain=hook.domain)
 
     async def _commit(self) -> None:
         """Commit, translating what the database refused.
@@ -433,6 +468,13 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         """Whether PostgreSQL refused the transaction: serialization or deadlock."""
         return isinstance(exc, DBAPIError) and sqlstate_of(exc) in CONFLICTS
 
+    def _refused(self, exc: BaseException) -> bool:
+        """Whether the commit surely stored nothing: the domain or the database refused.
+
+        What the database refuses is ``refused_commit``'s.
+        """
+        return super()._refused(exc) or refused_commit(exc)
+
     async def _begin_savepoint(self) -> Savepoint:
         """``SAVEPOINT`` in the session's transaction (flushing first)."""
         return _SessionSavepoint(self.session, await self.session.begin_nested())
@@ -444,6 +486,29 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         if isinstance(exc, IntegrityError):
             return duplicate_value(exc, metadata)
         return None
+
+
+def refused_commit(exc: BaseException) -> bool:
+    """Whether ``exc``, raised as a transaction committed, says it stored nothing.
+
+    A constraint, a stale version, a lost race, or another error the
+    server sent back; SQLAlchemy's own errors that come before a
+    ``COMMIT`` is sent (``REFUSED_BEFORE_COMMIT``); and a statement it
+    could not build or bind. A connection lost or cut off (SQLSTATE class
+    ``08``), a timeout, or a cancellation leaves the outcome unknown: the
+    server may have applied the ``COMMIT`` whose answer never came. So do
+    SQLAlchemy's other errors (``InvalidRequestError``, ``MissingGreenlet``):
+    a session's ``after_commit`` listener may raise them once the
+    ``COMMIT`` landed. The unit of work asks it, and so does a commit made
+    outside one (``enqueue``'s).
+    """
+    if isinstance(exc, REFUSED_BEFORE_COMMIT):
+        return True
+    if isinstance(exc, DBAPIError):
+        return not exc.connection_invalidated and not (
+            sqlstate_of(exc) or ""
+        ).startswith(CONNECTION_EXCEPTION)
+    return isinstance(exc, StatementError)  # Built or bound: never sent.
 
 
 async def _close(session: AsyncSession) -> None:

@@ -39,6 +39,7 @@ from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http import get_asgi_application
 from domainkit.management import CommandError, call_command
 from domainkit.management.base import run_async
+from domainkit.testing.queries import CapturedQueries
 from domainkit_tests.conftest import (
     ALPHA,
     AUTH,
@@ -78,10 +79,8 @@ def run(*args: str, **options: Any) -> str:  # noqa: ANN401 - command options.
 @pytest.fixture(autouse=True)
 def declared() -> Iterator[None]:
     """Forget the dynamic settings a test declares."""
-    before = dict(store_module._declared)
-    yield
-    store_module._declared.clear()
-    store_module._declared.update(before)
+    with store_module.declared_kept():
+        yield
 
 
 @pytest.fixture
@@ -543,6 +542,29 @@ def test_staff_manage_dynamic_settings(client: TestClient) -> None:
         == 204
     )
     assert client.get(f"{ADMIN}/settings", headers=headers).json()[0]["value"] == 10
+
+
+def test_the_settings_list_reads_stored_values_in_one_statement(
+    client: TestClient,
+) -> None:
+    """Three settings, two stored: one ``SELECT`` of the values (A28-PERF-07)."""
+    max_items()
+    dynamic_setting("checkout.min_items", int, default=1)
+    dynamic_setting("checkout.note", str, default="")
+    headers = staff("ops", *FLAG_PERMISSIONS)
+    for key, value in (("checkout.max_items", 25), ("checkout.note", "Hi")):
+        client.put(f"{ADMIN}/settings/{key}", json={"value": value}, headers=headers)
+
+    with CapturedQueries() as queries:
+        listed = client.get(f"{ADMIN}/settings", headers=headers).json()
+
+    assert [(each["key"], each["value"]) for each in listed] == [
+        ("checkout.max_items", 25),
+        ("checkout.min_items", 1),
+        ("checkout.note", "Hi"),
+    ]
+    read = [each for each in queries.statements if dynamic_settings.name in each]
+    assert len(read) == 1
 
 
 def test_staff_see_no_value_of_a_secret_setting(client: TestClient) -> None:

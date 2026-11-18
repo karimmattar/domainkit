@@ -26,10 +26,8 @@ the global limit, with the same backends::
 
 import contextlib
 import dataclasses
-import functools
 import hashlib
 import inspect
-import ipaddress
 import logging
 import math
 import re
@@ -38,7 +36,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Final, Literal, Protocol
+from typing import Final, Literal, Protocol, runtime_checkable
 
 from fastapi import status
 from starlette.exceptions import WebSocketException
@@ -48,18 +46,14 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from domainkit.cache import CacheError, CacheUnavailable, caches
 from domainkit.clock import monotonic
 from domainkit.conf import settings
+from domainkit.conf.backends import BackendHandler
 from domainkit.conf.global_settings import REDIS_SCHEMES
+from domainkit.context import client_group as client_group
 from domainkit.context import current_request
 from domainkit.ddd.tenancy import scoped_key, shared_keys
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.errors import APIError, error_response
-from domainkit.http.middleware import (
-    ADDRESS_CACHE,
-    MAX_CACHED_ADDRESS,
-    request_path,
-    set_headers,
-)
-from domainkit.utils.module_loading import import_string
+from domainkit.http.middleware import request_path, set_headers
 from domainkit.utils.rates import parse_rate
 
 try:
@@ -80,6 +74,7 @@ __all__ = [
     "RedisBackend",
     "RefundingBackend",
     "Throttle",
+    "rate_limit_backend",
 ]
 
 logger = logging.getLogger(__name__)
@@ -100,13 +95,15 @@ class Decision:
     let it through; ``AUTH.THROTTLE_FAIL_CLOSED`` refuses such attempts."""
 
 
+@runtime_checkable
 class Backend(Protocol):
     """Where rate-limit state lives.
 
     A backend may also give a counted request back, with ``refund(key,
     limit, period)`` (``RefundingBackend``): the attempt throttles of
     ``domainkit.contrib.auth`` then count only the attempts that fail.
-    Without it, they count every attempt.
+    Without it, they count every attempt. ``RATE_LIMIT_BACKEND`` must name
+    a class with ``hit`` (since 2.9).
     """
 
     async def hit(self, key: str, limit: int, period: float) -> Decision:
@@ -427,14 +424,18 @@ class RedisBackend:
             )
 
 
-def load_backend() -> Backend:
-    """A new instance of the ``RATE_LIMIT_BACKEND`` class."""
-    try:
-        backend = import_string(settings.RATE_LIMIT_BACKEND)
-    except ImportError as exc:
-        raise ImproperlyConfigured(f"RATE_LIMIT_BACKEND: {exc}") from exc
-    instance: Backend = backend()
-    return instance
+rate_limit_backend: Final[BackendHandler[Backend]] = BackendHandler(
+    "RATE_LIMIT_BACKEND", Backend
+)
+"""The class ``RATE_LIMIT_BACKEND`` names, by dotted path or by name (ADR 0196).
+
+Each counter makes its own with ``create()``, once: the global limit (one
+per application), the throttles of an application, auth's counts of
+refused credentials and of attempts, and the worker's task rates. Its
+counts stay its own, so a flood of one kind never pushes another's out of
+a ``MemoryBackend``. ``check`` and the application's start refuse a path
+that names no ``Backend`` (``backends.E001``).
+"""
 
 
 TRY_AGAIN_LATER: Final = 1013
@@ -461,8 +462,10 @@ class RateLimitMiddleware:
         """Read the rate, the exempt paths, and the backend from settings."""
         self.app = app
         self.rate = parse_rate(settings.RATE_LIMIT) if settings.RATE_LIMIT else None
-        self.exempt = frozenset(settings.RATE_LIMIT_EXEMPT_PATHS)
-        self.backend = load_backend()
+        self.exempt = frozenset(
+            (*settings.PROBE_PATHS, *settings.RATE_LIMIT_EXEMPT_PATHS)
+        )
+        self.backend = rate_limit_backend.create()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Count the request; answer 429 or add the quota headers."""
@@ -543,54 +546,6 @@ def _quota(limit: int, decision: Decision) -> dict[str, str]:
         "RateLimit-Remaining": str(decision.remaining),
         "RateLimit-Reset": str(math.ceil(decision.reset_after)),
     }
-
-
-def client_group(host: str) -> str:
-    """The address a client is counted by: IPv4 as is, IPv6 by its network.
-
-    IPv4-mapped IPv6 addresses count as their IPv4 address. Hosts that are
-    not addresses (a test client's name) are returned unchanged.
-
-    Groups are remembered for the latest ``ADDRESS_CACHE`` hosts, so a
-    client seen again is not parsed again (an IPv6 network takes about
-    25 µs to work out): by host, and for IPv6 by host and
-    ``RATE_LIMIT_IPV6_PREFIX``, which only IPv6 hosts read.
-    """
-    remembered = len(host) <= MAX_CACHED_ADDRESS
-    group = _cached_address_group(host) if remembered else _address_group(host)
-    if group is not None:
-        return group
-    prefix = settings.RATE_LIMIT_IPV6_PREFIX
-    return _cached_network(host, prefix) if remembered else _network(host, prefix)
-
-
-@functools.lru_cache(maxsize=ADDRESS_CACHE)
-def _cached_address_group(host: str) -> str | None:
-    """``_address_group``, remembered for the latest hosts."""
-    return _address_group(host)
-
-
-@functools.lru_cache(maxsize=ADDRESS_CACHE)
-def _cached_network(host: str, prefix: int) -> str:
-    """``_network``, remembered for the latest IPv6 hosts and prefixes."""
-    return _network(host, prefix)
-
-
-def _address_group(host: str) -> str | None:
-    """``host``'s group if no prefix is needed; None for an IPv6 address."""
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
-        return host
-    if isinstance(address, ipaddress.IPv6Address):
-        return None if address.ipv4_mapped is None else str(address.ipv4_mapped)
-    return str(address)
-
-
-def _network(host: str, prefix: int) -> str:
-    """The network of ``prefix`` bits that IPv6 ``host`` is in."""
-    address = ipaddress.IPv6Address(host)
-    return str(ipaddress.IPv6Interface((address, prefix)).network)
 
 
 _SCOPE: Final = re.compile(r"[A-Za-z0-9_.-]{1,128}")
@@ -737,7 +692,7 @@ def _app_backend(connection: HTTPConnection) -> Backend:
         with _app_backend_lock:
             backend = getattr(state, "throttle_backend", None)
             if backend is None:
-                backend = state.throttle_backend = load_backend()
+                backend = state.throttle_backend = rate_limit_backend.create()
     return backend
 
 

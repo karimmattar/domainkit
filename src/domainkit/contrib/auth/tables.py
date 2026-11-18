@@ -16,6 +16,8 @@ Its links to groups and permissions get tables of their own, named after
 it (``accounts_users_groups``, ``accounts_users_permissions``).
 """
 
+import hashlib
+from collections.abc import Callable
 from functools import partial
 from typing import Any
 
@@ -52,6 +54,8 @@ from domainkit.db import (
     metadata,
     register_column_type,
 )
+from domainkit.db.derive import IDENTIFIER_LENGTH
+from domainkit.db.encrypted import EncryptedType
 
 from .exceptions import GroupNameTaken, MobileNumberTaken, UsernameTaken
 from .models import (
@@ -64,6 +68,7 @@ from .models import (
     PasswordHash,
     Permission,
 )
+from .settings import identifier_fields
 from .tokens import AuthToken
 
 
@@ -198,6 +203,70 @@ users = Table(
     info={"domain": "auth", "guarded": True},
 )
 """The default user's table; unused while ``AUTH.USER_TABLE`` names another."""
+
+
+def lookup_indexes(
+    model: type[AbstractBaseUser],
+    table: Table,
+    listed: str,
+    quote: Callable[[str], str] = str,
+) -> dict[str, str]:
+    """The indexes ``migrate`` makes on PostgreSQL for the user lookups (since 2.9).
+
+    By name, each with what it indexes, as SQL (``quote`` quotes a name).
+    Logins, signups, and the checks for a taken address or username compare
+    ``lower()`` of ``EMAIL_FIELD`` and ``USERNAME_FIELD``: each text column
+    of those gets an index of it. The admin API lists users by ``listed``
+    (``listing_field``), then the id: that pair gets one, unless the column
+    is unique, as its own index serves the order then. An encrypted
+    column, or one the table lacks, gets none.
+    """
+    columns = {
+        column.name: column
+        for column in table.columns
+        if not isinstance(column.type, EncryptedType)
+    }
+    found = {
+        _index_name(table.name, f"{field}_lower"): f"lower({quote(field)})"
+        for field in dict.fromkeys((model.EMAIL_FIELD, model.USERNAME_FIELD))
+        if field is not None and field in columns and _is_text(columns[field])
+    }
+    order = columns.get(listed)
+    if order is not None and "id" in columns and not order.unique:
+        found[_index_name(table.name, f"{listed}_id")] = (
+            f"{quote(listed)}, {quote('id')}"
+        )
+    return found
+
+
+def listing_field(model: type[AbstractBaseUser], table: Table) -> str:
+    """The field the admin API lists users by, before the id (since 2.9).
+
+    The first of ``AUTH.IDENTIFIERS`` that ``table`` does not keep
+    encrypted, else the ``USERNAME_FIELD``.
+    """
+    for name in identifier_fields(model):
+        if not isinstance(table.c[name].type, EncryptedType):
+            return name
+    return model.USERNAME_FIELD
+
+
+def _is_text(column: Column[Any]) -> bool:
+    """Whether ``column`` stores text, itself or through a ``TypeDecorator``."""
+    kind = column.type
+    if isinstance(kind, TypeDecorator):
+        kind = kind.impl_instance
+    return isinstance(kind, String)
+
+
+def _index_name(table: str, suffix: str) -> str:
+    """``ix_<table>_<suffix>``, cut to PostgreSQL's 63 characters with a digest."""
+    name = f"ix_{table}_{suffix}"
+    if len(name) <= IDENTIFIER_LENGTH:
+        return name
+    digest = hashlib.sha256(name.encode()).hexdigest()[:8]
+    return f"{name[: IDENTIFIER_LENGTH - 9]}_{digest}"
+
 
 groups = Table(
     "domainkit_groups",

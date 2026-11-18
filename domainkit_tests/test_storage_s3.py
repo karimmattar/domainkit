@@ -10,8 +10,8 @@ import httpx2
 import pytest
 
 from domainkit.clock import freeze_time
-from domainkit.http.client import stub
 from domainkit.http.errors import upstream_refusal
+from domainkit.outbound.client import stub
 from domainkit.storage import FileMissing, StorageError
 from domainkit.storage.remote import ObjectFile, PresignedUpload
 from domainkit.storage.s3 import S3Storage, WriteOnceIgnored

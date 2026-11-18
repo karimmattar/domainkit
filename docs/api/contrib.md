@@ -372,6 +372,7 @@ Feature flags and dynamic settings, stored in the database and cached.
 - `SettingChanged`: A dynamic setting got a new value (JSON).
 - `SettingReset`: A dynamic setting went back to its default.
 - `UnknownSetting`: No dynamic setting is declared with that key.
+- `declared_kept`: Put the declared dynamic settings back as they were when the block ends.
 - `declared_settings`: Every declared dynamic setting, by key.
 - `dynamic_setting`: Declare a setting staff can change at runtime, typed and validated.
 - `flag_enabled`: Whether flag `name` is on for `user` (anyone without one).
@@ -517,6 +518,7 @@ Transactional outbox, durable event handlers, and background tasks.
 - `periodic`: Register an argument-free task that runs on a schedule, cluster-wide.
 - `task`: Register an async function as a background task (`uow.defer(task)`).
 - `tasks_kept`: Put the registered tasks back as they were when the block ends.
+- `unregister_task`: Forget the task registered as `key`; an unknown key is ignored (*new in 2.9*).
 
 ## `domainkit.contrib.messaging.admin`
 
@@ -530,14 +532,15 @@ Operator queries: queue depth, lag, listings, retries, cancelling, dropping.
 - `queue_lag`: Seconds the oldest due message of each queue has waited to start.
 - `release_stalled`: Make the next message of each stalled ordering key pending; how many.
 - `retry_dead`: Return dead messages (one, or all) to the queue with fresh attempts.
+- `unfinished_arguments`: A query of `argument` in each unfinished message of `target` (New in 2.9).
 
 ## `domainkit.contrib.messaging.heartbeat`
 
-The worker's health signal: a file it touches while every check holds.
+The worker's health signals: a file it touches while it lives, one while it is ready.
 
-- `beat`: Run the checks once; touch `path` if all hold. Whether they did.
+- `beat`: Touch `path`, then run the checks: touch `ready` if all hold, else remove it.
 - `failures`: What fails now: `/ready`'s checks, and `broker` (`broker:<alias>`).
-- `heartbeat`: Beat every `interval` seconds until `stop`; then remove `path`.
+- `heartbeat`: Touch `path` and check every `interval` seconds until `stop`.
 
 ## `domainkit.contrib.messaging.testing`
 
@@ -698,6 +701,7 @@ Push providers: Firebase Cloud Messaging, Apple's APNs, Huawei Push Kit.
 - `FcmPushBackend`: Firebase Cloud Messaging's HTTP v1 API (Android, iOS, the web).
 - `HuaweiPushBackend`: Huawei Push Kit's HTTP API, for devices without Google's services.
 - `Refusal`: How a push service refused a notification, read from its answer.
+- `reset_tokens`: Forget the services' tokens kept between sends (*new in 2.9*).
 
 ## `domainkit.contrib.mail.providers`
 
@@ -714,3 +718,4 @@ Mail the site's admins (Django's `mail_admins`), and tell them of errors.
 
 - `mail_admins`: Queue a mail to `MAIL["ADMINS"]`, with `uow`'s commit or at once.
 - `report_to_admins`: Mail `exc` to the admins, unless one like it went out lately.
+- `reset_reports`: Forget which reports went out lately: the next of each type goes at once.

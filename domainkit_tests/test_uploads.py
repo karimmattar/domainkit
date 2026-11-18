@@ -33,6 +33,9 @@ from domainkit.http.uploads import (
 )
 from domainkit.storage import FileMissing, MemoryStorage, storages
 from domainkit.storage.base import CHUNK_SIZE
+from domainkit_tests.support.storage import fresh_storages
+
+__all__ = ["fresh_storages"]  # The fixture the tests take.
 
 pytestmark = pytest.mark.anyio
 
@@ -215,14 +218,6 @@ async def test_large_uploads_stream_in_chunks(fresh_storages: None) -> None:
     assert stored.size == len(content)
     assert storage.files[stored.name] == content
     assert all(size is not None and 0 < size <= CHUNK_SIZE for size in file.asked)
-
-
-@pytest.fixture
-def fresh_storages() -> Iterator[None]:
-    """Forget the storages made."""
-    storages.reset()
-    yield
-    storages.reset()
 
 
 @pytest.mark.parametrize(

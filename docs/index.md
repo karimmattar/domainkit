@@ -105,7 +105,7 @@ pip install "domainkit[postgres,redis,sqlite,testing]"
 domainkit init bankAPI bank
 ```
 
-You need Python 3.13 or 3.14. [Part 0 of the tutorial](tutorial/0-first-route.md)
+You need Python 3.13, 3.14, or 3.15. [Part 0 of the tutorial](tutorial/0-first-route.md)
 explains each extra and what `init` makes.
 
 ## Where to go next
@@ -114,13 +114,16 @@ Choose the line that matches your goal.
 
 ### Learn domainkit
 
-- [Getting started](tutorial.md): six short parts, from `pip install` to
-  a tested service with rules, permissions, and a worker.
+- [Getting started](tutorial.md): nine short parts, from `pip install` to
+  a tested service with rules, permissions, and a worker, then a bank's
+  controls: transfers, approvals, and webhooks.
 - [Learning domainkit](learning.md): the order in which to read the
   guides, [the glossary](learning.md#words), and the daily commands.
 - [Coming from Django](from-django.md) and
   [coming from FastAPI](from-fastapi.md): what you know, and its name
   in domainkit.
+- [Choosing a feature](choosing.md): which tool to use for a need, and
+  which to leave alone, where two look alike.
 
 ### Build a service
 

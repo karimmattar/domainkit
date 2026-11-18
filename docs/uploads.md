@@ -28,6 +28,19 @@ The decisions are in
 [ADR 0167](adr/0167-check-an-upload-whole-and-let-a-resource-take-one.md) and
 [ADR 0169](adr/0169-granians-http-versions-failed-starts-fcm-dry-runs-write-once-probes-clamd-over-tls-and-dropped-files.md).
 
+## When to use it, and when not to
+
+- **Use `save_upload`**, or a resource route that takes a file, when the
+  application must check a file before it is kept: its type, its size,
+  what it holds, a virus scan.
+- **Use presigned URLs** for large files that the client sends to, or
+  fetches from, object storage itself. The file does not pass through
+  the application, so `save_upload`'s checks do not run on it.
+- **Do not keep files in the database**: store them in a
+  [`Storage`](#storages), and keep their names in your rows.
+  [Choosing a feature](choosing.md#storing-data-and-files) compares the
+  ways in.
+
 ## A first example
 
 A route that accepts a PDF or an image of up to 2 MB, and stores it:
@@ -236,7 +249,7 @@ instead, and speak only its protocol.
 ## Object storage
 
 Three storages keep files in an object store. They call it through
-`domainkit.http.client` (pooled, retried, limited by the request's
+`domainkit.outbound.client` (pooled, retried, limited by the request's
 deadline), with no cloud SDK. Install the `cloud` extra.
 
 | Backend | Stores | Credentials |
@@ -520,7 +533,10 @@ sooner when another sent the same file, which tells of that file.
 A gateway of the infrastructure layer may call `save_upload` with the
 bytes its route hands it: the [layer rules](reference/settings.md#layer-rules)
 allow `domainkit.http.uploads` there since 2.5. They keep Starlette's
-`UploadFile` out. A gateway that takes the route's file as it is,
+`UploadFile` out, and since 2.9 `check` warns when it is imported through
+`domainkit.http.uploads`, as of every name the module does not list in its
+`__all__`, and of `serve`, which only a route answers with
+(`architecture.W001`, refused in 3.0). A gateway that takes the route's file as it is,
 without reading it into memory first, types it as `Upload`, from the
 same module: a form's file, bytes, or a stream, as `save_upload` and
 `receive_upload` take them (since 2.7). It may catch `UploadRefused`

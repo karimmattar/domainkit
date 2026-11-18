@@ -9,7 +9,7 @@ which speaks OAuth 2 alone, is asked for the user and their verified
 primary email with the access token.
 
 The discovery document and the keys are read through
-``domainkit.http.client`` and kept for an hour; a key id not seen before
+``domainkit.outbound.client`` and kept for an hour; a key id not seen before
 reads the keys again, once, so a provider's key rotation never refuses
 a login.
 """
@@ -18,13 +18,17 @@ import base64
 import hashlib
 import time
 from dataclasses import dataclass
-from typing import Any, Final
+from functools import cache
+from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import urlencode
 
 from domainkit.exceptions import ImproperlyConfigured
 
 from .exceptions import ProviderError
 from .settings import ProviderSettings
+
+if TYPE_CHECKING:
+    from domainkit.outbound.client import HttpClient
 
 __all__ = [
     "AppleProvider",
@@ -74,9 +78,7 @@ class Provider:
         """Use the client ``config`` describes, under ``name``."""
         self.name = name
         self.config = config
-        from domainkit.http.client import HttpClient
-
-        self.client = HttpClient(propagate=False)
+        self.client = _client()
 
     async def authorization_url(self, state: str, nonce: str, verifier: str) -> str:
         """Where to send the browser to log in."""
@@ -390,6 +392,19 @@ _key_sets: dict[str, tuple[list[dict[str, Any]], float]] = {}
 def make_provider(name: str, config: ProviderSettings) -> Provider:
     """The provider ``config`` describes."""
     return _KINDS[config.KIND](name, config)
+
+
+@cache
+def _client() -> "HttpClient":
+    """The client every provider calls through: its pool and circuits are kept.
+
+    A provider is made per login (``services.provider``); its calls share
+    this one, so a provider that is down opens its host's circuit
+    (audit A28-ARCH-02).
+    """
+    from domainkit.outbound.client import HttpClient
+
+    return HttpClient(propagate=False, name="identity")
 
 
 def forget() -> None:

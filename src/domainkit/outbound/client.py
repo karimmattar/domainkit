@@ -1,0 +1,1318 @@
+"""Outgoing HTTP calls, bounded by the request's deadline (``domainkit[httpclient]``).
+
+::
+
+    from domainkit.outbound.client import HttpClient
+
+    rates = HttpClient(base_url="https://rates.example.com", timeout=3.0)
+
+    async def euro_rate() -> Decimal:
+        response = await rates.get("/v1/rates/EUR")
+        response.raise_for_status()
+        return Decimal(response.json()["rate"])
+
+A client keeps one pool of connections per process (per event loop),
+opened by its first call and closed with the other resources
+(``close_resources``) when the application or a command ends. Make one per
+service called, at module level; ``client`` serves calls that need no
+options of their own. A client's circuits are shared by all its callers,
+so make one per trust domain: one that calls URLs your users chose gets
+``breaker=False``, so one user's failing URLs never refuse another's
+calls. Every call:
+
+- is bounded by ``timeout`` (``HTTP_CLIENT.TIMEOUT``), retries included,
+  and by the deadline of the work it serves (``domainkit.deadlines``):
+  past the deadline it raises ``DeadlineExceeded``, which a request
+  answers 503, and past ``timeout``, ``CallTimeout``;
+- is retried up to ``retries`` times after a network error, a timeout,
+  or a 429, 502, 503, or 504 answer, with jittered exponential backoff
+  (and ``Retry-After``), when its method is idempotent (GET, HEAD,
+  OPTIONS, PUT, DELETE, TRACE) or it passes ``retry=True``. A call that
+  could not connect is retried whatever its method, since nothing was
+  sent; ``retry=False`` retries nothing;
+- fails at once with ``CircuitOpen`` while its host's circuit is open:
+  after ``BREAKER_FAILURES`` failures in a row (network errors, timeouts,
+  5xx answers) for ``BREAKER_COOLDOWN`` seconds, after which one call at a
+  time tries the host again (unless the client has ``breaker=False``);
+- sends the request id (``X-Request-ID``) and the trace context
+  (``traceparent``, ``tracestate``) of the work it serves;
+- sends a multipart form with ``files=`` (and ``data=`` for its other
+  fields), as httpx2 does; each file is bytes or a file that can seek,
+  so a retry sends it whole again;
+- reads at most ``MAX_RESPONSE_BYTES`` of the answer, both as it comes
+  and decompressed, or raises ``ResponseTooLarge``: httpx2 inflates a
+  compressed answer a piece of at most 1 MiB at a time, each counted
+  before the next, so an answer that inflates a thousandfold costs no
+  more than the limit and a piece;
+- is logged by method, origin, and path, on the ``domainkit.http.client``
+  logger (its name before the client moved here in 2.9): never a query
+  string, a header, or a body (``build_logging_config`` quiets httpx2's
+  own lines, which show the whole URL). ``log_paths=False`` logs the
+  origin alone, for paths that carry what the logs must not keep, such
+  as a hash prefix;
+- is counted and timed, with ``domainkit[metrics]``, by the client's
+  ``name`` (by default its base URL's host), its method, and how it ended:
+  the status of its answer, or ``timeout``, ``deadline_exceeded``,
+  ``circuit_open``, ``too_large``, ``unsafe_url``, ``cancelled``, or
+  ``error``. Its retries and its circuits' changes are counted too, and
+  the circuits open now are counted at each scrape. Never a URL.
+
+A client made with ``guard=True`` calls only public addresses
+(``domainkit.outbound.guard``): https only (``allow_http=True`` adds http), no
+credentials in the URL, every address of the host public unless in
+``allowed_networks``, and the connection made to an address that was
+checked, so DNS rebinding gains nothing. It follows no redirects, ignores
+proxy settings and CA files (``SSL_CERT_FILE``) from the environment, asks
+for uncompressed answers and refuses (``httpx2.DecodingError``) one
+compressed in a way it did not ask for, logs only the origin, and sends no
+request id or trace context (unless ``propagate=True``): use it for URLs
+that someone else chose. A refused URL raises ``UnsafeURL``, a 422 if the
+request does not catch it.
+
+In tests, ``stub(handler)`` sends every call to ``handler`` through
+httpx2's ``MockTransport``; the handler takes an ``httpx2.Request`` and
+returns an ``httpx2.Response``, or an awaitable of one. It holds for the
+block and the tasks it starts, a context variable's reach: a fixture whose
+context the test does not share (an async fixture of a sync test, a sync
+fixture after an async one) uses ``stub(handler, everywhere=True)``, which
+holds for every call of the process until the block ends. A client made
+with ``transport=`` always uses that transport; a guarded client takes
+none.
+"""
+
+import asyncio
+import io
+import logging
+import math
+import random
+import re
+import ssl
+import threading
+from collections import OrderedDict
+from collections.abc import (
+    AsyncIterator,
+    Callable,
+    Coroutine,
+    Iterable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
+from datetime import UTC
+from email.utils import parsedate_to_datetime
+from functools import cache, partial
+from pathlib import Path
+from typing import IO, Any, ClassVar, Final, cast
+from urllib.parse import unquote_to_bytes
+from weakref import WeakSet
+
+import httpcore2
+import httpx2
+
+from domainkit import clock, deadlines
+from domainkit.conf import settings
+from domainkit.conf.global_settings import HttpClientConfig
+from domainkit.context import current_request
+from domainkit.exceptions import UpstreamError
+from domainkit.outbound import guard as guards
+from domainkit.outbound.guard import Network, UnsafeURL, checked_host, checked_url
+from domainkit.tracing import trace_headers
+from domainkit.utils.closing import close_each
+from domainkit.utils.loops import PerLoop
+
+__all__ = [
+    "CallTimeout",
+    "CircuitBreaker",
+    "CircuitOpen",
+    "HttpClient",
+    "ResponseTooLarge",
+    "UnsafeURL",
+    "client",
+    "close_all",
+    "reset_circuits",
+    "stub",
+]
+
+IDEMPOTENT: Final = frozenset({"GET", "HEAD", "OPTIONS", "PUT", "DELETE", "TRACE"})
+"""Methods retried by default: sending them twice changes nothing more."""
+RETRY_STATUSES: Final = frozenset({429, 502, 503, 504})
+"""Answers worth trying again after a while."""
+SERVER_ERROR: Final = 500
+"""Answers from this status up count against the host's circuit."""
+BODILESS: Final = frozenset({204, 304})
+"""Answers that carry no body, whatever their headers say."""
+RETRIED: Final = (
+    httpx2.NetworkError,
+    httpx2.TimeoutException,
+    httpx2.RemoteProtocolError,
+)
+"""Failures of an attempt worth another try; they count against the host too."""
+BREAKER_HOSTS: Final = 1024
+"""Hosts whose failures a client remembers; the oldest are forgotten first."""
+REQUEST_ID_HEADER: Final = "X-Request-ID"
+MAX_RETRIES: Final = 10
+"""The most retries a client may make of one call."""
+DOT_SEGMENTS: Final = frozenset({b".", b".."})
+"""Path segments that move a URL up its path; relative URLs may not hold them."""
+CLIENT_NAME: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
+"""A client's name in its metrics: a short label, never a URL."""
+OTHER: Final = "other"
+"""The metrics' name of a client with neither a name nor a base URL."""
+METHODS: Final = IDEMPOTENT | {"POST", "PATCH", "CONNECT"}
+"""Methods counted by name in the metrics; any other is ``OTHER``."""
+OPENED: Final = "open"
+"""A circuit's state once failures opened it: its calls fail at once."""
+TRYING: Final = "half_open"
+"""A circuit's state while one call tries the host after the cooldown."""
+CLOSED: Final = "closed"
+"""A circuit's state once the host answered: calls go through."""
+_SEGMENTS: Final = re.compile(rb"[/\\]")
+r"""What separates path segments: ``/``, and ``\`` for servers that read it so."""
+
+type Handler = (
+    Callable[[httpx2.Request], httpx2.Response]
+    | Callable[[httpx2.Request], Coroutine[None, None, httpx2.Response]]
+)
+"""A stub's answer to a request: a response, sync or async."""
+type FileContent = bytes | IO[bytes]
+"""A file a form sends: bytes, or a binary file that can seek."""
+type FormFile = (
+    FileContent
+    | tuple[str | None, FileContent]
+    | tuple[str | None, FileContent, str | None]
+    | tuple[str | None, FileContent, str | None, Mapping[str, str]]
+)
+"""A form's file: its content, or ``(filename, content[, type[, headers]])``."""
+type Files = Mapping[str, FormFile] | Sequence[tuple[str, FormFile]]
+"""A form's files by field, as httpx2 takes them."""
+
+LOGGER: Final = "domainkit.http.client"
+"""The calls' logger: its name of 2.8, which logging settings and alerts name."""
+
+logger = logging.getLogger(LOGGER)
+
+
+class CircuitOpen(httpx2.TransportError, UpstreamError):
+    """Calls to a host fail at once while its circuit is open.
+
+    A request that lets it go is answered 503 ``upstream_unavailable``,
+    with ``Retry-After`` the seconds left of the cooldown.
+    """
+
+    status_code: ClassVar[int] = 503
+    code: ClassVar[str] = "upstream_unavailable"
+    detail: ClassVar[str] = (
+        "A service this one depends on is unavailable; try again later."
+    )
+
+
+class CallTimeout(httpx2.TimeoutException, UpstreamError):
+    """A call took longer than its ``timeout``, retries included.
+
+    A request that lets it go is answered 504 ``upstream_timeout``.
+    """
+
+    status_code: ClassVar[int] = 504
+    code: ClassVar[str] = "upstream_timeout"
+    detail: ClassVar[str] = "A service this one depends on took too long to answer."
+
+
+class ResponseTooLarge(httpx2.RequestError, UpstreamError):
+    """An answer was longer than ``MAX_RESPONSE_BYTES``, as sent or decompressed.
+
+    A request that lets it go is answered 502 ``upstream_response_too_large``.
+    """
+
+    status_code: ClassVar[int] = 502
+    code: ClassVar[str] = "upstream_response_too_large"
+    retryable: ClassVar[bool] = False  # The answer stays as long.
+    detail: ClassVar[str] = (
+        "A service this one depends on answered with more than can be read."
+    )
+
+
+@dataclass(slots=True)
+class _Circuit:
+    """One host's recent failures."""
+
+    failures: int = 0
+    opened: float | None = None
+    """When the circuit opened (``clock.monotonic``); None while closed."""
+    trying: bool = False
+    """A call is trying the host after the cooldown."""
+
+
+class CircuitBreaker:
+    """Circuits per host: open after failures in a row, then one trial at a time.
+
+    A host's circuit opens after ``failures`` failures in a row and stays
+    open for ``cooldown`` seconds; then one call may try the host. Its
+    success closes the circuit, its failure opens it again, and a call
+    that ends neither way (it was cancelled) lets the next call try. Only
+    hosts with failures are kept, at most ``BREAKER_HOSTS`` of them.
+
+    Event loops on several threads share a client's breaker (free-threaded
+    Python), so its circuits change only under its lock: one trial at a
+    time holds across them too.
+
+    With ``domainkit[metrics]``, ``http_client_circuit_transitions_total``
+    counts, under ``name``, each circuit that opens (from closed, or after
+    a failed trial), lets a trial through (``half_open``), or closes (a
+    host that answered, or one forgotten for the newer ones).
+    """
+
+    def __init__(self, *, name: str = OTHER) -> None:
+        """Start with every circuit closed; ``name`` labels its metrics."""
+        self.name = name
+        """The name of the client the circuits are kept for, in its metrics."""
+        self._circuits: OrderedDict[str, _Circuit] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def admits(self, host: str, cooldown: float) -> bool:
+        """Whether a call to ``host`` may go now.
+
+        While the circuit is open, no call may until ``cooldown`` seconds
+        have passed; then one may, as a trial, and others wait for its end.
+        """
+        with self._lock:
+            circuit = self._circuits.get(host)
+            if circuit is None or circuit.opened is None:
+                return True
+            if circuit.trying or clock.monotonic() < circuit.opened + cooldown:
+                return False
+            circuit.trying = True
+        _observe_circuit(self.name, TRYING)
+        return True
+
+    def retry_after(self, host: str, cooldown: float) -> int:
+        """Whole seconds until ``host``'s circuit lets a trial through, at least 1."""
+        with self._lock:
+            circuit = self._circuits.get(host)
+            opened = None if circuit is None else circuit.opened
+        if opened is None:
+            return 1
+        return max(1, math.ceil(opened + cooldown - clock.monotonic()))
+
+    def succeeded(self, host: str) -> None:
+        """Forget the host's failures: its circuit closes."""
+        with self._lock:
+            circuit = self._circuits.pop(host, None)
+        if circuit is not None and circuit.opened is not None:
+            _observe_circuit(self.name, CLOSED)
+
+    def failed(self, host: str, failures: int) -> bool:
+        """Count a failure; return whether it opened the circuit.
+
+        ``failures`` in a row open it, and a failed trial opens it again.
+        """
+        with self._lock:
+            circuit = self._circuits.pop(host, None) or _Circuit()
+            self._circuits[host] = circuit
+            forgotten = None
+            if len(self._circuits) > BREAKER_HOSTS:
+                forgotten = self._circuits.popitem(last=False)[1]
+            # A circuit opens from closed, or again after its failed trial.
+            changes = circuit.opened is None or circuit.trying
+            circuit.failures += 1
+            circuit.trying = False
+            opened = circuit.failures >= failures
+            if opened:
+                circuit.opened = clock.monotonic()
+        if forgotten is not None and forgotten.opened is not None:
+            _observe_circuit(self.name, CLOSED)
+        if opened and changes:
+            _observe_circuit(self.name, OPENED)
+        return opened
+
+    def abandoned(self, host: str) -> None:
+        """A call that neither succeeded nor failed: let the next one try."""
+        with self._lock:
+            circuit = self._circuits.get(host)
+            if circuit is not None:
+                circuit.trying = False
+
+    def open_circuits(self) -> int:
+        """How many hosts' circuits are not closed: open, or letting a trial through."""
+        with self._lock:
+            return sum(
+                circuit.opened is not None for circuit in self._circuits.values()
+            )
+
+    def reset(self) -> None:
+        """Forget every host's failures: every circuit closes (New in 2.9)."""
+        with self._lock:
+            self._circuits.clear()
+
+
+_stub: ContextVar[httpx2.AsyncBaseTransport | None] = ContextVar(
+    "domainkit_http_stub", default=None
+)
+_everywhere: list[httpx2.AsyncBaseTransport] = []
+"""The stubs of ``stub(..., everywhere=True)`` blocks, the last one in use."""
+_everywhere_lock = threading.Lock()
+_shared_stub: httpx2.AsyncBaseTransport | None = None
+"""The stub every context uses where it set none: the last of ``_everywhere``."""
+_clients: WeakSet["HttpClient"] = WeakSet()
+"""Every client made, so ``close_all`` finds their pools, and metrics their circuits."""
+_clients_lock = threading.Lock()
+"""Held to add to ``_clients`` and to copy it: threads make clients and scrape."""
+
+
+class HttpClient:
+    """Outgoing calls, pooled, bounded, retried, and broken off per host.
+
+    Options left as None follow ``HTTP_CLIENT``, read at each call.
+    """
+
+    def __init__(  # noqa: PLR0913
+        self,
+        *,
+        base_url: str | None = None,
+        headers: Mapping[str, str] | None = None,
+        timeout: float | None = None,
+        retries: int | None = None,
+        guard: bool = False,
+        allow_http: bool = False,
+        allowed_networks: Sequence[Network] = (),
+        propagate: bool | None = None,
+        breaker: bool = True,
+        transport: httpx2.AsyncBaseTransport | None = None,
+        http2: bool = False,
+        log_paths: bool | None = None,
+        name: str | None = None,
+    ) -> None:
+        """Make a client; nothing is opened until its first call.
+
+        Relative URLs are appended to ``base_url`` (absolute, without a
+        query), and others must keep to its origin; ``headers`` go with
+        every call; ``timeout`` and ``retries`` replace ``HTTP_CLIENT``'s.
+        ``guard`` checks every URL and address (see the module);
+        ``allow_http`` and ``allowed_networks`` loosen it. ``propagate``
+        sends the request id and trace context (default: unless guarded).
+        ``breaker=False`` keeps no circuits: for a client whose URLs others
+        choose, so one caller's failing URLs never refuse another's calls.
+        ``transport`` replaces the network, as httpx2's ``MockTransport``;
+        a guarded client refuses one, since its checks are made as it
+        connects (tests use ``stub``). ``http2`` speaks HTTP/2 where the
+        server does (needs ``h2``: ``httpx2[http2]``), as Apple's push
+        service requires. ``log_paths`` names each call's path in logs and
+        errors besides its origin (default: unless guarded). ``name`` labels
+        the client's metrics (default: the host of ``base_url``, else
+        ``other``): up to 128 letters, digits, ``.``, ``_``, ``:``, or
+        ``-``, a fixed name such as ``"rates"``, never a URL.
+
+        Raises:
+            ValueError: An option is out of range, a name is not a label, or
+                a guarded client was given a transport.
+        """
+        if timeout is not None and not (math.isfinite(timeout) and timeout > 0):
+            raise ValueError(
+                f"A client's timeout must be a finite number above 0, not {timeout!r}."
+            )
+        if retries is not None and not 0 <= retries <= MAX_RETRIES:
+            raise ValueError(f"A client retries 0 to 10 times, not {retries!r}.")
+        if guard and transport is not None:
+            raise ValueError(
+                "A guarded client checks each address as it connects, so it "
+                "cannot use a transport of its own; in tests, use stub()."
+            )
+        if name is not None and not CLIENT_NAME.fullmatch(name):
+            raise ValueError(
+                "A client's name is 1 to 128 letters, digits, '.', '_', ':', or "
+                f"'-', starting with a letter or a digit, not {name!r}."
+            )
+        self.base_url = None if base_url is None else _base(base_url)
+        self.name = name or (
+            OTHER if self.base_url is None else self.base_url.raw_host.decode("ascii")
+        )
+        """What the client's metrics call it: never a URL."""
+        self.headers = dict(headers or {})
+        self.timeout = timeout
+        self.retries = retries
+        self.guard = guard
+        self.allow_http = allow_http
+        self.allowed_networks = tuple(allowed_networks)
+        self.propagate = not guard if propagate is None else propagate
+        self.log_paths = not guard if log_paths is None else log_paths
+        self.transport = transport
+        self.http2 = http2
+        self.breaker = CircuitBreaker(name=self.name) if breaker else None
+        """The client's circuits per host; None with ``breaker=False``."""
+        self._pools: PerLoop[httpx2.AsyncClient] = PerLoop()
+        """Each event loop's connections (loops on several threads share a client)."""
+        with _clients_lock:
+            _clients.add(self)
+
+    async def get(self, url: str, **options: Any) -> httpx2.Response:  # noqa: ANN401
+        """``request("GET", url, ...)``."""
+        return await self.request("GET", url, **options)
+
+    async def head(self, url: str, **options: Any) -> httpx2.Response:  # noqa: ANN401
+        """``request("HEAD", url, ...)``."""
+        return await self.request("HEAD", url, **options)
+
+    async def options(self, url: str, **options: Any) -> httpx2.Response:  # noqa: ANN401
+        """``request("OPTIONS", url, ...)``."""
+        return await self.request("OPTIONS", url, **options)
+
+    async def post(self, url: str, **options: Any) -> httpx2.Response:  # noqa: ANN401
+        """``request("POST", url, ...)``."""
+        return await self.request("POST", url, **options)
+
+    async def put(self, url: str, **options: Any) -> httpx2.Response:  # noqa: ANN401
+        """``request("PUT", url, ...)``."""
+        return await self.request("PUT", url, **options)
+
+    async def patch(self, url: str, **options: Any) -> httpx2.Response:  # noqa: ANN401
+        """``request("PATCH", url, ...)``."""
+        return await self.request("PATCH", url, **options)
+
+    async def delete(self, url: str, **options: Any) -> httpx2.Response:  # noqa: ANN401
+        """``request("DELETE", url, ...)``."""
+        return await self.request("DELETE", url, **options)
+
+    async def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        params: Mapping[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
+        content: bytes | str | None = None,
+        data: Mapping[str, Any] | None = None,
+        files: Files | None = None,
+        json: Any = None,  # noqa: ANN401 - any JSON value.
+        timeout: float | None = None,  # noqa: ASYNC109 - bounds the call, retries too.
+        retry: bool | None = None,
+    ) -> httpx2.Response:
+        """Send one call: ``method`` to ``url``, retried as the module says.
+
+        ``timeout`` replaces the client's for this call; ``retry`` forces
+        retries (True) or forbids them (False). ``files`` sends a
+        ``multipart/form-data`` form (New in 2.5), ``data`` its other
+        fields: each file is bytes or a binary file that can seek, read
+        from its start on every attempt.
+
+        Raises:
+            DeadlineExceeded: The deadline of the work passed.
+            CallTimeout: ``timeout`` passed, retries included.
+            CircuitOpen: The host's circuit is open.
+            ResponseTooLarge: The answer was over ``MAX_RESPONSE_BYTES``.
+            UnsafeURL: A guarded client was asked for a URL it may not call.
+            httpx2.HTTPError: The call failed on its last try.
+            ValueError: A file cannot be sent again, or ``files`` comes with
+                ``content`` or ``json``.
+        """
+        if timeout is not None and not (math.isfinite(timeout) and timeout > 0):
+            raise ValueError(
+                f"A call's timeout must be a finite number above 0, not {timeout!r}."
+            )
+        if files is not None:
+            _check_files(files, content, json)
+        method = method.upper()
+        started = clock.monotonic()
+        try:
+            response = await self._call(
+                method,
+                url,
+                params=params,
+                headers=headers,
+                content=content,
+                data=data,
+                files=files,
+                json=json,
+                timeout=timeout,
+                retry=retry,
+            )
+        except BaseException as exc:
+            _observe_call(self.name, method, _outcome(exc), started)
+            raise
+        _observe_call(self.name, method, str(response.status_code), started)
+        return response
+
+    async def _call(
+        self,
+        method: str,
+        url: str,
+        *,
+        params: Mapping[str, Any] | None,
+        headers: Mapping[str, str] | None,
+        content: bytes | str | None,
+        data: Mapping[str, Any] | None,
+        files: Files | None,
+        json: Any,  # noqa: ANN401 - any JSON value.
+        timeout: float | None,  # noqa: ASYNC109 - bounds the call, retries too.
+        retry: bool | None,
+    ) -> httpx2.Response:
+        """``request``'s work, once its arguments are checked: see there."""
+        config = settings.HTTP_CLIENT
+        target = self._target(url)
+        origin = _origin(target)
+        seconds = timeout or self.timeout or config.TIMEOUT
+        call = _Call(
+            method=method,
+            shown=_shown(target, path=self.log_paths),
+            origin=origin,
+            seconds=seconds,
+            retries=config.RETRIES if self.retries is None else self.retries,
+            retry=retry,
+        )
+        budget = deadlines.timeout(seconds)
+        pool = await self._pool(config)
+        try:
+            async with budget:
+                request = pool.build_request(
+                    method,
+                    target,
+                    params=params,
+                    headers=self._headers(config, headers),
+                    content=content,
+                    data=data,
+                    files=cast("Any", files),
+                    json=json,
+                )
+                return await self._send(call, pool, request, config)
+        except TimeoutError as exc:
+            if isinstance(exc, deadlines.DeadlineExceeded) or not budget.expired():
+                raise
+            self._failed(call, config)
+            logger.warning(
+                "%s %s took longer than its %gs", method, call.shown, seconds
+            )
+            raise CallTimeout(
+                f"{method} {call.shown} took longer than {seconds:g}s."
+            ) from exc
+
+    async def aclose(self) -> None:
+        """Close this client's connections on the running event loop."""
+        pool = self._pools.pop()
+        if pool is not None:
+            await pool.aclose()
+
+    async def _send(
+        self,
+        call: "_Call",
+        pool: httpx2.AsyncClient,
+        request: httpx2.Request,
+        config: HttpClientConfig,
+    ) -> httpx2.Response:
+        """Try the call until it succeeds, may not be retried, or runs out of time."""
+        breaker = self.breaker
+        while True:
+            if breaker is not None and not breaker.admits(
+                call.origin, config.BREAKER_COOLDOWN
+            ):
+                refused = CircuitOpen(
+                    f"Calls to {call.origin} fail at once: its circuit is open.",
+                    request=request,
+                )
+                refused.retry_after = breaker.retry_after(
+                    call.origin, config.BREAKER_COOLDOWN
+                )
+                raise refused
+            started = clock.monotonic()
+            try:
+                response = await self._attempt(call, pool, request, config)
+            except RETRIED as exc:
+                self._failed(call, config)
+                delay = call.wait_before_retry(exc, config)
+                if delay is None:
+                    logger.warning(
+                        "%s %s failed (%s) after %d attempt(s)",
+                        call.method,
+                        call.shown,
+                        type(exc).__name__,
+                        call.attempt + 1,
+                    )
+                    raise
+                outcome = type(exc).__name__
+            except BaseException:
+                if breaker is not None:
+                    breaker.abandoned(call.origin)
+                raise
+            else:
+                if response.status_code >= SERVER_ERROR:
+                    self._failed(call, config)
+                elif breaker is not None:
+                    breaker.succeeded(call.origin)
+                delay = call.wait_before_retry(response, config)
+                if delay is None:
+                    logger.debug(
+                        "%s %s %d in %.1fms",
+                        call.method,
+                        call.shown,
+                        response.status_code,
+                        (clock.monotonic() - started) * 1000,
+                    )
+                    return response
+                outcome = str(response.status_code)
+            _observe_retry(self.name)
+            logger.info(
+                "Retrying %s %s in %.2fs after %s (attempt %d of %d)",
+                call.method,
+                call.shown,
+                delay,
+                outcome,
+                call.attempt + 1,
+                call.retries + 1,
+            )
+            await _sleep(delay)
+            call.attempt += 1
+
+    async def _attempt(
+        self,
+        call: "_Call",
+        pool: httpx2.AsyncClient,
+        request: httpx2.Request,
+        config: HttpClientConfig,
+    ) -> httpx2.Response:
+        """Send ``request`` once and read its answer, at most ``MAX_RESPONSE_BYTES``.
+
+        httpx2's own timeouts get the time the call has left, so its errors
+        say which step was slow.
+        """
+        left = deadlines.remaining(call.seconds)
+        request.extensions["timeout"] = httpx2.Timeout(
+            left, connect=min(config.CONNECT_TIMEOUT, left)
+        ).as_dict()
+        response = await pool.send(request, stream=True)
+        try:
+            if self.guard:
+                _check_encoding(response)
+            body = await _read(response, config.MAX_RESPONSE_BYTES)
+        finally:
+            await response.aclose()
+        response._content = body
+        return response
+
+    def _failed(self, call: "_Call", config: HttpClientConfig) -> None:
+        """Count a failure against the host; warn once when its circuit opens."""
+        breaker = self.breaker
+        if breaker is not None and breaker.failed(call.origin, config.BREAKER_FAILURES):
+            _opened(call.origin, config)
+
+    def _target(self, url: str) -> httpx2.URL:
+        """``url`` under ``base_url``, if the client has one; checked if guarded.
+
+        A relative URL is appended to the base URL's path, as httpx2 does,
+        and may not climb out of it: a ``.`` or ``..`` segment, spelled out
+        or percent-encoded (``%2e%2e``, ``..%2f``), is refused. A URL naming
+        a host must keep to the base URL's origin. So a path built from
+        someone's input cannot send the call elsewhere.
+
+        Raises:
+            UnsafeURL: The URL leaves the base URL's origin or path, or the
+                guard refuses it.
+        """
+        target = httpx2.URL(url)
+        base = self.base_url
+        if base is not None:
+            if target.scheme or target.host:
+                if (target.scheme, target.host, target.port) != (
+                    base.scheme,
+                    base.host,
+                    base.port,
+                ):
+                    raise UnsafeURL("The URL leaves the client's base URL.")
+            elif _climbs(target.raw_path):
+                raise UnsafeURL("The URL leaves the client's base URL.")
+            else:
+                path = base.raw_path.rstrip(b"/") + b"/" + target.raw_path.lstrip(b"/")
+                target = base.copy_with(raw_path=path)
+        if self.guard:
+            target = checked_url(
+                str(target), allow_http=self.allow_http, allowed=self.allowed_networks
+            )
+        return target
+
+    def _headers(
+        self, config: HttpClientConfig, extra: Mapping[str, str] | None
+    ) -> httpx2.Headers:
+        """The call's headers: what it carries along, the client's, then its own.
+
+        Each replaces the one before it of the same name, whatever its case.
+        """
+        headers = httpx2.Headers({"User-Agent": config.USER_AGENT})
+        if self.guard:
+            headers["Accept-Encoding"] = "identity"
+        if self.propagate:
+            request = current_request()
+            if request is not None:
+                headers[REQUEST_ID_HEADER] = request.request_id
+            headers.update(trace_headers())
+        headers.update(self.headers)
+        headers.update(extra or {})
+        return headers
+
+    async def _pool(self, config: HttpClientConfig) -> httpx2.AsyncClient:
+        """The running loop's pool (a stub's, inside ``stub``), opened on first use.
+
+        The first use on each loop builds the TLS context on a thread: loading
+        a bundle of CAs takes tens of milliseconds, which would hold the loop
+        (CONC-06). It is built once per bundle; later loops find it built.
+        """
+        stubbed = _stub.get() or _shared_stub
+        if stubbed is not None:
+            return httpx2.AsyncClient(transport=stubbed, follow_redirects=False)
+        pool = self._pools.find()
+        if pool is not None:
+            return pool
+        verify = await asyncio.to_thread(self._tls_context, config.CA_BUNDLE)
+        return self._pools.get(partial(self._open, config, verify))
+
+    def _tls_context(self, ca_bundle: Path | None) -> ssl.SSLContext:
+        """The TLS context of the client's calls: the guard's if guarded."""
+        if self.guard:
+            return guards.tls_context(ca_bundle)
+        return tls_context(ca_bundle)
+
+    def _open(
+        self, config: HttpClientConfig, verify: ssl.SSLContext | None = None
+    ) -> httpx2.AsyncClient:
+        """A pool of connections, with the guard's transport and TLS if guarded.
+
+        ``verify`` is the TLS context, when already built (``_tls_context``).
+        """
+        if verify is None:
+            verify = self._tls_context(config.CA_BUNDLE)
+        limits = httpx2.Limits(
+            max_connections=config.MAX_CONNECTIONS,
+            max_keepalive_connections=config.MAX_KEEPALIVE_CONNECTIONS,
+        )
+        transport = self.transport
+        if transport is None and self.guard:
+            transport = GuardedTransport(self.allowed_networks, verify, limits)
+        return httpx2.AsyncClient(
+            transport=transport,
+            verify=verify,
+            limits=limits,
+            trust_env=not self.guard,
+            follow_redirects=False,
+            http2=self.http2,
+        )
+
+
+@dataclass(slots=True)
+class _Call:
+    """One call's progress through its attempts."""
+
+    method: str
+    shown: str
+    """How logs name the URL: no query string, no credentials."""
+    origin: str
+    seconds: float
+    """The call's timeout, retries included."""
+    retries: int
+    retry: bool | None
+    attempt: int = 0
+
+    def wait_before_retry(
+        self, outcome: httpx2.Response | Exception, config: HttpClientConfig
+    ) -> float | None:
+        """Seconds to wait before trying again; None when it should not.
+
+        A call is retried while it has retries left, its kind of failure
+        is worth another try, the wait is at most ``MAX_BACKOFF``, and
+        enough time is left to wait.
+        """
+        if self.attempt >= self.retries or self.retry is False:
+            return None
+        delay = backoff(self.attempt, config.BACKOFF, config.MAX_BACKOFF)
+        if isinstance(outcome, Exception):
+            if not (self.retry or self.method in IDEMPOTENT or _not_sent(outcome)):
+                return None
+        elif outcome.status_code not in RETRY_STATUSES or not (
+            self.retry or self.method in IDEMPOTENT
+        ):
+            return None
+        else:
+            asked = retry_after(outcome.headers.get("retry-after"))
+            if asked is not None:
+                if asked > config.MAX_BACKOFF:
+                    return None
+                delay = max(delay, asked)
+        left = deadlines.remaining()
+        if left is not None and delay >= left:
+            return None
+        return delay
+
+
+def _base(url: str) -> httpx2.URL:
+    """A client's base URL: absolute, with no query or fragment to append to."""
+    base = httpx2.URL(url)
+    if not base.is_absolute_url or base.query or base.fragment:
+        raise ValueError(
+            "A client's base URL names a scheme and a host, and has no query "
+            "or fragment."
+        )
+    return base
+
+
+def _climbs(raw_path: bytes) -> bool:
+    r"""Whether a relative path has a ``.`` or ``..`` segment, however encoded.
+
+    The path is percent-decoded until nothing changes, so a server that
+    decodes it (once, or more) before it resolves dot segments sees no
+    segment this did not; ``\`` separates segments too, as some servers
+    take it.
+    """
+    path = raw_path.split(b"?", 1)[0]
+    while (decoded := unquote_to_bytes(path)) != path:
+        path = decoded
+    return any(segment in DOT_SEGMENTS for segment in _SEGMENTS.split(path))
+
+
+def backoff(attempt: int, base: float, most: float) -> float:
+    """A random wait before retry ``attempt + 1``: up to ``base`` times 2^attempt.
+
+    "Full jitter": the wait is spread evenly from 0 to that bound, capped at
+    ``most``, so clients that failed together do not retry together.
+    """
+    return random.random() * min(most, base * 2.0**attempt)  # noqa: S311 - jitter only.
+
+
+def retry_after(value: str | None) -> float | None:
+    """Seconds a ``Retry-After`` value asks for: a number, or an HTTP date."""
+    if value is None:
+        return None
+    value = value.strip()
+    if value.isascii() and value.isdigit():
+        return float(value)
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    return max((when - clock.now()).total_seconds(), 0.0)
+
+
+def _not_sent(error: Exception) -> bool:
+    """Whether the call failed before anything was sent: safe to send again."""
+    return isinstance(
+        error, httpx2.ConnectError | httpx2.ConnectTimeout | httpx2.PoolTimeout
+    )
+
+
+def _origin(url: httpx2.URL) -> str:
+    """``https://host:443``: whom a call goes to, which its circuit is kept for."""
+    port = url.port or {"https": 443, "http": 80}.get(url.scheme)
+    return f"{url.scheme}://{url.raw_host.decode('ascii')}:{port}"
+
+
+def _shown(url: httpx2.URL, *, path: bool) -> str:
+    """How logs name ``url``: origin and path, never the query or credentials."""
+    shown = f"{url.scheme}://{url.netloc.decode('ascii')}"
+    if path:
+        shown += url.raw_path.split(b"?", 1)[0].decode("ascii")
+    return shown
+
+
+def _opened(origin: str, config: HttpClientConfig) -> None:
+    """Warn that a host's circuit opened."""
+    logger.warning(
+        "The circuit to %s is open for %gs after %d failures in a row",
+        origin,
+        config.BREAKER_COOLDOWN,
+        config.BREAKER_FAILURES,
+    )
+
+
+def _check_encoding(response: httpx2.Response) -> None:
+    """Refuse an answer compressed in a way its request did not accept.
+
+    A guarded client asks for ``identity``: an answer someone else's
+    server compresses anyway is refused before any of it is inflated. An
+    answer without a body (to ``HEAD``, a 204, a 304) is let through.
+
+    Raises:
+        httpx2.DecodingError: The answer's ``Content-Encoding`` is not one
+            the request's ``Accept-Encoding`` takes.
+    """
+    request = response.request
+    if request.method == "HEAD" or response.status_code in BODILESS:
+        return
+    used = {
+        coding.strip().lower()
+        for coding in response.headers.get_list("content-encoding", split_commas=True)
+    } - {"", "identity"}
+    accepted = _accepted(request.headers.get("accept-encoding", "identity"))
+    if used and "*" not in accepted and not used <= accepted:
+        raise httpx2.DecodingError(
+            f"The answer is compressed ({', '.join(sorted(used))}), which the "
+            "request did not accept.",
+            request=request,
+        )
+
+
+def _accepted(value: str) -> set[str]:
+    """The content codings an ``Accept-Encoding`` value takes (``q=0``: not)."""
+    accepted = set()
+    for item in value.split(","):
+        coding, _, parameter = item.partition(";")
+        name, _, weight = parameter.partition("=")
+        if name.strip().lower() == "q" and _nothing(weight):
+            continue
+        accepted.add(coding.strip().lower())
+    return accepted
+
+
+def _nothing(weight: str) -> bool:
+    """Whether a ``q`` weight is 0: the coding is not acceptable at all."""
+    try:
+        return float(weight) == 0
+    except ValueError:
+        return False
+
+
+class _Bounded(httpx2.AsyncByteStream):
+    """A response's stream as it comes, refused past ``limit`` bytes."""
+
+    def __init__(
+        self, stream: httpx2.AsyncByteStream, request: httpx2.Request, limit: int
+    ) -> None:
+        """Count what ``stream`` gives, up to ``limit`` bytes."""
+        self.stream = stream
+        self.request = request
+        self.limit = limit
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        """The chunks of the stream, until there are too many bytes.
+
+        Raises:
+            ResponseTooLarge: More than ``limit`` bytes came.
+        """
+        size = 0
+        async for chunk in self.stream:
+            size += len(chunk)
+            if size > self.limit:
+                raise ResponseTooLarge(
+                    f"The answer is longer than {self.limit} bytes.",
+                    request=self.request,
+                )
+            yield chunk
+
+    async def aclose(self) -> None:
+        """Close the stream underneath."""
+        await self.stream.aclose()
+
+
+async def _read(response: httpx2.Response, limit: int) -> bytes:
+    """The decompressed body of ``response``, unless longer than ``limit``.
+
+    The bytes as they come are bounded too (``_Bounded``): an answer that
+    inflates to little, or to nothing, is not read without end.
+    """
+    # An async client's answers stream asynchronously.
+    stream = cast(httpx2.AsyncByteStream, response.stream)
+    response.stream = _Bounded(stream, response.request, limit)
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in response.aiter_bytes():
+        size += len(chunk)
+        if size > limit:
+            raise ResponseTooLarge(
+                f"The answer is longer than {limit} bytes.", request=response.request
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def _sleep(seconds: float) -> None:
+    """Wait before a retry (tests replace it)."""
+    await asyncio.sleep(seconds)
+
+
+@cache
+def tls_context(ca_bundle: Path | None) -> ssl.SSLContext:
+    """A client TLS context for ``CA_BUNDLE`` (default: httpx2's), built once."""
+    if ca_bundle is None:
+        context = httpx2.create_ssl_context()
+    else:
+        context = ssl.create_default_context(cafile=ca_bundle)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
+
+
+class GuardedBackend(httpcore2.AsyncNetworkBackend):
+    """Connects only to addresses the guard passed (``domainkit.outbound.guard``).
+
+    The host is resolved, and every address checked, as each connection is
+    opened; the connection goes to the first address. TLS still checks the
+    certificate against the host name, and the pool keeps connections per
+    host name, never per address.
+    """
+
+    def __init__(self, allowed: Sequence[Network]) -> None:
+        """Let ``allowed`` private networks through."""
+        self.allowed = tuple(allowed)
+        self._backend = httpcore2.AnyIOBackend()
+
+    async def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,  # noqa: ASYNC109 - httpcore2's interface.
+        local_address: str | None = None,
+        socket_options: Any = None,  # noqa: ANN401 - httpcore2's option type.
+    ) -> httpcore2.AsyncNetworkStream:
+        """Check the host's addresses, then connect to the first.
+
+        Raises:
+            UnsafeURL: The host has an address the guard refuses.
+            httpcore2.ConnectError: The host could not be resolved.
+            httpcore2.ConnectTimeout: Resolving took longer than ``timeout``.
+        """
+        try:
+            async with asyncio.timeout(timeout):
+                address = await checked_host(host, port, self.allowed)
+        except TimeoutError as exc:
+            raise httpcore2.ConnectTimeout("Resolving the host took too long.") from exc
+        except OSError as exc:
+            raise httpcore2.ConnectError(
+                f"The host could not be resolved: {exc}"
+            ) from exc
+        return await self._backend.connect_tcp(
+            str(address),
+            port,
+            timeout=timeout,
+            local_address=local_address,
+            socket_options=socket_options,
+        )
+
+    async def connect_unix_socket(
+        self,
+        path: str,
+        timeout: float | None = None,  # noqa: ASYNC109 - httpcore2's interface.
+        socket_options: Any = None,  # noqa: ANN401 - httpcore2's option type.
+    ) -> httpcore2.AsyncNetworkStream:
+        """Refuse: a guarded client calls hosts, never local sockets."""
+        raise UnsafeURL("The URL names a local socket.")
+
+    async def sleep(self, seconds: float) -> None:
+        """Sleep, as the backend underneath does."""
+        await self._backend.sleep(seconds)
+
+
+class GuardedTransport(httpx2.AsyncHTTPTransport):
+    """httpx2's transport, connecting through ``GuardedBackend``, without proxies."""
+
+    def __init__(
+        self,
+        allowed: Sequence[Network],
+        verify: ssl.SSLContext,
+        limits: httpx2.Limits,
+    ) -> None:
+        """Pool connections as httpx2 does, opened by the guarded backend."""
+        super().__init__(verify=verify, limits=limits, trust_env=False)
+        self._pool = httpcore2.AsyncConnectionPool(
+            ssl_context=verify,
+            max_connections=limits.max_connections,
+            max_keepalive_connections=limits.max_keepalive_connections,
+            keepalive_expiry=limits.keepalive_expiry,
+            network_backend=GuardedBackend(allowed),
+        )
+
+
+@contextmanager
+def stub(
+    handler: Handler | httpx2.AsyncBaseTransport, *, everywhere: bool = False
+) -> Iterator[None]:
+    """Send every call made in the block (and tasks it starts) to ``handler``.
+
+    ``handler`` takes an ``httpx2.Request`` and returns an
+    ``httpx2.Response`` (or an awaitable of one), through httpx2's
+    ``MockTransport``; a transport is used as it is. The URL checks of
+    guarded clients still apply; address checks need the network, so a
+    stub skips them.
+
+    ``everywhere`` (New in 2.5) sends every call of the process to it
+    until the block ends, from any task, thread, or context, unless a
+    plain ``stub`` holds there: for a pytest fixture, whose context the
+    test may not share. Blocks may end in any order.
+    """
+    transport = (
+        handler
+        if isinstance(handler, httpx2.AsyncBaseTransport)
+        else httpx2.MockTransport(handler)
+    )
+    if everywhere:
+        with _shared(transport):
+            yield
+        return
+    token = _stub.set(transport)
+    try:
+        yield
+    finally:
+        _stub.reset(token)
+
+
+@contextmanager
+def _shared(transport: httpx2.AsyncBaseTransport) -> Iterator[None]:
+    """Use ``transport`` in every context of the process until the block ends."""
+    global _shared_stub  # The one stub every context reads.
+    with _everywhere_lock:
+        _everywhere.append(transport)
+        _shared_stub = transport
+    try:
+        yield
+    finally:
+        with _everywhere_lock:
+            _everywhere.remove(transport)
+            _shared_stub = _everywhere[-1] if _everywhere else None
+
+
+def _check_files(files: Files, content: bytes | str | None, json: object) -> None:
+    """Refuse a form that a retry could not send again, or that has a body too.
+
+    Raises:
+        ValueError: A file is neither bytes nor a binary file that can
+            seek, or ``content`` or ``json`` is given too.
+    """
+    if content is not None or json is not None:
+        raise ValueError("files= sends a form: it takes no content= or json=.")
+    items = files.values() if isinstance(files, Mapping) else (f for _, f in files)
+    for item in items:
+        given = item[1] if isinstance(item, tuple) else item
+        if isinstance(given, bytes):
+            continue
+        seekable = getattr(given, "seekable", None)
+        if isinstance(given, io.TextIOBase) or not (callable(seekable) and seekable()):
+            raise ValueError(
+                "A form's file is bytes or a binary file that can seek, so that "
+                "a retry sends it whole again."
+            )
+
+
+def every_client() -> list[HttpClient]:
+    """Every client made and still in use, in no order."""
+    with _clients_lock:
+        return list(_clients)
+
+
+async def close_all() -> None:
+    """Close every client's connections on the running event loop."""
+    await close_each(every_client(), HttpClient.aclose)
+
+
+def reset_circuits() -> None:
+    """Close every client's circuits, forgetting their failures (New in 2.9).
+
+    The test plugin calls it before each test: clients shared by the
+    backends made per call (mail, text messages, push, search, identity,
+    captcha) carry no open circuit from one test to the next.
+    """
+    for each in every_client():
+        if each.breaker is not None:
+            each.breaker.reset()
+
+
+OUTCOMES: Final[tuple[tuple[type[BaseException], str], ...]] = (
+    (CircuitOpen, "circuit_open"),
+    (CallTimeout, "timeout"),
+    (deadlines.DeadlineExceeded, "deadline_exceeded"),
+    (ResponseTooLarge, "too_large"),
+    (UnsafeURL, "unsafe_url"),
+    (asyncio.CancelledError, "cancelled"),
+)
+"""How a call that raised ended, in its metrics; any other error is ``error``."""
+
+
+def _outcome(error: BaseException) -> str:
+    """The ``outcome`` label of a call that raised ``error``."""
+    for kind, outcome in OUTCOMES:
+        if isinstance(error, kind):
+            return outcome
+    return "error"
+
+
+OPEN_CIRCUITS: Final = "http_client_circuits_open"
+OPEN_CIRCUITS_HELP: Final = (
+    "Circuits of outgoing calls not closed now: open, or letting a trial through."
+)
+
+try:
+    from prometheus_client import REGISTRY, Counter, Histogram
+    from prometheus_client.metrics_core import GaugeMetricFamily, Metric
+except ImportError:  # pragma: no cover - only without the [metrics] extra.
+
+    def _observe_call(client: str, method: str, outcome: str, started: float) -> None:
+        """Record nothing: ``prometheus_client`` is not installed."""
+
+    def _observe_retry(client: str) -> None:
+        """Record nothing: ``prometheus_client`` is not installed."""
+
+    def _observe_circuit(client: str, state: str) -> None:
+        """Record nothing: ``prometheus_client`` is not installed."""
+
+else:
+    CALLS: Final = Counter(
+        "http_client_requests_total",
+        "Outgoing HTTP calls, by the status of their answer or how else they ended.",
+        ["client", "method", "outcome"],
+    )
+    CALL_DURATION: Final = Histogram(
+        "http_client_request_duration_seconds",
+        "Outgoing HTTP calls' duration, retries included.",
+        ["client", "method"],
+        buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10),
+    )
+    CALL_RETRIES: Final = Counter(
+        "http_client_retries_total", "Outgoing HTTP calls tried again.", ["client"]
+    )
+    TRANSITIONS: Final = Counter(
+        "http_client_circuit_transitions_total",
+        "Circuits of outgoing calls that opened, let a trial through, or closed.",
+        ["client", "state"],
+    )
+
+    def _observe_call(client: str, method: str, outcome: str, started: float) -> None:
+        """Count one call of ``client``, and its time since ``started``."""
+        label = method if method in METHODS else "OTHER"
+        CALLS.labels(client, label, outcome).inc()
+        CALL_DURATION.labels(client, label).observe(clock.monotonic() - started)
+
+    def _observe_retry(client: str) -> None:
+        """Count one retry of a call of ``client``."""
+        CALL_RETRIES.labels(client).inc()
+
+    def _observe_circuit(client: str, state: str) -> None:
+        """Count a circuit of ``client`` entering ``state``."""
+        TRANSITIONS.labels(client, state).inc()
+
+    class OpenCircuits:
+        """``http_client_circuits_open``, counted from the clients at each scrape.
+
+        Every client with a breaker has a series, 0 while its circuits are
+        closed; clients of one name are counted together.
+        """
+
+        def describe(self) -> Iterable[Metric]:
+            """The gauge, without samples: what registering it needs."""
+            yield GaugeMetricFamily(
+                OPEN_CIRCUITS, OPEN_CIRCUITS_HELP, labels=["client"]
+            )
+
+        def collect(self) -> Iterable[Metric]:
+            """The gauge, with each client's circuits not closed now."""
+            counts: dict[str, int] = {}
+            for each in every_client():
+                if each.breaker is not None:
+                    counts[each.name] = (
+                        counts.get(each.name, 0) + each.breaker.open_circuits()
+                    )
+            gauge = GaugeMetricFamily(
+                OPEN_CIRCUITS, OPEN_CIRCUITS_HELP, labels=["client"]
+            )
+            for name, count in sorted(counts.items()):
+                gauge.add_metric([name], count)
+            yield gauge
+
+    REGISTRY.register(OpenCircuits())
+
+
+client: Final = HttpClient(name="default")
+"""A client with ``HTTP_CLIENT``'s options, for calls that need no others."""

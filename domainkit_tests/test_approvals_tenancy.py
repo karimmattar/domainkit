@@ -725,3 +725,24 @@ def test_erasing_a_person_reaches_every_tenants_requests(client: TestClient) -> 
     assert {stored(each.id).maker.startswith("erased:") for each in (of_a, of_b)} == {
         True
     }
+
+
+def test_an_approvers_list_reads_through_an_index_of_its_scope() -> None:
+    """The tenant, the action, the policy, and the order: one index (A28-PERF-04).
+
+    An approver's list reads, of the tenant served, the requests of each
+    action and policy that names them, newest first; without it, an
+    approver of a rare policy read the whole table on every page.
+    """
+    (index,) = (
+        each
+        for each in requests.indexes
+        if each.name == "ix_domainkit_approval_requests_scope"
+    )
+
+    assert [column.name for column in index.columns] == [
+        "tenant_id",
+        "action",
+        "policy",
+        "submitted_at",
+    ]

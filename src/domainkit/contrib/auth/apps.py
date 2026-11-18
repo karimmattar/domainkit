@@ -1,7 +1,7 @@
 """Install ``domainkit.contrib.auth`` (after ``domainkit.contrib.contenttypes``)."""
 
 import dataclasses
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from http.cookies import SimpleCookie
 from importlib import import_module
 from typing import Any, Final
@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 
 from fastapi import FastAPI, Response
 from fastapi.dependencies.models import Dependant
-from sqlalchemy import Table
+from sqlalchemy import Connection, Table, inspect
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from domainkit.apps import DomainConfig, registry
@@ -18,9 +18,9 @@ from domainkit.apps.hooks import (
     on_deployment_warnings,
     on_export_subject,
 )
-from domainkit.checks import CheckFailed, CheckMessage
-from domainkit.conf import settings
-from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS, REDIS_SCHEMES
+from domainkit.checks import CheckFailed, CheckMessage, probes_left_out
+from domainkit.conf import DEPLOYED_ENVIRONMENTS, settings
+from domainkit.conf.global_settings import REDIS_SCHEMES
 from domainkit.contrib.contenttypes.sync import has_tables
 from domainkit.db import SqlAlchemyUnitOfWork, metadata
 from domainkit.db.hooks import on_committed, on_migrated, on_stage
@@ -38,7 +38,7 @@ from domainkit.http.access import (
     served_routes,
 )
 from domainkit.http.live import streams
-from domainkit.http.ratelimit import MemoryBackend
+from domainkit.http.ratelimit import MemoryBackend, rate_limit_backend
 from domainkit.utils.module_loading import import_string
 from domainkit.utils.rates import PERIODS, parse_rate
 
@@ -55,7 +55,14 @@ from .permissions import declared_permissions, sync_permissions
 from .principals import invalidate_all, stamp_committed, stamp_pending, watch
 from .routing import AccountRoutes, on_account_routes
 from .settings import PRINCIPAL_TTL, AuthSettings, auth_settings
-from .tables import DEFAULT_USER_TABLES, permissions, start_mappers, users
+from .tables import (
+    DEFAULT_USER_TABLES,
+    listing_field,
+    lookup_indexes,
+    permissions,
+    start_mappers,
+    users,
+)
 from .validators import get_password_validators, preset_contradictions
 
 CONTENTTYPES = "domainkit.contrib.contenttypes"
@@ -126,6 +133,8 @@ class AuthConfig(DomainConfig):
         on_stage(self.stamp_changes)
         on_committed(self.after_commit)
         on_migrated(self.create_permissions)
+        self._leave_lookup_indexes()
+        on_migrated(self.index_lookups)
         invalidate_all()  # Settings, models, or databases may have changed.
         declared_permissions()
         if registry.is_installed(MESSAGING):
@@ -321,6 +330,7 @@ class AuthConfig(DomainConfig):
             )
         problems.extend(self._mailing_problems(app))
         problems.extend(self._unshared_throttles(required=True))
+        problems.extend(_uncountable_attempts(auth_settings()))
         problems.extend(
             CheckMessage(
                 "auth.E106",
@@ -444,7 +454,9 @@ class AuthConfig(DomainConfig):
         (``auth.W008``), and a worker that may send codes once they expired
         (``auth.W009``). Anywhere, a backend that does not list its grants
         on objects (``auth.W007``), and members' keys without the list of a
-        user's tenants (``auth.W010``): only superusers then change users.
+        user's tenants (``auth.W010``): only superusers then change users;
+        and ``AUTHENTICATION_EXEMPT_PATHS`` naming some of ``PROBE_PATHS``,
+        not all (``probes.W001``, as ``check`` says of the framework's lists).
         """
         unlisted: list[str] = [
             CheckMessage(
@@ -470,6 +482,13 @@ class AuthConfig(DomainConfig):
                     "the function that lists the tenants a user belongs to.",
                 )
             )
+        probes = probes_left_out(
+            "AUTH.AUTHENTICATION_EXEMPT_PATHS",
+            auth_settings().AUTHENTICATION_EXEMPT_PATHS,
+            settings.PROBE_PATHS,
+        )
+        if probes is not None:
+            unlisted.append(probes)
         if settings.ENVIRONMENT not in DEPLOYED_ENVIRONMENTS:
             return unlisted
         config = auth_settings()
@@ -562,6 +581,44 @@ class AuthConfig(DomainConfig):
         if database == self.database and await has_tables(connection, permissions):
             await sync_permissions(connection)
 
+    async def index_lookups(self, connection: AsyncConnection, database: str) -> None:
+        """Make the user lookups' indexes after ``migrate``, on PostgreSQL.
+
+        ``lower()`` of the address and the username, and the admin's order
+        (``lookup_indexes``), each where missing. The table's indexes are
+        read first, from the catalog, and only a missing one is made: a
+        ``CREATE INDEX`` locks the table against writes even when the index
+        exists, so a ``migrate`` with nothing to make waits for no writer.
+        Not on SQLite, which cannot reflect an index on ``lower()``: such an
+        index would warn at every ``makemigrations`` and snapshot, so they
+        are not declared on the table either, and revisions leave them alone
+        (A28-PERF-02).
+        """
+        if database != self.database or connection.dialect.name != "postgresql":
+            return
+        present = await connection.run_sync(_index_names, self.user_table)
+        if present is None:
+            return
+        preparer = connection.dialect.identifier_preparer
+        table = preparer.format_table(self.user_table)
+        for name, indexed in self._lookup_indexes(preparer.quote).items():
+            if name not in present:  # IF NOT EXISTS: another migrate made it.
+                await connection.exec_driver_sql(
+                    f"CREATE INDEX IF NOT EXISTS {preparer.quote(name)} "
+                    f"ON {table} ({indexed})"
+                )
+
+    def _lookup_indexes(self, quote: Callable[[str], str] = str) -> dict[str, str]:
+        """The user lookups' indexes, by name (``lookup_indexes``)."""
+        model, table = self.user_model, self.user_table
+        return lookup_indexes(model, table, listing_field(model, table), quote)
+
+    def _leave_lookup_indexes(self) -> None:
+        """Have revisions leave the lookups' indexes alone, by their names."""
+        info = self.user_table.info
+        names = (*info.get("unmanaged_index_names", ()), *self._lookup_indexes())
+        info["unmanaged_index_names"] = (*dict.fromkeys(names),)
+
     def _check_routing(self) -> None:
         """Users, their links, and content types must share one target.
 
@@ -607,6 +664,17 @@ class AuthConfig(DomainConfig):
                     f"AUTH.IDENTIFIERS names {', '.join(map(repr, unknown))}, which "
                     f"{self.user_model.__name__} has no field for; name its fields, "
                     "such as 'email' or 'mobile_number'.",
+                )
+            )
+        stored = set(self.user_table.c.keys())
+        if linked := [name for name in identifiers if name in names - stored]:
+            errors.append(
+                CheckMessage(
+                    "auth.E011",
+                    f"AUTH.IDENTIFIERS names {', '.join(map(repr, linked))}, which "
+                    f"the user table {self.user_table.name!r} has no column for; "
+                    "name fields that it stores, such as 'email' or "
+                    "'mobile_number'.",
                 )
             )
         if len(set(identifiers)) != len(identifiers):
@@ -942,21 +1010,46 @@ def _check_middleware() -> None:
             )
 
 
-def _counted_per_process(config: AuthSettings) -> bool:
-    """Whether attempts are throttled, in a backend each process keeps alone."""
+def _throttles_attempts(config: AuthSettings) -> bool:
+    """Whether some attempts are counted: a rate of ``config`` is set."""
     rates = (
         config.LOGIN_RATE,
         config.EMAIL_RATE,
         config.MFA.RATE,
         config.MFA.ADDRESS_RATE,
     )
-    if all(rate is None for rate in rates):
+    return any(rate is not None for rate in rates)
+
+
+def _uncountable_attempts(config: AuthSettings) -> list[CheckMessage]:
+    """``backends.E001``: attempts counted with a ``RATE_LIMIT_BACKEND`` that cannot.
+
+    Said here only without ``RATE_LIMIT``: with it, the core says so.
+    """
+    if settings.RATE_LIMIT is not None or not _throttles_attempts(config):
+        return []
+    try:
+        rate_limit_backend.backend_class()
+    except ImproperlyConfigured as exc:
+        return [
+            CheckMessage(
+                "backends.E001",
+                f"{exc} AUTH's attempt throttles count with it.",
+                f"Name a class with hit(key, limit, period), such as {REDIS_BACKEND}.",
+            )
+        ]
+    return []
+
+
+def _counted_per_process(config: AuthSettings) -> bool:
+    """Whether attempts are throttled, in a backend each process keeps alone."""
+    if not _throttles_attempts(config):
         return False
     try:
-        backend = import_string(settings.RATE_LIMIT_BACKEND)
-    except ImportError:
-        return False  # Not a class: loading it fails loudly where it is used.
-    return isinstance(backend, type) and issubclass(backend, MemoryBackend)
+        backend = rate_limit_backend.backend_class()
+    except ImproperlyConfigured:
+        return False  # Not a backend: backends.E001 says so, and loading fails.
+    return issubclass(backend, MemoryBackend)
 
 
 def _user_model(path: str) -> type[AbstractBaseUser]:
@@ -1062,3 +1155,23 @@ async def _export_logins(subject: str) -> Mapping[str, object]:
     from .erasure import export_logins
 
     return await export_logins(subject)
+
+
+def _index_names(connection: Connection, table: Table) -> set[str] | None:
+    """The names of ``table``'s indexes, in its schema, else the connection's.
+
+    A table that names its schema (``Table(..., schema="identity")``) is
+    there, whatever schema the connection works in. None where it has no
+    such table yet. Read from the catalog, which takes no lock on the table.
+    """
+    inspector = inspect(connection)
+    schema = table.schema
+    if schema is None:
+        schema = connection.exec_driver_sql("SELECT current_schema()").scalar()
+    if not inspector.has_table(table.name, schema=schema):
+        return None
+    return {
+        str(index["name"])
+        for index in inspector.get_indexes(table.name, schema=schema)
+        if index["name"] is not None
+    }

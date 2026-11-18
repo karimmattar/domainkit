@@ -23,7 +23,6 @@ from domainkit.contrib.auth.authentication import (
     RefreshNotSupported,
     bearer_token,
     get_authenticators,
-    load_authenticators,
 )
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.ratelimit import Decision, MemoryBackend
@@ -116,7 +115,6 @@ def test_authentication_classes_are_checked(use_auth: UseAuth) -> None:
     use_auth()
     first = get_authenticators()
     assert get_authenticators() is first
-    assert load_authenticators.cache_info().currsize >= 1
 
 
 @pytest.mark.parametrize(
@@ -160,7 +158,6 @@ def test_jwt_keys_are_checked(
 
 def test_jwt_needs_pyjwt(use_auth: UseAuth, monkeypatch: pytest.MonkeyPatch) -> None:
     """Without the extra, startup says how to install it."""
-    load_authenticators.cache_clear()  # Instances made by earlier tests had PyJWT.
     monkeypatch.setitem(sys.modules, "jwt", None)
     with pytest.raises(ImproperlyConfigured) as missing:
         jwt_auth(use_auth, SIGNING_KEY="k" * 32)

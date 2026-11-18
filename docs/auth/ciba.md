@@ -46,6 +46,10 @@ NOTIFICATIONS = {"PUSH_BACKEND": "..."}  # FCM, APNs: see Mail and notifications
 CIBA = {"APPROVE_LOGINS": True}  # every key is optional
 ```
 
+The routes go in `src/config/urls.py`, on the project's `router`, as
+[part 0 of the tutorial](../tutorial/0-first-route.md#step-3-add-a-first-route)
+mounts its first route:
+
 ```python
 from domainkit.contrib.ciba.api import router as sign_in_router
 from domainkit.contrib.devices.api import router as devices_router

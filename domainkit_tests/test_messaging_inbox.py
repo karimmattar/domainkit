@@ -12,7 +12,7 @@ import logging
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any, Final
+from typing import Any
 
 import pytest
 from prometheus_client import REGISTRY
@@ -49,6 +49,7 @@ from domainkit.ddd import DuplicateValue, event_bus
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.tasks import spawn
 from domainkit_tests.conftest import MakeDatabase
+from domainkit_tests.support.waiting import within
 from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork, NoteWritten, notes
 from domainkit_tests.test_messaging import (  # noqa: F401 - fixtures.
     ALPHA,
@@ -63,15 +64,6 @@ from domainkit_tests.test_messaging import (  # noqa: F401 - fixtures.
 )
 
 pytestmark = pytest.mark.anyio
-
-WAIT: Final = 30.0
-"""The longest any test waits for something; a regression fails, never hangs."""
-
-
-async def within(awaitable: Any) -> Any:  # noqa: ANN401 - any awaitable.
-    """Await ``awaitable``, failing after ``WAIT`` seconds."""
-    async with asyncio.timeout(WAIT):
-        return await awaitable
 
 
 async def credits(database: str = "default") -> int:
@@ -626,8 +618,8 @@ async def test_a_handler_blocked_past_its_lease_commits_once(
     assert outcomes("superseded") == superseded + 1
     assert caplog.messages == [
         (
-            f"event {row['target']} lost its lease while it ran: another worker "
-            "took it over and runs it"
+            f"event {row['target']} (message {row['id']}) lost its lease while it "
+            "ran: another worker took it over and runs it"
         )
     ]
 

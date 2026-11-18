@@ -49,8 +49,8 @@ def forget() -> Iterator[None]:
     """Start with nothing run; forget the tasks after."""
     ran.clear()
     yield
-    tasks._tasks.pop(FIRST, None)
-    tasks._tasks.pop(SECOND, None)
+    tasks.unregister_task(FIRST)
+    tasks.unregister_task(SECOND)
 
 
 def config() -> MessagingSettings:
@@ -71,8 +71,8 @@ async def test_the_next_step_of_a_chain_gets_its_own_grace() -> None:
         task(name=FIRST)(first_step)
         task(name=SECOND)(second_step)
         await enqueue(chain(first_step, second_step), label="x")  # New web pods.
-        tasks._tasks.pop(FIRST)
-        tasks._tasks.pop(SECOND)
+        tasks.unregister_task(FIRST)
+        tasks.unregister_task(SECOND)
 
         await Worker(config()).run_once()  # An old worker: the first step waits.
         assert (await row_of(FIRST))["status"] == PENDING
@@ -80,7 +80,7 @@ async def test_the_next_step_of_a_chain_gets_its_own_grace() -> None:
         clock.tick(HOUR - 60)
         task(name=FIRST)(first_step)  # A new worker runs it, near the grace's end.
         await Worker(config()).run_once()
-        tasks._tasks.pop(FIRST)
+        tasks.unregister_task(FIRST)
         assert (await row_of(FIRST))["status"] == DONE
 
         clock.tick(120)  # An old worker, still running, claims the second step,
@@ -99,7 +99,7 @@ async def test_a_retried_dead_letter_gets_a_grace_again() -> None:
     with freeze_time("2026-11-01T09:00:00Z") as clock:
         task(name=FIRST)(first_step)
         await enqueue(first_step, label="y")
-        tasks._tasks.pop(FIRST)
+        tasks.unregister_task(FIRST)
         await Worker(config()).run_once()
         clock.tick(HOUR)
         await Worker(config()).run_once()

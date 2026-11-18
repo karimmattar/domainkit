@@ -18,7 +18,7 @@ typo tolerance, and facets, keep an index in a search engine::
 ``found.ids`` are the matching documents' ids, best first: read the
 aggregates from their repository, which keeps the rules. Index from an
 event handler of the aggregate's events, so the index follows commits.
-The backends call through ``domainkit.http.client`` (the ``httpclient``
+The backends call through ``domainkit.outbound.client`` (the ``httpclient``
 extra), with no SDK; ``MemorySearchBackend`` is for tests.
 """
 

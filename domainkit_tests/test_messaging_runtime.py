@@ -89,6 +89,7 @@ from domainkit.lifecycle import Budget as ShutdownBudget
 from domainkit.lifecycle import close_resources
 from domainkit.management import call_command
 from domainkit_tests import test_messaging as test_messaging_module
+from domainkit_tests.support.waiting import WAIT, within
 from domainkit_tests.test_messaging import (  # noqa: F401 - fixtures.
     ALPHA,
     BROKERED,
@@ -109,15 +110,6 @@ from domainkit_tests.test_messaging import (  # noqa: F401 - fixtures.
 from domainkit_tests.test_messaging_ordering import step
 
 pytestmark = pytest.mark.anyio
-
-WAIT: Final = 30.0
-"""The longest any test waits for something; a regression fails, never hangs."""
-
-
-async def within(awaitable: Any) -> Any:  # noqa: ANN401 - any awaitable.
-    """Await ``awaitable``, failing after ``WAIT`` seconds."""
-    async with asyncio.timeout(WAIT):
-        return await awaitable
 
 
 def postgres() -> bool:
@@ -436,21 +428,50 @@ async def test_a_stop_while_waiting_for_a_slot_still_cuts_off_running_messages()
 
 
 @pytest.mark.usefixtures("tables")
-async def test_a_running_message_may_finish_within_a_short_shutdown_timeout() -> None:
-    """A DRAIN_TIMEOUT under a second is waited for: what ends in it is done."""
+async def test_a_running_message_may_finish_within_a_short_shutdown_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A DRAIN_TIMEOUT under a second is waited for: what ends in it is done.
+
+    The worker hands its running messages to ``finish`` with the timeout as
+    set, 0.9 s; the message ends once it is handed over. ``finish`` is given
+    longer here, so the message's commit never races the timeout on a slow
+    runner; the next test holds ``finish`` to a timeout under a second
+    (A28-TEST-06).
+    """
     await enqueue(at_gate, name="ending")
     config = MessagingSettings(**{**FAST, **SLOW, "DRAIN_TIMEOUT": 0.9})
+    graces: list[float] = []
+    real = worker_module.finish
+
+    async def finishing(tasks: set[asyncio.Task[None]], grace: float) -> None:
+        graces.append(grace)
+        gate.open()
+        await real(tasks, WAIT)
+
+    monkeypatch.setattr(worker_module, "finish", finishing)
     stop = asyncio.Event()
     running = asyncio.create_task(Worker(config).run(stop))
     await gate.until(lambda: gate.started == ["ending"])
 
     stop.set()
-    await asyncio.sleep(0.01)  # The worker starts to wait; 0.89 s of slack.
-    gate.open()
     await within(running)
 
+    assert graces == [0.9]
     assert gate.finished == ["ending"]
     assert [row["status"] for row in await rows()] == [DONE]
+
+
+async def test_finish_waits_a_timeout_under_a_second() -> None:
+    """A task that ends within 0.9 s is waited for, not cancelled (A28-TEST-06)."""
+    ended = asyncio.Event()
+    task = asyncio.create_task(ended.wait())
+    asyncio.get_running_loop().call_soon(ended.set)
+
+    await worker_module.finish({task}, 0.9)  # type: ignore[arg-type]
+
+    assert task.done()
+    assert not task.cancelled()
 
 
 @pytest.mark.usefixtures("tables")
@@ -2993,17 +3014,160 @@ async def test_a_stopping_relay_finishes_its_round(
 async def test_a_relay_that_will_not_stop_is_cancelled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """After HELPER_GRACE, a relay still publishing is cancelled; it gives back."""
+    """After HELPER_GRACE, a relay still publishing is cancelled; it gives back.
+
+    It is not given ``DRAIN_TIMEOUT`` (20 seconds) first: that is for a
+    relay that runs messages from the outbox while the broker is away, and
+    this broker answers (audit A28-TEST-07).
+    """
     broker = Holding()
     monkeypatch.setattr(BrokerHandler, "__getitem__", lambda self, alias: broker)
     monkeypatch.setattr(dispatch, "HELPER_GRACE", 0.05)
     stop, running = await relaying_into(broker)
 
     stop.set()
-    await within(running)
+    async with asyncio.timeout(5):  # Room for a loaded runner; 20 is the drain.
+        await running
 
     (row,) = await rows()
     assert (row["lock_id"], row["locked_until"]) == (None, None)
+
+
+@pytest.mark.usefixtures("broker_tables")
+async def test_a_relay_running_the_outbox_gets_the_drain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """While the broker is away, the relay's own messages get ``DRAIN_TIMEOUT``.
+
+    Not only ``HELPER_GRACE``: a message it runs from the outbox is waited
+    for as a delivery is, and is done, not cut short.
+    """
+
+    async def away(*args: object, **options: object) -> None:
+        raise BrokerUnavailable("connection refused")
+
+    broker = brokers["work"]
+    monkeypatch.setattr(broker, "publish", away)
+    monkeypatch.setattr(broker, "check", away)
+    monkeypatch.setattr(dispatch, "HELPER_GRACE", 0.05)
+    await enqueue(at_gate, name="drained")
+    config = registry.settings(MessagingSettings).model_copy(
+        update={
+            "BREAKER_FAILURES": 1,
+            "BREAKER_COOLDOWN": 60.0,
+            "POLL_INTERVAL": 0.01,
+            "DRAIN_TIMEOUT": 10.0,
+            **SLOW,
+        }
+    )
+    stop = asyncio.Event()
+    running = asyncio.create_task(
+        BrokerWorkers([Worker(config)], ["default"], config).run(stop)
+    )
+    await gate.until(lambda: gate.started == ["drained"])
+
+    stop.set()
+    await asyncio.sleep(0.3)  # Past HELPER_GRACE.
+    gate.open()
+    await within(running)
+
+    assert gate.finished == ["drained"]
+    (row,) = await rows()
+    assert row["status"] == DONE
+
+
+@pytest.mark.usefixtures("broker_tables")
+async def test_a_relay_claiming_from_the_outbox_at_the_stop_gets_the_drain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A relay whose breaker is open is waited for, though it runs nothing yet.
+
+    The stop came while it claimed: what it claims then runs, and is done.
+    """
+
+    async def away(*args: object, **options: object) -> None:
+        raise BrokerUnavailable("connection refused")
+
+    broker = brokers["work"]
+    monkeypatch.setattr(broker, "publish", away)
+    monkeypatch.setattr(broker, "check", away)
+    monkeypatch.setattr(dispatch, "HELPER_GRACE", 0.05)
+    gate.open("claimed")
+    await enqueue(at_gate, name="claimed")
+    config = registry.settings(MessagingSettings).model_copy(
+        update={
+            "BREAKER_FAILURES": 1,
+            "BREAKER_COOLDOWN": 60.0,
+            "POLL_INTERVAL": 0.01,
+            "DRAIN_TIMEOUT": 10.0,
+            **SLOW,
+        }
+    )
+    worker = Worker(config)
+    claim = worker._claim
+    claiming, release = asyncio.Event(), asyncio.Event()
+
+    async def held(limit: int) -> list[Claimed]:
+        claiming.set()
+        await release.wait()
+        return await claim(limit)
+
+    monkeypatch.setattr(worker, "_claim", held)
+    stop = asyncio.Event()
+    running = asyncio.create_task(
+        BrokerWorkers([worker], ["default"], config).run(stop)
+    )
+    await within(claiming.wait())
+
+    stop.set()
+    await asyncio.sleep(0.3)  # Past HELPER_GRACE.
+    release.set()
+    await within(running)
+
+    assert gate.finished == ["claimed"]
+    (row,) = await rows()
+    assert row["status"] == DONE
+
+
+@pytest.mark.usefixtures("broker_tables")
+async def test_a_relay_probing_the_broker_at_the_stop_gets_the_grace_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Its cooldown over, a relay checks the broker; a check that hangs is cut short.
+
+    It runs nothing from the outbox, so it is not given the drain: a stop
+    during the check waits ``HELPER_GRACE``, not ``DRAIN_TIMEOUT`` too.
+    """
+    probing = asyncio.Event()
+
+    async def hangs() -> None:
+        probing.set()
+        await asyncio.Event().wait()  # A broker that never answers.
+
+    broker = brokers["work"]
+    monkeypatch.setattr(broker, "check", hangs)
+    monkeypatch.setattr(dispatch, "HELPER_GRACE", 0.05)
+    config = registry.settings(MessagingSettings).model_copy(
+        update={
+            "BREAKER_FAILURES": 1,
+            "BREAKER_COOLDOWN": 0.01,
+            "POLL_INTERVAL": 0.01,
+            "DRAIN_TIMEOUT": 20.0,
+            **SLOW,
+        }
+    )
+    runner = BrokerWorkers([Worker(config)], ["default"], config)
+    breaker = runner.breaker("default")
+    breaker.failed(BrokerUnavailable("connection refused"))  # Open, then cooled down.
+    await asyncio.sleep(0.02)
+    assert breaker.state == "probing"
+    stop = asyncio.Event()
+    running = asyncio.create_task(runner.run(stop))
+    await within(probing.wait())
+
+    stop.set()
+    async with asyncio.timeout(5):  # Room for a loaded runner; 20 is the drain.
+        await running
 
 
 @pytest.mark.usefixtures("tables")

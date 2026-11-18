@@ -135,7 +135,7 @@ class Command(ActionCommand):
         if not found:
             self.write(f"No limit bounds {kind} {subject!r}.")
 
-    async def _set(
+    async def _set(  # noqa: PLR0913
         self,
         *,
         code: str,

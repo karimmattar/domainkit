@@ -3,7 +3,7 @@
 In this part you install domainkit, create a project, and add one route
 that anyone may call. You call the route with `curl`, and you write a
 test for it. You learn no new words here, only the commands. This part
-comes before the five parts that build a small bank
+comes before the parts that build a small bank
 ([the tutorial](../tutorial.md)). Each part ends with a project that
 works, and the next part starts from it.
 
@@ -13,7 +13,7 @@ works, and the next part starts from it.
 - One route, `GET /rates`, that answers the bank's interest rates.
 - One test that calls the route and passes.
 
-You need Python 3.13 or 3.14, and `curl`. The part takes about 15
+You need Python 3.13, 3.14, or 3.15, and `curl`. The part takes about 15
 minutes.
 
 ## Step 1: install domainkit
@@ -72,8 +72,8 @@ own order: the database and the first user come in
 
 A route is a function that answers requests to one URL. FastAPI, which
 domainkit is built on, calls it a path operation. Flask and Django call
-it a view. Your first route answers the bank's interest rates. Make this
-new file:
+it a view. Your first route answers the bank's interest rates. Make a
+new file, `src/config/rates.py`:
 
 ```python title="src/config/rates.py (new file)"
 """The bank's interest rates: a first route."""
@@ -133,7 +133,7 @@ port instead, here and in the next parts.
 
 The `client` fixture comes with domainkit's pytest plugin. It calls the
 application inside the test's own process, so no server needs to run.
-Make this new file:
+Make a new file, `tests/test_rates.py`:
 
 ```python title="tests/test_rates.py (new file)"
 """Anyone may read the rates."""

@@ -19,7 +19,8 @@ from domainkit.apps import registry
 from domainkit.broker import BrokerUnavailable, MemoryBroker
 from domainkit.conf import override_settings
 from domainkit.contrib.messaging import MessagingSettings, Worker, enqueue
-from domainkit.contrib.messaging.dispatch import BrokerWorkers
+from domainkit.contrib.messaging.breaker import Watched
+from domainkit.contrib.messaging.dispatch import BrokerWorkers, close_publishers
 from domainkit.contrib.messaging.ordering import Promoted
 from domainkit.contrib.messaging.tables import DONE
 from domainkit_tests.test_messaging import (
@@ -97,6 +98,40 @@ async def test_a_relay_runs_the_outbox_while_the_broker_is_away(
     )
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [ConnectionError("the outbox is away"), asyncio.CancelledError()],
+    ids=["error", "cancelled"],
+)
+async def test_a_claim_that_fails_gives_its_slots_back(
+    broker_tables: MemoryBroker,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: BaseException,
+) -> None:
+    """While the broker is away, a claim that raises keeps none of the budget.
+
+    Its slots are taken while it claims, and given back when it fails or
+    is cancelled: kept, each failure would leave fewer, until the worker
+    starved (A28-TEST-02).
+    """
+    config = quick()
+    worker = Worker(config)
+    runner = BrokerWorkers([worker], ["default"], config)
+    taken: list[int] = []
+
+    async def claim(slots: int) -> list[Any]:
+        taken.append(worker.budget.used)
+        raise failure
+
+    monkeypatch.setattr(worker, "_claim", claim)
+    async with asyncio.TaskGroup() as group:
+        with pytest.raises(type(failure)):
+            await runner._run_due(worker, group, set(), asyncio.Event())
+
+    assert taken == [min(config.BATCH_SIZE, config.CONCURRENCY)]
+    assert worker.budget.used == 0
+
+
 async def test_the_relay_publishes_again_once_the_broker_answers(
     broker_tables: MemoryBroker,
     monkeypatch: pytest.MonkeyPatch,
@@ -157,3 +192,44 @@ async def test_the_next_message_of_a_key_waits_for_the_relay_while_away(
     (row,) = await outbox()
     await relay(Promoted(row["id"], "emails"))  # type: ignore[arg-type]
     assert str(row["id"]) in outage.published
+
+
+async def test_a_failed_probe_opens_the_breaker_again_and_leases_nothing(
+    broker_tables: MemoryBroker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cooled down, a round checks the broker before any row: down, it opens again.
+
+    Nothing is leased to be published; the round runs the outbox instead.
+    """
+    Outage(broker_tables, monkeypatch)
+    tried: list[str] = []
+    publishing = broker_tables.publish
+
+    async def counted(queue: str, body: bytes, *, message_id: str) -> None:
+        tried.append(message_id)
+        await publishing(queue, body, message_id=message_id)
+
+    await enqueue(send_email, to="ada@example.com")
+    await close_publishers()  # The commit's own publication is not the round's.
+    monkeypatch.setattr(broker_tables, "publish", counted)
+    config = quick(BREAKER_COOLDOWN=60.0)
+    worker = Worker(config)
+    runner = BrokerWorkers([worker], ["default", "emails"], config)
+    breaker = runner.breaker("default")
+    breaker.failed(BrokerUnavailable("down"))
+    assert breaker.opened_at is not None
+    breaker.opened_at -= 60  # Cooled down: the next round probes.
+    assert breaker.state == "probing"
+    running: set[asyncio.Task[None]] = set()
+
+    async with asyncio.TaskGroup() as group:
+        done, _ = await runner._round(
+            worker, Watched(broker_tables, breaker), group, running, asyncio.Event()
+        )
+
+    assert breaker.state == "open"
+    assert tried == []
+    assert done == 1
+    (row,) = await outbox()
+    assert row["status"] == DONE
+    assert ("email", "ada@example.com") in ran

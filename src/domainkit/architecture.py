@@ -13,17 +13,19 @@ domain layer), ``controllers.py`` (application), ``models.py``
   ``domainkit.money``, ``domainkit.i18n.lazy`` (to mark its texts for
   translation), and its own domain layer. No frameworks, no I/O, no
   settings.
-- ``application``: no ``infrastructure`` or ``api`` code, and no web or
-  database libraries; it reaches storage through repository ports.
-- ``infrastructure``: no ``api`` code and no web libraries, but the
-  outgoing HTTP client (``domainkit.http.client``): calling another
-  service is what an adapter does; and the checks and storing of uploads
-  (``domainkit.http.uploads``), which a file gateway runs on what its
-  route hands it, typed as ``Upload`` rather than Starlette's
-  ``UploadFile`` (ADR 0177); and the problems a route raises
-  (``domainkit.http.problems``: ``APIError``, ``FieldError``), so a file
-  gateway refuses a file with the code a route would (ADR 0182), and
-  only the names its ``__all__`` lists. The rest of
+- ``application``: no ``infrastructure`` or ``api`` code, no web or
+  database libraries, and no outgoing calls (``domainkit.outbound``); it
+  reaches storage and other services through ports.
+- ``infrastructure``: no ``api`` code and no web libraries. It calls other
+  services through ``domainkit.outbound`` (the outgoing HTTP client):
+  calling another service is what an adapter does. Of ``domainkit.http``
+  it may import the client's 2.8 path (``domainkit.http.client``, ADR
+  0195); the checks and storing of uploads (``domainkit.http.uploads``),
+  which a file gateway runs on what its route hands it, typed as
+  ``Upload`` rather than Starlette's ``UploadFile`` (ADR 0177); and the
+  problems a route raises (``domainkit.http.problems``: ``APIError``,
+  ``FieldError``), so a file gateway refuses a file with the code a route
+  would (ADR 0182), and only the names its ``__all__`` lists. The rest of
   ``domainkit.http.errors``, which builds responses, stays out.
 - Another domain may be used only through its ``application`` layer or its
   ``domain.events`` (bounded contexts stay decoupled).
@@ -46,6 +48,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final, Self
 
+from domainkit.conf.global_settings import LAYERS as LAYERS
+
 if TYPE_CHECKING:
     from domainkit.conf.global_settings import ArchitectureConfig
 
@@ -59,10 +63,8 @@ __all__ = [
     "Violation",
     "check_domain",
     "check_domains",
+    "layer_warnings",
 ]
-
-LAYERS: Final = ("domain", "application", "infrastructure", "api")
-"""Layer packages of a domain, innermost first."""
 
 LAYER_MODULES: Final = MappingProxyType(
     {
@@ -91,6 +93,7 @@ FORBIDDEN_LIBRARIES: Final = {
         "redis",
         "domainkit.db",
         "domainkit.http",
+        "domainkit.outbound",
     ),
     "infrastructure": ("fastapi", "starlette", "domainkit.http"),
 }
@@ -99,6 +102,7 @@ FORBIDDEN_LIBRARIES: Final = {
 ALLOWED_MODULES: Final = {
     "infrastructure": (
         "domainkit.http.client",
+        "domainkit.outbound.client",
         "domainkit.http.uploads",
         "domainkit.http.problems",
     )
@@ -106,7 +110,23 @@ ALLOWED_MODULES: Final = {
 """Modules a layer may import although a library it must not use holds them.
 
 An entry lifts only a library entry less specific than itself: a project
-that forbids ``domainkit.http.client`` by name forbids it.
+that forbids ``domainkit.http.client`` by name forbids it. That module is
+the client's path of 2.8; the client lives in ``domainkit.outbound``,
+which no default rule names for the infrastructure layer, and which the
+exception lifts as it lifts the old path, from a project's rule on all of
+``domainkit`` (ADR 0195).
+"""
+
+MOVED: Final = MappingProxyType(
+    {
+        "domainkit.http.client": "domainkit.outbound.client",
+        "domainkit.http.guard": "domainkit.outbound.guard",
+    }
+)
+"""Modules that left ``domainkit.http`` in 2.9, by their 2.8 path (ADR 0195).
+
+A project's rule that names an old path, or a package that held it, names
+the new one too: it keeps applying to the same code.
 """
 
 _PUBLIC_ONLY: Final = ("domainkit.http.problems",)
@@ -114,7 +134,23 @@ _PUBLIC_ONLY: Final = ("domainkit.http.problems",)
 
 ``from domainkit.http.problems import HTTPException`` would pass otherwise:
 the rules read names, and a module holds every name it imports. The 2.7
-modules (``client``, ``uploads``) are not held to it yet (ADR 0182).
+modules (``client``, ``uploads``) are not held to it yet (ADR 0182): they
+are warned of (``_PUBLIC_FROM_3_0``).
+"""
+
+_PUBLIC_FROM_3_0: Final = ("domainkit.http.client", "domainkit.http.uploads")
+"""Allowed modules whose other names ``layer_warnings`` warns of; 3.0 refuses them.
+
+``from domainkit.http.uploads import UploadFile`` passed in 2.8, and so did
+Starlette's ``StreamingResponse`` and every name either module imports
+(ADR 0188).
+"""
+
+_SERVING: Final = MappingProxyType({"domainkit.http.uploads": frozenset({"serve"})})
+"""Names of an allowed module's ``__all__`` that answer a request with a response.
+
+A route answers; a gateway hands it what to answer with. Warned of by
+``layer_warnings``, refused by 3.0.
 """
 
 FORBIDDEN_LAYERS: Final = {
@@ -180,20 +216,47 @@ class LayerRules:
         """These rules with more entries; nothing already here is removed.
 
         Nothing extends ``allowed_modules``: a project adds rules, never
-        exceptions to them.
+        exceptions to them. A library entry that names a module's path of
+        2.8 (``domainkit.http.client``), or a package that held it
+        (``domainkit.http``), names its 2.9 home too (``MOVED``), where the
+        entry kept a layer from the old path.
         """
+        more = {
+            layer: (*entries, *self._moved(layer, entries))
+            for layer, entries in (forbidden_libraries or {}).items()
+        }
         return type(self)(
             layers=_merged(self.layers, layers),
             domain_allowed=_merged(self.domain_allowed, domain_allowed),
-            forbidden_libraries=_merged_table(
-                self.forbidden_libraries, forbidden_libraries or {}
-            ),
+            forbidden_libraries=_merged_table(self.forbidden_libraries, more),
             allowed_modules=self.allowed_modules,
             forbidden_layers=_merged_table(
                 self.forbidden_layers, forbidden_layers or {}
             ),
             public_surface=_merged(self.public_surface, public_surface),
         )
+
+    def _moved(self, layer: str, entries: Iterable[str]) -> Iterator[str]:
+        """The 2.9 homes of what ``entries`` forbade ``layer`` at a path of 2.8.
+
+        Under the default exceptions: a project's ``domainkit.http`` entry
+        for the infrastructure layer left the client to it in 2.8, as the
+        exception for ``domainkit.http.client`` lifted it, and leaves
+        ``domainkit.outbound.client`` to it now. An entry these rules hold
+        already for the layer adds nothing: a project that repeats a default
+        rule asks for no more than the default.
+        """
+        held = self.forbidden_libraries.get(layer, ())
+        for entry in entries:
+            if entry in held:
+                continue
+            for old, new in MOVED.items():
+                if _within(entry, (old,)):
+                    yield new + entry.removeprefix(old)
+                elif _within(old, (entry,)):
+                    exception = _closest(old, self.allowed_modules.get(layer, ()))
+                    if exception is None or len(exception) <= len(entry):
+                        yield new
 
     @classmethod
     def from_config(cls, config: "ArchitectureConfig") -> Self:
@@ -213,7 +276,7 @@ def project_rules() -> LayerRules:
     Without a settings module (a script, a test of the rules themselves) the
     defaults apply.
     """
-    from domainkit.conf import settings  # The settings import this module.
+    from domainkit.conf import settings  # Read only when the rules are asked for.
     from domainkit.exceptions import ImproperlyConfigured
 
     try:
@@ -307,6 +370,55 @@ def check_domains(
     return [
         violation for name in names for violation in check_domain(name, names, rules)
     ]
+
+
+def layer_warnings(
+    installed: Iterable[str], rules: LayerRules | None = None
+) -> list[Violation]:
+    """Imports the rules let through in 2.x and 3.0 refuses (``architecture.W001``).
+
+    Of each domain in ``installed``, under ``rules`` (the project's): a
+    name a layer takes from an allowed module (``ALLOWED_MODULES``) that
+    its ``__all__`` does not list, such as Starlette's ``UploadFile`` from
+    ``domainkit.http.uploads``, and ``serve``, which builds a route's
+    response. ``check`` lists them as warnings, so ``check --deploy``
+    fails until the import changes (ADR 0188).
+    """
+    rules = project_rules() if rules is None else rules
+    names = [name for name in installed if not _within(name, FRAMEWORK_PACKAGES)]
+    found = []
+    for name in names:
+        for module, imported in iter_imports(name):
+            layer = _layer(name, module, rules)
+            if layer is not None and (rule := _refused_in_3_0(layer, imported, rules)):
+                found.append(Violation(module, imported, rule))
+    return list(dict.fromkeys(found))
+
+
+def _refused_in_3_0(layer: str, imported: str, rules: LayerRules) -> str | None:
+    """The rule 3.0 adds that ``imported`` breaks in ``layer``, if any."""
+    library = _closest(imported, rules.forbidden_libraries.get(layer, ()))
+    exception = _closest(imported, rules.allowed_modules.get(layer, ()))
+    if (
+        library is None
+        or exception is None
+        or exception not in _PUBLIC_FROM_3_0
+        or len(exception) <= len(library)
+        or imported == exception
+    ):
+        return None
+    name = imported.removeprefix(f"{exception}.").partition(".")[0]
+    if name in _SERVING.get(exception, ()):
+        return (
+            f"the {layer} layer may not answer a request with {exception}.{name}, "
+            "which is its route's; 3.0 refuses it"
+        )
+    if name not in _public_names(exception):
+        return (
+            f"the {layer} layer may import only the __all__ of {exception}; "
+            "3.0 refuses the rest"
+        )
+    return None
 
 
 def _layer_rule(

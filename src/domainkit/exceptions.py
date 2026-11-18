@@ -49,7 +49,7 @@ class UpstreamError(DomainkitError):
     The HTTP layer answers it with ``status_code`` (502, 503, or 504), its
     ``code`` and ``detail``, which name no host or URL, and ``Retry-After``
     when ``retry_after`` is set; it is logged where it happened, never
-    reported per request as a bug (WEB-23). ``domainkit.http.client``'s
+    reported per request as a bug (WEB-23). ``domainkit.outbound.client``'s
     ``CircuitOpen``, ``CallTimeout``, and ``ResponseTooLarge`` are ones.
     """
 
@@ -58,3 +58,6 @@ class UpstreamError(DomainkitError):
     detail: ClassVar[str] = "A service this one depends on failed; try again later."
     retry_after: int | None = None
     """Seconds to wait before trying again, if known."""
+    retryable: ClassVar[bool] = True
+    """Whether trying again may succeed; False where it cannot change the
+    outcome, as for an answer too large to read (since 2.9, ADR 0196)."""

@@ -561,18 +561,20 @@ def test_mutmut_copies_every_file_the_tests_read() -> None:
 
 
 def test_a_hung_test_ends_the_suite_well_within_its_jobs_time() -> None:
-    """Two minutes a test, thirty a job, forty-five for integration's suite.
+    """Two minutes a test; thirty a job, forty-five for a suite under coverage.
 
-    Integration keeps its results on failure.
+    The suites of test and integration run under coverage, which follows the
+    processes the tests start. Integration keeps its results on failure.
     """
     config = tomllib.loads((ROOT / "pyproject.toml").read_text())
     options = config["tool"]["pytest"]["ini_options"]
     assert (options["timeout"], options["timeout_method"]) == (120, "thread")
     dev = config["dependency-groups"]["dev"]
     assert any(each.startswith("pytest-timeout ") for each in dev)
-    for name in ("test", "newest", "oldest"):
+    for name in ("newest", "oldest"):
         assert jobs()[name]["timeout-minutes"] == 30
-    assert jobs()["integration"]["timeout-minutes"] == 45
+    for name in ("test", "integration"):
+        assert jobs()[name]["timeout-minutes"] == 45
     steps = jobs()["integration"]["steps"]
     assert any(
         "--cov -rs --junitxml=junit.xml" in step.get("run", "") for step in steps
@@ -641,9 +643,7 @@ def test_the_rulesets_hold_without_an_everyday_bypass() -> None:
     assert [rule["type"] for rule in creation["rules"]] == ["creation"]
 
 
-@pytest.mark.parametrize(
-    "name", ["ci.yml", "release.yml", "codeql.yml", "scorecard.yml"]
-)
+@pytest.mark.parametrize("name", sorted(path.name for path in WORKFLOWS.glob("*.yml")))
 def test_actions_are_pinned_to_commits_and_tokens_only_read(name: str) -> None:
     """Every action by a full commit SHA; write access only where it is used."""
     assert workflow(name)["permissions"] == {"contents": "read"}
@@ -673,6 +673,8 @@ def test_actions_are_pinned_to_commits_and_tokens_only_read(name: str) -> None:
         }
     if name == "codeql.yml":
         assert granted == {"analyze": {"contents": "read", "security-events": "write"}}
+    if name == "docs.yml":
+        assert granted == {"deploy": {"pages": "write", "id-token": "write"}}
     if name == "scorecard.yml":
         assert granted == {
             "analysis": {
@@ -883,7 +885,7 @@ def test_renovate_sees_every_image_ci_starts() -> None:
     }
     pinned = re.findall(r"[\w./-]+:[\w.-]+@sha256:[0-9a-f]{64}", text)
     started = set(pinned) - services
-    assert len(started) == 6, started
+    assert len(started) == 8, started
     config = json.loads((ROOT / "renovate.json").read_text())
     [manager] = [
         each
@@ -1093,6 +1095,249 @@ def test_the_docs_site_builds_strictly_beside_the_tests() -> None:
     assert site["strict"] is True
     assert site["hooks"] == ["docs/hooks/site.py"]
     assert set(site["validation"].values()) == {"warn"}  # Failures, under --strict.
+
+
+PAGES_URL = "https://karimmattar.github.io/domainkit/"
+
+
+def test_the_docs_site_is_published_from_release_tags_only() -> None:
+    """The newest final release, if release.yml's tag checks pass it, is published.
+
+    Whatever tag started the run, it publishes the newest final release, so
+    a run dropped while it waited leaves nothing out. Its tag job makes
+    release.yml's checks of that tag, every tag of a newer version left
+    out; the site is built as CI's docs-site job builds it; the deploy job
+    deploys that artifact and nothing else, and no job reads a secret (ADR
+    0189).
+    """
+    text = (WORKFLOWS / "docs.yml").read_text()
+    docs: dict[object, Any] = yaml.safe_load(text)
+    assert docs[True] == {"push": {"tags": ["v*"]}}  # YAML 1.1 reads "on" as True.
+    assert docs["concurrency"] == {"group": "pages", "cancel-in-progress": False}
+    assert "secrets." not in text
+    found = docs["jobs"]
+    assert list(found) == ["newest", "tag", "site", "deploy"]
+    tag = "${{ needs.newest.outputs.tag }}"
+
+    newest = found["newest"]
+    assert newest["outputs"] == {"tag": "${{ steps.newest.outputs.tag }}"}
+    [find] = [step["run"] for step in newest["steps"] if step.get("id") == "newest"]
+    assert 'tag="$(python3 .github/scripts/newest_release.py)"' in find
+
+    def checks(job: dict[str, Any]) -> dict[str, str]:
+        return {
+            step["name"]: step["run"]
+            for step in job["steps"]
+            if step.get("name", "").startswith("Check that the ")
+        }
+
+    judged = found["tag"]
+    assert (judged["needs"], judged["if"]) == (
+        "newest",
+        "needs.newest.outputs.tag != ''",
+    )
+    released = checks(jobs("release.yml")["tag"])
+    assert len(released) == 3
+    release_check = 'python3 .github/scripts/release_check.py "$TAG"'
+    [last] = [name for name, run in released.items() if run == release_check]
+    # The same checks; this run's own release_check.py, without newer tags.
+    assert checks(judged) == released | {
+        last: 'python3 "$RUNNER_TEMP/scripts/release_check.py" "$TAG" --as-pushed'
+    }
+    assert all(
+        step["env"] == {"TAG": tag}
+        for step in judged["steps"]
+        if step.get("name", "").startswith("Check")
+    )
+
+    site = found["site"]
+    assert site["needs"] == ["newest", "tag"]
+    assert site["steps"][0]["with"]["ref"] == f"refs/tags/{tag}"
+    built = [step["run"] for step in site["steps"] if "run" in step]
+    reviewed = [step["run"] for step in jobs()["docs-site"]["steps"] if "run" in step]
+    assert built == reviewed  # The docs group alone, and --strict.
+    [upload] = [
+        step for step in site["steps"] if "upload-pages" in step.get("uses", "")
+    ]
+    assert upload["with"] == {"path": "site/"}
+
+    deploy = found["deploy"]
+    assert deploy["needs"] == "site"
+    assert deploy["environment"]["name"] == "github-pages"
+    assert [step["uses"].split("@")[0] for step in deploy["steps"]] == [
+        "actions/deploy-pages"
+    ]
+    site_config = yaml.safe_load((ROOT / "mkdocs.yml").read_text())
+    assert site_config["site_url"] == PAGES_URL
+
+
+def test_the_site_shows_the_newest_final_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pre-release does not count; nor does a name that is not a version."""
+    script = load_script("newest_release", monkeypatch)
+    tags = ["v2.8.0", "v2.8.1", "v2.9.0rc1", "notes", "v2.9", "v\u0663.0.0"]
+    assert script.newest(tags) == "v2.8.1"  # 2.9 has no final yet.
+    assert script.newest([*tags, "v2.9.0"]) == "v2.9.0"
+    assert script.newest([*tags, "v2.9.0", "v2.8.2"]) == "v2.9.0"  # An older line.
+    assert script.newest(["v2.9.0rc1", "notes"]) is None
+    assert script.key("\u0663.0.0") is None  # ASCII digits only.
+
+
+def test_the_newest_release_is_read_from_the_tags(tmp_path: Path) -> None:
+    """The script prints the newest final release, or nothing."""
+    git(tmp_path, "init", "-q")
+    git(tmp_path, "commit", "-q", "--allow-empty", "-m", "first")
+    script = ROOT / ".github" / "scripts" / "newest_release.py"
+
+    def printed() -> str:
+        done = subprocess.run(  # noqa: S603 - the test interpreter and the script.
+            [sys.executable, str(script)],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return done.stdout
+
+    git(tmp_path, "tag", "v1.0.0rc1")
+    assert printed() == "\n"
+    for name in ("v1.0.0", "v1.1.0", "v2.0.0rc1"):
+        git(tmp_path, "tag", name)
+    assert printed() == "v1.1.0\n"
+
+
+def test_a_release_is_judged_again_without_the_newer_tags(tmp_path: Path) -> None:
+    """A later line's pre-release refuses the release, unless ``--as-pushed``."""
+    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "1.0.0"\n')
+    (tmp_path / "CHANGELOG.md").write_text(
+        "## [Unreleased]\n\n## [1.0.0] - 2026-11-02\n"
+    )
+    git(tmp_path, "init", "-q", "-b", "main")
+    git(tmp_path, "add", ".")
+    git(tmp_path, "commit", "-q", "-m", "Release 1.0.0")
+    for name in ("v1.0.0", "v2.0.0rc1", "notes"):
+        git(tmp_path, "tag", name)
+
+    def release(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(  # noqa: S603 - the test interpreter and the script.
+            [sys.executable, str(RELEASE_CHECK), *args],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    pushed = release("v1.0.0")
+    assert (pushed.returncode, pushed.stdout) == (
+        1,
+        "v2.0.0rc1 exists, and 1.0.0 is not newer\n",
+    )
+    assert release("v1.0.0", "--as-pushed").returncode == 0
+    mismatched = release("v1.0.1", "--as-pushed")
+    assert mismatched.stdout.startswith("v1.0.1 does not match version 1.0.0")
+
+
+def released(tmp_path: Path, version: str) -> None:
+    """Commit the release of ``version``, as docs/versioning.md makes one."""
+    (tmp_path / "pyproject.toml").write_text(f'[project]\nversion = "{version}"\n')
+    (tmp_path / "CHANGELOG.md").write_text(
+        f"## [Unreleased]\n\n## [{version}] - 2026-11-02\n"
+    )
+    git(tmp_path, "add", ".")
+    git(tmp_path, "commit", "-q", "-m", f"Release {version}")
+
+
+def scripted(tmp_path: Path, script: str, *args: str) -> tuple[int, str]:
+    """Run ``.github/scripts/<script>`` in ``tmp_path``: its exit code and output."""
+    done = subprocess.run(  # noqa: S603 - the test interpreter and the script.
+        [sys.executable, str(ROOT / ".github" / "scripts" / script), *args],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return done.returncode, done.stdout
+
+
+def flat(path: Path) -> str:
+    """The text of ``path``, its words joined by one space, without ``#``."""
+    return " ".join(path.read_text(encoding="utf-8").replace("#", " ").split())
+
+
+ADR_0189 = next((ROOT / "docs" / "adr").glob("0189-*.md"))
+
+
+def test_as_pushed_leaves_out_a_newer_tag_pushed_before_the_release(
+    tmp_path: Path,
+) -> None:
+    """Every tag of a newer version is left out, whenever it was pushed.
+
+    ``--as-pushed`` reads versions, not when a tag was pushed: a later
+    line's pre-release tagged before the release refused it in release.yml,
+    and passes it here. The workflow, ADR 0189, versioning.md, and the
+    changelog say so, where they said "as when its tag was pushed" (audit
+    A28-DX-02).
+    """
+    git(tmp_path, "init", "-q", "-b", "main")
+    released(tmp_path, "1.0.0")
+    for name in ("v2.0.0rc1", "v1.0.0"):  # The pre-release first.
+        git(tmp_path, "tag", name)
+
+    assert scripted(tmp_path, "release_check.py", "v1.0.0") == (
+        1,
+        "v2.0.0rc1 exists, and 1.0.0 is not newer\n",
+    )
+    assert scripted(tmp_path, "release_check.py", "v1.0.0", "--as-pushed") == (0, "")
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    # The entry that added docs.yml, under [Unreleased] or the release since.
+    [entry] = [
+        each
+        for each in re.split(r"^- ", changelog, flags=re.MULTILINE)
+        if each.startswith("`.github/workflows/docs.yml` publishes")
+    ]
+    told = {
+        "docs.yml": flat(WORKFLOWS / "docs.yml"),
+        "ADR 0189": flat(ADR_0189),
+        "versioning.md": flat(ROOT / "docs" / "versioning.md"),
+        "CHANGELOG.md": " ".join(entry.split()),
+        "release_check.py": flat(RELEASE_CHECK),
+    }
+    assert [name for name, text in told.items() if "when it was pushed" in text] == []
+    assert [name for name, text in told.items() if "when its tag was" in text] == []
+    said = "every tag of a newer version"
+    assert [name for name, text in told.items() if said not in text] == []
+
+
+def test_a_stray_final_tag_freezes_the_site_as_it_blocks_releases(
+    tmp_path: Path,
+) -> None:
+    """The site's release is the newest final tag, a release or not.
+
+    A stray ``v9.0.0`` is taken for the newest release by every run of
+    docs.yml, and its checks refuse it, so nothing is published until it is
+    deleted; release.yml refuses each new minor release while it is there.
+    ADR 0189 says so (audit A28-DX-02).
+    """
+    git(tmp_path, "init", "-q", "-b", "main")
+    released(tmp_path, "1.0.0")
+    for name in ("v1.0.0", "v9.0.0"):  # The second, by mistake.
+        git(tmp_path, "tag", name)
+    assert scripted(tmp_path, "newest_release.py") == (0, "v9.0.0\n")
+    stray = scripted(tmp_path, "release_check.py", "v9.0.0", "--as-pushed")
+    assert stray[0] == 1
+    assert stray[1].startswith("v9.0.0 does not match version 1.0.0")
+
+    released(tmp_path, "1.1.0")
+    git(tmp_path, "tag", "v1.1.0")
+    assert scripted(tmp_path, "newest_release.py") == (0, "v9.0.0\n")
+    assert scripted(tmp_path, "release_check.py", "v1.1.0") == (
+        1,
+        "v9.0.0 exists, and 1.1.0 is not newer\n",
+    )
+    assert "A stray final `v*` tag, newer than every release, freezes the site" in (
+        flat(ADR_0189)
+    )
 
 
 def test_the_workflows_are_audited_and_scanned() -> None:
@@ -1918,7 +2163,7 @@ def test_the_published_links_name_the_release_tag(tmp_path: Path) -> None:
     assert "/blob/main/" not in readme
     assert readme.count(f"{REPOSITORY_URL}blob/v1.2.3/docs/") >= 20
     urls = tomllib.loads((tmp_path / "pyproject.toml").read_text())["project"]["urls"]
-    assert urls["Documentation"] == f"{REPOSITORY_URL}blob/v1.2.3/docs/reference.md"
+    assert urls["Documentation"] == f"{REPOSITORY_URL}blob/v1.2.3/docs/index.md"
     assert urls["Changelog"] == f"{REPOSITORY_URL}blob/v1.2.3/CHANGELOG.md"
     assert urls["Homepage"] == REPOSITORY_URL.rstrip("/")
 

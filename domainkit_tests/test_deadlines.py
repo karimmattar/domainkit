@@ -404,3 +404,184 @@ async def test_enforced_says_whether_a_timer_cuts_this_task_off() -> None:
         async with deadlines.timeout():  # Bounded by the outer deadline.
             assert deadlines.enforced() is True
         assert await asyncio.create_task(in_a_task()) is False
+
+
+async def test_a_commit_lifts_a_deadline_until_commit_for_good() -> None:
+    """``until_commit``: after the commit nothing cuts the work off any more.
+
+    The block waits twice its seconds after the commit and ends without
+    raising; so do the blocks the lifted deadline bounds.
+    """
+    async with deadlines.timeout(0.05, until_commit=True) as bound:
+        async with deadlines.timeout(60.0) as inner:  # Bounded by the outer.
+            with deadlines.after_commit():
+                assert deadlines.remaining() is None
+            assert deadlines.remaining() is None
+            await asyncio.sleep(0.1)
+        assert deadlines.remaining() is None
+    assert not bound.expired()
+    assert inner.deadline is not None
+    assert bound.deadline is not None
+    assert bound.deadline.until_commit is True
+    assert inner.deadline.until_commit is True  # Bounded by it: lifted with it.
+
+
+async def test_after_a_commit_other_deadlines_come_back_later() -> None:
+    """What follows a commit does not count: the time left is the same after.
+
+    On a frozen clock the block takes 30 seconds; the block's 10 seconds,
+    and its inner block's 5 (a timer of its own), are still left after,
+    and their timers follow.
+    """
+    loop = asyncio.get_running_loop()
+    with freeze_time("2026-01-01") as clock:
+        async with deadlines.timeout(10.0) as outer, deadlines.timeout(5.0) as inner:
+            with deadlines.after_commit():
+                assert deadlines.remaining() is None
+                assert outer.deadline is not None
+                assert outer.deadline.remaining() is None
+                clock.tick(30)
+            assert deadlines.remaining() == 5.0
+            assert outer.deadline.remaining() == 10.0
+            assert inner._timer is not None
+            when = inner._timer.when()
+            assert when is not None
+            assert loop.time() < when <= loop.time() + 5
+    assert not outer.expired()
+    assert not inner.expired()
+
+
+async def test_after_a_commit_a_deadline_moved_meanwhile_stays_moved() -> None:
+    """A deadline set again in the block keeps its new end."""
+    with freeze_time("2026-01-01"):
+        async with deadlines.timeout(10.0) as bound:
+            assert bound.deadline is not None
+            with deadlines.after_commit():
+                bound.deadline.reset(3.0)
+            assert deadlines.remaining() == 3.0
+
+
+async def test_after_a_commit_the_deadlines_of_other_tasks_are_left_alone() -> None:
+    """A task that shares a deadline lifts nothing; outside one, nothing happens.
+
+    The task commits under the deadline of the block that started it,
+    which only that block's task enforces: it keeps counting.
+    """
+    with deadlines.after_commit():  # No deadline at all.
+        assert deadlines.current_deadline() is None
+    with freeze_time("2026-01-01"):
+        async with deadlines.timeout(10.0) as bound:
+
+            async def commits() -> float | None:
+                with deadlines.after_commit():
+                    return deadlines.remaining()
+
+            assert await asyncio.create_task(commits()) == 10.0
+            assert bound.deadline is not None
+            assert bound.deadline.remaining() == 10.0
+
+
+async def test_a_commit_in_a_task_that_shares_the_deadline_lifts_it() -> None:
+    """``gather``, a task group, a ``BaseHTTPMiddleware``: the request committed.
+
+    A task the block started commits: the block's deadline, which that
+    task only shares, is lifted for good, and the block waits twice its
+    seconds without being cut off.
+    """
+
+    async def commits() -> float | None:
+        with deadlines.after_commit():
+            return deadlines.remaining()
+
+    async with deadlines.timeout(0.05, until_commit=True) as bound:
+        assert list(await asyncio.gather(commits())) == [None]
+        assert deadlines.remaining() is None
+        await asyncio.sleep(0.1)
+    assert not bound.expired()
+
+
+async def test_a_commit_in_doubt_is_noted_on_the_deadlines_around_it() -> None:
+    """In a task that shares the deadline, within a block of its own: noted.
+
+    The commit's error is that task's; the deadline it shares says so to
+    the task that answers, and so does each block around the commit's,
+    though cleared as they end. A deadline outside the work is not told.
+    """
+    elsewhere = deadlines.timeout(60.0)
+    async with elsewhere:
+        pass
+
+    async def commits() -> None:
+        async with deadlines.timeout(30.0) as inner:
+            deadlines.commit_in_doubt()
+        assert inner.deadline is not None
+        assert inner.deadline.in_doubt is True
+
+    async with deadlines.timeout(60.0, until_commit=True) as bound:
+        assert bound.deadline is not None
+        assert bound.deadline.in_doubt is False
+        await asyncio.gather(commits())
+    assert (bound.deadline.in_doubt, bound.deadline.remaining()) == (True, None)
+    assert elsewhere.deadline is not None
+    assert elsewhere.deadline.in_doubt is False
+    deadlines.commit_in_doubt()  # No deadline: nothing to note.
+
+
+async def test_a_commit_lifts_the_blocks_its_deadline_bounds_in_other_tasks() -> None:
+    """A sibling's block, with a timer of its own, is lifted with the deadline.
+
+    One task waits in a block bounded by the request's deadline (an
+    outgoing call, say); another commits. The first is not cut off at the
+    moment the deadline was set for.
+    """
+    started = asyncio.Event()
+
+    async def waits() -> float | None:
+        async with deadlines.timeout(60.0) as block:  # Bounded by the deadline.
+            assert block._timer is not None  # This task does not enforce it.
+            started.set()
+            await asyncio.sleep(0.1)
+            return deadlines.remaining()
+
+    async def commits() -> None:
+        await started.wait()
+        with deadlines.after_commit():
+            pass
+
+    async with deadlines.timeout(0.05, until_commit=True) as bound:
+        left, _ = await asyncio.gather(waits(), commits())
+    assert left is None
+    assert not bound.expired()
+
+
+async def test_a_deadline_keeps_its_open_blocks_only() -> None:
+    """Blocks bounded by a request's deadline leave its list as they end.
+
+    Two open at once, in two tasks, are both on it; three thousand, one
+    after another, leave nothing behind.
+    """
+    entered, release = asyncio.Event(), asyncio.Event()
+    count: list[int] = []
+
+    async def opens() -> None:
+        async with deadlines.timeout(120.0):
+            count.append(1)
+            if len(count) == 2:
+                entered.set()
+            await release.wait()
+
+    async with deadlines.timeout(60.0, until_commit=True) as bound:
+        assert bound.deadline is not None
+        seen: list[int] = []
+
+        async def looks() -> None:
+            await entered.wait()
+            seen.append(len(bound.deadline._bounded or ()))  # type: ignore[union-attr]
+            release.set()
+
+        await asyncio.gather(opens(), opens(), looks())
+        assert seen == [2]
+        for _ in range(3000):
+            async with deadlines.timeout(120.0):
+                pass
+        assert bound.deadline._bounded == []

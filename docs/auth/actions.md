@@ -21,11 +21,28 @@ On this page you learn how to:
 - confirm another way, from an app of your own;
 - authorize an act in a test.
 
+## When to use it, and when not to
+
+- **Use it when** the user confirms one act, with the arguments shown,
+  once: ending a membership, closing an account, deciding a request.
+- **Do not use it** when any guarded act may go ahead for a few minutes:
+  a [step-up](step-up.md#stepping-up) asks for one code for all of them.
+  Do not use it to get another person's agreement: that is
+  [approvals](../contrib/approvals.md), whose steps an authorization can
+  guard ([held for approval](#held-for-approval)).
+
 ## A first example
 
 Declare the act: its purpose, the command its service takes, what it is
 on, and what the user is shown. Decorate the service, register the
-action in your domain's `ready()`, and ask for it on the route:
+action in your domain's `ready()`, and ask for it on the route. The act
+is of an organizations domain, as `startdomain` writes one
+([part 1 of the tutorial](../tutorial/1-first-resource.md)):
+`OrganizationsUnitOfWork` is its unit of work on the database, with the
+repositories `memberships` and `organizations`, and `memberships` is the
+`ResourceRouter` of its memberships, in `routes.py`. [Part 7 of the
+tutorial](../tutorial/7-four-eyes.md) authorizes an act in a project, end
+to end: a clerk's approval of a transfer, with a code.
 
 ```python
 from uuid import UUID

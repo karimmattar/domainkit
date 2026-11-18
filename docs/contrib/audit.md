@@ -21,6 +21,18 @@ On this page you learn how to:
   HTTP;
 - meet the checks that staging and production run.
 
+## When to use it, and when not to
+
+- **Use it when** you must answer who did what, when, and from where,
+  for every committed change, in rows that nobody can change unseen.
+- **Do not use it** to keep a fact you may have to prove exactly as it
+  was, such as a signed consent or a verification result: record that as
+  [evidence](evidence.md), with a receipt. Do not use it as your domain's
+  data: a balance or a status belongs to an aggregate, and the trail
+  keeps people only as pseudonyms.
+- **For a record's earlier versions**, read its [history](#history), from
+  the same trail.
+
 ## Install
 
 ```python
@@ -543,8 +555,10 @@ their triggers as `protect()` makes them. A database without them, or
 that did not answer within 10 seconds, is reported. A trigger counts as
 missing when it is disabled, fires only in replica sessions (`ENABLE
 REPLICA TRIGGER`), fires on other events, under a `WHEN` condition, or
-for some columns only, or runs a function that is not the one `protect()`
-writes (its body is compared, whitespace aside). The probe cannot see a
+for some columns only, is given arguments, or runs a function that is not
+the one `protect()` writes (its body is compared, whitespace aside). The
+ledger's entries are checked the same way
+([Append-only tables](../databases.md#append-only-tables)). The probe cannot see a
 session that sets `session_replication_role = replica`, which only a
 superuser may do. It cannot stop a table owner from dropping the
 triggers between two starts either: `audit verify` checks what they

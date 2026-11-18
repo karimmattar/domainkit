@@ -90,11 +90,15 @@ print([name for name in sys.modules if name.startswith({never!r})])
 
 
 def run(script: str, path: Path | None = None) -> list[str]:
-    """Run ``script`` in a fresh interpreter; the lines it printed."""
+    """Run ``script`` in a fresh interpreter; the lines it printed.
+
+    No project's settings reach it, nor coverage's: a measured interpreter
+    loads coverage's modules too (A28-TEST-05).
+    """
     environment = {
         name: value
         for name, value in os.environ.items()
-        if not name.startswith("DOMAINKIT_")
+        if not name.startswith(("DOMAINKIT_", "COVERAGE_PROCESS_"))
     }
     paths = [str(ROOT), str(ROOT / "src"), *([str(path)] if path else [])]
     environment["PYTHONPATH"] = os.pathsep.join(paths)
@@ -131,6 +135,58 @@ def test_importing_domainkit_http_loads_neither_fastapi_nor_sqlalchemy() -> None
         """
     )
     assert run(script) == ["[]", "True", "True", "True"]
+
+
+@pytest.mark.reads_own_source
+def test_loading_the_settings_loads_no_layer_checker() -> None:
+    """The settings name the built-in layers; the layer checker imports them.
+
+    They check ``ARCHITECTURE.EXTRA_LAYERS`` against those layers, the
+    default ``ARCHITECTURE`` too, so in 2.8 every process that loaded its
+    settings imported the checker (audit A28-ARCH-04).
+    """
+    script = textwrap.dedent(
+        """\
+        import sys
+
+        from domainkit.conf import ArchitectureConfig, Settings
+
+        Settings()
+        extra = {"EXTRA_LAYERS": ("ports",), "FORBIDDEN_LAYERS": {"ports": ("api",)}}
+        ArchitectureConfig(**extra)
+        print("domainkit.architecture" in sys.modules)
+        from domainkit import architecture
+        from domainkit.conf import global_settings
+
+        print(architecture.LAYERS is global_settings.LAYERS)
+        """
+    )
+    assert run(script) == ["False", "True"]
+
+
+@pytest.mark.reads_own_source
+def test_an_adapter_calls_out_without_the_serving_package() -> None:
+    """``domainkit.outbound`` loads neither ``domainkit.http`` nor the web libraries.
+
+    2.8's client lived in ``domainkit.http``, so every adapter that called a
+    service loaded that package (audit A28-ARCH-04, ADR 0195).
+    """
+    script = textwrap.dedent(
+        """\
+        import sys
+
+        import domainkit.outbound
+
+        loaded = ["domainkit.outbound.client", "httpx2"]
+        print([name for name in loaded if name in sys.modules])
+        from domainkit.outbound.client import HttpClient
+        from domainkit.storage.s3 import S3Storage
+
+        web = ["domainkit.http", "fastapi", "starlette"]
+        print([name for name in web if name in sys.modules])
+        """
+    )
+    assert run(script) == ["[]", "[]"]
 
 
 def test_a_served_application_loads_no_ledger_broker_or_worker(

@@ -11,7 +11,7 @@ Name one in ``NOTIFICATIONS``, with its settings in ``SMS_OPTIONS``::
         },
     }
 
-Each calls its provider's HTTP API through ``domainkit.http.client``
+Each calls its provider's HTTP API through ``domainkit.outbound.client``
 (the ``httpclient`` extra), with no SDK. A message's ``sender`` replaces
 the configured one where the provider allows it. A refusal raises
 ``NotificationFailed`` with the provider's error code, never the number
@@ -43,7 +43,7 @@ from .settings import NotificationsSettings
 if TYPE_CHECKING:
     import httpx2
 
-    from domainkit.http.client import HttpClient
+    from domainkit.outbound.client import HttpClient
 
 
 __all__ = [
@@ -62,12 +62,17 @@ _clients: dict[tuple[float, bool], "HttpClient"] = {}
 
 
 def shared_client(timeout: float, *, http2: bool = False) -> "HttpClient":
-    """One client per timeout, shared by every backend made: its pool is kept."""
-    from domainkit.http.client import HttpClient
+    """One client per timeout, shared by every backend made: its pool is kept.
+
+    Text messages and push share it; its metrics call it ``notifications``.
+    """
+    from domainkit.outbound.client import HttpClient
 
     key = (timeout, http2)
     if key not in _clients:
-        _clients[key] = HttpClient(timeout=timeout, propagate=False, http2=http2)
+        _clients[key] = HttpClient(
+            timeout=timeout, propagate=False, http2=http2, name="notifications"
+        )
     return _clients[key]
 
 
@@ -99,11 +104,7 @@ class ProviderSmsBackend(SmsBackend):
             if isinstance(options, self.Options)
             else self.Options.model_validate(options)
         )
-        from domainkit.http.client import HttpClient
-
-        self.client: HttpClient = HttpClient(
-            timeout=self.options.TIMEOUT, propagate=False
-        )
+        self.client: HttpClient = shared_client(self.options.TIMEOUT)
 
     async def send_messages(self, messages: Sequence[SmsMessage]) -> int:
         """Send each message; return how many were sent.

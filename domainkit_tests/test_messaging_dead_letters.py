@@ -126,7 +126,7 @@ async def test_a_long_slots_dead_run_is_kept_until_the_slot_ends() -> None:
             clock.move_to(start + timedelta(days=30))  # The slot has ended.
             assert await worker.cleanup() == 1
     finally:
-        tasks._tasks.pop("tests.dead_letters.monthly")
+        tasks.unregister_task("tests.dead_letters.monthly")
 
 
 def test_the_dead_statement_needs_a_retention() -> None:

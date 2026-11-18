@@ -21,7 +21,6 @@ from domainkit.contrib.auth.validators import (
     NumericPasswordValidator,
     PasswordValidationError,
     UserAttributeSimilarityValidator,
-    load_validators,
 )
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.i18n import override
@@ -183,15 +182,13 @@ def test_validators_follow_settings(use_auth: UseAuth) -> None:
     use_auth(PASSWORD_VALIDATORS=[])
     validate_password("")
 
-    with pytest.raises(ImproperlyConfigured, match=r"nowhere\.Rule"):
-        load_validators((PasswordValidatorConfig(NAME="nowhere.Rule"),))
+    with pytest.raises(ImproperlyConfigured, match=r"VALIDATORS: .*nowhere"):
+        use_auth(PASSWORD_VALIDATORS=[{"NAME": "nowhere.Rule"}])
     with pytest.raises(ImproperlyConfigured, match="MinimumLengthValidator"):
-        load_validators(
-            (
-                PasswordValidatorConfig(
-                    NAME=f"{VALIDATORS}.MinimumLengthValidator", OPTIONS={"size": 3}
-                ),
-            )
+        use_auth(
+            PASSWORD_VALIDATORS=[
+                {"NAME": f"{VALIDATORS}.MinimumLengthValidator", "OPTIONS": {"size": 3}}
+            ]
         )
 
 

@@ -413,9 +413,10 @@ def test_one_table_lists_every_closer_in_the_steps_it_runs() -> None:
 
     assert names(Phase.DOMAINS) == names(Phase.TASKS) == []
     assert names(Phase.DRAIN)[-1][-1] == "publishers"
-    assert names(Phase.RESOURCES)[0][:5] == [
+    assert names(Phase.RESOURCES)[0][:6] == [
         "caches",
         "HTTP clients",
+        "guard lookups",
         "databases",
         "ledgers",
         "brokers",
@@ -450,6 +451,8 @@ def test_the_old_tables_are_views_of_the_one_table() -> None:
     assert lifecycle._builtin() == {
         "caches": cache_handler.close_all,
         "HTTP clients": lifecycle.close_http_clients,
+        # The guard sits below lifecycle and registers nothing (ADR 0195).
+        "guard lookups": lifecycle.close_guard_lookups,
         "databases": connections.close_all,
         # Looked up in sys.modules, not imported: a process that uses no
         # ledger or broker never loads one (PERF-15).

@@ -42,9 +42,8 @@ from uuid import UUID
 
 from domainkit import setup
 from domainkit.apps import registry
-from domainkit.conf import settings
+from domainkit.conf import DEPLOYED_ENVIRONMENTS, settings
 from domainkit.conf.env import Env
-from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.exceptions import DomainkitError
 from domainkit.i18n import override
 from domainkit.management.base import BaseCommand, CommandError, run_async
@@ -610,14 +609,15 @@ class Command(BaseCommand):
         if not reached:
             self.note(
                 "Note: the superuser has no email address nor mobile number: "
-                "no code reaches it, to reset its password or enroll a phone."
+                "no verification code can be sent to it (to reset its password "
+                "or enroll a phone)."
             )
             return
         kind, _, _ = reached[0]
         self.note(
-            f"Note: no code reaches the superuser, to reset its password or "
-            f"enroll a phone, until it proves its {LABELS[kind]}: run "
-            f"{_retry(user)}"
+            "Note: no verification code can be sent to the superuser (to reset "
+            f"its password or enroll a phone) until its {LABELS[kind]} is "
+            f"verified: run {_retry(user)}"
         )
 
     def _error(self, message: str) -> None:

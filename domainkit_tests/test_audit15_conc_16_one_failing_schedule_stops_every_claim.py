@@ -23,6 +23,7 @@ import pytest
 from domainkit.contrib.messaging import Worker, enqueue, periodic
 from domainkit.contrib.messaging import registry as tasks
 from domainkit_tests.conftest import POSTGRES_VARIABLE
+from domainkit_tests.support.waiting import until
 from domainkit_tests.test_messaging import (  # noqa: F401
     messaging,
     ran,
@@ -42,7 +43,11 @@ NAME = "tests.audit15." + "x" * 226  # 240 characters: a valid target.
 
 @pytest.mark.usefixtures("tables")
 async def test_a_schedule_that_cannot_be_written_does_not_stop_other_messages() -> None:
-    """The worker still runs the tasks that are due."""
+    """The worker still runs the tasks that are due.
+
+    It runs while the schedule fails, round after round: the test waits for
+    the task to have run, not for a fixed time (A28-TEST-06).
+    """
 
     @periodic(every=timedelta(hours=1), name=NAME)
     async def hourly() -> None:
@@ -54,12 +59,12 @@ async def test_a_schedule_that_cannot_be_written_does_not_stop_other_messages() 
     worker = Worker()
     try:
         running = asyncio.create_task(worker.run(stop))
-        await asyncio.sleep(3)  # Three poll intervals, and more.
+        await until(lambda: bool(ran), "The due task never ran.")
         stop.set()
         async with asyncio.timeout(10):
             await running
     finally:
-        tasks._tasks.pop(NAME)
+        tasks.unregister_task(NAME)
 
     # Safe behaviour: the due task ran; on d126394 nothing ever is claimed.
     assert [entry[0] for entry in ran] == [value]

@@ -16,7 +16,8 @@ the HTTP layer raise errors of their own, never an HTTP exception, and are
 mapped here too: ``ServiceBusy`` is 503 with ``Retry-After``
 (``busy_refusal``), an ``UpstreamError`` (an outgoing call that failed) is
 its own 502, 503, or 504 (``upstream_refusal``), database refusals that are
-not bugs are mapped by ``database_refusal``, and a ``MoneyError`` (two
+not bugs, a database out of reach included, are mapped by
+``database_refusal``, and a ``MoneyError`` (two
 currencies added, an amount with too many places) is 422 with its code and
 its summary.
 
@@ -27,11 +28,14 @@ catalogs.
 
 ``APIError`` and ``FieldError`` are defined in ``domainkit.http.problems``,
 which the infrastructure layer may import (since 2.8, ADR 0182); this module
-re-exports them, and ``DomainkitError``, as 2.7's did.
+re-exports them, and ``DomainkitError``, as 2.7's did. Its ``__all__`` lists
+the names ``domainkit.http`` takes from it, the two problems, and
+``transient`` (since 2.9): the rest is the framework's own.
 """
 
 import re
-from collections.abc import Mapping
+import socket
+from collections.abc import Iterator, Mapping
 from http import HTTPStatus
 from typing import Final
 from urllib.parse import quote
@@ -48,6 +52,8 @@ from starlette.routing import Match
 from domainkit.conf import settings
 from domainkit.context import RequestContext, RoutedRequestContext, current_request
 from domainkit.db.errors import (
+    CONNECTION_EXCEPTION,
+    UNAVAILABLE_STATES,
     IntegrityViolation,
     duplicate_value,
     integrity_violation,
@@ -63,13 +69,24 @@ from domainkit.ddd.exceptions import (
     PermissionDenied,
     PreconditionFailed,
 )
+from domainkit.ddd.uow import failed_in_doubt
+from domainkit.deadlines import DeadlineExceeded
 from domainkit.exceptions import DomainkitError as DomainkitError
-from domainkit.exceptions import ServiceBusy, UpstreamError
+from domainkit.exceptions import ImproperlyConfigured, ServiceBusy, UpstreamError
 from domainkit.http.problems import APIError as APIError
 from domainkit.http.problems import FieldError as FieldError
 from domainkit.http.responses import BuiltJSONResponse, JSONResponse
 from domainkit.i18n import gettext, validation_message
 from domainkit.money import MoneyError
+
+__all__ = [
+    "APIError",
+    "ErrorResponse",
+    "FieldError",
+    "error_response",
+    "error_responses",
+    "transient",
+]
 
 STATUS_CODES: Final[tuple[tuple[type[DomainError], int], ...]] = (
     (PreconditionFailed, status.HTTP_412_PRECONDITION_FAILED),
@@ -91,6 +108,21 @@ BUSY_STATES: Final = frozenset(
     }
 )
 """SQLSTATEs of statements worth trying again later."""
+DATABASE_UNAVAILABLE: Final = "database_unavailable"
+"""The code of a request answered 503 because its database cannot be reached."""
+UNAVAILABLE_RETRY_AFTER: Final = "5"
+"""Seconds a client should wait while the database cannot be reached: longer
+than ``database_busy``'s, as a restart or a failover takes seconds."""
+RETRIED_STATUSES: Final = frozenset({408, 429})
+"""The 4xx answers worth trying again after: a timeout, too many requests."""
+_CAUSES: Final = 16
+"""Errors ``transient`` reads down an error's chain at most."""
+_READ: Final = 64
+"""Errors ``transient`` reads at most in all, the groups' included."""
+_POOL: Final = "sqlalchemy.pool.base"
+"""The module of the pool's ``__connect``, which opens each connection."""
+_EVENTS: Final = "sqlalchemy.event"
+"""The package that calls an engine's or a pool's listeners."""
 
 _BODILESS: Final = frozenset({status.HTTP_204_NO_CONTENT, status.HTTP_304_NOT_MODIFIED})
 _METHODS: Final = ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
@@ -405,14 +437,32 @@ def database_refusal(exc: BaseException) -> APIError | None:
 
     The pool out of connections, and statements cancelled by a timeout or
     lost to another transaction, are 503 ``database_busy``: try again
-    shortly. A value the database cannot store (a NUL character, a number
-    or text too long for its column) is 422 ``invalid_value``. Integrity
-    errors are answered as ``integrity_refusal`` says.
+    shortly. A database that cannot be reached, or cannot serve now, is
+    503 ``database_unavailable`` (``unreachable``), with ``Retry-After``
+    unless the connection was lost as a commit was sent: that change may
+    have been made (``failed_in_doubt``). A value the database
+    cannot store (a NUL character, a number or text too long for its
+    column) is 422 ``invalid_value``. Integrity errors are answered as
+    ``integrity_refusal`` says.
     """
     if isinstance(exc, PoolTimeout):
         return _busy()
     if isinstance(exc, IntegrityError):
         return integrity_refusal(exc)
+    if unreachable(exc):
+        if failed_in_doubt(exc):  # Lost as it committed: it may be stored.
+            return APIError(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "The database was lost as the change was committed, so it may "
+                "have been made; check before you send it again.",
+                code=DATABASE_UNAVAILABLE,
+            )
+        return APIError(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "The database is unavailable; try again shortly.",
+            code=DATABASE_UNAVAILABLE,
+            headers={"Retry-After": UNAVAILABLE_RETRY_AFTER},
+        )
     if not isinstance(exc, DBAPIError):
         return None
     state = sqlstate(exc)
@@ -426,6 +476,153 @@ def database_refusal(exc: BaseException) -> APIError | None:
             code="invalid_value",
         )
     return None
+
+
+def transient(exc: BaseException) -> bool:
+    """Whether ``exc`` says that what the work needs cannot serve now: try later.
+
+    Read on the error and on what it was raised from (``_chain``), from
+    the error outwards, the first that settles it deciding:
+
+    - Transient: a connection that failed (``ConnectionError``), a
+      timeout (``TimeoutError``), a name that did not resolve
+      (``socket.gaierror``), ``ServiceBusy``, a cache, ledger, or broker
+      out of reach (``CacheUnavailable``, ``LedgerUnavailable``,
+      ``BrokerUnavailable``), or a database that is busy or out of reach,
+      as ``database_refusal`` answers with 503.
+    - Not: a refusal (a ``DomainError``, such as the guard's
+      ``UnsafeURL``), the settings (``ImproperlyConfigured``), an outgoing
+      call's failure that trying again cannot change (``UpstreamError``
+      whose ``retryable`` is False: an answer too large to read), a 4xx
+      answer but 408 and 429, or another answer of the database.
+
+    An ``UpstreamError`` that none of these settles, or a host's circuit
+    open, is transient, and so is a 5xx answer; any other error is the
+    work's own. An exception group is transient if an error it holds is.
+    No error is read twice, though a group may hold the error raised from
+    it, and ``_READ`` errors at most are read in all (since 2.9, ADR 0196).
+    """
+    return _transient(exc, set())
+
+
+def _transient(exc: BaseException, read: set[int]) -> bool:
+    """``transient``, past the errors ``read`` holds the ids of already."""
+    found_upstream = False
+    for seen in _chain(exc):
+        if id(seen) in read or len(read) >= _READ:
+            break
+        read.add(id(seen))
+        if isinstance(seen, BaseExceptionGroup):
+            return any(_transient(each, read) for each in seen.exceptions)
+        decided = _settles(seen)
+        if decided is not None:
+            return decided
+        found_upstream = found_upstream or isinstance(seen, UpstreamError)
+    return found_upstream
+
+
+def _settles(exc: BaseException) -> bool | None:
+    """True or False if ``exc`` alone says whether to try again; None if not."""
+    from domainkit.broker.base import BrokerUnavailable  # Loaded when asked.
+    from domainkit.cache.base import CacheUnavailable
+    from domainkit.ledger.base import LedgerUnavailable
+
+    if isinstance(exc, DomainError | ImproperlyConfigured):
+        return False
+    if isinstance(exc, UpstreamError) and not exc.retryable:
+        return False
+    answered = getattr(getattr(exc, "response", None), "status_code", None)
+    if (
+        isinstance(answered, int)
+        and status.HTTP_400_BAD_REQUEST
+        <= answered
+        < status.HTTP_500_INTERNAL_SERVER_ERROR
+    ):
+        return answered in RETRIED_STATUSES
+    if isinstance(answered, int) and answered >= status.HTTP_500_INTERNAL_SERVER_ERROR:
+        return True
+    state = getattr(exc, "sqlstate", None)
+    if isinstance(state, str) and not isinstance(exc, DBAPIError):  # A driver's own.
+        return state in BUSY_STATES | UNAVAILABLE_STATES or state.startswith(
+            CONNECTION_EXCEPTION
+        )
+    if isinstance(
+        exc,
+        ConnectionError
+        | TimeoutError
+        | socket.gaierror
+        | ServiceBusy
+        | CacheUnavailable
+        | LedgerUnavailable
+        | BrokerUnavailable,
+    ):
+        return True
+    refusal = database_refusal(exc)
+    if refusal is None:
+        return None
+    return refusal.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+
+
+def _chain(exc: BaseException) -> Iterator[BaseException]:
+    """``exc``, then what it was raised from, ``_CAUSES`` errors at most.
+
+    Its cause where one is set; else the error it was raised while
+    handling, unless that is suppressed (``raise ... from None``).
+    """
+    seen: BaseException | None = exc
+    for _ in range(_CAUSES):
+        if seen is None:
+            return
+        yield seen
+        if seen.__cause__ is not None or seen.__suppress_context__:
+            seen = seen.__cause__
+        else:
+            seen = seen.__context__
+
+
+def unreachable(exc: BaseException) -> bool:
+    """Whether ``exc`` says the database cannot be reached, or cannot serve now.
+
+    A connection lost or refused: SQLAlchemy found it disconnected, or its
+    SQLSTATE is of class ``08``. A server shutting down, starting up or
+    failing over, or out of connections (``UNAVAILABLE_STATES``). And a
+    connection that could not be opened: asyncpg raises the socket's error
+    (refused, an unknown host, ``CONNECT_TIMEOUT``) as it is, so an
+    ``OSError`` raised while SQLAlchemy's pool opened a connection counts.
+    A login refused (a wrong password, a database that does not exist) is
+    a mistake in the settings, reported as any other error.
+    """
+    if isinstance(exc, DBAPIError):
+        state = sqlstate(exc)
+        return exc.connection_invalidated or (
+            state is not None
+            and (state.startswith(CONNECTION_EXCEPTION) or state in UNAVAILABLE_STATES)
+        )
+    return (
+        isinstance(exc, OSError)
+        and not isinstance(exc, DeadlineExceeded)
+        and _raised_connecting(exc)
+    )
+
+
+def _raised_connecting(exc: BaseException) -> bool:
+    """Whether ``exc`` was raised as SQLAlchemy's pool opened a connection.
+
+    By the driver, or the engine's creator, under the pool's ``__connect``:
+    not by a listener (a pool's ``connect`` or ``checkout`` listener of a
+    project's), whose error is the project's own.
+    """
+    connecting = False
+    trace = exc.__traceback__
+    while trace is not None:
+        frame = trace.tb_frame
+        module = frame.f_globals.get("__name__", "")
+        if module == _POOL and frame.f_code.co_name == "__connect":
+            connecting = True
+        elif connecting and module.startswith(_EVENTS):
+            return False
+        trace = trace.tb_next
+    return connecting
 
 
 def integrity_refusal(exc: IntegrityError) -> APIError | None:

@@ -43,13 +43,10 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import fields, replace
 from datetime import datetime
-from types import SimpleNamespace
 from typing import Any, Final
 from uuid import UUID
 
 from pydantic import ValidationError
-from starlette.datastructures import State
-from starlette.requests import HTTPConnection
 
 from domainkit import clock
 from domainkit.apps import registry
@@ -58,7 +55,11 @@ from domainkit.db import SqlAlchemyUnitOfWork
 from domainkit.ddd import Command, ConcurrentUpdate, Criteria, DomainError, F, Selection
 from domainkit.ddd.tenancy import all_tenants, current_tenant, tenant_alone
 from domainkit.exceptions import ImproperlyConfigured
+from domainkit.http.access import BasePermission, OfflineContext
+from domainkit.http.errors import transient
+from domainkit.log import ThrottledLog
 from domainkit.money import MoneyError
+from domainkit.reporting import report_error
 
 from .exceptions import (
     ApprovalNotNeeded,
@@ -94,27 +95,8 @@ STAFF_FLAGS: Final = ("is_superuser", "is_staff")
 """The flags of the users an approver rule is asked about (``approvers_of``)."""
 MAKER: Final = "A maker's id has 1 to 255 characters."
 APPROVER: Final = "An approver's id has 1 to 255 characters."
-
-
-def _run_connection() -> HTTPConnection:
-    """A connection of no credentials to ask one maker or approver rule once.
-
-    Each call gets its own, with its own ``state``, so nothing a rule keeps
-    on it reaches another call. Its scope is complete: a rule may read its
-    query parameters, which are none, and ``request.app.state``, a fresh,
-    empty ``State`` of its own, not the application's.
-    """
-    return HTTPConnection(
-        {
-            "type": "http",
-            "method": "POST",
-            "path": f"/{EXECUTE}",
-            "headers": [],
-            "query_string": b"",
-            "app": SimpleNamespace(state=State()),
-            "state": {},
-        }
-    )
+rule_log: Final = ThrottledLog(logger)
+"""Maker and approver rules that raised, a line per rule a while."""
 
 
 def config() -> ApprovalsSettings:
@@ -273,8 +255,8 @@ async def record_submission(
     its ``maker_rule``, which ``POST /requests`` asks of the maker, are
     asked only when the command runs (``maker_not_allowed``), and only of
     a maker that is a user's id, with ``domainkit.contrib.auth``
-    installed, on a connection without credentials, where a
-    ``maker_rule`` that reads them refuses. A maker that names no user is
+    installed, on a call without credentials: there, rules about scopes
+    do not limit, and a step-up refuses. A maker that names no user is
     never asked. A guard ``http=False`` is submitted too.
 
     Raises:
@@ -881,15 +863,20 @@ async def _check_maker(guard: Guard, maker: str) -> None:
     a clerk dismissed, a customer frozen, or staff demoted after
     submitting runs nothing. It is asked in the request's tenant, where
     the run is (a guard ``everywhere``: as where no tenant is served).
-    The rule sees the user on a connection of no credentials of its own
-    (``_run_connection``): a rule about the submitting request itself (its
-    scopes, a step-up) was checked when the request was submitted, and one
-    that needs such credentials refuses here. A maker that names no user
-    (a principal of the project's own) is left to the project.
+    The rule sees the user on a call of its own, outside any request,
+    with no credentials (``OfflineContext``). Rules about scopes were
+    checked when the request was submitted over HTTP; here no scopes are
+    found, which is no limit, so they do not limit. A step-up refuses
+    here, as does a rule that raises an error of its own (``_allows``). A
+    ``DomainError`` it raises fails the run with its code, as in 2.8, and
+    a transient error is raised for the run to be tried again. A maker
+    that names no user (a principal of the project's own) is left to the
+    project.
 
     Raises:
         MakerNotAllowed: The user is gone, inactive, lacks the permission,
             or fails the maker rule.
+        DomainError: The maker rule raised one.
     """
     if not registry.is_installed(AUTH):
         return
@@ -904,10 +891,52 @@ async def _check_maker(guard: Guard, maker: str) -> None:
     with guard.checking():  # A guard of rows of no tenant: no role counts.
         allowed = user is not None and (
             (guard.permission is None or await has_perm(user, guard.permission))
-            and (rule is None or await rule.has_permission(_run_connection(), user))
+            and (rule is None or await _allows(rule, user, raised=(DomainError,)))
         )
     if not allowed:
         raise MakerNotAllowed("Whoever submitted this command may no longer make it.")
+
+
+async def _allows(
+    rule: BasePermission,
+    user: Any,  # noqa: ANN401 - a user.
+    *,
+    raised: tuple[type[Exception], ...] = (),
+    reported: set[str] | None = None,
+) -> bool:
+    """Whether ``rule`` allows ``user`` on a call of their own, outside any request.
+
+    Each is asked on a new ``OfflineContext``, a request context of its
+    own. A transient error (``transient``: a timeout, a connection lost, a
+    backend or a database out of reach) and the errors of ``raised`` go
+    up, for the caller to try again or to answer. A rule that raises any
+    other refuses: it is logged by its class and the error's, never the
+    error's text, and reported (``report_error``), as a run that failed
+    was in 2.8, so the mistake still reaches whoever watches the errors:
+    once per rule, where ``reported`` (a call's rules reported already) is
+    given. A run it would fail is not tried again for it, nor is a list of
+    approvers lost.
+    """
+    try:
+        return await rule.has_permission(
+            OfflineContext(user, method="POST", path=f"/{EXECUTE}"), user
+        )
+    except Exception as exc:
+        if transient(exc) or isinstance(exc, raised):
+            raise
+        name = type(rule).__qualname__
+        rule_log.warning(
+            "rule_raised",
+            name,
+            "The access rule %s, asked outside a request, raised %s: it refuses",
+            name,
+            type(exc).__name__,
+        )
+        if reported is None or name not in reported:
+            report_error(exc, rule=name)
+        if reported is not None:
+            reported.add(name)
+        return False
 
 
 async def approvers_of(request: ApprovalRequest) -> list[Any]:
@@ -917,9 +946,10 @@ async def approvers_of(request: ApprovalRequest) -> list[Any]:
     the users who hold its permission (``has_perm``: granted to them or to
     a group of theirs, and superusers), the members of its group, or the
     superusers and staff its approver rule lets through, asked about the
-    user alone, each on a connection without credentials of its own
-    (``_run_connection``). Never its maker, a party to its command, or
-    someone who decided it already. A
+    user alone, on a call without credentials (``OfflineContext``); a rule
+    that raises leaves the user out, and is logged, but for a transient
+    error, which is raised. Never its
+    maker, a party to its command, or someone who decided it already. A
     permission only a backend of the project's grants is not looked for:
     such holders are not found (user report P3). They are asked as the
     request's tenant, where it is decided (ADR 0183).
@@ -964,6 +994,7 @@ async def _approvers(request: ApprovalRequest) -> list[Any]:
         )
     rule = rule_instance(policy.approver_rule)
     approvers = []
+    reported: set[str] = set()  # A rule's mistake is reported once a call.
     with guard.checking():
         for user in users:
             if str(user.id) in left_out:
@@ -972,7 +1003,7 @@ async def _approvers(request: ApprovalRequest) -> list[Any]:
                 if not await has_perm(user, request.permission):
                     continue
             elif request.group is None and (
-                rule is None or not await rule.has_permission(_run_connection(), user)
+                rule is None or not await _allows(rule, user, reported=reported)
             ):
                 continue
             approvers.append(user)

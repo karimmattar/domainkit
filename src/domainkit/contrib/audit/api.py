@@ -100,6 +100,7 @@ class HistoryPageOut(BaseModel):
 
 @router.get(
     "/history",
+    name="audit_read_history",
     responses=error_responses(
         status.HTTP_401_UNAUTHORIZED,
         status.HTTP_403_FORBIDDEN,

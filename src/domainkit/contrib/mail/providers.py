@@ -8,7 +8,7 @@ Name one as ``MAIL.BACKEND``, with its settings in ``MAIL.OPTIONS``::
         "DEFAULT_FROM_EMAIL": "Acme <hello@acme.example>",
     }
 
-Each calls its provider's HTTP API through ``domainkit.http.client`` (the
+Each calls its provider's HTTP API through ``domainkit.outbound.client`` (the
 ``httpclient`` extra), with no SDK. SES is sent the message as MIME,
 built as SMTP's is (``to_mime``), signed with SigV4; the others are sent
 its parts: sender, recipients (Bcc as such, never in a header), subject,
@@ -37,7 +37,7 @@ from .settings import MailSettings
 if TYPE_CHECKING:
     import httpx2
 
-    from domainkit.http.client import HttpClient
+    from domainkit.outbound.client import HttpClient
 
 __all__ = ["MailgunBackend", "PostmarkBackend", "SendGridBackend", "SesBackend"]
 
@@ -72,11 +72,13 @@ class ProviderBackend(BaseEmailBackend):
             if isinstance(options, self.Options)
             else self.Options.model_validate(options)
         )
-        from domainkit.http.client import HttpClient
+        from domainkit.outbound.client import HttpClient
 
         timeout = self.options.TIMEOUT
         if timeout not in _clients:
-            _clients[timeout] = HttpClient(timeout=timeout, propagate=False)
+            _clients[timeout] = HttpClient(
+                timeout=timeout, propagate=False, name="mail"
+            )
         self.client = _clients[timeout]
 
     async def send_messages(self, messages: Sequence[EmailMessage]) -> int:

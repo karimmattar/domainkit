@@ -23,6 +23,19 @@ On this page you learn how to:
 If you know Django REST framework: a `ResourceRouter` does the work of a
 viewset, a router, and a serializer, for task-based commands.
 
+## When to use it, and when not to
+
+- **Use it when** clients list, read, and change one kind of aggregate.
+  One declaration gives pages, filters, `ETag`s, conditional writes,
+  access rules, and the OpenAPI document.
+- **Do not use it when** a route serves no aggregate, such as a health
+  page or the rates of [tutorial part 0](tutorial/0-first-route.md):
+  write a FastAPI route with an access rule. For one more route on a
+  resource's aggregate, use [`fetch`](#routes-of-your-own-on-a-resource),
+  which keeps the resource's reach and rules.
+- [Choosing a feature](choosing.md#serving-a-route) compares the ways to
+  serve a route.
+
 ## A first example
 
 A product, two use cases, and the resource that serves them:
@@ -689,7 +702,11 @@ Content-Type: application/pdf
   runs, outside its transaction; the reach and `If-Match` are checked
   again in it. If the request fails and its unit of work did not commit,
   the file is deleted. Once it committed, a row may name the file, and
-  it is kept, whatever fails after.
+  it is kept, whatever fails after. A commit whose outcome is unknown
+  (its answer lost, or cut off as it committed: `uow.in_doubt`) may have
+  named it too: the file is kept, and the warning `Kept the upload <name>
+  on the <storage> storage` names it, to check by hand. A file that
+  cannot be deleted is logged with its name and storage too. *New in 2.9*
 - The service may read the file as it was received
   ([The file received](#the-file-received)), not from the storage.
 - The other options are `command_route`'s: `returns`, `method` (`POST`,
@@ -1014,7 +1031,9 @@ f056550e-1f49-4cf9-b364-d942a15aded4,0,Big lamp,5
 ```
 
 - More than `max_export` matches (10,000) is `422 export_too_large`
-  (`ExportTooLarge`): narrow the export with filters.
+  (`ExportTooLarge`): narrow the export with filters. The count before
+  the export stops at `max_export + 1` (since 2.9), so a filter that
+  matches much is refused without counting every match.
 - A request that accepts none of the offered types is `406
   not_acceptable` (`NotAcceptable`), with an `Accept` header that names
   them: `application/json, text/csv, application/x-ndjson`. Without

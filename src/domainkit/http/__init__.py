@@ -14,9 +14,7 @@ if TYPE_CHECKING:
     from domainkit.http.errors import ErrorResponse, error_response, error_responses
     from domainkit.http.filters import EveryWord, Filter, FilterSet, InvalidFilter
     from domainkit.http.pagination import (
-        CURSOR_PATTERN as CURSOR_PATTERN,
-    )
-    from domainkit.http.pagination import (
+        CURSOR_PATTERN,
         MAX_CURSOR_LENGTH,
         InvalidCursor,
         PageOut,
@@ -30,6 +28,7 @@ if TYPE_CHECKING:
     from domainkit.http.responses import JSONResponse
 
 __all__ = [
+    "CURSOR_PATTERN",
     "MAX_CURSOR_LENGTH",
     "APIError",
     "ErrorResponse",

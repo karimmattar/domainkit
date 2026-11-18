@@ -21,7 +21,11 @@ is refused unless:
 Prints each reason, and exits 1 if there is any.
 
 Usage: ``python3 .github/scripts/release_check.py vX.Y.Z``, in the
-repository, with its tags fetched.
+repository, with its tags fetched. With ``--as-pushed`` after the tag,
+every tag of a newer version is left out, such as a later line's
+pre-release, whether it was pushed before the tag or after: no newer tag
+refuses it. docs.yml judges the newest final release so, whatever tag
+started its run.
 """
 
 import re
@@ -30,7 +34,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)(?:(a|b|rc)(\d+))?")
+VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)(?:(a|b|rc)(\d+))?", re.ASCII)
 """The versions a release may have: final, or a numbered pre-release."""
 PRE = {"a": 0, "b": 1, "rc": 2}
 """Pre-releases by rank; a final release ranks above them all."""
@@ -106,6 +110,12 @@ def commit_problems(
     return []
 
 
+def _newer(tag: str, this: tuple[int, int, int, int, int]) -> bool:
+    """Whether ``tag`` names a release version newer than ``this``."""
+    other = key(tag.removeprefix("v"))
+    return other is not None and other > this
+
+
 def git_show(path: str) -> str | None:
     """``path`` in the tagged commit's parent, or None."""
     done = subprocess.run(  # noqa: S603 - git, fixed arguments.
@@ -118,8 +128,11 @@ def git_show(path: str) -> str | None:
 
 
 def main(argv: list[str]) -> int:
-    """Print why the tag ``argv[0]`` is refused; exit 1 if it is."""
-    tag = argv[0]
+    """Print why the tag ``argv[0]`` is refused; exit 1 if it is.
+
+    ``--as-pushed`` after it leaves out every tag of a newer version.
+    """
+    tag, *flags = argv
     version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
     found: list[str] = []
     if tag != f"v{version}":
@@ -130,6 +143,8 @@ def main(argv: list[str]) -> int:
         text=True,
         check=True,
     ).stdout.split()
+    if flags == ["--as-pushed"] and (this := key(version)) is not None:
+        tags = [other for other in tags if not _newer(other, this)]
     found += tag_problems(version, tags)
     found += changelog_problems(Path("CHANGELOG.md").read_text(), version)
     found += commit_problems(

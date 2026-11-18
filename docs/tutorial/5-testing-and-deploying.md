@@ -200,6 +200,9 @@ before the first real user.
 You have a domain with rules, a resource guarded by permissions, a
 durable reaction, and the tests that hold them. From here:
 
+- [Part 6](6-moving-money.md) goes on with the bank's own controls:
+  transfers that move money once, within a limit, booked in
+  double-entry books.
 - [Resources](../resources.md): more aggregates, queries, filters, and
   the other generators (`startaggregate`, `addquery`, `addevent`).
 - [Queries](../queries.md): filters, pages, row locks, and savepoints. A

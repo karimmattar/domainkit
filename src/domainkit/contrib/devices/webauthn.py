@@ -267,7 +267,7 @@ def cbor_decode(data: bytes) -> Any:  # noqa: ANN401 - CBOR holds anything.
     return value
 
 
-def _decode(data: bytes, offset: int, depth: int) -> tuple[Any, int]:
+def _decode(data: bytes, offset: int, depth: int) -> tuple[Any, int]:  # noqa: C901
     """The CBOR item at ``offset``, and the offset after it."""
     if depth > MAX_CBOR_DEPTH:
         raise WebAuthnError("CBOR nested too deep")

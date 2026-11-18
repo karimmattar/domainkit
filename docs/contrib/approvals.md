@@ -30,6 +30,23 @@ Every step is a domain event, recorded in the [audit trail](audit.md)
 with its actor. The decisions are in
 [ADR 0121](../adr/0121-hold-guarded-commands-as-sealed-requests-and-count-approvals-under-the-requests-lock.md).
 
+## When to use it, and when not to
+
+- **Use it when** a command must wait for other people to agree: a large
+  payment, a journal entry over a limit, a user made superuser.
+- **Do not use it** for the user's own confirmation of an act: a
+  [step-up](../auth/step-up.md) or an
+  [action authorization](../auth/actions.md) is given by the user alone,
+  at once. Do not use it alone against many small commands under a
+  threshold: add [limits](limits.md) per window
+  ([what maker-checker does not stop](#what-maker-checker-does-not-stop)).
+- **An approved command runs later.** The maker's call gets the
+  request, not the command's result
+  ([what a direct call does](#what-a-direct-call-does)). By default the
+  worker runs it; with `by_maker=True`, the maker's same call, made
+  again once the request is approved, runs it and gets its result
+  ([run by its maker](#run-by-its-maker)).
+
 ## Install
 
 Approvals need messaging (approved commands run in the worker) and audit
@@ -56,7 +73,14 @@ The app brings two tables, `domainkit_approval_requests` and
 
 A refund of more than 1,000 dollars needs two approvals from people who
 hold `payments.approve_refund`. In code, a maker submits the refund, two
-checkers approve it, and the worker runs it:
+checkers approve it, and the worker runs it. The example uses names of
+the project's own: `refund_command` is a `Refund` command of 1,500
+dollars, guarded as `payments.refund` (the next section,
+[Guarding a use case](#guarding-a-use-case), writes the guard); `ann` is
+the maker, who holds `payments.add_refund`; `bob` and `carol` are users
+who hold `payments.approve_refund`. [Part 7 of the
+tutorial](../tutorial/7-four-eyes.md) writes a guard like it in a
+project, and approves a transfer over HTTP, end to end.
 
 ```python
 from domainkit.contrib.approvals import (
@@ -190,10 +214,20 @@ returns the approved command being run here, if any, and
 `approved(action, command)` says whether `command` is it.
 
 `maker_rule` is asked again when the approved command runs, on the maker
-as a user, with no credentials, on a request context of its own each
-time (since 2.8.2): nothing the rule keeps on it, in `request.state`
-say, reaches another call. So a rule about the submitting request's own
-scopes or step-up passes at submission only, and refuses at the run.
+as a user, on a call of its own with no credentials (since 2.8.2; an
+`OfflineContext` since 2.9,
+[Rules asked outside a request](../auth/routes.md#rules-asked-outside-a-request)).
+Rules about the submitting request's scopes (`HasScope`, `IsUnscoped`,
+`AllowScoped`) are checked when the request is submitted over HTTP. At
+the run there are no scopes, which is no limit, so they do not limit
+there. A step-up refuses at the run. A rule that raises a `DomainError`
+fails the request with its code; a transient error (a timeout, a
+connection lost, a backend out of reach, an outgoing call that may
+succeed later, a database busy or out of reach) has the run tried again.
+Since 2.9, a rule that raises any other error refuses: it is logged by
+its class and its error's, and reported to the error reporters. The
+request fails (`maker_not_allowed`), and the run is not tried again
+([Rules asked outside a request](../auth/routes.md#rules-asked-outside-a-request)).
 
 ### Run by its maker
 
@@ -454,9 +488,11 @@ A request that fails a check is `failed`, with the refusal's code as its
 `reason` (`request_tampered`, `fingerprint_mismatch`,
 `invalid_arguments`, `policy_removed`, `maker_not_allowed`), and runs
 nothing. So does a request whose use case refuses it (a `DomainError`,
-such as `insufficient_funds`): the maker may submit it again. A use case
-that lost a race (`ConcurrentUpdate`) or failed in another way is tried
-again by the worker, with its backoff.
+such as `insufficient_funds`): the maker may submit it again. Failing
+makes the request's seal again only if it held, so the failed record of
+a row changed around the application still fails its seal (since 2.9).
+A use case that lost a race (`ConcurrentUpdate`) or failed in another
+way is tried again by the worker, with its backoff.
 
 Where the use case's unit of work commits to the requests' database,
 the request is marked `executed` in that same transaction, with its
@@ -984,8 +1020,10 @@ by name, in the command's order. Each value is the argument as compact
 JSON (a string as itself), printable; a list goes over as many lines as
 it takes ("added", "added (2)"), item by item, an object or a list as
 compact JSON ([What a screen shows](../auth/actions.md#what-a-screen-shows)).
-A value of a guard's `show` that JSON has not, such as a `Decimal` or a
-`UUID`, shows as its text. A screen
+An argument that is `Money`, or an item of a list that is, shows as its
+amount and currency, `1500.00 USD`, as `Money` writes itself (since
+2.9). A value of a guard's `show` that JSON has not, such as `Money`, a
+`Decimal`, or a `UUID`, shows as its text. A screen
 holds six lines of 64 characters. What does not fit is cut and counted
 (since 2.7, a list's last line says how many more items: "… and 22
 more"), and with more arguments than lines, the last line says how many
@@ -1201,9 +1239,9 @@ async def withdraw_stale() -> None:
   rule, acting in one's own name, the model permissions, and, at
   submission, the guard's permission and `maker_rule`. The run asks
   those of the maker only with `domainkit.contrib.auth` installed and a
-  maker that is a user's id, on a connection without credentials: a
-  `maker_rule` that reads credentials refuses there, and a maker that
-  names no user is never asked
+  maker that is a user's id, on a call without credentials
+  (`OfflineContext`): rules about scopes do not limit there, a step-up
+  refuses, and a maker that names no user is never asked
   ([What maker-checker does not stop](#what-maker-checker-does-not-stop)).
   Code that acts for a person it did not authenticate, such as a command
   given a user's id, checks them first: `approvers_of(request)` lists who
@@ -1332,8 +1370,11 @@ users who may decide it now:
   group of theirs; superusers hold every permission);
 - the members of its group;
 - for an approver rule, the superusers and staff the rule lets through,
-  asked about the user alone, each on a connection without credentials
-  of its own (since 2.8.2);
+  asked about the user alone, on a call of its own without credentials
+  (since 2.8.2; an `OfflineContext` since 2.9); a rule that raises leaves
+  the user out, and is logged, but a transient error (a timeout, a
+  connection lost, an outgoing call that may succeed later, a database
+  busy or out of reach) is raised;
 - never its maker, a party to its command, or someone who decided it
   already.
 

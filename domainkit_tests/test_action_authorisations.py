@@ -8,6 +8,8 @@ authorization, confirms it with a code, and sends it with the act.
 
 import asyncio
 import base64
+import hashlib
+import json
 import os
 import threading
 from collections.abc import Callable, Iterator
@@ -46,6 +48,7 @@ from domainkit.management.base import run_async
 from domainkit_tests import sample_action_routes as acts
 from domainkit_tests.conftest import IDENTITY, POSTGRES_VARIABLE, Api, Migrated, Shape
 from domainkit_tests.support.auth import (
+    JWT,
     PASSWORD,
     audited,
     bearer,
@@ -286,6 +289,48 @@ def test_another_login_of_the_same_user_cannot_spend_it(web: Web) -> None:
     assert own.status_code == 200, own.json()
 
 
+@pytest.fixture
+def jwt_web(identity: Api, frozen: FrozenClock) -> Iterator[Web]:
+    """Alice's session at the sample API, logged in with a JSON Web Token."""
+    with override_settings(ROOT_ROUTER=ROUTES):
+        register_action(acts.RENAME, domain="shop")
+        create_user("alice")
+        yield Web(identity(**JWT), frozen, "alice").enrolled()
+
+
+def test_a_jwt_login_spends_its_own_act_once_and_no_other_login_may(
+    jwt_web: Web,
+) -> None:
+    """Under a JSON Web Token, an act is bound to its login as under a token.
+
+    The authorization holds the digest of the token's login (its ``sid``),
+    which every access token the login refreshes into shares. Another
+    login of alice's is refused it, and refused to see it; the asker's
+    spends it, once (A28-TEST-02).
+    """
+    web = jwt_web
+    authorization = web.authorized("Al")
+    other = web.again()
+    authorization_id = authorization.split(".")[0]
+
+    spent_elsewhere = other.rename("Al", authorization)
+    seen_elsewhere = other.client.get(
+        f"/auth/authorizations/{authorization_id}", headers=other.headers
+    )
+    own = web.rename("Al", authorization)
+    replayed = web.rename("Al", authorization)
+
+    payload = web.headers["Authorization"].removeprefix("Bearer ").split(".")[1]
+    claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    [row] = rows()
+    assert row["login"] == hashlib.sha256(f"jwt:{claims['sid']}".encode()).hexdigest()
+    assert code_of(spent_elsewhere) == (403, "action_not_authorized")
+    assert code_of(seen_elsewhere) == (404, "authorization_not_found")
+    assert own.status_code == 200, own.json()
+    assert first_name() == "Al"
+    assert code_of(replayed) == (403, "action_not_authorized")
+
+
 def test_an_authorization_expires_with_its_ttl(web: Web) -> None:
     """Five minutes from asking, confirmed or not: neither spent nor confirmed later."""
     authorization = web.authorized("Al")
@@ -409,6 +454,23 @@ def test_an_act_elsewhere_spends_it_before_and_a_failure_needs_a_new_one(
     assert code_of(again) == (403, "action_not_authorized")
     assert acts.ARCHIVED == []
     assert reasons() == ["invalid_authorization"]  # The rule saw it spent.
+
+
+def test_code_that_spends_it_twice_elsewhere_is_refused_and_says_so(
+    web: Web,
+) -> None:
+    """Off auth's database, the second spend finds it spent: 403, ``used``."""
+    asked = web.client.post(
+        f"/notes/{NOTE}/archive/authorization", headers=web.headers
+    ).json()
+    confirmed = web.confirm(asked["id"]).json()["authorization"]
+    headers = {**web.headers, "Action-Authorization": confirmed}
+
+    twice = web.client.post(f"/notes/{NOTE}/archive/twice", headers=headers)
+
+    assert code_of(twice) == (403, "action_not_authorized")
+    assert len(audited("auth.action_authorization_used")) == 1
+    assert reasons() == ["used"]
 
 
 def test_an_authorization_no_service_spent_fails_the_request_in_tests(

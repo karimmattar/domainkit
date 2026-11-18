@@ -48,6 +48,7 @@ from domainkit.exceptions import ImproperlyConfigured
 from domainkit.tracing import current_ids
 
 __all__ = [
+    "SECURITY_LOGGER",
     "WARNING_RESERVE",
     "BackgroundHandler",
     "BackgroundListener",
@@ -1154,7 +1155,7 @@ def build_logging_config(
             # Autogenerate announces each plugin it loads; keep migrations readable.
             "alembic.runtime.plugins": {"level": "WARNING"},
             # httpx2 logs each call's full URL, query string and all, at INFO;
-            # domainkit.http.client logs calls without it.
+            # domainkit.outbound.client logs calls without it.
             "httpx2": {"level": "WARNING"},
             "httpcore2": {"level": "WARNING"},
         },

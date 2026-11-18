@@ -663,6 +663,20 @@ def test_authentication_exempt_paths_hold_behind_a_root_path(api: Api) -> None:
     assert client.get("/api/whoami", headers=bearer("dkt_unknown")).status_code == 401
 
 
+def test_the_probes_are_served_without_credentials_from_probe_paths(api: Api) -> None:
+    """``PROBE_PATHS`` exempts them; ``AUTHENTICATION_EXEMPT_PATHS`` adds paths.
+
+    With the probes moved away, ``/health`` reads credentials as any route
+    does, unless the authentication list names it.
+    """
+    unknown = bearer("dkt_unknown")
+    assert api().get("/health", headers=unknown).status_code == 200
+    with override_settings(PROBE_PATHS=()):
+        assert api().get("/health", headers=unknown).status_code == 401
+        listed = api(AUTHENTICATION_EXEMPT_PATHS=["/health"])
+        assert listed.get("/health", headers=unknown).status_code == 200
+
+
 def test_held_addresses_are_let_go(api: Api, monkeypatch: pytest.MonkeyPatch) -> None:
     """After ``Retry-After``, and when too many others are held, first in first out.
 

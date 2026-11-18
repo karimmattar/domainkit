@@ -66,7 +66,7 @@ class AzureKeyVaultKeyProvider(KeyProvider):
             ValueError: ``key_name`` is empty, or the algorithm unknown.
         """
         from domainkit.cloud.azure import ManagedIdentity
-        from domainkit.http.client import HttpClient
+        from domainkit.outbound.client import HttpClient
 
         if not key_name or algorithm not in {"RSA-OAEP-256", "RSA-OAEP", "A256KW"}:
             raise ValueError(

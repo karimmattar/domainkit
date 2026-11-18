@@ -19,16 +19,23 @@ On this page you learn how to:
 ## A first example
 
 A client logs in at `POST /auth/login`, and sends the token it gets in
-the `Authorization` header:
+the `Authorization` header. The example runs in a project made by
+`domainkit init`, with a user `alice` whose email address is
+`alice@example.com`. Such a project logs users in by email address or
+mobile number (`AUTH.IDENTIFIERS`,
+[logging in with an email address](logging-in.md#logging-in-with-an-email-address-or-a-mobile-number)).
+Its local settings accept the host `localhost` (`ALLOWED_HOSTS`), so the
+client sends that host, not `testserver`. Run it with
+`python manage.py shell`:
 
 ```python
-from fastapi.testclient import TestClient
-
 from domainkit.http import get_asgi_application
+from domainkit.testing import TestClient
 
-with TestClient(get_asgi_application()) as client:
+with TestClient(get_asgi_application(), base_url="http://localhost") as client:
     login = client.post(
-        "/auth/login", json={"username": "alice", "password": "correct horse battery"}
+        "/auth/login",
+        json={"identifier": "alice@example.com", "password": "correct horse battery"},
     )
     token = login.json()["access_token"]
     me = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
@@ -44,8 +51,10 @@ alice
 authentication_failed Invalid token.
 ```
 
-`/catalog` is a public route, yet the bad token gets a 401. A client
-never mistakes a bad token for being anonymous.
+The middleware refuses the bad token before any route runs, so the
+answer is a 401 on a public route too, and on a path such as `/catalog`
+that the project does not have. A client never mistakes a bad token for
+being anonymous.
 
 ## What the middleware does
 
@@ -65,8 +74,9 @@ never mistakes a bad token for being anonymous.
   public routes.
 - **Credentials that no class recognizes** are left to the route
   (`/metrics` has its own token).
-- **`AUTHENTICATION_EXEMPT_PATHS`** (`/health`, `/ready`, `/metrics`) are
-  served without looking at credentials at all.
+- **The probes** (`PROBE_PATHS`: `/health`, `/ready`, `/metrics`), and
+  the paths of `AUTHENTICATION_EXEMPT_PATHS`, are served without looking
+  at credentials at all.
 
 `Credentials` holds `user`, `scheme` (`token`, `jwt`, `cookie`,
 `certificate`, or your class's), `token_id` (the digest of the token),
@@ -737,7 +747,7 @@ the principal on every request, in the same two queries.
 | `AUTH` key | Default | What it does |
 | --- | --- | --- |
 | `AUTHENTICATION_CLASSES` | `TokenAuthentication` | Classes tried in order; the first issues login tokens. |
-| `AUTHENTICATION_EXEMPT_PATHS` | `/health`, `/ready`, `/metrics` | Served without reading credentials. |
+| `AUTHENTICATION_EXEMPT_PATHS` | `()` | Served without reading credentials, besides `PROBE_PATHS`. |
 | `TOKEN_TTL`, `TOKEN_PREFIX` | 14 days, `dkt_` | Opaque login tokens. |
 | `PERSONAL_TOKEN_MAX_AGE`, `MAX_LIVE_TOKENS` | 90 days, 100 | Personal tokens. |
 | `JWT` | see the table | `SIGNING_KEY`, `VERIFYING_KEY`, `ALGORITHM`, `PREVIOUS_KEYS`, `ACCESS_TOKEN_TTL`, `REFRESH_TOKEN_TTL`, `ISSUER`, `AUDIENCE`, `LEEWAY`. |

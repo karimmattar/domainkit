@@ -109,8 +109,8 @@ def _check_signature_store(store: str) -> None:
     if store != "cache":
         return
     from domainkit.cache import caches
-    from domainkit.conf import settings
-    from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS, REDIS_SCHEMES
+    from domainkit.conf import DEPLOYED_ENVIRONMENTS, settings
+    from domainkit.conf.global_settings import REDIS_SCHEMES
 
     config = caches.config()
     if config.BACKEND is not None or config.scheme in REDIS_SCHEMES:

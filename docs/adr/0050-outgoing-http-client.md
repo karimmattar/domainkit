@@ -1,6 +1,6 @@
 # 0050. Call other services through pooled clients that keep to the deadline
 
-- Status: Accepted; amended 2026-10-21 (at the end)
+- Status: Accepted; amended 2026-10-21 (at the end); amended by [0195](0195-move-the-outgoing-client-below-the-adapters-and-hold-module-state-to-its-resets.md) on 2026-11-18 (at the end)
 - Date: 2026-10-20
 
 ## Context
@@ -112,3 +112,12 @@ pooled connections.
 - **Logs.** httpx2 logs each call's full URL, query string included, at
   INFO: `build_logging_config` sets its loggers, and httpcore2's, to
   WARNING.
+
+## Amendment (2026-11-18, 2.9)
+
+- The client and its guard are `domainkit.outbound.client` and
+  `domainkit.outbound.guard` ([0195](0195-move-the-outgoing-client-below-the-adapters-and-hold-module-state-to-its-resets.md)), below the adapters that call through
+  them. `domainkit.http.client` and `domainkit.http.guard` import every
+  name they had, the same objects; the calls still log as
+  `domainkit.http.client`. The guard registers nothing with
+  `domainkit.lifecycle`, which closes its threads by name.

@@ -1,18 +1,26 @@
 """``dbshell``, ``diffsettings``, and ``shell``: consoles on the project."""
 
 import asyncio
+import importlib
 import io
+import json
+import pkgutil
 import shutil
+import timeit
 import traceback
+from collections.abc import Iterator
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, get_args
 
 import pytest
+from pydantic import BaseModel, SecretBytes, SecretStr
 
+import domainkit
 from domainkit.conf import UNSET, override_settings, settings, use_settings
 from domainkit.management import CommandError, call_command
-from domainkit.management.commands import shell
+from domainkit.management.commands import diffsettings, shell
 from domainkit_tests.conftest import MakePackage, UseAuth
 
 PASSWORD = "s3cret-pass"
@@ -187,7 +195,7 @@ def test_diffsettings_shows_changes_with_secrets_hidden(restore_logging: None) -
     lines = output.splitlines()
     assert lines[0] == "# domainkit_tests.settings: settings that differ from defaults"
     assert "DEBUG = True" in lines
-    assert "ALPHA = '**********'" in lines
+    assert "ALPHA = {'GREETING': 'hi'}" in lines
     assert not [
         line
         for line in lines
@@ -227,6 +235,448 @@ def test_diffsettings_hides_project_settings_named_like_secrets(
     assert PASSWORD not in output + every
     assert "PAYMENT_API_KEY = '**********'" in output.splitlines()
     assert "PAYMENT_REGION = 'us'" in output.splitlines()
+
+
+KEYED = {
+    "apps.py": """
+        from typing import Any
+
+        from pydantic import BaseModel, SecretStr
+
+        from domainkit.apps import DomainConfig
+
+
+        class KeyedSettings(BaseModel):
+            ADDRESS: str
+            TOKEN: SecretStr
+            REGION: str = "eu"
+            OPTIONS: dict[str, Any] = {}
+
+
+        class KeyedConfig(DomainConfig):
+            settings_class = KeyedSettings
+    """
+}
+
+
+def test_diffsettings_shows_a_domains_settings_with_its_secrets_hidden(
+    make_package: MakePackage,
+) -> None:
+    """Validated, with defaults; secret values and secret-named entries hidden.
+
+    The domain's name looks like a secret's (``API_KEYS``), but its
+    settings are typed, so they are shown, scrubbed, not hidden whole.
+    """
+    make_package("api_keys", KEYED)
+    keyed = {
+        "ADDRESS": f"https://vault:{PASSWORD}@vault.internal",
+        "TOKEN": PASSWORD,
+        "OPTIONS": {"api_key": PASSWORD, "pool": 4},
+    }
+    with override_settings(INSTALLED_DOMAINS=["api_keys"], ALPHA=UNSET, API_KEYS=keyed):
+        output = run("diffsettings")
+
+    assert PASSWORD not in output
+    assert (
+        "API_KEYS = {'ADDRESS': 'https://vault:**********@vault.internal', "
+        "'TOKEN': '**********', 'REGION': 'eu', "
+        "'OPTIONS': {'api_key': '**********', 'pool': 4}}"
+    ) in output.splitlines()
+
+
+def test_diffsettings_hides_a_providers_options_whatever_their_names() -> None:
+    """Unifonic's ``APP_SID`` is a secret, in a mapping no type describes."""
+    notifications = {
+        "SMS_BACKEND": "domainkit.contrib.notifications.sms.UnifonicSmsBackend",
+        "SMS_OPTIONS": {"APP_SID": PASSWORD, "SENDER_ID": "Acme"},
+    }
+    with override_settings(
+        INSTALLED_DOMAINS=[
+            "domainkit.contrib.messaging",
+            "domainkit.contrib.notifications",
+        ],
+        ALPHA=UNSET,
+        NOTIFICATIONS=notifications,
+    ):
+        output = run("diffsettings") + run("diffsettings", "--all")
+
+    assert PASSWORD not in output
+    (line,) = {line for line in output.splitlines() if line.startswith("NOTIFICA")}
+    assert "'SMS_OPTIONS': {'APP_SID': '**********', 'SENDER_ID': '**********'}" in line
+
+
+TYPED = {
+    "apps.py": """
+        from collections.abc import Mapping
+        from typing import Annotated, Any, Literal
+
+        from pydantic import BaseModel, ConfigDict, Field, SecretStr
+
+        from domainkit.apps import DomainConfig
+
+
+        class Thing:
+            def __repr__(self) -> str:
+                return "Thing()"
+
+
+        class Provider(BaseModel):
+            NAME: str
+            KEY: SecretStr | None = None
+
+
+        class TypedSettings(BaseModel):
+            model_config = ConfigDict(arbitrary_types_allowed=True)
+
+            URLS: tuple[Annotated[str, Field(min_length=1)], ...] = ()
+            MODE: Literal["fast", "safe"] = "safe"
+            SALT: bytes = b""
+            PROVIDER: Provider | None = None
+            PROVIDERS: dict[str, Provider] = {}
+            LIMITS: dict[str, int] = {}
+            NAMES: Mapping[str, str] | None = None
+            EXTRA: object = None
+            VALUES: list[dict[str, Any]] = []
+            THING: Thing | None = None
+
+
+        class TypedConfig(DomainConfig):
+            settings_class = TypedSettings
+    """
+}
+PROBES = {
+    "redis_empty_user": f"redis://:{PASSWORD}@cache:6379/0",
+    "rediss_user": f"rediss://default:{PASSWORD}@cache:6380/0",
+    "redis_query": f"redis://cache:6379/0?password={PASSWORD}",
+    "at_in_password": f"postgresql://app:ab@{PASSWORD}@db/shop",
+    "encoded": f"postgresql+asyncpg://app:{PASSWORD}%40x@db/shop",
+    "libpq_keywords": f"host=db user=app password={PASSWORD} dbname=shop",
+    "libpq_quoted": f"host=db password='{PASSWORD} x' dbname=shop",
+    "amqp": f"amqp://guest:{PASSWORD}@rabbit:5672/",
+    "upper_scheme": f"POSTGRESQL://app:{PASSWORD}@db/shop",
+    "key_as_user": f"https://{PASSWORD}@o1.ingest.example.com/1",
+    "user_with_slash": f"redis://us/er:{PASSWORD}@cache",
+    "token_in_query": f"https://api.example.com/v1?access_token={PASSWORD}&x=1",
+    "libpq_spaced": f"host = db user = app password = {PASSWORD} dbname = shop",
+    "json_key": json.dumps({"type": "service_account", "private_key": PASSWORD}),
+    "header": f"Authorization: Bearer {PASSWORD}",
+    "header_basic": f"Proxy-Authorization: Basic {PASSWORD}==",
+    "quoted_key": f"{{'client_secret': '{PASSWORD} x'}}",
+    "quoted_first": f'password="a"{PASSWORD}',
+    "quoted_empty": f'password=""{PASSWORD}',
+    "single_quoted_empty": f"password=''{PASSWORD}",
+    "empty_yaml_value": f"password:\ntoken: {PASSWORD}",
+    "next_line_indented": f"password:\n  {PASSWORD}\nregion: eu",
+    "odbc": f"DRIVER={{ODBC Driver 18}};SERVER=db;UID=app;PWD={PASSWORD};",
+    "after_at": f"x@password={PASSWORD}",
+    "after_slashes": f"//token={PASSWORD}",
+    "after_at_colon": f"a@api_key: {PASSWORD}",
+    "quoted_then_dot": f"password='x {PASSWORD}'.",
+    "quoted_then_comma": f'password="a",{PASSWORD}',
+    "no_break_space": f"token=\xa0{PASSWORD}",
+    "no_break_space_colon": f"password:\xa0{PASSWORD}",
+}
+"""Secrets in text, which the patterns find even in a field typed ``str``."""
+UNTYPED = {
+    **PROBES,
+    "path_token": f"https://hooks.example.com/services/T0/B0/{PASSWORD}",
+    "json": json.dumps({"type": "service_account", "private_key": PASSWORD}),
+    "pem": f"-----BEGIN PRIVATE KEY-----\n{PASSWORD}\n-----END PRIVATE KEY-----",
+    "space": f"postgresql://app:{PASSWORD} x@db/shop",
+    "nested": {"inner": {"client": PASSWORD, "list": [{"Neutral": PASSWORD}]}},
+}
+"""What only failing closed hides: text in a value that no type describes."""
+
+
+@pytest.mark.parametrize("name", sorted(UNTYPED))
+def test_diffsettings_hides_the_text_of_untyped_values(
+    make_package: MakePackage, name: str
+) -> None:
+    """In a mapping, ``Any``, or ``object``: text hidden, keys and numbers shown."""
+    make_package("typed_probe", TYPED)
+    settings = {
+        "NAMES": {"first": "plain text"},
+        "EXTRA": UNTYPED[name],
+        "VALUES": [{"value": UNTYPED[name], "count": 3, "on": True, "none": None}],
+    }
+    with override_settings(
+        INSTALLED_DOMAINS=["typed_probe"], ALPHA=UNSET, TYPED_PROBE=settings
+    ):
+        output = run("diffsettings") + run("diffsettings", "--all")
+
+    assert PASSWORD not in output
+    assert "'NAMES': {'first': '**********'}, 'EXTRA': " in output
+    assert "'count': 3, 'on': True, 'none': None}]" in output
+
+
+@pytest.mark.parametrize("name", sorted(PROBES))
+def test_diffsettings_hides_passwords_in_typed_text(
+    make_package: MakePackage, name: str
+) -> None:
+    """A URL's user and password, and ``password=``, in a field typed ``str``."""
+    make_package("typed_probe", TYPED)
+    with override_settings(
+        INSTALLED_DOMAINS=["typed_probe"],
+        ALPHA=UNSET,
+        TYPED_PROBE={"URLS": [PROBES[name]]},
+    ):
+        output = run("diffsettings")
+
+    assert PASSWORD not in output
+    assert "**********" in output
+
+
+def test_diffsettings_hides_the_value_of_a_secret_pair_and_keeps_the_rest(
+    make_package: MakePackage,
+) -> None:
+    """``password = x``, ``"private_key": "x"``, ``Authorization: Bearer x``.
+
+    A name and its value, with ``=`` or ``:`` between, spaced or not, the
+    name quoted or not; a header's scheme is hidden with its token. A value
+    is on the name's line, or the next one indented; a quoted one is read on
+    after ``=``, and after ``:`` ends where a delimiter follows the quote.
+    What follows the value stays, and a URL's host and port are no pair,
+    whatever the host's words (audit A28-DX-10).
+    """
+    make_package("typed_probe", TYPED)
+    urls = [
+        f"host = db password = {PASSWORD} dbname = shop port = 5432",
+        json.dumps({"type": "service_account", "private_key": PASSWORD}),
+        f"Authorization: Bearer {PASSWORD}",
+        f"X-Request-Id: 7 Proxy-Authorization: Basic {PASSWORD}== X-Other: 1",
+        f"password: {PASSWORD} next: 1",
+        "token: Bearer, region: eu",  # A scheme with no token: the scheme hides.
+        f"password:\ntoken: {PASSWORD}\nregion: eu",
+        f'password="a"{PASSWORD} next=1',
+        "https://auth.example.com:8443/realms/x",  # A host is no name.
+        f"https://app:{PASSWORD}@keycloak.example.com:8443/ redis://cache-key:6379/0",
+        f"/password={PASSWORD} ODBC: UID=app;PWD={PASSWORD};",
+        "cwd=/srv pwdless=1",
+        f"x@password={PASSWORD} postgresql://app:{PASSWORD}@pgbouncer-auth:6432/db",
+        f'password="a",{PASSWORD} next=1',
+        f'{{"private_key": "{PASSWORD}", "url": "https://auth.example.com:8443"}}',
+    ]
+    with override_settings(
+        INSTALLED_DOMAINS=["typed_probe"], ALPHA=UNSET, TYPED_PROBE={"URLS": urls}
+    ):
+        lines = run("diffsettings").splitlines()
+
+    shown = [
+        "host = db password = ********** dbname = shop port = 5432",
+        '{"type": "service_account", "private_key": **********}',
+        "Authorization: **********",
+        "X-Request-Id: 7 Proxy-Authorization: ********** X-Other: 1",
+        "password: ********** next: 1",
+        "token: ********** region: eu",
+        "password:**********\ntoken: **********\nregion: eu",
+        "password=********** next=1",
+        "https://auth.example.com:8443/realms/x",
+        "https://app:**********@keycloak.example.com:8443/ redis://cache-key:6379/0",
+        "/password=********** ODBC: UID=app;PWD=**********;",
+        "cwd=/srv pwdless=1",
+        "x@password=********** postgresql://app:**********@pgbouncer-auth:6432/db",
+        "password=********** next=1",
+        '{"private_key": **********, "url": "https://auth.example.com:8443"}',
+    ]
+    (line,) = [line for line in lines if line.startswith("TYPED_PROBE")]
+    assert line.startswith(f"TYPED_PROBE = {{'URLS': {shown!r}, 'MODE': ")
+
+
+LONG_TEXTS = ["key.", "a.", "pin-", ".token", "key: a ", "a://", "Bearer key: "]
+"""Texts that made the patterns read each name or address again from within."""
+
+
+@pytest.mark.parametrize("unit", LONG_TEXTS)
+def test_diffsettings_reads_a_long_text_in_a_time_its_length_bounds(unit: str) -> None:
+    """100 KB of text is scrubbed well under a second, 2 KB in 50 ms.
+
+    Each name and each address is read from its start once: the pattern
+    that read a name again from each position within it took about a
+    second for 2 KB of ``key.``, and over 100 s for 10 KB; the one for a
+    URL's password read the rest of a word again at each ``a://``. A text
+    read again and again fails at 2 KB already, at once. The best of three
+    runs counts, so a machine busy for a moment does not; each takes a few
+    percent of its bound at most (audit A28-DX-10).
+    """
+    for size, bound in ((2_000, 0.05), (100_000, 1.0)):
+        scrub = partial(diffsettings._scrub, unit * (size // len(unit)))
+        assert min(timeit.repeat(scrub, number=1, repeat=3)) < bound, size
+
+
+def test_diffsettings_prints_a_sets_items_in_one_order() -> None:
+    """A set's items are sorted, typed or not, so two runs print one line.
+
+    A set of text is ordered by the hash seed, which each process draws
+    (``AUDIT.REQUIRE``); ``{8, 1}`` is out of order in every process (audit
+    A28-DX-10).
+    """
+    assert list({8, 1}) == [8, 1]  # The order the set itself gives.
+
+    assert diffsettings._typed(frozenset({8, 1}), free_form=False) == [1, 8]
+    assert diffsettings._opaque({8, 1, "x"}) == ["**********", 1, 8]
+    assert diffsettings._typed((8, 1), free_form=False) == [8, 1]  # A tuple's own.
+
+
+PLAIN = {
+    "apps.py": """
+        from collections import deque
+        from dataclasses import dataclass, field
+        from typing import Any, NamedTuple
+
+        from pydantic import BaseModel
+
+        from domainkit.apps import DomainConfig
+
+
+        @dataclass
+        class Provider:
+            NAME: str
+            OPTIONS: dict[str, Any] = field(default_factory=dict)
+            EXTRA: Any = None
+
+
+        class Pair(NamedTuple):
+            NAME: str
+            OPTIONS: dict[str, Any]
+
+
+        class PlainSettings(BaseModel):
+            PROVIDER: Provider | None = None
+            PAIR: Pair | None = None
+            PROVIDERS: list[Provider] = []
+            WAITING: deque[Provider] = deque()
+
+
+        class PlainConfig(DomainConfig):
+            settings_class = PlainSettings
+    """
+}
+
+
+def test_diffsettings_hides_the_text_of_values_that_are_not_models(
+    make_package: MakePackage,
+) -> None:
+    """A dataclass, and a mapping in a ``NamedTuple``, fail closed as mappings do.
+
+    No model's types say what their fields hold: their keys, numbers and
+    booleans show, their text is hidden, as in a field typed ``Any``. So
+    for a container the walk does not know, a ``deque`` (audit A28-DX-10).
+    """
+    make_package("plain_probe", PLAIN)
+    provider = {
+        "NAME": "sms",
+        "OPTIONS": {"client": PASSWORD, "pool": 4, "on": True},
+        "EXTRA": [PASSWORD, 2],
+    }
+    settings = {
+        "PROVIDER": provider,
+        "PAIR": ["second", {"client": PASSWORD, "pool": 5}],
+        "PROVIDERS": [provider],
+        "WAITING": [provider],
+    }
+    with override_settings(
+        INSTALLED_DOMAINS=["plain_probe"], ALPHA=UNSET, PLAIN_PROBE=settings
+    ):
+        output = run("diffsettings") + run("diffsettings", "--all")
+
+    assert PASSWORD not in output
+    hidden = (
+        "{'NAME': '**********', 'OPTIONS': {'client': '**********', 'pool': 4, "
+        "'on': True}, 'EXTRA': ['**********', 2]}"
+    )
+    (line,) = {line for line in output.splitlines() if line.startswith("PLAIN")}
+    assert line == (
+        f"PLAIN_PROBE = {{'PROVIDER': {hidden}, 'PAIR': ['second', "
+        f"{{'client': '**********', 'pool': 5}}], 'PROVIDERS': [{hidden}], "
+        f"'WAITING': [{hidden}]}}"
+    )
+
+
+def test_diffsettings_shows_typed_values_and_keeps_a_urls_user(
+    make_package: MakePackage,
+) -> None:
+    """Models by their fields, numbers in mappings, bytes hidden, never a crash."""
+    make_package("typed_probe", TYPED)
+    thing = importlib.import_module("typed_probe.apps").Thing()
+    settings = {
+        "URLS": ["https://api.example.com/v1", f"postgresql://app:p@{PASSWORD}@db"],
+        "MODE": "fast",
+        "SALT": b"\xff\x00",  # Not UTF-8: JSON could not hold it.
+        "PROVIDER": {"NAME": "first", "KEY": PASSWORD},
+        "PROVIDERS": {"second": {"NAME": "second"}},
+        "LIMITS": {"daily": 5},
+        "THING": thing,  # No JSON type: shown as its repr.
+    }
+    with override_settings(
+        INSTALLED_DOMAINS=["typed_probe"], ALPHA=UNSET, TYPED_PROBE=settings
+    ):
+        lines = run("diffsettings").splitlines()
+
+    (line,) = [line for line in lines if line.startswith("TYPED_PROBE")]
+    assert line == (
+        "TYPED_PROBE = {'URLS': ['https://api.example.com/v1', "
+        "'postgresql://app:**********@db'], 'MODE': 'fast', 'SALT': '**********', "
+        "'PROVIDER': {'NAME': 'first', 'KEY': '**********'}, "
+        "'PROVIDERS': {'second': {'NAME': 'second', 'KEY': '**********'}}, "
+        "'LIMITS': {'daily': 5}, 'NAMES': None, 'EXTRA': None, 'VALUES': [], "
+        "'THING': 'Thing()'}"
+    )
+
+
+RUN_ON_IMPORT = {"domainkit.contrib.audit.tasks", "domainkit.db.migration_env.env"}
+"""Modules that act when imported: one needs AUDIT settings, one is Alembic's env."""
+
+
+def _models() -> Iterator[type[BaseModel]]:
+    """Every pydantic model that domainkit defines, its modules imported."""
+    for info in pkgutil.walk_packages(domainkit.__path__, "domainkit."):
+        if info.name in RUN_ON_IMPORT:
+            continue
+        module = importlib.import_module(info.name)
+        for value in vars(module).values():
+            if (
+                isinstance(value, type)
+                and issubclass(value, BaseModel)
+                and value.__module__ == module.__name__
+            ):
+                yield value
+
+
+def _secret(annotation: object) -> bool:
+    """Whether the annotation holds a ``SecretStr`` or ``SecretBytes``."""
+    if isinstance(annotation, type) and issubclass(annotation, SecretStr | SecretBytes):
+        return True
+    return any(_secret(argument) for argument in get_args(annotation))
+
+
+def test_every_secret_field_has_a_name_diffsettings_hides() -> None:
+    """A provider's options are a mapping until the provider reads them.
+
+    ``diffsettings`` sees them by name only, and a project's own free-form
+    settings too, so every ``SecretStr`` field of domainkit's models has a
+    name the pattern hides; a connection URL's password is hidden by the
+    URL pattern.
+    """
+    missed = {
+        f"{model.__module__}.{model.__qualname__}.{name}"
+        for model in _models()
+        for name, field in model.model_fields.items()
+        if _secret(field.annotation)
+        and not diffsettings.SECRET_KEY.search(name)
+        and not name.endswith("URL")
+    }
+
+    assert missed == set()
+
+
+def test_diffsettings_leaves_a_domains_default_settings_out() -> None:
+    """Settings a domain reads but the module leaves unset are its defaults."""
+    with override_settings(ALPHA=UNSET):
+        changed = run("diffsettings").splitlines()
+        every = run("diffsettings", "--all").splitlines()
+
+    assert not [line for line in changed if line.startswith("ALPHA")]
+    assert "### ALPHA = {'GREETING': 'hello'}" in every
 
 
 def test_diffsettings_all_marks_defaults() -> None:

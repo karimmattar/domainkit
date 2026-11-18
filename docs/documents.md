@@ -27,6 +27,10 @@ when it is missing:
 pip install "domainkit[documents,httpclient]"
 ```
 
+On free-threaded Python, the first call of `fill_docx` or `placeholders`
+imports lxml, which turns the GIL back on for the rest of the process
+([free-threaded Python](runtime.md#free-threaded-python)).
+
 The decisions are in
 [ADR 0168](adr/0168-render-documents-through-a-port-with-gotenberg-and-fill-them-locally.md),
 [ADR 0176](adr/0176-bound-what-a-pdf-decodes-list-placeholders-fill-drafts-and-clean-less.md),
@@ -111,7 +115,7 @@ pdf = await renderer().html_to_pdf(
 )
 ```
 
-Each rendering is one call through `domainkit.http.client`:
+Each rendering is one call through `domainkit.outbound.client`:
 
 - bounded by `TIMEOUT` (30 seconds) and by the deadline of the request
   it serves;
@@ -677,7 +681,7 @@ import httpx2
 
 from domainkit.documents import renderer
 from domainkit.documents.gotenberg import LIBREOFFICE
-from domainkit.http.client import stub
+from domainkit.outbound.client import stub
 
 
 async def test_a_lease_is_converted() -> None:

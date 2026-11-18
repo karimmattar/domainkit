@@ -1,4 +1,4 @@
-"""Contrib apps reach each other only through what each app makes public.
+"""Contrib apps reach each other, and the core, only through what is public.
 
 An app's public surface is its package (``domainkit.contrib.audit``) and the
 modules that declare ``__all__`` (listed in ``docs/api.md``), and of those
@@ -9,10 +9,19 @@ or the core, importing it couples the two so neither can change alone.
 written (0.9.2). It may only shrink: a new one fails, and so does an entry
 that is no longer needed, so that 0.10 can remove them one by one by giving
 each app the public names the others use.
+
+The core is held to the same rule from the apps' side: an app imports the
+core's public names only, so a project can write an app as the contrib
+apps are written. ``ALLOWED_CORE`` lists the core names apps used in 2.8
+that no ``__all__`` publishes where they import them from; it only shrinks.
+
+Apps also import no ring of apps: two apps that import each other, or
+three or more that reach one another, can be neither read nor replaced
+alone (ADR 0140). ``ALLOWED_CYCLES`` lists the one ring left, and why.
 """
 
 import ast
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Final
 
@@ -63,6 +72,126 @@ ALLOWED: Final = frozenset(
 The core's were removed in 0.10: the core imports no contrib app at all
 (``test_framework_layers.py``).
 """
+
+ALLOWED_CORE: Final = frozenset(
+    {
+        # Core names apps imported in 2.8 that no __all__ publishes where
+        # they are imported from. Publish a name, or import it from the
+        # module that publishes it, and remove it here.
+        "domainkit.broker.base.publish_with_priority",
+        "domainkit.broker.handler.broker_class",
+        "domainkit.cloud.http_errors",
+        "domainkit.cloud.oauth_token",
+        "domainkit.conf.env.Env",
+        "domainkit.conf.global_settings.DEADLINE_MIDDLEWARE",
+        "domainkit.conf.global_settings.NAME_PATTERN",
+        "domainkit.conf.global_settings.REDIS_SCHEMES",
+        "domainkit.conf.global_settings.is_network_database",
+        "domainkit.conf.unwrap_settings",
+        "domainkit.db.connections.create_owner_engine",
+        "domainkit.db.connections.pool_capacity",
+        "domainkit.db.encrypted.context",
+        "domainkit.db.encrypted.encrypted_columns",
+        "domainkit.db.encrypted.index_context",
+        "domainkit.db.encrypted.indexed_tables",
+        "domainkit.db.fixtures.FixtureError",
+        "domainkit.db.fixtures.tables_of",
+        "domainkit.db.orm.children",
+        "domainkit.db.orm.map_imperatively",
+        "domainkit.db.query.column_of",
+        "domainkit.db.query.contains_text",
+        "domainkit.db.query.mapper_of",
+        "domainkit.db.uow.tenant_schemas",
+        "domainkit.ddd.events.inherits_actor",
+        "domainkit.ddd.fields.fields_of",
+        "domainkit.ddd.personal.SEPARATOR",
+        "domainkit.ddd.personal.counted_fields",
+        "domainkit.ddd.personal.event_subjects",
+        "domainkit.ddd.personal.fields_about",
+        "domainkit.ddd.personal.personal_fields",
+        "domainkit.ddd.personal.subject_tag",
+        "domainkit.ddd.personal.subjects_in",
+        "domainkit.ddd.personal.tagged_with",
+        "domainkit.ddd.query.And",
+        "domainkit.ddd.query.Condition",
+        "domainkit.ddd.uow.MAX_ORDERING_KEY",
+        "domainkit.ddd.uow.checked_ordering_key",
+        "domainkit.ddd.uow.expectations_of",
+        "domainkit.ddd.usecases.UseCase",
+        "domainkit.http.access.routes_need_users",
+        "domainkit.http.access.served_routes",
+        "domainkit.http.blocking.awaited_sync",
+        "domainkit.http.errors.sqlstate",
+        "domainkit.http.live.LONG_LIVED",
+        "domainkit.http.live.REAUTHENTICATE",
+        "domainkit.http.live.streams",
+        "domainkit.http.metrics.register_refresher",
+        "domainkit.http.middleware.PEER",
+        "domainkit.http.middleware.host_allowed",
+        "domainkit.http.middleware.request_path",
+        "domainkit.http.ratelimit.address_key",
+        "domainkit.http.ratelimit.refuse",
+        "domainkit.keys.ring.DATA",
+        "domainkit.keys.ring.FORMAT",
+        "domainkit.keys.ring.SUBJECT",
+        "domainkit.keys.ring.forget_held",
+        "domainkit.keys.ring.sealed_key",
+        "domainkit.management.operators.require_named",
+        "domainkit.resources.access.ModelLike",
+        "domainkit.resources.access.VIEW",
+        "domainkit.resources.access.content_type_of",
+        "domainkit.resources.access.rules_for",
+        "domainkit.resources.conditional.PreconditionRequired",
+        "domainkit.resources.conditional.asked_versions",
+        "domainkit.resources.conditional.expected_versions",
+        "domainkit.resources.renderers.CSV",
+        "domainkit.resources.renderers.JSON",
+        "domainkit.resources.renderers.csv_rows",
+        "domainkit.resources.renderers.negotiate",
+        "domainkit.resources.routing.DEFAULT",
+        "domainkit.resources.routing.Handler",
+        "domainkit.resources.routing.RepositoryOf",
+        "domainkit.resources.routing.Scope",
+        "domainkit.resources.routing.Service",
+        "domainkit.resources.routing.UnitOfWorkFactory",
+        "domainkit.signing.secret_keys",
+        "domainkit.utils.decimals.with_decimal_text",
+        "domainkit.utils.delivery.ConsoleDelivery",
+        "domainkit.utils.delivery.DeliveryBackend",
+        "domainkit.utils.delivery.MemoryDelivery",
+        "domainkit.utils.delivery.load_backend",
+        "domainkit.utils.text.pluralize",
+        "domainkit.utils.text.snake_case",
+        # The audit's fixes of 2.9 gave the apps these, before this list
+        # existed: tenant_alone is the tenancy's own (ADR 0183), the rest
+        # are shared definitions. Publish them, or import them from a module
+        # that publishes them, and remove them here.
+        "domainkit.context.caller_key",
+        "domainkit.db.derive.IDENTIFIER_LENGTH",
+        "domainkit.ddd.query.CriteriaLike",
+        "domainkit.ddd.query.as_criteria",
+        "domainkit.ddd.tenancy.tenant_alone",
+        "domainkit.utils.text.IGNORABLE",
+    }
+)
+"""Unpublished core names apps import, by the module they import them from.
+
+By name, not by importer: the debt is a name the core must publish (or an
+import to point at its public module), whichever app module uses it.
+"""
+
+ALLOWED_CYCLES: Final = frozenset(
+    {
+        # Auth forgets a user's credentials on privacy's PersonalDataErased,
+        # which retention purges publish too; on_erase_subject runs only for
+        # "privacy erase", with a subject rather than the user erased, so
+        # moving to it would keep a purged user's credentials. Privacy
+        # writes the audit trail, and audit's history API is guarded by
+        # auth's rules.
+        ("audit", "auth", "privacy"),
+    }
+)
+"""Rings of apps that import one another, each with its reason; only shrinks."""
 
 
 class Layout:
@@ -121,8 +250,40 @@ class Layout:
             return f"{module}.{name}"
         return None
 
+    def core_crossing(self, importer: str, module: str, name: str | None) -> str | None:
+        """The core name an app imports that the core does not publish, if it is one.
+
+        The core is every module outside ``<package>.contrib``. What it
+        publishes is what its modules' ``__all__`` lists: a module without
+        one publishes nothing, and a name is public only from a module
+        whose ``__all__`` lists it, not from the module it was moved from.
+        """
+        contrib = f"{self.package}.contrib"
+        inside = module == contrib or module.startswith(f"{contrib}.")
+        if self.app(importer) is None or module not in self.files or inside:
+            return None
+        public = self.exports(module) or set()
+        if name in public:
+            return None
+        if name is not None and f"{module}.{name}" in self.files:
+            module, name = f"{module}.{name}", None
+            public = self.exports(module) or set()
+        if name is None or name == "*":
+            return None if public else module
+        return f"{module}.{name}"
+
     def crossings(self) -> Iterator[tuple[str, str]]:
         """Every ``(importer, private target)`` in the package."""
+        yield from self._imports(self.crossing)
+
+    def core_crossings(self) -> Iterator[tuple[str, str]]:
+        """Every ``(app module, unpublished core name)`` in the package."""
+        yield from self._imports(self.core_crossing)
+
+    def _imports(
+        self, crossing: Callable[[str, str, str | None], str | None]
+    ) -> Iterator[tuple[str, str]]:
+        """``(importer, target)`` for each import ``crossing`` finds a target in."""
         for importer, path in self.files.items():
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
@@ -135,16 +296,48 @@ class Layout:
                 else:
                     continue
                 for module, name in targets:
-                    if target := self.crossing(importer, module, name):
+                    if target := crossing(importer, module, name):
                         yield importer, target
 
-    def mutual(self) -> set[tuple[str, str]]:
-        """Each pair of apps that import each other, in alphabetical order.
+    def cycles(self) -> set[tuple[str, ...]]:
+        """Each set of apps that reach one another by imports, in alphabetical order.
 
-        At any depth, inside functions too: an import a function makes
-        when it is called ties two apps as one at the top of a module does.
+        A strongly connected component of the graph of apps (Tarjan's
+        algorithm): two apps that import each other, or three or more in
+        a ring. At any depth, inside functions too: an import a function
+        makes when it is called ties the apps as one at the top of a
+        module does.
         """
-        uses: set[tuple[str, str]] = set()
+        uses = self.app_imports()
+        index: dict[str, int] = {}
+        low: dict[str, int] = {}
+        stack: list[str] = []
+        found: set[tuple[str, ...]] = set()
+
+        def connect(app: str) -> None:
+            index[app] = low[app] = len(index)
+            stack.append(app)
+            for other in sorted(uses.get(app, ())):
+                if other not in index:
+                    connect(other)
+                    low[app] = min(low[app], low[other])
+                elif other in stack:
+                    low[app] = min(low[app], index[other])
+            if low[app] == index[app]:
+                component = []
+                while (top := stack.pop()) != app:
+                    component.append(top)
+                if component:
+                    found.add(tuple(sorted([app, *component])))
+
+        for app in sorted(uses):
+            if app not in index:
+                connect(app)
+        return found
+
+    def app_imports(self) -> dict[str, set[str]]:
+        """The other apps each app imports, at any depth."""
+        uses: dict[str, set[str]] = {}
         for importer, path in self.files.items():
             app = self.app(importer)
             if app is None:
@@ -161,8 +354,8 @@ class Layout:
                 for module in modules:
                     other = self.app(module)
                     if other is not None and other != app:
-                        uses.add((app, other))
-        return {(one, two) for one, two in uses if one < two and (two, one) in uses}
+                        uses.setdefault(app, set()).add(other)
+        return uses
 
 
 def _resolve(importer: str, path: Path, level: int, target: str | None) -> str:
@@ -184,9 +377,39 @@ def test_no_new_imports_of_another_apps_internals() -> None:
     assert sorted(ALLOWED - found) == [], "No longer imported: remove from ALLOWED."
 
 
-def test_no_two_apps_import_each_other() -> None:
-    """An app asks the apps built on it through hooks, not imports (ADR 0140)."""
-    assert Layout(SRC, "domainkit").mutual() == set()
+def test_apps_import_only_the_names_the_core_publishes() -> None:
+    """An app uses the core as a project's app would; the old list only shrinks."""
+    found = {target for _, target in Layout(SRC, "domainkit").core_crossings()}
+
+    assert sorted(found - ALLOWED_CORE) == [], "Import or publish a public name."
+    assert sorted(ALLOWED_CORE - found) == [], "No longer imported: remove it."
+
+
+def test_no_apps_import_one_another_in_a_ring() -> None:
+    """An app asks the apps built on it through hooks, not imports (ADR 0140).
+
+    Two apps that import each other, or three or more in a ring, at any
+    depth; the ring left only shrinks.
+    """
+    found = Layout(SRC, "domainkit").cycles()
+
+    assert sorted(found - ALLOWED_CYCLES) == [], "Ask through a hook instead."
+    assert sorted(ALLOWED_CYCLES - found) == [], "No longer a ring: remove it."
+
+
+def test_the_check_finds_rings_of_any_length(
+    make_package: MakePackage, tmp_path: Path
+) -> None:
+    """``one -> two -> three -> one`` is one ring, though no two import each other."""
+    make_package("fakekit.contrib.one", {"__init__.py": "from ..two import x\n"})
+    make_package("fakekit.contrib.two", {"__init__.py": "from ..three import x\n"})
+    make_package(
+        "fakekit.contrib.three",
+        {"__init__.py": "def f():\n    import fakekit.contrib.one\n"},
+    )
+    make_package("fakekit.contrib.four", {"__init__.py": "from ..one import x\n"})
+
+    assert Layout(tmp_path, "fakekit").cycles() == {("one", "three", "two")}
 
 
 def test_the_check_finds_apps_that_import_each_other(
@@ -217,10 +440,7 @@ def test_the_check_finds_apps_that_import_each_other(
         {"__init__.py": "", "uses.py": "from ..base import rules\nimport json\n"},
     )
 
-    assert Layout(tmp_path, "fakekit").mutual() == {
-        ("base", "money"),
-        ("base", "trail"),
-    }
+    assert Layout(tmp_path, "fakekit").cycles() == {("base", "money", "trail")}
 
 
 def test_the_check_finds_private_imports_and_lets_public_ones_pass(
@@ -259,4 +479,47 @@ def test_the_check_finds_private_imports_and_lets_public_ones_pass(
         ("fakekit.contrib.two.uses", "fakekit.contrib.one.models"),
         ("fakekit.contrib.two.uses", "fakekit.contrib.one.api.helper"),
         ("fakekit.core.rules", "fakekit.contrib.one.inner"),
+    }
+
+
+def test_the_check_finds_core_names_the_core_does_not_publish(
+    make_package: MakePackage, tmp_path: Path
+) -> None:
+    """A name outside its module's ``__all__``, or from a module without one."""
+    make_package(
+        "fakekit.core",
+        {
+            "__init__.py": "from .rules import Rule\nregistry = 1\n"
+            "__all__ = ['Rule', 'registry']\n",
+            "rules.py": "class Rule: ...\nclass Hidden: ...\n__all__ = ['Rule']\n",
+            "registry.py": "",
+            "loose.py": "helper = 1\n",
+        },
+    )
+    make_package(
+        "fakekit.contrib.one",
+        {
+            "uses.py": """
+                from fakekit.core import Rule, registry
+                from fakekit.core.rules import Rule, Hidden
+                from fakekit.core.rules import *
+                from fakekit.core.loose import helper
+                from fakekit.core import loose
+                import fakekit.core.rules
+                import fakekit.core.loose
+                from ...core import rules
+                import json
+            """,
+        },
+    )
+    make_package(
+        "fakekit.other", {"inner.py": "from fakekit.core.loose import helper\n"}
+    )
+
+    found = set(Layout(tmp_path, "fakekit").core_crossings())
+
+    assert found == {
+        ("fakekit.contrib.one.uses", "fakekit.core.rules.Hidden"),
+        ("fakekit.contrib.one.uses", "fakekit.core.loose.helper"),
+        ("fakekit.contrib.one.uses", "fakekit.core.loose"),
     }

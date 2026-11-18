@@ -119,7 +119,7 @@ print(config.TOKEN_TTL, config.JWT.ACCESS_TOKEN_TTL)
 | `CREDENTIAL_CHANGE_DEVICE_LOGINS` | `"end"` | What the user's password change (`/password`), reset (`/password-reset/code`), or turning the second factor on (`/mfa/totp/confirm`) does to the logins of their bound devices: `"end"` ends them with the other logins, `"keep"` keeps them, `"ask"` does as the request's `keep_device_logins` says (true by default). Every other login ends in each case ([Credential changes and the phone](auth/logging-in.md#credential-changes-and-the-phone)). |
 | `BACKENDS` | `["domainkit.contrib.auth.backends.ModelBackend"]` | Authentication and permission backends, asked in order; at least one. |
 | `AUTHENTICATION_CLASSES` | `["domainkit.contrib.auth.authentication.TokenAuthentication"]` | How requests prove who sent them, tried in order (at least one); the first issues login tokens. |
-| `AUTHENTICATION_EXEMPT_PATHS` | `["/health", "/ready", "/metrics"]` | Paths served without looking at credentials. |
+| `AUTHENTICATION_EXEMPT_PATHS` | `()` | Paths served without looking at credentials, besides `PROBE_PATHS` (the probes and the metrics scrape). Until 2.9 its default named the probes. |
 | `TOKEN_TTL` | 14 days | How long a login's opaque token works; `None`: until revoked. |
 | `TOKEN_PREFIX` | `"dkt_"` | Starts every opaque token. Changing it makes existing tokens invalid. |
 | `MAX_LOGINS` | `100` | Logins a user holds at once: login tokens, browser sessions, and JSON Web Token logins (1 to 10,000). A new one past it ends the oldest; personal tokens neither count nor end ([Sessions](auth/logging-in.md#sessions)). |
@@ -134,7 +134,7 @@ print(config.TOKEN_TTL, config.JWT.ACCESS_TOKEN_TTL)
 | `EMAIL_RATE` | `"5/hour"` | Requests that send mail (resets, verifications, signups) per client address and per email address or user. |
 | `THROTTLE_FAIL_CLOSED` | `None` | While `RATE_LIMIT_BACKEND` cannot count (Redis failing), refuse password and code checks, and requests for mail, with `503 throttle_unavailable`, instead of letting them through uncounted. `None`: `True` in staging and production, `False` elsewhere (since 0.11) ([Logging in and out](auth/logging-in.md#logging-in-and-out)). |
 | `REQUIRE_SHARED_THROTTLES` | `True` | Staging and production refuse to start while password and code attempts are counted in each process (a `MemoryBackend` as `RATE_LIMIT_BACKEND`, `auth.E105`), since 0.11. `False` only warns (`auth.W004`), as 0.10 did: for a deployment of one process. |
-| `IDENTIFIERS` | `None` | The user fields that identify a user (`None`: the user model's `USERNAME_FIELD` alone), in the order a login tries them, such as `("email", "mobile_number")`; at least one. Each must be a field of the user model, and named once (`auth.E011`) (ADR 0126). |
+| `IDENTIFIERS` | `None` | The user fields that identify a user (`None`: the user model's `USERNAME_FIELD` alone), in the order a login tries them, such as `("email", "mobile_number")`; at least one. Each must be a field of the user model that its table has a column for, and named once (`auth.E011`) (ADR 0126). |
 | `NAME_FIELDS` | `None` | How the admin API's `GET /users/names` names a user (*new in 2.8*): entries tried in order, each a field or a tuple of fields joined by a space, the first that gives text, each value stripped, being the name, as in `("display_name", ("first_name", "last_name"))`; at least one entry and up to 8, each of one to 8 fields. Each field must hold text (`str`) and be one `GET /users` shows, among `fields` (the model's `admin_fields()`) or as the username, or `check` refuses to start (`auth.E012`); one that stops being shown, or a value that is not text, gives no name. `None`: `first_name` and `last_name`, joined, as in 2.7 ([The admin API](auth/routes.md#the-admin-api), ADR 0182). |
 | `CODE_TTL` | 10 minutes | How long a code works, from 1 minute to 1 hour. Signup, email and mobile verification, and password resets prove that someone reads an address or a number with a code of 6 digits; the links of 1.x, and their settings (`VERIFICATION`, `PASSWORD_RESET_URL`, `PASSWORD_RESET_TIMEOUT`, `EMAIL_VERIFICATION_URL`, `EMAIL_VERIFICATION_TIMEOUT`, `SIGNUP_URL`), were removed in 2.0: setting one is refused. |
 | `CODE_ATTEMPTS` | `5` | Wrong tries that spend a code, from 1 to 10. |
@@ -152,6 +152,12 @@ print(config.TOKEN_TTL, config.JWT.ACCESS_TOKEN_TTL)
 | `ADMIN_ACTION` | `False` | Each change of the admin API asks for an authorization of its own (`auth.admin_change`), bound to the user or group and to what changes, in place of a step-up window; each changing route gets a twin that asks for one ([Each change, authorized as one act](auth/routes.md#each-change-authorized-as-one-act)). |
 | `CSRF_TRUSTED_ORIGINS` | `()` | Origins (`https://app.example.com`, `https://*.example.com`) whose pages may send cookie requests, besides the request's own and `ALLOWED_HOSTS`. |
 | `JWT` | see below | JSON Web Tokens, for `JWTAuthentication`. |
+
+The classes of `PASSWORD_HASHERS`, `PASSWORD_VALIDATORS`, `BACKENDS`, and
+`AUTHENTICATION_CLASSES` are named by dotted path, or, since 2.9, by the
+name an installed package offers them by
+([Backends from an installed package](reference/extension-points.md#backends-from-an-installed-package)).
+Each is made once for the settings: `override_settings` makes them again.
 
 | `AUTH["BREACHED_PASSWORDS"]` key | Default | Meaning |
 | --- | --- | --- |

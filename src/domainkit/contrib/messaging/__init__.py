@@ -34,7 +34,15 @@ from typing import TYPE_CHECKING
 from domainkit.utils.module_loading import lazy_names
 
 from .outbox import enqueue
-from .registry import Chain, chain, ordered, periodic, task, tasks_kept
+from .registry import (
+    Chain,
+    chain,
+    ordered,
+    periodic,
+    task,
+    tasks_kept,
+    unregister_task,
+)
 from .retry import Backoff, RunLater
 from .runs import AlreadyHandled, LeaseLost, inbox
 from .settings import MessagingSettings
@@ -61,6 +69,7 @@ __all__ = [
     "periodic",
     "task",
     "tasks_kept",
+    "unregister_task",
 ]
 
 # The worker's names are imported on first use: a web process writes

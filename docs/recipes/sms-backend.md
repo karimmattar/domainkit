@@ -36,8 +36,8 @@ each message, and returns how many went. It raises `NotificationFailed`
 when the provider refuses a message, or cannot be reached.
 
 The backend reads its settings from `NOTIFICATIONS["SMS_OPTIONS"]`. Its
-calls go through `domainkit.http.client`, with its timeouts, retries, and
-circuit breaker:
+calls go through `domainkit.outbound.client`, with its timeouts, retries, and
+circuit breaker. Make a new file, `src/config/sms.py`:
 
 ```python title="src/config/sms.py (new file)"
 """Text messages through Example SMS's JSON API."""
@@ -51,7 +51,7 @@ from domainkit.contrib.notifications import (
     SmsBackend,
     SmsMessage,
 )
-from domainkit.http.client import HttpClient
+from domainkit.outbound.client import HttpClient
 from pydantic import BaseModel, ConfigDict, SecretStr
 
 
@@ -96,8 +96,8 @@ class ExampleSmsBackend(SmsBackend):
 
 ### Step 3: install the app and name the backend
 
-Install the notifications app, and name the backend and its options. The
-token comes from the environment:
+Install the notifications app, and name the backend and its options, in
+`src/config/settings/base.py`. The token comes from the environment:
 
 ```python title="src/config/settings/base.py"
 INSTALLED_DOMAINS = [*INSTALLED_DOMAINS, "domainkit.contrib.notifications"]
@@ -117,7 +117,8 @@ message leaves with the commit, and the worker hands it to the backend.
 
 `stub` sends the calls made in its block to a function instead of the
 network. So the test sees each request, and chooses the answer. `db`
-starts the project's domains (and an empty database) for the test:
+starts the project's domains (and an empty database) for the test. Make
+a new file, `tests/test_sms.py`:
 
 ```python title="tests/test_sms.py (new file)"
 """The backend posts each message with the token, and reports a refusal."""
@@ -127,7 +128,7 @@ import json
 import httpx2
 import pytest
 from domainkit.contrib.notifications import NotificationFailed, SmsMessage
-from domainkit.http.client import stub
+from domainkit.outbound.client import stub
 
 from config.sms import ExampleSmsBackend
 

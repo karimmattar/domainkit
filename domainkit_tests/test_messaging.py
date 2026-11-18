@@ -11,7 +11,6 @@ import sys
 import uuid
 from collections.abc import (
     AsyncIterator,
-    Callable,
     Iterable,
     Iterator,
     Mapping,
@@ -100,6 +99,7 @@ from domainkit.management import CommandError, call_command
 from domainkit.reporting import flush_reports
 from domainkit_tests.sample_domains.alpha.events import GreetingSent
 from domainkit_tests.sample_routes import DriverError
+from domainkit_tests.support.waiting import until
 from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork, NoteWritten, notes
 
 pytestmark = pytest.mark.anyio
@@ -411,7 +411,13 @@ async def test_failures_retry_then_dead_letter(
     assert row["finished_at"] is not None
     dead = [r for r in caplog.records if r.levelname == "ERROR"]
     assert [(r.getMessage(), bool(r.exc_info)) for r in dead] == [
-        ("Dead-lettered task tests.always_fails after 3 attempts", True)
+        (
+            (
+                f"Dead-lettered task tests.always_fails (message {row['id']}) "
+                "after 3 attempts"
+            ),
+            True,
+        )
     ]
     flush_reports()  # Reporters run on their own thread.
     assert reported == [
@@ -506,7 +512,8 @@ async def test_retries_wait_for_their_backoff(
     assert available_at <= datetime.now(UTC) + timedelta(seconds=60)
     (record,) = [r for r in caplog.records if r.exc_info]
     assert record.getMessage() == (
-        "task tests.always_fails failed (attempt 1 of 3); retrying in 60.0s"
+        f"task tests.always_fails (message {row['id']}) failed (attempt 1 of 3); "
+        "retrying in 60.0s"
     )
 
 
@@ -639,7 +646,7 @@ async def test_work_no_request_queued_runs_as_the_system(tables: None) -> None:
     try:
         await Worker().run_once()
     finally:
-        tasks._tasks.pop("tests.hourly_actor")
+        tasks.unregister_task("tests.hourly_actor")
 
     actors = {key: context.actor for key, _, context in ran}
     assert actors == {first: SYSTEM_ACTOR, second: None, "hourly": SYSTEM_ACTOR}
@@ -658,7 +665,7 @@ async def test_periodic_tasks_run_once_per_interval(tables: None) -> None:
         await worker.run_once()
         await Worker().run_once()
     finally:
-        tasks._tasks.pop("tests.hourly")
+        tasks.unregister_task("tests.hourly")
 
     (row,) = await outbox()
     assert (row["target"], row["status"], ran) == ("tests.hourly", DONE, ["hourly"])
@@ -684,7 +691,7 @@ async def test_each_periodic_task_has_its_own_slot(tables: None) -> None:
         await worker.run_once()
     finally:
         for name in intervals:
-            tasks._tasks.pop(name)
+            tasks.unregister_task(name)
 
     rows = await outbox()
     assert sorted(ran) == ["hourly", "ten_minutes"]
@@ -2328,8 +2335,8 @@ async def test_a_message_the_outbox_cannot_take_back_waits_for_its_lock(
     assert row["lock_id"] is not None
     target = "domainkit_tests.test_messaging.wait_at_gate"
     logged = (
-        f"Could not give back task {target} after stopping it; it runs again "
-        "once its lock expires"
+        f"Could not give back task {target} (message {row['id']}) after stopping "
+        "it; it runs again once its lock expires"
     )
     assert caplog.messages == [logged]
     cause = caplog.records[0].exc_info
@@ -2544,15 +2551,6 @@ def test_runworker_on_a_broker(brokered: None, monkeypatch: pytest.MonkeyPatch) 
         run("runworker", "--queue", "bad queue")
 
 
-async def until(condition: Callable[[], bool]) -> None:
-    """Wait up to five seconds for ``condition`` to hold."""
-    for _ in range(500):
-        if condition():
-            return
-        await asyncio.sleep(0.01)
-    raise AssertionError("Timed out waiting")
-
-
 class Flaky:
     """Fail the first ``times`` calls of a worker method, then call through."""
 
@@ -2655,8 +2653,8 @@ async def test_unrecorded_outcomes_run_again_later(
     assert len(ran) == 1
     assert caplog.messages == [
         (
-            f"Could not record the outcome of task {claimed.target}; it runs "
-            "again once its lock expires"
+            f"Could not record the outcome of task {claimed.target} (message "
+            f"{claimed.id}); it runs again once its lock expires"
         )
     ]
     assert caplog.records[0].exc_info
@@ -2807,9 +2805,17 @@ async def test_workers_claim_only_what_they_can_run(
     gates.update(c0=asyncio.Event(), c1=asyncio.Event(), c2=asyncio.Event())
     for name in ("c0", "c1", "c2"):
         await enqueue(wait_at_gate, name=name)
+    # Not a test of timeouts: the gates hold their tasks past FAST's 0.2 s.
+    slow = {"TASK_TIMEOUT": 30, "VISIBILITY_TIMEOUT": 60}
     worker = Worker(
         MessagingSettings(
-            **{**FAST, "POLL_INTERVAL": 0.01, "CONCURRENCY": 2, "BATCH_SIZE": 10}
+            **{
+                **FAST,
+                "POLL_INTERVAL": 0.01,
+                "CONCURRENCY": 2,
+                "BATCH_SIZE": 10,
+                **slow,
+            }
         )
     )
     claim = Flaky(worker._claim, times=0)
