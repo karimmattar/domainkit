@@ -137,7 +137,22 @@ async def test_ready_checks_brokers_only_when_told(
         assert await heartbeats.failures("work") == ["broker:work"]  # Not twice.
 
 
-@pytest.mark.usefixtures("messaging", "checked")
+@pytest.fixture
+def checks_hold(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every round of checks holds at once, with no connection opened.
+
+    A test that stops the heartbeat as soon as a file appears would
+    otherwise cut a round short while it opens its SQLite connection,
+    which is then left for the garbage collector to close in another test.
+    """
+
+    async def holding(broker: str | None) -> list[str]:
+        return []
+
+    monkeypatch.setattr(heartbeats, "failures", holding)
+
+
+@pytest.mark.usefixtures("messaging", "checked", "checks_hold")
 async def test_the_files_go_when_the_worker_stops(tmp_path: Path) -> None:
     """A stopped worker is no one's: its files are removed."""
     path, ready = tmp_path / "alive", tmp_path / "ready"
@@ -270,7 +285,7 @@ async def test_a_heartbeat_file_that_cannot_be_written_ages_and_says_so(
     await beating
 
 
-@pytest.mark.usefixtures("messaging")
+@pytest.mark.usefixtures("messaging", "checks_hold")
 def test_runworker_beats_while_it_runs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -299,7 +314,7 @@ def test_runworker_beats_while_it_runs(
     assert not path.exists()
 
 
-@pytest.mark.usefixtures("messaging")
+@pytest.mark.usefixtures("messaging", "checks_hold")
 def test_runworker_writes_a_ready_file_alone(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
