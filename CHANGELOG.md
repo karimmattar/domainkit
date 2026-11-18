@@ -237,7 +237,11 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   its scope, and a `state` no other call sees. `RuleContext` is what a
   rule may read of both kinds of call (`scope`, `user`, `state`):
   `HTTPConnection` is one, and a rule that annotates its `request` with
-  it answers offline as on a route; `scopes_of` takes one
+  it answers offline as on a route; `scopes_of` takes one.
+  `domainkit.http.errors.transient(exc)` says whether an error is one
+  worth trying again after: a timeout, an error of the operating system,
+  `ServiceBusy`, or a database busy or out of reach (`database_refusal`'s
+  503s)
   ([Rules asked outside a request](docs/auth/routes.md#rules-asked-outside-a-request),
   ADR 0196) (audit A28-ARCH-08).
 
@@ -662,10 +666,14 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   connection in the process, without a query, an application, or a user.
   A rule that reads the request's query, application, or user answers
   there; what a rule keeps in `request.state` no other call sees; and a
-  rule that raises refuses and is logged by its class and its error's.
-  An approved command whose maker rule raises fails once
-  (`maker_not_allowed`) instead of being run again until dead-lettered,
-  and `approvers_of` no longer raises for every caller
+  rule that raises an error of its own refuses and is logged by its class
+  and its error's. An approved command whose maker rule makes such a
+  mistake fails once (`maker_not_allowed`) instead of being run again
+  until dead-lettered, and `approvers_of` no longer raises for every
+  caller. A transient error (`domainkit.http.errors.transient`: a
+  timeout, a connection lost, `ServiceBusy`, a database busy or out of
+  reach) is still raised, so the run is tried again, and a maker rule's
+  `DomainError` still fails the request with its code
   ([upgrading.md](docs/upgrading.md#28-to-29), ADR 0196) (audit
   A28-ARCH-08).
 

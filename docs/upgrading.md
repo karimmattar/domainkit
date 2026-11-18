@@ -382,10 +382,12 @@ No migration.
   `request.user` is the user asked about, `request.auth` is None, and
   `request.state` is that call's alone. A rule that kept a value in
   `request.state` for later calls no longer finds it there. A rule that
-  raises refuses, and is logged as a warning by its class and its
-  error's: the request fails with `maker_not_allowed` at once, where 2.8
-  ran it again until it was dead-lettered, and `approvers_of` leaves that
-  rule's users out, where 2.8 raised
+  raises an error of its own, neither a `DomainError` nor a transient one
+  (a timeout, a connection lost, a database busy or out of reach), refuses,
+  and is logged as a warning by its class and its error's: the request
+  fails with `maker_not_allowed` at once, where 2.8 ran it again until it
+  was dead-lettered, and `approvers_of` leaves that rule's users out,
+  where 2.8 raised
   ([Rules asked outside a request](auth/routes.md#rules-asked-outside-a-request)).
 - **`RATE_LIMIT_BACKEND` is checked before it counts.** A value that is
   neither a dotted path (`module.Class`, `module:Class`) nor a name a

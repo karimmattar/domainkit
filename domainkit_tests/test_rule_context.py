@@ -16,6 +16,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import DBAPIError, OperationalError
 from starlette.requests import HTTPConnection
 
 from domainkit.contrib.approvals import (
@@ -29,7 +30,8 @@ from domainkit.contrib.approvals import (
 from domainkit.contrib.approvals.guards import Guard
 from domainkit.contrib.approvals.services import _check_maker
 from domainkit.contrib.messaging.testing import drain
-from domainkit.ddd import Command
+from domainkit.ddd import Command, DomainError
+from domainkit.exceptions import ServiceBusy
 from domainkit.http.access import (
     AnonymousPrincipal,
     BasePermission,
@@ -41,6 +43,7 @@ from domainkit.http.access import (
     RuleContext,
     scopes_of,
 )
+from domainkit.http.errors import transient
 from domainkit.management.base import run_async
 from domainkit_tests.test_approvals_api import decide
 from domainkit_tests.test_approvals_tenancy import stored
@@ -117,6 +120,31 @@ class OnlyActive(BasePermission):
         """Active users, on a call that keeps its own state."""
         request.state.asked = True
         return bool(user.is_active) and request.scope["user"] is user
+
+
+class Suspended(DomainError):
+    """A refusal of the project's own, with its own code."""
+
+
+class RefusesInItsOwnWords(BasePermission):
+    """A maker rule that refuses with a domain error of the project's."""
+
+    async def has_permission(self, request: HTTPConnection, user: Any) -> bool:  # noqa: ANN401 - a user.
+        """Refuse, saying why."""
+        raise Suspended("This maker is suspended.")
+
+
+class LosesItsConnectionOnce(BasePermission):
+    """A rule whose own call to another service fails once, then answers."""
+
+    failures: ClassVar[list[BaseException]] = []
+    """What it raises next, one call each; then it allows."""
+
+    async def has_permission(self, request: HTTPConnection, user: Any) -> bool:  # noqa: ANN401 - a user.
+        """Raise what is left to raise, then allow."""
+        if LosesItsConnectionOnce.failures:
+            raise LosesItsConnectionOnce.failures.pop(0)
+        return True
 
 
 def made_by(maker_rule: BasePermission, service: Any = ruled) -> Guard:  # noqa: ANN401 - a service.
@@ -326,3 +354,126 @@ def test_an_approver_rule_that_raises_lets_no_one_through(
     assert found == []
     assert lines[0] == RAISED
     assert lines.count(RAISED) == 1  # The other user's is held back, counted.
+
+
+def test_transient_errors_are_told_apart_from_a_rules_own() -> None:
+    """A timeout, a connection, a busy or unreachable database: try again."""
+    gone = OperationalError("SELECT 1", {}, Exception("gone"))
+    gone.connection_invalidated = True
+
+    assert transient(TimeoutError())
+    assert transient(ConnectionResetError())
+    assert transient(ServiceBusy("Busy."))
+    assert transient(gone)
+    assert transient(DBAPIError("SELECT 1", {}, Stated("57014")))  # A timeout.
+    assert not transient(DBAPIError("SELECT 1", {}, Stated("22021")))  # A NUL.
+    assert not transient(OperationalError("SELECT 1", {}, Exception("syntax")))
+    assert not transient(LookupError("a mistake"))
+    assert not transient(Suspended("No."))
+
+
+class Stated(Exception):
+    """A driver's error with a SQLSTATE, as asyncpg raises one."""
+
+    def __init__(self, sqlstate: str) -> None:
+        """Carry ``sqlstate``."""
+        super().__init__(sqlstate)
+        self.sqlstate = sqlstate
+
+
+@pytest.mark.parametrize(
+    "failure", [TimeoutError("slow"), ConnectionRefusedError("refused")]
+)
+def test_a_transient_error_of_a_maker_rule_is_raised_not_refused(
+    client: TestClient,  # noqa: F811 - the fixture.
+    failure: Exception,
+) -> None:
+    """The run is tried again: a rule that could not answer has not refused."""
+    maker = str(person("maker"))
+    LosesItsConnectionOnce.failures[:] = [failure]
+
+    with pytest.raises(type(failure)):
+        run_async(_check_maker(made_by(LosesItsConnectionOnce()), maker))
+    run_async(_check_maker(made_by(LosesItsConnectionOnce()), maker))  # Allowed.
+
+
+def test_an_approved_command_whose_maker_rule_lost_its_connection_runs_again(
+    client: TestClient,  # noqa: F811 - the fixture.
+) -> None:
+    """The first run is tried again, and the second runs the command."""
+    guard(
+        "tests.ruled",
+        ruled,
+        unit_of_work=object,
+        policies=[Policy("tests.ruled", permission=HOLDS)],
+        maker_rule=LosesItsConnectionOnce(),
+        domain="alpha",
+    )
+    maker = person("maker")
+    person("holder", HOLDS)
+    made = submitted("tests.ruled", Ruled(note="x"), maker)
+    shown = {"id": str(made.id), "fingerprint": made.fingerprint}
+    LosesItsConnectionOnce.failures[:] = [ConnectionResetError("reset")]
+    assert decide(client, shown, token_for("holder")).json()["status"] == "approved"
+
+    drained = run_async(drain(delayed=True))
+
+    assert len(drained.failures) == 1  # The first run, tried again.
+    assert stored(made.id).status is RequestStatus.EXECUTED
+
+
+def test_a_domain_error_of_a_maker_rule_fails_the_run_with_its_code(
+    client: TestClient,  # noqa: F811 - the fixture.
+) -> None:
+    """As in 2.8: the rule's own refusal names why, not ``maker_not_allowed``."""
+    guard(
+        "tests.ruled",
+        ruled,
+        unit_of_work=object,
+        policies=[Policy("tests.ruled", permission=HOLDS)],
+        maker_rule=RefusesInItsOwnWords(),
+        domain="alpha",
+    )
+    maker = person("maker")
+    person("holder", HOLDS)
+    made = submitted("tests.ruled", Ruled(note="x"), maker)
+    shown = {"id": str(made.id), "fingerprint": made.fingerprint}
+    assert decide(client, shown, token_for("holder")).json()["status"] == "approved"
+
+    with pytest.raises(Suspended):
+        run_async(_check_maker(made_by(RefusesInItsOwnWords()), str(maker)))
+    drained = run_async(drain())
+
+    done = stored(made.id)
+    assert drained.failures == []
+    assert (done.status, done.reason) == (RequestStatus.FAILED, "suspended")
+
+
+@pytest.mark.parametrize(
+    ("rule", "raised"),
+    [(LosesItsConnectionOnce(), True), (RefusesInItsOwnWords(), False)],
+)
+def test_whom_to_tell_is_not_guessed_while_a_rule_cannot_answer(
+    client: TestClient,  # noqa: F811 - the fixture.
+    rule: BasePermission,
+    raised: bool,
+) -> None:
+    """A transient error goes up; a domain error leaves the user out."""
+    guard(
+        "tests.ruled",
+        ruled,
+        unit_of_work=object,
+        policies=[Policy("tests.by_rule", approver_rule=rule)],
+        domain="alpha",
+    )
+    maker = person("maker")
+    person("staffer", is_staff=True)
+    made = submitted("tests.ruled", Ruled(note="x"), maker)
+    LosesItsConnectionOnce.failures[:] = [ConnectionAbortedError("aborted")]
+
+    if raised:
+        with pytest.raises(ConnectionAbortedError):
+            run_async(approvers_of(made))
+        assert [user.username for user in run_async(approvers_of(made))] == ["staffer"]
+    else:
+        assert run_async(approvers_of(made)) == []

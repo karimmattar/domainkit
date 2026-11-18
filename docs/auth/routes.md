@@ -179,8 +179,24 @@ no client. It has the method and path it is given, no headers, query,
 cookies, or session data, no credentials (`request.auth` is None, so
 `scopes_of(request)` is None), and a `request.state` that no other call
 sees. A rule reads it as it reads a request. A rule that needs what only
-a request carries, such as a header or a step-up, refuses there. Code of
-your own that asks a rule outside a request makes one per call:
+a request carries, such as a header or a step-up, refuses there.
+
+When such a rule raises, approvals tells three kinds of error apart:
+
+- A transient one: a timeout, a connection refused or lost, `ServiceBusy`,
+  or a database that is busy or out of reach
+  (`domainkit.http.errors.transient`, *new in 2.9*). It goes up, and the
+  run is tried again, as any run that meets one is; `approvers_of` raises
+  it.
+- A `DomainError` of a maker rule. The approved request fails with the
+  error's own code, as in 2.8. An approver rule's leaves the user out.
+- Any other error, a mistake in the rule. It refuses, and is logged as a
+  warning by the rule's class and the error's, never the error's text:
+  the request fails with `maker_not_allowed`, once, and `approvers_of`
+  leaves the user out.
+
+Code of your own that asks a rule outside a request makes one context
+per call:
 
 ```python
 from domainkit.http.access import OfflineContext

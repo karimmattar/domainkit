@@ -56,6 +56,7 @@ from domainkit.ddd import Command, ConcurrentUpdate, Criteria, DomainError, F, S
 from domainkit.ddd.tenancy import all_tenants, current_tenant, tenant_alone
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import BasePermission, OfflineContext
+from domainkit.http.errors import transient
 from domainkit.log import ThrottledLog
 from domainkit.money import MoneyError
 
@@ -865,12 +866,16 @@ async def _check_maker(guard: Guard, maker: str) -> None:
     with no credentials (``OfflineContext``): a rule about the submitting
     request itself (its scopes, a step-up) was checked when the request
     was submitted, and one that needs such credentials refuses here, as
-    does one that raises (``_allows``). A maker that names
-    no user (a principal of the project's own) is left to the project.
+    does one that raises an error of its own (``_allows``). A
+    ``DomainError`` it raises fails the run with its code, as in 2.8, and
+    a transient error is raised for the run to be tried again. A maker
+    that names no user (a principal of the project's own) is left to the
+    project.
 
     Raises:
         MakerNotAllowed: The user is gone, inactive, lacks the permission,
             or fails the maker rule.
+        DomainError: The maker rule raised one.
     """
     if not registry.is_installed(AUTH):
         return
@@ -885,25 +890,35 @@ async def _check_maker(guard: Guard, maker: str) -> None:
     with guard.checking():  # A guard of rows of no tenant: no role counts.
         allowed = user is not None and (
             (guard.permission is None or await has_perm(user, guard.permission))
-            and (rule is None or await _allows(rule, user))
+            and (rule is None or await _allows(rule, user, raised=(DomainError,)))
         )
     if not allowed:
         raise MakerNotAllowed("Whoever submitted this command may no longer make it.")
 
 
-async def _allows(rule: BasePermission, user: Any) -> bool:  # noqa: ANN401 - a user.
+async def _allows(
+    rule: BasePermission,
+    user: Any,  # noqa: ANN401 - a user.
+    *,
+    raised: tuple[type[Exception], ...] = (),
+) -> bool:
     """Whether ``rule`` allows ``user`` on a call of their own, outside any request.
 
     Each is asked on a new ``OfflineContext``, so what one call keeps in
-    its ``state`` no other sees. A rule that raises refuses, and is logged
-    by its class and the error's, never the error's text: a run it would
-    fail is not tried again for it, nor is a list of approvers lost.
+    its ``state`` no other sees. A transient error (``transient``: a
+    timeout, a connection lost, a database busy or out of reach) and the
+    errors of ``raised`` go up, for the caller to try again or to answer.
+    A rule that raises any other refuses, and is logged by its class and
+    the error's, never the error's text: a run it would fail is not tried
+    again for it, nor is a list of approvers lost.
     """
     try:
         return await rule.has_permission(
             OfflineContext(user, method="POST", path=f"/{EXECUTE}"), user
         )
-    except Exception as exc:  # noqa: BLE001 - logged; the rule refuses.
+    except Exception as exc:
+        if transient(exc) or isinstance(exc, raised):
+            raise
         name = type(rule).__qualname__
         rule_log.warning(
             "rule_raised",
@@ -923,7 +938,8 @@ async def approvers_of(request: ApprovalRequest) -> list[Any]:
     a group of theirs, and superusers), the members of its group, or the
     superusers and staff its approver rule lets through, asked about the
     user alone, on a call without credentials (``OfflineContext``); a rule
-    that raises lets no one through, and is logged. Never its
+    that raises leaves the user out, and is logged, but for a transient
+    error, which is raised. Never its
     maker, a party to its command, or someone who decided it already. A
     permission only a backend of the project's grants is not looked for:
     such holders are not found (user report P3). They are asked as the

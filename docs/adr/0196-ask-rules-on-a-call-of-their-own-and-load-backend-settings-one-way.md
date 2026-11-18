@@ -109,11 +109,23 @@ How others do it:
   request (a task, a command) makes one per call.
 - Approvals asks a guard's `maker_rule` and a policy's `approver_rule` on
   a new `OfflineContext` each time, as `POST /domainkit.approvals.execute`.
-  A rule that raises refuses: the maker may not make the command
-  (`maker_not_allowed`, the request fails once, and the run is not tried
-  again), and the user is not an approver. It is logged as a warning by
-  the rule's class and the error's, never the error's text, a line per
-  rule a while (`ThrottledLog`).
+  What a rule raises is told apart:
+  - A transient error goes up, so the run is tried again as before, and
+    `approvers_of` raises it: a rule that could not answer has not
+    refused, and an approved command is not lost to a blip.
+    `domainkit.http.errors.transient` says which: `OSError` (timeouts and
+    lost connections among them), `ServiceBusy`, and what
+    `database_refusal` already answers with 503 (a pool out of
+    connections, a statement cancelled or lost to another transaction, a
+    server out of reach or a connection SQLAlchemy invalidated). It reuses
+    that classification rather than keeping a second list.
+  - A maker rule's `DomainError` fails the request with its own code, as in
+    2.8: it is the rule's answer, not a mistake.
+  - Any other error is a mistake in the rule, and refuses: the maker may
+    not make the command (`maker_not_allowed`, the request fails once),
+    and the user is not an approver. It is logged as a warning by the
+    rule's class and the error's, never the error's text, a line per rule
+    a while (`ThrottledLog`).
 
 ### Settings that name backend classes
 
@@ -130,18 +142,32 @@ How others do it:
   setting names, kept while the settings object is the one loaded, as
   `registry.settings` keeps app settings, and made again under a lock so
   loops on several threads get the same ones. `load(value)` makes them
-  for a value that is not the setting's, for checks.
+  for a value that is not the setting's, for checks. It lives beside the
+  settings, not in `domainkit.utils` as the audit proposed: `utils` is
+  the bottom layer (ADR 0188) and cannot read the settings object whose
+  lifetime the instances follow; the import and the check, which need no
+  settings, stay in `utils`.
 - `RATE_LIMIT_BACKEND` is `domainkit.http.ratelimit.rate_limit_backend`.
   Its `Backend` protocol is `runtime_checkable`: the class must have
   `hit`. Each counter keeps its own backend, made with `create()` where
   it was made before: once per application for the global limit and for
   throttles, once per middleware for refused credentials, once per
   application for auth's attempts, and once per worker for task rates.
+  Not one per settings object, as for auth's classes: a backend holds
+  counts, and one `MemoryBackend` shared by every counter would let a
+  flood of new addresses on the global limit push login attempts out of
+  it, and would count two applications of one process, or a project's
+  tests under one settings object, together.
 - `Settings` refuses a `RATE_LIMIT_BACKEND` of no form that could load
   (`BACKEND_PATH`). `check` and the application's start refuse one that
   does not import, or names a class without `hit` (`backends.E001`):
   staging and production do not start, and elsewhere it is logged, and
-  the first request is refused with what is wrong.
+  the first request is refused with what is wrong. The class is not
+  imported when the settings load: the default one lives in
+  `domainkit.http.ratelimit`, so every process, every command, and every
+  `override_settings` would import the HTTP stack, which neither loading
+  the settings nor `setup()` does, and the settings would load the
+  serving layer.
 - `AUTH.BACKENDS`, `AUTH.PASSWORD_HASHERS`, `AUTH.AUTHENTICATION_CLASSES`,
   and `AUTH.PASSWORD_VALIDATORS` use handlers: they take names that
   packages offer, and their instances are made once per settings object
@@ -158,6 +184,10 @@ How others do it:
   offline as on a route. One that needs a request (a header, a step-up)
   refuses there, as the docs said; one with a mistake refuses and is
   logged, and no longer dead-letters the run or breaks `approvers_of`.
+  One that meets a timeout or a database out of reach is tried again, as
+  before, and one that refuses with a `DomainError` names its code, as
+  before. A mistake that raises an `OSError` (a file not found) is taken
+  for a transient error and tried again until it is dead-lettered.
 - A rule meant for both places can say so by annotating `RuleContext`.
   The built-in rules keep their annotations, so a project's subclass of
   one passes its type check as before.

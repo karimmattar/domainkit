@@ -29,8 +29,8 @@ catalogs.
 ``APIError`` and ``FieldError`` are defined in ``domainkit.http.problems``,
 which the infrastructure layer may import (since 2.8, ADR 0182); this module
 re-exports them, and ``DomainkitError``, as 2.7's did. Its ``__all__`` lists
-the names ``domainkit.http`` takes from it, and the two problems (since 2.9):
-the rest is the framework's own.
+the names ``domainkit.http`` takes from it, the two problems, and
+``transient`` (since 2.9): the rest is the framework's own.
 """
 
 import re
@@ -84,6 +84,7 @@ __all__ = [
     "FieldError",
     "error_response",
     "error_responses",
+    "transient",
 ]
 
 STATUS_CODES: Final[tuple[tuple[type[DomainError], int], ...]] = (
@@ -468,6 +469,24 @@ def database_refusal(exc: BaseException) -> APIError | None:
             code="invalid_value",
         )
     return None
+
+
+def transient(exc: BaseException) -> bool:
+    """Whether ``exc`` says that what the work needs cannot serve now: try later.
+
+    A timeout or another error of the operating system (a connection
+    refused or lost), ``ServiceBusy``, or a database that is busy or out
+    of reach: what ``database_refusal`` answers with 503, a connection
+    SQLAlchemy found invalidated among them. Work that ran into one is
+    tried again; any other error is the work's own (since 2.9, ADR 0196).
+    """
+    if isinstance(exc, OSError | ServiceBusy):  # TimeoutError is an OSError.
+        return True
+    refusal = database_refusal(exc)
+    return (
+        refusal is not None
+        and refusal.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    )
 
 
 def unreachable(exc: BaseException) -> bool:

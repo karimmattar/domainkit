@@ -126,6 +126,7 @@ One error format for every failure, and the mapping from domain errors.
 - `FieldError`: One invalid part of a request; the submitted value is left out.
 - `error_response`: Build an error body that carries the request id for support cases.
 - `error_responses`: OpenAPI `responses` for the error statuses a route may answer with.
+- `transient`: Whether `exc` says that what the work needs cannot serve now: try later (New in 2.9).
 
 ## `domainkit.http.health`
 
