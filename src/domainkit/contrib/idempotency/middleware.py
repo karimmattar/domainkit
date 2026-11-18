@@ -39,12 +39,14 @@ other services from deferred tasks, not from the handler.
 Keys are scoped to the authenticated actor (set by
 ``AuthenticationMiddleware``, which must come first), and to the scopes its
 credentials are limited to, if any: a token limited to scopes never shares
-its user's keys. Without an actor, they are scoped to the client address
-and the request's credentials (the ``CREDENTIAL_HEADERS``, hashed), so
-callers behind one address never share keys where the project
-authenticates on its own with one of those headers; once an
-authentication middleware found no one in the request, those headers name
-nobody.
+its user's keys. Staff acting as a user (an impersonation) have keys apart
+for each user they act as (``domainkit.context.caller_key``), and a
+response kept for them is about that user too. Without an actor, they
+are scoped to the client address and the request's credentials (the
+``CREDENTIAL_HEADERS``, hashed), so callers behind one address never
+share keys where the project authenticates on its own with one of those
+headers; once an authentication middleware found no one in the request,
+those headers name nobody.
 A key sent with neither is answered 400 (``ANONYMOUS = "refuse"``, the
 default); ``"per-address"`` shares it with every caller behind the address.
 List the middleware after ``RequestContextMiddleware`` and
@@ -73,7 +75,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from domainkit import clock
 from domainkit.apps import registry
-from domainkit.context import current_request
+from domainkit.context import caller_key, current_request
 from domainkit.db import connections
 from domainkit.ddd.personal import SEPARATOR, subject_tag
 from domainkit.ddd.tenancy import current_tenant
@@ -324,10 +326,23 @@ class IdempotencyMiddleware:
                 return  # The client left before sending its whole body: run nothing.
             request = current_request()
             actor = request.actor if request is not None else None
+            # Staff acting as a user: their keys are apart for each user, and
+            # what they are answered is about that user too (``subjects``).
+            impersonating = request.impersonating if request is not None else None
             key_hash = _key_hash(
-                _caller_of(actor, scope, config.CREDENTIAL_HEADERS), key
+                _caller_of(
+                    caller_key(actor, impersonating) if actor else None,
+                    scope,
+                    config.CREDENTIAL_HEADERS,
+                ),
+                key,
             )
-            operation = Operation(key_hash, secrets.token_hex(16), actor=actor or None)
+            operation = Operation(
+                key_hash,
+                secrets.token_hex(16),
+                actor=actor or None,
+                subjects={impersonating} if actor and impersonating else set(),
+            )
             existing = await self._claim(config, operation, fingerprint)
             if existing is not None and not (
                 _abandoned(existing, fingerprint)
@@ -700,8 +715,10 @@ def _died_after_commit(existing: dict[str, Any]) -> bool:
 def _caller(scope: Scope, credential_headers: tuple[str, ...]) -> str:
     """Scope keys to the actor, or else to the address and the credentials."""
     request = current_request()
-    actor = request.actor if request is not None else None
-    return _caller_of(actor, scope, credential_headers)
+    if request is None or not request.actor:
+        return _caller_of(None, scope, credential_headers)
+    caller = caller_key(request.actor, request.impersonating)
+    return _caller_of(caller, scope, credential_headers)
 
 
 def _key_hash(caller: str, key: str) -> str:
@@ -719,9 +736,11 @@ def _key_hash(caller: str, key: str) -> str:
 def _caller_of(
     actor: str | None, scope: Scope, credential_headers: tuple[str, ...]
 ) -> str:
-    """``_caller``, for a request whose ``actor`` was read already.
+    """``_caller``, for a request whose actor was read already (``caller_key``).
 
-    An actor's credentials limited to scopes (``scope["auth"].scopes``) are
+    Staff acting as a user are a caller apart for each user they act as:
+    never replayed what the user, or another user, was answered. An
+    actor's credentials limited to scopes (``scope["auth"].scopes``) are
     a caller apart, one per set of scopes: the middleware replays before
     the route's rules run, so a token limited to scopes must never be
     replayed what the actor's other credentials were answered (SEC-11a-2).

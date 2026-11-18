@@ -27,13 +27,36 @@ application as audience and recipient, answer this request
 to ``FRONTEND_URL`` with a one-time ``ticket``, which the page trades
 for tokens at ``/identity/ticket``, or with an ``error`` code.
 Encrypted assertions are not read.
+
+Anyone may post to the ACS, so its response is bounded before signxml
+reads it (since 2.9): ``MAX_RESPONSE`` base64 characters, and
+``MAX_NODES`` nodes, counted on its bytes as ``domainkit.documents``
+counts a Word document's (each ``<`` twice, each ``=`` once). A DTD or
+an entity is refused before parsing, and it is read as UTF-8 only, so
+the count sees what is parsed. It is then read once for what makes
+canonicalization cost: ``MAX_DEPTH`` levels, ``MAX_DECLARATIONS``
+namespace declarations on the path to an element, of ``MAX_NAMESPACE_URI``
+characters at most, and ``MAX_ATTRIBUTES`` attributes on it, and
+``MAX_SIGNED_INFO`` elements and
+``MAX_SIGNED_INFO_BYTES`` bytes in a ``SignedInfo``. It is
+parsed in a thread of its own, which ends with it and takes with it the
+names lxml keeps for the thread, never on the event loop's; ``PARSES``
+at most at once on a loop, the others waiting ``SLOT_WAIT`` seconds at
+most.
 """
 
+import asyncio
 import base64
+import contextlib
+import contextvars
+import io
 import logging
+import re
+import threading
 import zlib
+from collections.abc import Callable
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Form, Request, Response, status
@@ -42,6 +65,7 @@ from fastapi.responses import RedirectResponse
 from domainkit.contrib.auth.integration import utc_now
 from domainkit.exceptions import DomainkitError
 from domainkit.http.access import Public
+from domainkit.utils.loops import PerLoop
 
 from .binding import COOKIE, TICKET_SEPARATOR, binding, bound
 from .exceptions import EmailTaken, NoAccount, UnknownProvider
@@ -67,6 +91,48 @@ EMAIL_FORMAT: Final = "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress"
 SKEW: Final = timedelta(seconds=60)
 MAX_RESPONSE: Final = 1_000_000
 """The largest SAMLResponse read, in base64 characters."""
+MAX_NODES: Final = 50_000
+"""The most nodes a SAMLResponse's XML may make, counted before it is parsed.
+
+A thousand group values make some 7,000."""
+MAX_DEPTH: Final = 32
+"""How deep an element may sit, the response's root at 1.
+
+Identity providers write under ten levels, an encrypted assertion's
+included."""
+MAX_DECLARATIONS: Final = 32
+"""The most namespace declarations on the path from the root to an element,
+the element's own included, a prefix declared again counted again.
+
+Identity providers write about five on a path. Okta declares ``xs`` and
+``xsi`` again on each attribute value: on siblings, each path holds them once."""
+MAX_NAMESPACE_URI: Final = 128
+"""The most characters a namespace declaration's URI may hold.
+
+SAML's and XML Signature's are under 60. Exclusive canonicalization, which
+identity providers sign with, writes a declaration again on each element
+that uses it."""
+MAX_ATTRIBUTES: Final = 32
+"""The most attributes an element may hold, its namespace declarations aside.
+
+Identity providers write up to some seven (a response's ``ID``,
+``Version``, ``IssueInstant``, ``Destination``, ``InResponseTo``)."""
+MAX_SIGNED_INFO: Final = 32
+"""The most elements a ``ds:SignedInfo`` may hold, itself included.
+
+One reference, its transforms, and their methods take some ten."""
+MAX_SIGNED_INFO_BYTES: Final = 16 * 1024
+"""The most bytes a ``ds:SignedInfo`` may take, serialized.
+
+Identity providers write under 2 KiB."""
+PARSES: Final = 4
+"""The most responses parsed at once on one event loop."""
+SLOT_WAIT: Final = 5.0
+"""How long, in seconds, a response waits for one of the ``PARSES`` slots
+before it is refused."""
+SIGNED_INFO: Final = "{http://www.w3.org/2000/09/xmldsig#}SignedInfo"
+DECLARATION: Final = re.compile(rb"<!(?:DOCTYPE|ENTITY)", re.IGNORECASE)
+"""What declares a DTD or an entity: refused before the XML is parsed."""
 NS: Final = {"samlp": PROTOCOL, "saml": ASSERTION}
 
 
@@ -142,7 +208,10 @@ async def saml_acs(
             raise AssertionRefused("an unknown, used, or expired RelayState")
         if not bound(flow.id, request.cookies.get(COOKIE)):
             raise AssertionRefused("a RelayState another browser started")
-        claims = verified_claims(config, saml_response, f"_{flow.nonce}", utc_now())
+        request_id, now = f"_{flow.nonce}", utc_now()
+        claims = await _alone(
+            lambda: verified_claims(config, saml_response, request_id, now)
+        )
         user = await account_for(provider_key(name), claims)
     except AssertionRefused as exc:
         # A configured provider's name; line breaks dropped all the same.
@@ -193,22 +262,45 @@ def verified_claims(
 ) -> Claims:
     """Who the signed assertion of ``encoded`` says logged in.
 
+    Bounded before it is parsed: ``MAX_RESPONSE`` characters, ``MAX_NODES``
+    nodes, no DTD or entity; read as UTF-8. Then bounded before signxml
+    reads it: ``MAX_DEPTH``, ``MAX_DECLARATIONS``, ``MAX_NAMESPACE_URI``,
+    ``MAX_ATTRIBUTES``, ``MAX_SIGNED_INFO`` and ``MAX_SIGNED_INFO_BYTES``
+    (``_shaped``).
+    CPU-bound, and lxml keeps each name it parses for the thread's life:
+    the ACS calls it in a thread of its own.
+
     Raises:
-        AssertionRefused: The response does not prove a login for this request.
+        AssertionRefused: The response does not prove a login for this
+            request; what lxml or signxml raise of it among them.
     """
     from lxml import etree
-    from signxml.exceptions import InvalidInput, InvalidSignature
+    from signxml.exceptions import SignXMLException
     from signxml.verifier import XMLVerifier
 
+    if len(encoded) > MAX_RESPONSE:
+        raise AssertionRefused(f"a SAMLResponse over {MAX_RESPONSE:,} characters")
     try:
         document = base64.b64decode(encoded, validate=True)
     except ValueError:
         raise AssertionRefused("a SAMLResponse that is not base64") from None
+    if DECLARATION.search(document):
+        raise AssertionRefused("a SAMLResponse that declares a DTD or an entity")
+    if 2 * document.count(b"<") + document.count(b"=") > MAX_NODES:
+        raise AssertionRefused(f"a SAMLResponse of more than {MAX_NODES:,} nodes")
     try:
+        _shaped(document)
         verified = XMLVerifier().verify(
-            document, x509_cert=config.IDP_CERTIFICATE, expect_config=_expected()
+            document,
+            x509_cert=config.IDP_CERTIFICATE,
+            expect_config=_expected(),
+            # signxml's own parser, read as UTF-8 whatever the XML declares.
+            parser=etree.XMLParser(resolve_entities=False, encoding="utf-8"),
         )
-    except (InvalidSignature, InvalidInput, etree.XMLSyntaxError) as exc:
+    except (SignXMLException, etree.LxmlError, ValueError, TypeError) as exc:
+        # A schema it fails, a namespace canonicalization refuses, a value
+        # that is not base64, an empty one signxml reads as None: the
+        # response proves nothing.
         raise AssertionRefused(f"no valid signature ({type(exc).__name__})") from None
     signed = verified.signed_xml  # type: ignore[union-attr]
     if signed is None:
@@ -271,6 +363,140 @@ def _claims(
     elif name_id.get("Format") == EMAIL_FORMAT:
         email = nameid
     return Claims(subject=nameid, email=email, email_verified=email is not None)
+
+
+def _shaped(document: bytes) -> None:
+    """Refuse a response whose canonicalization would cost, before signxml runs.
+
+    Read once, as signxml's parser reads it (UTF-8, no entity): each
+    element's depth, the namespace declarations on its path, each one
+    counted, which canonicalization walks for each element, their URIs'
+    lengths, which it may write again for each, and its attributes, which
+    it sorts; in the signed part signxml canonicalizes
+    before it checks a digest as well as in a ``SignedInfo``. And each
+    ``SignedInfo``'s elements and bytes, which signxml canonicalizes
+    before it checks a signature. The declarations on a path bound the
+    namespaces in scope too.
+
+    Raises:
+        AssertionRefused: An element sits deeper than ``MAX_DEPTH``, has
+            more than ``MAX_DECLARATIONS`` on its path, one of a URI past
+            ``MAX_NAMESPACE_URI``, or ``MAX_ATTRIBUTES`` attributes; or a
+            ``SignedInfo`` more than ``MAX_SIGNED_INFO`` elements or
+            ``MAX_SIGNED_INFO_BYTES`` bytes.
+        lxml.etree.XMLSyntaxError: It is not well-formed.
+    """
+    from lxml import etree
+
+    paths = [0]  # The declarations on the path to each open element, by depth.
+    declared = 0
+    signed, opened = 0, -1  # The open SignedInfo's elements, and its depth.
+    for event, item in etree.iterparse(
+        io.BytesIO(document),
+        events=("start-ns", "start", "end"),
+        encoding="utf-8",
+        resolve_entities=False,
+        no_network=True,
+        huge_tree=False,
+    ):
+        if event == "start-ns":
+            if len(item[1]) > MAX_NAMESPACE_URI:
+                raise AssertionRefused(
+                    f"a namespace URI of more than {MAX_NAMESPACE_URI} characters"
+                )
+            declared += 1
+        elif event == "start":
+            path, declared = paths[-1] + declared, 0
+            if len(paths) > MAX_DEPTH:
+                raise AssertionRefused(f"an element deeper than {MAX_DEPTH} levels")
+            if path > MAX_DECLARATIONS:
+                raise AssertionRefused(
+                    f"more than {MAX_DECLARATIONS} namespace declarations on the "
+                    "path to an element"
+                )
+            if len(item.attrib) > MAX_ATTRIBUTES:
+                raise AssertionRefused(
+                    f"an element with more than {MAX_ATTRIBUTES} attributes"
+                )
+            paths.append(path)
+            if signed or item.tag == SIGNED_INFO:
+                opened = len(paths) - 1 if not signed else opened
+                signed += 1
+                if signed > MAX_SIGNED_INFO:
+                    raise AssertionRefused(
+                        f"a SignedInfo of more than {MAX_SIGNED_INFO} elements"
+                    )
+        else:
+            paths.pop()
+            if len(paths) == opened:  # The SignedInfo ends, read whole.
+                size = len(etree.tostring(item, with_tail=False))
+                if size > MAX_SIGNED_INFO_BYTES:
+                    raise AssertionRefused(
+                        f"a SignedInfo of more than {MAX_SIGNED_INFO_BYTES:,} bytes"
+                    )
+                signed, opened = 0, -1
+            if not signed:  # A SignedInfo's elements are kept until it ends.
+                item.clear()
+
+
+_parsing: Final[PerLoop[asyncio.Semaphore]] = PerLoop()
+"""Each loop's slots for responses parsed at once (``PARSES``)."""
+
+
+async def _alone(work: Callable[[], Claims]) -> Claims:
+    """``work()``, in a thread of its own that ends with it; ``PARSES`` at once.
+
+    lxml keeps every name a thread parses for the thread's life: on the
+    event loop's thread, each response of new names would grow it for good,
+    and block every other request while it parsed (ADR 0181 did the same
+    for Word documents). A slot is held until the thread ends, even if the
+    request is cancelled meanwhile; one not free within ``SLOT_WAIT``
+    seconds refuses the response. ``work`` runs in a copy of the context.
+
+    The thread is not a daemon: a process that exits while a response is
+    parsed waits for the parse, which the bounds keep short, rather than
+    stop it halfway through lxml's or OpenSSL's code.
+
+    Raises:
+        AssertionRefused: What ``work`` raised, raised again here; or no
+            slot was free in time.
+    """
+    loop = asyncio.get_running_loop()
+    slots = _parsing.get(lambda: asyncio.Semaphore(PARSES))
+    try:
+        async with asyncio.timeout(SLOT_WAIT):
+            await slots.acquire()
+    except TimeoutError:
+        raise AssertionRefused(
+            f"no slot free to parse it in within {SLOT_WAIT:g} seconds"
+        ) from None
+    done: asyncio.Future[Claims] = loop.create_future()
+    context = contextvars.copy_context()
+
+    def settle(result: Claims | None, error: BaseException | None) -> None:
+        slots.release()
+        if done.done():  # The request was cancelled meanwhile.
+            return
+        if error is not None:
+            done.set_exception(error)
+        else:
+            done.set_result(cast("Claims", result))
+
+    def run() -> None:
+        result, error = None, None
+        try:
+            result = context.run(work)
+        except BaseException as raised:  # noqa: BLE001 - raised again in the caller.
+            error = raised
+        with contextlib.suppress(RuntimeError):  # The loop closed meanwhile.
+            loop.call_soon_threadsafe(settle, result, error)
+
+    try:
+        threading.Thread(target=run, name="domainkit.identity.saml").start()
+    except BaseException:  # pragma: no cover - no thread could start.
+        slots.release()
+        raise
+    return await done
 
 
 def _expected() -> "SignatureConfiguration":

@@ -118,6 +118,50 @@ project that relied on 2.8's behaviour changes, and what to run.
 - **`check` names the apps whose rows every tenant shares**
   (`tenancy.I001`). It is an info: nothing to change, and
   `check --deploy` never refuses it.
+- **Staff acting as a user get answers kept for that user alone.** Under
+  an impersonation, a page cached with `vary_on_user=True` and a
+  response kept for an `Idempotency-Key` are kept for the staff member
+  acting as that user, where 2.8 kept them for the staff member, shared
+  across every user they acted as. An entry or a key made while acting
+  as a user before the upgrade misses once; a retry of a request sent
+  just before the deploy, while acting as a user, runs again. Rate
+  limits, throttles, and live connections count the staff member, as
+  before.
+- **An impersonation needs the right to change users held everywhere.**
+  Each of its requests checks the staff member's `change` permission on
+  the user model as they hold it everywhere. With `MembershipBackend`, a
+  staff member who holds it only through a role in a tenant can no
+  longer keep an impersonation going in requests served as that tenant:
+  they get `401`. Grant the permission everywhere to staff who
+  impersonate.
+- **The SAML ACS refuses a response past its bounds.** A response whose
+  XML makes more than 50,000 nodes (each `<` counts twice, each `=`
+  once), that has an element deeper than 32 levels, with more than 32
+  namespace declarations on its path (a prefix declared again counts
+  again), one of a URI past 128 characters, or more than 32 attributes,
+  or a `SignedInfo` of more than 32 elements or 16 KiB, or that is not
+  in UTF-8 (in UTF-16, or declaring Latin-1 with bytes past ASCII), gets
+  `?error=saml_refused`, where 2.8 read it. A response of a thousand
+  group values makes some 7,000 nodes; identity providers write UTF-8,
+  about five declarations on a path, namespace URIs under 60 characters,
+  fewer than ten levels, up to some seven attributes on an element, and
+  a `SignedInfo` under 2 KiB. Responses are parsed in a
+  thread of their own, at most 4 at once on an event loop; one that
+  waits more than 5 seconds for its turn is refused. A response that
+  lxml or signxml cannot read gets `saml_refused` where 2.8 answered 500.
+- **With `TYPED_LINKS = "refused"`, more typed text is refused.** A name
+  spaced out (`example . com`) or bracketed (`example (dot) com`), or
+  spelled with `dot`, or a dot and white space, before `com` (`example
+  dot com`, `example. com`, `example .com`), answers `422
+  link_not_shown`, and so do `the dot com era`, `fine . me too` and `the
+  key (dot) is broken`. Under `"shown"`, the default, nothing changes.
+- **A CSV cell that starts with an invisible character and a formula's
+  sign gets an apostrophe.** A directional mark, a soft hyphen, a control
+  or any other character that shows nothing, before `=`, `+`, `-` or
+  `@`, now counts as the spaces before them did: a phone number written
+  with a left-to-right mark before its `+`, as right-to-left pages write
+  it, is exported with an apostrophe first, as `+1 555 0100` already
+  was. Numbers stay numbers.
 
 ### `migrate` makes the user lookups' indexes, on PostgreSQL
 

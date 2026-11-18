@@ -247,6 +247,48 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   [upgrading.md](docs/upgrading.md#28-to-29), ADR 0183) (audit
   A28-SEC-04).
 
+- Staff acting as a user (an impersonation) have pages cached per user
+  (`cache_page(vary_on_user=True)`) and responses kept for an
+  `Idempotency-Key` of their own for each user they act as, apart from
+  their own and the user's. A response so kept is about the user too:
+  `privacy erase` drops it, and the user's export lists it, withheld. The
+  trail still names the staff member, and rate limits, throttles, and
+  live connections still count them (audit A28-SEC-03).
+
+- The SAML ACS bounds a response before it checks its signature: 50,000
+  nodes, counted on its bytes, no DTD or entity, 32 levels, 32 namespace
+  declarations on the path to an element, each of a URI of 128 characters
+  at most, and 32 attributes on it, and 32 elements and 16 KiB in a
+  `SignedInfo`; it reads the XML as UTF-8. It parses each response in a
+  thread of its own, which ends with it, never on the event loop's
+  thread, and at most 4 at once on a loop;
+  a response that waits more than 5 seconds for one is refused. The
+  names lxml keeps for a thread go with it, and the loop serves other
+  requests meanwhile. What lxml or signxml raise of a response refuses
+  it (`saml_refused`) (audit A28-PERF-03).
+
+- `holds_link` reads a name spaced out or bracketed as the link it
+  spells, so `TYPED_LINKS = "refused"` refuses it: `example . com`
+  (but before a capital), `example (dot) com`, `example<dot>com`,
+  `https : //`, white space and new lines around them, and, before `com`,
+  `example .com`, `example. com`, `example (.) com` and `example dot
+  com`. It reads these in the text as typed, not in the cuts a screen
+  may show. Prose whose next word is a top-level domain (`vs. net`,
+  `Done. Info sent`, `Rejected . No receipt`) holds none. The docs list
+  what it still does not read (audit A28-SEC-05).
+
+- CSV exports guard a formula behind any character that shows nothing:
+  white space, a control, a format character (a directional mark, a soft
+  hyphen, the Arabic number sign), or another default ignorable code
+  point (a variation selector, a tag). Screens, Office documents' checks,
+  and CSV cells read one definition of what shows nothing
+  (audit A28-ARCH-13).
+
+- Each request of an impersonation checks the staff member's right to
+  change users as they hold it everywhere, whatever tenant the request is
+  served as: users belong to no tenant, so a member's role in one keeps no
+  impersonation going (audit A28-SEC-04).
+
 ## [2.8.0] - 2026-11-18
 
 2.8 answers fourteen of a project's fifteen notes on 2.7 (the last,
