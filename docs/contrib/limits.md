@@ -22,6 +22,18 @@ The decision, with the proof of concept behind it, is
 [ADR 0123](../adr/0123-count-movements-against-limits-under-the-subjects-row-in-the-movements-transaction.md).
 Amounts are `domainkit.money.Money` ([money.md](../money.md)).
 
+## When to use it, and when not to
+
+- **Use it when** you bound money that moves: per payment, or the sum
+  and the number of movements in a window, per account, customer, or
+  actor. The count commits with the movement, or rolls back with it.
+- **Do not use it** to limit how many requests a caller sends: that is a
+  [rate limit](../cache.md#rate-limits-for-every-request) (`RATE_LIMIT`),
+  or a [throttle](../cache.md#throttles-for-one-route) on one route.
+  They count requests in a cache, not movements in the database.
+- **A limit bounds amounts, not people.** Who may move money is an
+  access rule; a second person's agreement is [approvals](approvals.md).
+
 ## Install
 
 ```python
@@ -437,7 +449,9 @@ router.include_router(limits, prefix="/api/limits")
 | `GET /usage?kind=holder&subject=...` | `limits.view_limit` | A subject's usage of each limit that bounds it (`currency=` and `direction=` keep to one). |
 
 Every route needs its permission, whatever authenticates requests.
-Amounts are `{"amount": "50000.00", "currency": "EGP"}`. Each usage item
+Limits belong to no tenant: with [multi-tenancy](../tenancy.md#rows-of-no-tenant),
+each permission counts only as a user holds it everywhere, never through
+a member's role in the tenant served (`403`). Amounts are `{"amount": "50000.00", "currency": "EGP"}`. Each usage item
 also says where its limit comes from: `"origin": "stored"` or
 `"settings"`. A breach answers 422 with its code wherever a counted
 movement is refused: on the ledger's `POST /entries`, or on a route of

@@ -148,7 +148,7 @@ Every repository has these methods: the port (`Repository`),
 | --- | --- |
 | `filter(query=None)` | A list of the aggregates selected, in the query's ordering. |
 | `first(query=None)` | The first one, or None. |
-| `count(criteria=None, *, include_deleted=False)` | How many meet the criteria. |
+| `count(criteria=None, *, include_deleted=False, at_most=None)` | How many meet the criteria. With `at_most` (*new in 2.9*), never more than that: a database reads no further matches, as an export does to tell whether it holds too many. |
 | `exists(criteria=None, *, include_deleted=False)` | Whether any does. |
 | `get(id_)`, `find(id_)` | One aggregate by id. `get` raises the repository's `not_found`; `find` returns None. |
 
@@ -400,6 +400,24 @@ Keyset pages stay fast on deep pages. They never skip or repeat a row
 when others are added in between. `offset` suits pages a person jumps
 to. `count` costs one more query. A use case of your own may fetch
 `limit + 1` items and call `Page.from_items(items, limit)`.
+
+What follows a position starts with a bound on the first field of the
+ordering, at the position's value: `placed_at <=` it for `-placed_at`,
+`>=` it ascending, and on a money field, its currency
+([ADR 0185](adr/0185-bound-keyset-pages-index-the-user-lookups-and-read-fewer-grants.md)).
+With an index whose first column is that field, a page deep in a list
+reads the index from the position, not from its first row. Two cases
+read more:
+
+- **Ascending on a field that may be missing.** Rows without a value sort
+  last, so they follow every position; no one range holds them and the
+  rest. Such a page reads the index from its start. Order the field
+  descending, or put a field that is never missing first.
+- **Ties on the first field.** A page reads the rows of its tie group that
+  come before the position, as the bound covers only the first field.
+- **Money first.** A money field is bounded by its currency alone, not
+  its amount: where every amount is in one currency, a page deep in an
+  ordering by money reads the index from its start, as it did before.
 
 ### Pages over HTTP
 

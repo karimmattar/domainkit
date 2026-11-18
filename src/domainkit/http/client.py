@@ -130,6 +130,7 @@ __all__ = [
     "UnsafeURL",
     "client",
     "close_all",
+    "reset_circuits",
     "stub",
 ]
 
@@ -333,6 +334,11 @@ class CircuitBreaker:
             return sum(
                 circuit.opened is not None for circuit in self._circuits.values()
             )
+
+    def reset(self) -> None:
+        """Forget every host's failures: every circuit closes (New in 2.9)."""
+        with self._lock:
+            self._circuits.clear()
 
 
 _stub: ContextVar[httpx2.AsyncBaseTransport | None] = ContextVar(
@@ -1184,6 +1190,18 @@ def every_client() -> list[HttpClient]:
 async def close_all() -> None:
     """Close every client's connections on the running event loop."""
     await close_each(every_client(), HttpClient.aclose)
+
+
+def reset_circuits() -> None:
+    """Close every client's circuits, forgetting their failures (New in 2.9).
+
+    The test plugin calls it before each test: clients shared by the
+    backends made per call (mail, text messages, push, search, identity,
+    captcha) carry no open circuit from one test to the next.
+    """
+    for each in every_client():
+        if each.breaker is not None:
+            each.breaker.reset()
 
 
 OUTCOMES: Final[tuple[tuple[type[BaseException], str], ...]] = (

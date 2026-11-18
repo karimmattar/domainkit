@@ -21,6 +21,18 @@ On this page you learn how to:
   HTTP;
 - meet the checks that staging and production run.
 
+## When to use it, and when not to
+
+- **Use it when** you must answer who did what, when, and from where,
+  for every committed change, in rows that nobody can change unseen.
+- **Do not use it** to keep a fact you may have to prove exactly as it
+  was, such as a signed consent or a verification result: record that as
+  [evidence](evidence.md), with a receipt. Do not use it as your domain's
+  data: a balance or a status belongs to an aggregate, and the trail
+  keeps people only as pseudonyms.
+- **For a record's earlier versions**, read its [history](#history), from
+  the same trail.
+
 ## Install
 
 ```python
@@ -658,7 +670,9 @@ AUDIT = {"HISTORY_FIELDS": ["account_id", "entry_id", "request_id"]}
 
 Staff read histories over HTTP, with `audit.view_history` (a permission
 that `migrate` creates for the trail's `AuditEntry` model) and
-`is_staff`, or as superusers. Mount the router next to the admin API:
+`is_staff`, or as superusers. The permission counts as they hold it
+everywhere: a member's role in the tenant served does not
+([rows of no tenant](../tenancy.md#rows-of-no-tenant)). Mount the router next to the admin API:
 
 ```python
 from domainkit.contrib.audit.api import router as audit_router

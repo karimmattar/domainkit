@@ -6,8 +6,10 @@ puts the databases back, but a ``memory://`` ledger (the one tests use for
 ``storages.reset()`` exists for it. The databases' ids start again after
 ``db``, so a later test's ``customer:1`` meets the evidence an earlier
 test recorded for its own ``customer:1``: a key written once is refused
-(``LedgerKeyExists``), and reads return another test's facts. Only a test
-whose application shuts down (a client's lifespan) closes the ledgers.
+(``LedgerKeyExists``), and reads return another test's facts. Closing the
+ledgers does not empty a memory one (since 2.9 it keeps what it holds,
+through a command, ``run_queued``, or a client's shutdown): the plugin's
+``ledgers.reset()`` before each test does.
 """
 
 import pytest

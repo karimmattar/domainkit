@@ -19,6 +19,20 @@ On this page you learn how to:
 - run workers, on the outbox alone or with a broker such as RabbitMQ;
 - inspect, retry, and cancel messages, and test code that queues them.
 
+## When to use it, and when not to
+
+- **Use it when** work must happen after a commit and must not be lost:
+  a mail, a call to another service, a reaction that may be slow or
+  fail.
+- **Do not use it** for work you can lose on a restart, such as warming
+  a cache: [`spawn` and `supervise`](../runtime.md#background-tasks-spawn-and-supervise)
+  need no table and no worker. A handler without `durable=True` runs in
+  the request's process after the commit, and is lost if the process
+  stops first ([tutorial part 4](../tutorial/4-events.md)).
+- **Delivery is at least once.** For a message that runs twice, use
+  [the inbox](#once-in-the-database-the-inbox). For an HTTP request that
+  a client sends twice, use [idempotency keys](idempotency.md).
+
 ## Install
 
 ```python
@@ -166,11 +180,12 @@ A failure is retried with exponential backoff and jitter, up to
 `max_attempts`. Then the message is dead-lettered and sent to
 `ERROR_REPORTERS`. A message whose worker died (a crash, or a kill)
 during its last attempt is dead-lettered too, as `AttemptsExhausted`: it
-is not run again after `max_attempts`.
+is not run again after `max_attempts`. Each line names the message's id,
+as `messages list` shows it and `messages retry` takes it:
 
 ```text
-task shop.flaky failed (attempt 1 of 2); retrying in 0.0s
-Dead-lettered task shop.flaky after 2 attempts
+task shop.flaky (message 0f8e2c4a-5b7d-4e1f-9a3c-6d2b8e7f1a90) failed (attempt 1 of 2); retrying in 0.0s
+Dead-lettered task shop.flaky (message 0f8e2c4a-5b7d-4e1f-9a3c-6d2b8e7f1a90) after 2 attempts
 ```
 
 A task or handler that finds the world not ready yet, such as a provider
@@ -819,7 +834,7 @@ and a full outbox drained at 950 tasks per second instead of 470.
 before the workers start; run it with an account that may configure the
 virtual host if the workers' account may not. `broker check` tells
 whether each broker answers: on RabbitMQ it opens and closes a channel,
-a round trip, as `runworker --heartbeat-file` does. In staging and production, brokers must use
+a round trip, as `runworker --ready-file` does. In staging and production, brokers must use
 `amqps://` with certificate checks, and a user other than `guest`;
 `memory://`, an in-process broker for tests and development, is refused
 there.

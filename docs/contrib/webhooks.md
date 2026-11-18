@@ -17,6 +17,18 @@ On this page you learn how to:
 - keep subscription secrets safe, and change `SECRET_KEY` without
   losing them.
 
+## When to use it, and when not to
+
+- **Use it when** another service, yours or a customer's, must learn of
+  an event: signed, sent only after the commit, and tried again until it
+  answers.
+- **Do not use it** to show changes to a browser or an app while it is
+  open: use [live events](../live.md). Do not use it to react inside
+  your own service: a [durable handler](messaging.md#durable-event-handlers)
+  needs no HTTP call and no signature.
+- **A receiver may get a delivery twice**, under the same `webhook-id`
+  ([how a delivery runs](#how-a-delivery-runs)).
+
 ## Install
 
 Install the app with messaging, which runs the deliveries, and the
@@ -131,13 +143,24 @@ followed. A failed attempt is tried again after a delay that starts at
 `RETRY_BASE_SECONDS` and doubles, with jitter, up to `RETRY_MAX_SECONDS`.
 After `MAX_ATTEMPTS`, the delivery is marked failed.
 
+A last attempt can also end without an outcome: its worker is killed,
+it runs past its time limit, or the database fails as the outcome is
+written. Its task then dies, and the delivery is marked failed all the
+same: by the attempt, if the database lets it, else by an hourly task
+of its own (`domainkit.contrib.webhooks.fail_abandoned`), which marks
+failed each pending delivery whose task no longer waits to run (dead,
+cancelled, or dropped), and logs how many. `last_error` says so, and
+`webhooks replay` sends it again. Retrying the dead task with
+`messages retry` sends nothing, and the worker logs that the delivery
+is not pending: replay the delivery instead.
+
 A delivery is in one of four states:
 
 | State | Meaning |
 | --- | --- |
 | `pending` | Waiting for its next attempt. |
 | `succeeded` | A receiver answered 2xx. |
-| `failed` | Every attempt failed, the URL was refused, or no key decrypts the secret. |
+| `failed` | Every attempt failed, the URL was refused, no key decrypts the secret, or the last attempt ended without an outcome. |
 | `cancelled` | The subscription was deleted or made inactive, or the people the delivery was about were erased. |
 
 Delivery is at least once. A receiver must accept the same delivery

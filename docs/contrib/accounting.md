@@ -24,6 +24,18 @@ The decisions are ADRs
 and [0117](../adr/0117-reconcile-statements-through-a-port-with-rules-in-order-and-record-breaks.md).
 Amounts are `domainkit.money.Money` (ADR 0115, [money.md](../money.md)).
 
+## When to use it, and when not to
+
+- **Use it when** money must balance and be reported: customers'
+  wallets, a payment service, a lender. It gives entries that always
+  balance, holds, periods that close, a trial balance, and the
+  reconciliation of a bank's statements.
+- **Do not use it** for a balance with a rule or two and no reports, such
+  as credits in an app: a `Money` field on the aggregate, as in
+  [the payment recipe](../recipes/payments.md), is less to run.
+- **Its books are on one database**, never a shard group: an entry's
+  accounts commit together ([install](#install)).
+
 ## Install
 
 ```python
@@ -656,6 +668,12 @@ which list every account's balance and every posting of the period, so
 grant it as you would grant `view_account` and `view_entry` together. To
 show people their own accounts, serve them from routes of your own,
 filtered by `holder`.
+
+The ledger belongs to no tenant. With
+[multi-tenancy](../tenancy.md#rows-of-no-tenant), each permission counts
+only as a user holds it everywhere, never through a member's role in the
+tenant served (`403`), and approvals' guards of postings, captures, and
+reversals count their makers' and approvers' keys the same way.
 
 ## From the command line
 

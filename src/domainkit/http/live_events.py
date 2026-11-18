@@ -42,6 +42,12 @@ names a backend (ADR 0143): then the event types a domain shares in its
 of every process, whichever committed them, the worker included.
 Without it, a client behind several replicas sees the events committed
 by the replica it is connected to (ADR 0057).
+
+Each event keeps the tenant it was committed in (``current_tenant()``),
+across processes too, and reaches only the connections served as that
+tenant: one committed as no tenant reaches those served as none. A
+subscription with ``per_tenant=False`` hears every tenant's, its rule
+alone deciding (ADR 0183).
 """
 
 import asyncio
@@ -52,6 +58,7 @@ import uuid
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass
 from functools import cache
 from typing import Any, Final, Protocol
 from weakref import WeakKeyDictionary
@@ -69,6 +76,7 @@ from domainkit.db.uow import MESSAGING
 from domainkit.ddd import DomainEvent, EventBus, event_bus
 from domainkit.ddd.events import inherits_actor
 from domainkit.ddd.personal import personal_fields
+from domainkit.ddd.tenancy import check_tenant_id, current_tenant
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.access import check_scopes_bounded, current_user
 from domainkit.http.live import TOO_SLOW, Closed, Closure, live_routes, send_queue
@@ -141,14 +149,33 @@ def payload(event: DomainEvent) -> dict[str, Any]:
     return data
 
 
+@dataclass(frozen=True, slots=True)
+class _Tenancy:
+    """Whose events a subscription hears: one tenant's (None: no tenant's), or all."""
+
+    tenant: str | None
+    every: bool = False
+
+    def hears(self, tenant: str | None) -> bool:
+        """Whether an event committed in ``tenant`` reaches the subscription."""
+        return self.every or tenant == self.tenant
+
+
+def _tenancy(per_tenant: bool) -> _Tenancy:
+    """Whose events a subscription made now hears: the tenant served, or all."""
+    return _Tenancy(current_tenant(), every=not per_tenant)
+
+
 class _Subscriber:
     """One connection's subscription: bounded buffers, read in its own task.
 
-    Events of the subscribed types wait in ``intake`` until the reader asks
-    for the next one; it then checks all that came against the rule, and
-    keeps those allowed in ``allowed``. Too slow is judged on what the
-    connection may see: more than ``size`` allowed events waiting. The
-    intake has a bound of its own, ``INTAKE_FACTOR`` times larger.
+    Events of the subscribed types, committed in the tenant it hears, wait
+    in ``intake`` until the reader asks for the next one; it then checks
+    all that came against the rule, and keeps those allowed in
+    ``allowed``. Too slow is judged on what the connection may see: more
+    than ``size`` allowed events waiting. The intake has a bound of its
+    own, ``INTAKE_FACTOR`` times larger. Another tenant's events never
+    reach it, so they never count against it.
     """
 
     def __init__(
@@ -156,11 +183,16 @@ class _Subscriber:
         connection: HTTPConnection,
         types: tuple[type[DomainEvent], ...],
         rule: EventRule,
+        tenancy: _Tenancy,
     ) -> None:
-        """Buffer ``connection``'s events of ``types`` that ``rule`` may allow."""
+        """Buffer ``connection``'s events of ``types`` that ``rule`` may allow.
+
+        Only those committed in a tenant ``tenancy`` hears.
+        """
         self.connection = connection
         self.types = types
         self.rule = rule
+        self.tenancy = tenancy
         self.size = send_queue(connection.scope)
         """Allowed events that may wait for the reader; one more is too slow."""
         self.intake_size = self.size * INTAKE_FACTOR
@@ -174,9 +206,12 @@ class _Subscriber:
         """Whether the intake was full, so events were lost unchecked."""
         self.ready = asyncio.Event()
 
-    def offer(self, event: DomainEvent) -> None:
-        """Take ``event`` in if it is of a subscribed type, in the subscriber's loop."""
-        if not isinstance(event, self.types):
+    def offer(self, event: DomainEvent, tenant: str | None) -> None:
+        """Take ``event``, committed in ``tenant``, in if it is the subscriber's.
+
+        Of a subscribed type, and of a tenant it hears; in its loop.
+        """
+        if not isinstance(event, self.types) or not self.tenancy.hears(tenant):
             return
         if asyncio.get_running_loop() is self.loop:
             self._put(event)
@@ -292,25 +327,38 @@ class LiveEvents:
     async def publish(self, event: DomainEvent) -> None:
         """Offer a committed event to every subscriber; never waits, never fails.
 
-        It then yields to the event loop once, so subscribers in this loop
-        take each event of a commit as it comes, not all of them at once.
+        The event is the tenant's being served (``current_tenant()``): the
+        commit publishes it in its own context. It then yields to the event
+        loop once, so subscribers in this loop take each event of a commit
+        as it comes, not all of them at once.
         """
-        if self._offer(event):
+        if self._offer(event, current_tenant()):
             await asyncio.sleep(0)
 
     def _offer(
-        self, event: DomainEvent, loop: asyncio.AbstractEventLoop | None = None
+        self,
+        event: DomainEvent,
+        tenant: str | None,
+        loop: asyncio.AbstractEventLoop | None = None,
     ) -> bool:
-        """Offer ``event`` to the subscribers (of ``loop``); whether there were any."""
+        """Offer ``event`` of ``tenant`` to the subscribers (of ``loop``).
+
+        Whether there were any.
+        """
         with self._lock:
             subscribers = tuple(self._subscribers)
         for subscriber in subscribers:
             if loop is None or subscriber.loop is loop:
-                subscriber.offer(event)
+                subscriber.offer(event, tenant)
         return bool(subscribers)
 
     async def _send_out(self, event: DomainEvent) -> None:
-        """Hand a committed shared event to the loop's sender (``LIVE_FANOUT``)."""
+        """Hand a committed shared event to the loop's sender (``LIVE_FANOUT``).
+
+        The message names the tenant the event was committed in (``n``),
+        where one is served, so the other processes hand it to that
+        tenant's subscribers alone.
+        """
         event_type = type(event)
         key = _key(event_type)
         if self._shared.get(key) is not event_type:
@@ -320,9 +368,10 @@ class LiveEvents:
         if fanout is None:
             return
         data = _adapter(event_type).dump_python(event, mode="json")
-        message = json.dumps(
-            {"o": self.origin, "t": key, "d": data}, separators=(",", ":")
-        )
+        sent: dict[str, object] = {"o": self.origin, "t": key, "d": data}
+        if (tenant := current_tenant()) is not None:
+            sent["n"] = tenant
+        message = json.dumps(sent, separators=(",", ":"))
         senders = self._senders.setdefault(asyncio.get_running_loop(), {})
         sender = senders.get(config)
         if sender is None:
@@ -358,13 +407,18 @@ class LiveEvents:
             )
 
     def _heard(self, message: str, loop: asyncio.AbstractEventLoop) -> None:
-        """Offer an event another process sent to ``loop``'s subscribers."""
+        """Offer an event another process sent to ``loop``'s subscribers.
+
+        To those of the tenant it names (``n``); a message that names none,
+        as a process of 2.8.0 sends, is of no tenant.
+        """
         try:
             sent = json.loads(message)
             if sent.get("o") == self.origin:
                 return  # Its subscribers had it when it committed.
             event_type = self._shared[sent["t"]]
             event = _adapter(event_type).validate_python(sent["d"])
+            tenant = _tenant_of(sent)
         except (
             ValueError,
             KeyError,
@@ -379,7 +433,7 @@ class LiveEvents:
                 exc,
             )
             return
-        self._offer(event, loop)
+        self._offer(event, tenant, loop)
 
     @asynccontextmanager
     async def subscribe(
@@ -387,12 +441,16 @@ class LiveEvents:
         connection: HTTPConnection,
         *types: type[DomainEvent],
         rule: EventRule,
+        per_tenant: bool = True,
     ) -> AsyncIterator[AsyncIterator[DomainEvent]]:
         """The events of ``types`` that ``rule`` lets ``connection`` see.
 
         ``async with live_events.subscribe(websocket, OrderShipped,
         rule=IsCustomer()) as events: async for event in events: ...``.
-        Events committed while the block runs are heard; none before.
+        Events committed while the block runs are heard; none before. Only
+        those committed in the tenant served now are (None: as no tenant),
+        unless ``per_tenant=False``: then every tenant's, ``rule`` alone
+        deciding.
 
         Raises:
             ImproperlyConfigured: No types, or no ``AuthenticationMiddleware``.
@@ -402,7 +460,7 @@ class LiveEvents:
         """
         _check(connection, types)
         await check_scopes_bounded(connection)
-        subscriber = _Subscriber(connection, types, rule)
+        subscriber = _Subscriber(connection, types, rule, _tenancy(per_tenant))
         with self._lock:
             # Hear the bus, once: it ignores repeats. Not just at the first
             # subscription, as a bus may be cleared (tests restore theirs).
@@ -422,13 +480,16 @@ class LiveEvents:
         rule: EventRule,
         render: Render = payload,
         retry: int | None = None,
+        per_tenant: bool = True,
     ) -> EventSourceResponse:
         """An event stream of the events of ``types`` that ``rule`` allows.
 
         Each is an event named after its type, with its ``event_id`` as the
         id and ``render(event)`` as JSON data. Clients that reconnect miss
         what was committed meanwhile; a route that must not lose events
-        replays them from ``last_event_id(request)`` first.
+        replays them from ``last_event_id(request)`` first. Only events
+        committed in the tenant the route serves are sent, unless
+        ``per_tenant=False`` (``subscribe``).
 
         Raises:
             ImproperlyConfigured: No types, or no ``AuthenticationMiddleware``.
@@ -439,7 +500,7 @@ class LiveEvents:
         _check(request, types)
         current_user(request)  # Scoped credentials, before the 200 is sent.
         return EventSourceResponse(
-            self._server_sent(request, types, rule, render), retry=retry
+            self._server_sent(request, types, rule, render, per_tenant), retry=retry
         )
 
     async def _server_sent(
@@ -448,9 +509,16 @@ class LiveEvents:
         types: tuple[type[DomainEvent], ...],
         rule: EventRule,
         render: Render,
+        per_tenant: bool,
     ) -> AsyncIterator[ServerSentEvent]:
-        """The subscription's events as Server-Sent Events."""
-        async with self.subscribe(request, *types, rule=rule) as events:
+        """The subscription's events as Server-Sent Events.
+
+        It subscribes once the body is sent, still as the route's tenant:
+        the middleware, or ``PathTenant``, serves it until the response ends.
+        """
+        async with self.subscribe(
+            request, *types, rule=rule, per_tenant=per_tenant
+        ) as events:
             async for event in events:
                 yield ServerSentEvent.json(
                     render(event), event=type(event).__name__, id=str(event.event_id)
@@ -462,19 +530,24 @@ class LiveEvents:
         *types: type[DomainEvent],
         rule: EventRule,
         render: Render = payload,
+        per_tenant: bool = True,
     ) -> None:
         """Send ``websocket`` the events of ``types`` that ``rule`` allows.
 
         It accepts the connection if the route has not, then sends each
         event as JSON (``{"event": name, "id": event_id, "data": ...}``)
         until the client leaves. What the client sends is read and dropped.
+        Only events committed in the tenant the route serves are sent,
+        unless ``per_tenant=False`` (``subscribe``).
 
         Raises:
             ImproperlyConfigured: No types, or no ``AuthenticationMiddleware``.
             PermissionDenied: Credentials limited to scopes, on a route that
                 declares no rule that checks scopes, before it accepts.
         """
-        async with self.subscribe(websocket, *types, rule=rule) as events:
+        async with self.subscribe(
+            websocket, *types, rule=rule, per_tenant=per_tenant
+        ) as events:
             if websocket.application_state is WebSocketState.CONNECTING:
                 await websocket.accept()
             closure: Closure | None = None
@@ -512,6 +585,20 @@ async def _send_all(
         except Closed as closed:
             return closed.closure
     return None
+
+
+def _tenant_of(sent: Mapping[str, object]) -> str | None:
+    """The tenant a fan-out message says its event was committed in; None for none.
+
+    Raises:
+        ValueError: It names something that is not a tenant id.
+    """
+    named = sent.get("n")
+    if named is None:
+        return None
+    if not isinstance(named, str):
+        raise ValueError("a tenant id is text")
+    return check_tenant_id(named)
 
 
 def _check(connection: HTTPConnection, types: tuple[type[DomainEvent], ...]) -> None:

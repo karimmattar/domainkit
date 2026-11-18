@@ -35,7 +35,7 @@ from domainkit.http.servers import (
     unix_socket_warnings,
 )
 from domainkit.management.base import BaseCommand, CommandError
-from domainkit.tenancy import unsaid_throttles
+from domainkit.tenancy import shared_apps, unsaid_throttles
 
 
 class Command(BaseCommand):
@@ -139,6 +139,7 @@ def _warnings(app: FastAPI) -> list[str]:
         "architecture.W001",
         map(str, layer_warnings(settings.INSTALLED_DOMAINS)),
     )
+    warnings += shared_apps()
     return warnings
 
 

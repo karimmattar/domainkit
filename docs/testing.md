@@ -151,7 +151,8 @@ a project's `conftest.py` never needs a private name:
 | The throttled logs (`domainkit.log.ThrottledLog`) have forgotten what they held back, so a test's first line is written. | `domainkit.log.reset_throttled()` |
 | The principal cache is empty: a user is read from the database again. | `domainkit.contrib.auth.principals.invalidate_all()` |
 | The admins' error reports have forgotten what went out lately, so a test's first report is sent (*new in 2.9*). | `domainkit.contrib.mail.admins.reset_reports()` |
-| Memory ledgers (`memory://` in `LEDGERS`) and memory storages are empty, as the databases' ids start again after `db`. Ledgers that hold connections (immudb's) stay open. | `ledgers.reset()`, `storages.reset()` |
+| Every outgoing HTTP client's circuits are closed: a client that mail, text messages, push, search, identity, or captcha share between calls carries no open circuit into the next test (New in 2.9). | `domainkit.http.client.reset_circuits()` |
+| Memory ledgers (`memory://` in `LEDGERS`) and memory storages are empty, as the databases' ids start again after `db`. Within the test they keep what they hold when the ledgers close: after a command, `outbox.run_queued()`, or a client's shutdown (since 2.9). Ledgers that hold connections (immudb's) stay open. | `ledgers.reset()`, `storages.reset()` |
 | The databases are refused unless the test requested them ([Database access](#database-access)). | `database_blocker` |
 
 | After each test | Through |

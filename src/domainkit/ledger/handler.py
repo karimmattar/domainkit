@@ -82,9 +82,17 @@ class LedgerHandler:
         """Close every ledger opened so far, even if one fails (it is raised).
 
         Each ledger's own ``close``: ``Ledger.close`` is the base class's,
-        which closes nothing.
+        which closes nothing. Memory ledgers are closed and kept, as a
+        server keeps what it holds when its clients go: a test reads their
+        revisions after a command, ``run_queued``, or an application's
+        shutdown closed the ledgers. ``reset`` forgets them.
         """
-        ledgers, self._ledgers = self._ledgers, {}
+        ledgers = self._ledgers
+        self._ledgers = {
+            key: ledger
+            for key, ledger in ledgers.items()
+            if isinstance(ledger, MemoryLedger)
+        }
         await close_each(ledgers.values(), lambda ledger: ledger.close())
 
 

@@ -43,7 +43,7 @@ from typing import Final
 from domainkit.apps.hooks import HookPoint
 from domainkit.ddd import BusinessRuleViolation
 from domainkit.i18n import ngettext, pgettext
-from domainkit.inspection import IGNORABLE
+from domainkit.utils.text import IGNORABLE
 
 from .repositories.authorizations import DETAIL_MAX_LENGTH, MAX_DETAILS
 from .settings import auth_settings
@@ -106,14 +106,32 @@ DOTS: Final = str.maketrans(
 the dots UTS #39 says look like one, and the middle dots, a bullet among them."""
 ZERO_DOT: Final = re.compile("(?<=[^\\W\\d_])[\u0660\u06f0](?=[^\\W\\d_])")
 """An Arabic-Indic zero, which looks like a dot, between two letters."""
+SPACED: Final = (
+    (re.compile(r"(?<=\w)\s+\.\s+(?=\w)(?![A-Z][a-z])"), "."),
+    (re.compile(r"(?<=\w)\s+\.(?=(?i:com)(?![^\W\d_]))"), "."),
+    (re.compile(r"(?<=\w)\.\s+(?=(?:com|COM)(?![^\W\d_]))"), "."),
+    (re.compile(r"(?<=\w)\s+dot\s+(?=com(?![^\W\d_]))", re.IGNORECASE), "."),
+)
+"""A name spaced out so that it is not a link and still reads as one (since
+2.9), in the text as typed, never in a cut of it: ``evil . com``, white
+space, new lines too, on both sides of the dot, but before a capital (a
+sentence: ``Rejected . No receipt``); and before ``com`` alone, ``evil
+.com``, ``evil. com`` (in lower or upper case) and ``evil dot com``. Other
+words follow a full stop, a dot, or ``dot`` in prose (``vs. net``, the
+``.NET`` service, a ``dot net`` developer, ``Done. Info sent``)."""
 DEFANGED: Final = (
-    (re.compile(r" {0,3}[\[{] {0,3}(?:\.|dot) {0,3}[\]}] {0,3}"), "."),
-    (re.compile(r"(?<=\w)\((?:\.|dot)\)(?=\w)"), "."),
-    (re.compile(r" {0,3}[\[{] {0,3}at {0,3}[\]}] {0,3}|(?<=\w)\(at\)(?=\w)"), "@"),
-    (re.compile(r"[\[({] {0,3}: {0,3}[\])}]"), ":"),
+    (re.compile(r"\s*[\[{<]\s*(?:\.|dot)\s*[\]}>]\s*"), "."),
+    (re.compile(r"(?<=\w)\((?:\.|dot)\)(?=\w)|\s*\(\s*dot\s*\)\s*"), "."),
+    (re.compile(r"\s*\(\s*\.\s*\)\s*(?=com(?![^\W\d_]))"), "."),
+    (re.compile(r"\s*[\[{<]\s*at\s*[\]}>]\s*|(?<=\w)\(at\)(?=\w)"), "@"),
+    (re.compile(r"[\[({]\s*:\s*[\])}]"), ":"),
+    (re.compile(r"\s*:\s*/\s*/"), "://"),
 )
 """A name written so that it is not a link and still reads as one, and what
-each part stands for: ``example[.]com``, ``ann[at]example.com``, ``hxxp[:]//``."""
+each part stands for: ``example[.]com``, ``ann[at]example.com``, ``hxxp[:]//``;
+since 2.9, ``example<dot>com``, ``example (dot) com``, ``https : //``, white
+space and new lines around them, and ``example (.) com`` before ``com``
+alone (``a period (.) at the end`` is prose)."""
 SCHEME: Final = re.compile(
     r"(?<![\w+.\-])[^\W\d_][\w+.\-]*://"
     r"|(?<![^\W_])(?:tel|sms|callto):\s*\+?\(?\d"
@@ -246,10 +264,12 @@ def holds_link(text: str) -> bool:
     characters a screen draws as nothing (zero-width spaces), with the
     dots that look like one (UTS #46's label separators, ideographic and
     full-width; a one dot leader; a middle dot) and names written not to
-    be links (``example[.]com``, ``ann[at]example.com``) read as the link
-    they spell. It holds one where it holds a scheme (``https://``,
-    ``tel:``, ``mailto:``), an at sign before a letter or a digit, four
-    numbers joined by dots, a name ending in a top-level domain IANA
+    be links (``example[.]com``, ``ann[at]example.com``, ``example (dot)
+    com``) or spaced out (``example . com``, and before ``com``, ``example
+    .com``, ``example. com`` and ``example dot com``: ``SPACED``; since
+    2.9) read as the link they spell. It holds one where it holds a scheme
+    (``https://``, ``tel:``, ``mailto:``), an at sign before a letter or a
+    digit, four numbers joined by dots, a name ending in a top-level domain IANA
     lists (``evil.example.com``, ``www.anything``, the same with Cyrillic
     letters that read as Latin ones), or seven digits or more written as
     one number (``+1 555 010 0100``), but a date, an amount (with its
@@ -258,9 +278,30 @@ def holds_link(text: str) -> bool:
     when unsure, it holds one, and never an amount or a code with a plus
     sign, a bracket, or beside a word that asks for a call. ``v1.2``,
     ``Q3 report``, and ``readers`` hold none.
+
+    It is a heuristic, and a reader still takes for a link some text it
+    reads as none: a name split by spaces alone (``evil com``), ``dot``, or
+    a dot with white space on one side, before another top-level domain
+    than ``com`` (``evil dot io``, ``evil. net``), a dot spaced on both
+    sides before a capital (``evil . Com``), a number in hexadecimal
+    (``0xC0A80101``, written as error codes are), an IPv6 address, or
+    digits written as words.
+    """
+    return _holds_link(text, spaced=True)
+
+
+def _holds_link(text: str, *, spaced: bool) -> bool:
+    """``holds_link``; ``spaced=False`` reads no name spaced out (``SPACED``).
+
+    A cut of a text, or a line as shown, is read without: ``i.e.
+    company`` cut to ``i.e. com…`` is no name, and the whole text, which
+    the screen shows too, is read with.
     """
     seen = _as_read(text)
-    plain = seen.casefold()
+    plain = seen
+    for pattern, meant in SPACED if spaced else ():
+        plain = pattern.sub(meant, plain)
+    plain = plain.casefold()
     for pattern, meant in DEFANGED:
         plain = pattern.sub(meant, plain)
     return bool(
@@ -289,7 +330,9 @@ def check_typed(text: str) -> None:
     """
     shown = _printable(text)
     cuts = (shown[:end] + CUT for end in range(SHORTEST_CUT, len(shown)))
-    if _links_refused() and (holds_link(text) or any(map(holds_link, cuts))):
+    if _links_refused() and (
+        holds_link(text) or any(_holds_link(cut, spaced=False) for cut in cuts)
+    ):
         raise LinkNotShown
     _check_by_hooks(text)
 
@@ -322,7 +365,11 @@ def _check_shown(values: list[object], lines: list[tuple[str, str, int]]) -> Non
     """
     typed = {index for index, value in enumerate(values) if any(_typed_in(value))}
     shown = (text for _, text, index in lines if index in typed)
-    if typed and _links_refused() and any(map(holds_link, shown)):
+    if (
+        typed
+        and _links_refused()
+        and any(_holds_link(line, spaced=False) for line in shown)
+    ):
         raise LinkNotShown
 
 

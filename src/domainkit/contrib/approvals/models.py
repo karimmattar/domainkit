@@ -12,14 +12,17 @@ command runs once, and the request is executed, or failed.
 The request and each decision carry a ``seal``: an HMAC under a key
 derived from ``SECRET_KEY`` of what they say. The request's covers its
 id, action, fingerprint, maker, policy, approvals needed, approvers
-(permission or group), expiry, status, and run token, and is made again
-with each change of its state; a decision's covers its request, person,
-verdict, and fingerprint. Every change and every run checks the seals
-first, so a row changed or added around the application, by someone
-without the key, is neither decided nor run (``RequestTampered``). An
-approved request holds a one-time ``run_token``, which the message that
-runs it carries and the run spends, so a message queued again, or a
-status set back, runs nothing.
+(permission or group), expiry, status, run token, and tenant, where it
+has one, and is made again with each change of its state; a decision's
+covers its request, person, verdict, and fingerprint. Every change and
+every run checks the seals first, so a row changed or added around the
+application, by someone without the key, is neither decided nor run
+(``RequestTampered``). An approved request holds a one-time
+``run_token``, which the message that runs it carries and the run
+spends, so a message queued again, or a status set back, runs nothing.
+
+A request belongs to the tenant it was submitted in (``tenant_id``,
+None for none): it is read, decided, and run there alone (ADR 0183).
 """
 
 import json
@@ -53,6 +56,8 @@ MAX_PERSON: Final = 255
 """The longest action name, and the longest id of a maker or an approver."""
 MAX_REASON: Final = 500
 """The longest reason given for a rejection or a cancellation."""
+MAX_TENANT: Final = 63
+"""The longest tenant id (``domainkit.ddd.tenancy``)."""
 SEAL_SALT: Final = "domainkit.contrib.approvals.seal"
 """The purpose the seals' key is derived for."""
 
@@ -215,6 +220,9 @@ class ApprovalRequest(AggregateRoot[RequestId]):
     run_token: Annotated[str, MaxLength(64)] | None = None
     """Set when it is approved, carried by the message that runs it, spent
     by the run: a one-time key to running it."""
+    tenant_id: Annotated[str, MaxLength(MAX_TENANT)] | None = None
+    """The tenant it was submitted in; None for none (and for a request
+    stored before 2.8.1). It is read, decided, and run there alone."""
     decisions: list[Decision] = field(default_factory=list)
 
     @classmethod
@@ -229,8 +237,12 @@ class ApprovalRequest(AggregateRoot[RequestId]):
         permission: str | None,
         group: str | None,
         expires_at: datetime,
+        tenant_id: str | None = None,
     ) -> Self:
-        """A pending request for ``arguments``, sealed; records ``RequestSubmitted``."""
+        """A pending request for ``arguments``, sealed; records ``RequestSubmitted``.
+
+        ``tenant_id`` is the tenant it is submitted in; None for none.
+        """
         request_id = RequestId(uuid4())
         digest = fingerprint(action, arguments)
         request = cls(
@@ -245,6 +257,7 @@ class ApprovalRequest(AggregateRoot[RequestId]):
             permission=permission,
             group=group,
             expires_at=expires_at,
+            tenant_id=tenant_id,
         )
         request._reseal()
         request.record(
@@ -259,8 +272,12 @@ class ApprovalRequest(AggregateRoot[RequestId]):
         return request
 
     def _state(self) -> tuple[object, ...]:
-        """What its seal covers: everything but the reason and the times decided."""
-        return (
+        """What its seal covers: everything but the reason and the times decided.
+
+        Its tenant too, where it has one: a request of no tenant, as every
+        request stored before 2.8.1 is, keeps the seal it had.
+        """
+        state = (
             self.id,
             self.action,
             fingerprint(self.action, self.arguments),
@@ -273,6 +290,7 @@ class ApprovalRequest(AggregateRoot[RequestId]):
             self.status.value,
             self.run_token,
         )
+        return state if self.tenant_id is None else (*state, self.tenant_id)
 
     def _reseal(self) -> None:
         """Seal what it holds now (after a change the application made)."""
@@ -528,11 +546,15 @@ class ApprovalRequest(AggregateRoot[RequestId]):
         """Record that its approved command was refused, by the code ``error``.
 
         A request whose seal does not hold may fail too: failing is the end,
-        and runs nothing.
+        and runs nothing. Its seal is made again only if it held, as
+        ``pseudonymise`` makes it: the failed record of a request changed
+        around the application still shows the change.
         """
+        held = self.sealed()
         self.status = RequestStatus.FAILED
         self.executed_at = clock.now()
         self.reason = error
         self.run_token = None
-        self._reseal()
+        if held:
+            self._reseal()
         self.record(RequestFailed(request_id=self.id, action=self.action, error=error))

@@ -626,8 +626,8 @@ async def test_a_handler_blocked_past_its_lease_commits_once(
     assert outcomes("superseded") == superseded + 1
     assert caplog.messages == [
         (
-            f"event {row['target']} lost its lease while it ran: another worker "
-            "took it over and runs it"
+            f"event {row['target']} (message {row['id']}) lost its lease while it "
+            "ran: another worker took it over and runs it"
         )
     ]
 

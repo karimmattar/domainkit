@@ -39,9 +39,210 @@ never published), with each section below.
 ## 2.8 to 2.9
 
 2.9 follows up the audit of 2.8. Each item of this list says what a
-project that relied on 2.8's behaviour changes, and what to run. No
-migration comes with these items.
+project that relied on 2.8's behaviour changes, and what to run.
 
+- **`diffsettings` shows each domain's settings.** `AUTH`, `APPROVALS`,
+  `LIMITS`, and every other installed domain's setting print as the
+  domain's schema validated them, with its defaults, where 2.8 printed
+  `'**********'`. A script that reads the command's output sees these
+  lines, and `--all` lists a domain's setting left at its defaults with
+  `###`. What stays hidden: values typed `SecretStr` or bytes, names that
+  suggest a secret, URL passwords and `password=` pairs, and all text in
+  a mapping or a value typed `Any`. A project whose own domains declare
+  settings types each secret among them as `SecretStr`, as the
+  framework's schemas do: a secret in a field typed `str`, under a name
+  such as `ENDPOINT`, would print
+  ([diffsettings](reference/commands.md#diffsettings-show-the-settings)).
+- **The application's problems are logged one to a record.** In
+  development and tests, each problem found as the application is built
+  or starts (`security.E101`, a route without an access rule, say) is a
+  warning of its own: `The application has problems: security.E101: GET
+  /reports declares no access rule: ...`. 2.8 logged one record for them
+  all. Change a log filter or alert that matched the record of 2.8.
+  Staging and production still refuse to start, with the same
+  `CheckFailed`.
+- **`manage.py help <command>` prints the command's options**, as
+  `<command> --help` does, where 2.8 printed the list of commands.
+  `manage.py help` alone still prints the list.
+- **`createsuperuser`'s note is reworded**: "Note: no verification code
+  can be sent to the superuser (to reset its password or enroll a phone)
+  until its email address is verified: run ...". A script that matched
+  2.8's wording matches this one instead.
+- **Live events are each tenant's own** (security,
+  [ADR 0183](adr/0183-keep-live-events-and-approval-requests-to-their-tenant-and-rows-of-no-tenant-to-keys-held-everywhere.md)).
+  With `TENANCY`, an event reaches only the connections served as the
+  tenant it was committed in, and one committed as no tenant only those
+  served as none. A route only staff reach that streams every tenant's
+  events on purpose, such as a back office's, passes `per_tenant=False`
+  to `stream`, `forward`, or `subscribe`: its rule never sees an event's
+  tenant ([tenancy](tenancy.md#live-events-and-approvals)). With
+  `LIVE_FANOUT`, processes of 2.8.0 send their events without a tenant,
+  so connections served as a tenant miss them until every process is
+  upgraded. Without `TENANCY`, nothing changes.
+- **Approval requests are each tenant's own** (security). With
+  `TENANCY`, a request is listed, read, approved, rejected, and
+  cancelled where the tenant it was submitted in is served alone, and
+  its command runs in that tenant. Approvers who decided for a tenant
+  while served as another, or as none, are served as the request's
+  tenant now; code that decides across tenants does it inside
+  `all_tenants()`
+  ([Requests and tenants](contrib/approvals.md#requests-and-tenants)).
+  Requests stored by 2.8.0 have no tenant: they are read where no tenant
+  is served. Do not set their `tenant_id` by hand, which breaks their
+  seal: decide or cancel them where no tenant is served, or let them
+  expire. Before you deploy, let the worker run the requests already
+  approved: once deployed, such a request runs as no tenant.
+  `approvals.view_every_approvalrequest` shows the requests of a guard
+  `everywhere`, such as approvals' own guards of postings, superusers,
+  and admin changes, to those who hold it everywhere: grant it so to the
+  staff who read them. Without `TENANCY`, nothing changes.
+- **Limits and the ledger count the keys held everywhere** (security).
+  A key granted in the tenant served, by `MembershipBackend` or any
+  backend that grants by `current_tenant()`, does not count on the routes
+  of `domainkit.contrib.limits` or `domainkit.contrib.accounting`
+  (`403`), nor for the makers and approvers of approvals' guards of
+  postings, captures, reversals, making superusers, and admin changes.
+  Grant those keys to the staff who use them, directly or through a
+  group ([Rows of no tenant](tenancy.md#rows-of-no-tenant)). Routes of
+  your own over rows every tenant shares say `everywhere=True`, which
+  asks the permissions as where no tenant is served: it relies on a
+  backend that grants per tenant reading `current_tenant()`.
+- **Staff APIs count the keys held everywhere** (security). The admin
+  API (users, groups, permissions), the staff APIs of flags and
+  webhooks, the audit trail's history, and the admin site's models that
+  are not `TenantOwned` count a staff member's model permission, and
+  `audit.view_history`, as they hold it everywhere: a role in the tenant
+  served opens none of them (`403`). Staff who used them through a role
+  are granted the keys everywhere, directly or through a group
+  ([Rows of no tenant](tenancy.md#rows-of-no-tenant)).
+- **`check` names the apps whose rows every tenant shares**
+  (`tenancy.I001`). It is an info: nothing to change, and
+  `check --deploy` never refuses it.
+- **Staff acting as a user get answers kept for that user alone.** Under
+  an impersonation, a page cached with `vary_on_user=True` and a
+  response kept for an `Idempotency-Key` are kept for the staff member
+  acting as that user, where 2.8 kept them for the staff member, shared
+  across every user they acted as. An entry or a key made while acting
+  as a user before the upgrade misses once; a retry of a request sent
+  just before the deploy, while acting as a user, runs again. Rate
+  limits, throttles, and live connections count the staff member, as
+  before.
+- **An impersonation needs the right to change users held everywhere.**
+  Each of its requests checks the staff member's `change` permission on
+  the user model as they hold it everywhere. With `MembershipBackend`, a
+  staff member who holds it only through a role in a tenant can no
+  longer keep an impersonation going in requests served as that tenant:
+  they get `401`. Grant the permission everywhere to staff who
+  impersonate.
+- **The SAML ACS refuses a response past its bounds.** A response whose
+  XML makes more than 50,000 nodes (each `<` counts twice, each `=`
+  once), that has an element deeper than 32 levels, with more than 32
+  namespace declarations on its path (a prefix declared again counts
+  again), one of a URI past 128 characters, or more than 32 attributes,
+  or a `SignedInfo` of more than 32 elements or 16 KiB, or that is not
+  in UTF-8 (in UTF-16, or declaring Latin-1 with bytes past ASCII), gets
+  `?error=saml_refused`, where 2.8 read it. A response of a thousand
+  group values makes some 7,000 nodes; identity providers write UTF-8,
+  about five declarations on a path, namespace URIs under 60 characters,
+  fewer than ten levels, up to some seven attributes on an element, and
+  a `SignedInfo` under 2 KiB. Responses are parsed in a
+  thread of their own, at most 4 at once on an event loop; one that
+  waits more than 5 seconds for its turn is refused. A response that
+  lxml or signxml cannot read gets `saml_refused` where 2.8 answered 500.
+- **With `TYPED_LINKS = "refused"`, more typed text is refused.** A name
+  spaced out (`example . com`) or bracketed (`example (dot) com`), or
+  spelled with `dot`, or a dot and white space, before `com` (`example
+  dot com`, `example. com`, `example .com`), answers `422
+  link_not_shown`, and so do `the dot com era`, `fine . me too` and `the
+  key (dot) is broken`. Under `"shown"`, the default, nothing changes.
+- **A CSV cell that starts with an invisible character and a formula's
+  sign gets an apostrophe.** A directional mark, a soft hyphen, a control
+  or any other character that shows nothing, before `=`, `+`, `-` or
+  `@`, now counts as the spaces before them did: a phone number written
+  with a left-to-right mark before its `+`, as right-to-left pages write
+  it, is exported with an apostrophe first, as `+1 555 0100` already
+  was. Numbers stay numbers.
+- **The worker's heartbeat no longer ages while a dependency is away.**
+  `runworker --heartbeat-file` is rewritten while the worker's event
+  loop runs, whatever the broker, the databases, or the caches do, so
+  the documented health check no longer restarts workers during their
+  outage. A worker that relied on such a restart keeps running, and
+  logs each failing check. To keep the restart, run the worker with
+  `--ready-file /tmp/worker-ready`, which is removed while a check
+  fails, and point the health check at it
+  ([The worker](operations.md#the-worker)). The ready file goes after
+  one failed round of checks, where 2.8's heartbeat had to age past the
+  health check's 60 seconds: set the tolerance with the check's retries
+  (`HEALTHCHECK --retries`, or a probe's `failureThreshold`).
+- **`heartbeat.beat()` always touches its path**, then runs the checks,
+  and takes the ready file as `ready`. Code that called it to touch a
+  file only while the checks hold passes that file as `ready`, and
+  `None` as the path.
+- **Webhook deliveries whose task ended are marked failed.** The first
+  run of the new hourly task `domainkit.contrib.webhooks.fail_abandoned`
+  marks failed every delivery that 2.8 left `pending` with no task to
+  run it (the worker killed during the last attempt, the attempt past
+  its time limit, or its outcome not written), and logs how many. Send
+  them again with `webhooks replay --failed`. Retrying such a delivery's
+  dead task with `messages retry` sends nothing now, and logs so:
+  replay the delivery.
+- **Text messages, search, identity, and captcha open their circuits.**
+  After `HTTP_CLIENT.BREAKER_FAILURES` failures in a row (5), a provider
+  is not called for `BREAKER_COOLDOWN` seconds (30): text messages fail
+  with `... could not be reached (CircuitOpen).` and are retried, a
+  search raises `SearchError` at once, a login through an identity
+  provider fails at once, and a captcha check answers 503
+  `captcha_unavailable` at once, as it did after waiting. Their calls
+  and circuits are counted under the client names `notifications` (text
+  messages and push), `identity`, `captcha`, and `mail`, where they were
+  `other`: change a dashboard or an alert on `client="other"`. The test
+  plugin closes every client's circuits before each test; a test suite
+  that does not use it calls `domainkit.http.client.reset_circuits()`
+  between tests, or a circuit one test opens refuses the next one's
+  calls.
+- **The worker's log lines about a failing message name its id**, after
+  its target: `Dead-lettered task shop.flaky (message 0f8e...) after 2
+  attempts`. Change a log rule or an alert that matches the whole line.
+- **Contrib routes are renamed, and so are their operation ids.** Each
+  new name is the 2.8 name with its app's prefix, for every route
+  renamed: `accounting_` on the ledger's, `approvals_` on approvals',
+  `limits_` on limits', `webhooks_` on the webhooks admin's and owner's,
+  `flags_` on the flags admin's, `auth_admin_` on the auth admin's, and
+  `audit_` on the audit trail's history (`list_accounts` is
+  `accounting_list_accounts`, `read_history` is `audit_read_history`).
+  The routes named so already keep their names: `accounting_trial_balance`,
+  `accounting_general_ledger`, `accounting_import_statement`,
+  `accounting_reconcile`, `accounting_breaks`, `approvals_submit`,
+  `approvals_submit_authorization`, and `limits_usage`. The paths, the
+  methods, and the answers are unchanged, so a client that calls the
+  URLs changes nothing, and `openapi --diff` reports nothing. Code that
+  builds a URL with `url_path_for` and a 2.8 name uses the new name, and
+  a client generated from the OpenAPI document calls each method by its
+  new name once you generate it again. With `OPENAPI_OPERATION_IDS =
+  "fastapi"`, FastAPI's ids start with the new name too. FastAPI writes
+  an operation's summary, and the title of a response schema declared
+  inline, from the name: 50 summaries ("Delete User" is "Auth Admin
+  Delete User") and 7 titles ("Response List Flags" is "Response Flags
+  List Flags") change with them. A project's resource named `accounts`,
+  `users`, or `subscriptions` failed `check` beside the ledger, the auth
+  admin, or the webhooks admin (`openapi.E001`), and its `Location` and
+  links could name the contrib route; it clashes with none now
+  ([Operation ids](reference/responses.md#operation-ids), ADR 0192).
+- **A memory ledger keeps what it holds when the ledgers close.** In
+  tests, evidence recorded before `outbox.run_queued()`, a command, or a
+  client's shutdown is still there after it. A test that relied on the
+  close to empty a `memory://` ledger calls `ledgers.reset()`; the test
+  plugin calls it before each test, as before.
+- **An approval screen shows money as its amount and currency.** A
+  guard without `show` lists the command's arguments, and an argument
+  that is `Money` now reads `1500.00 USD`, where 2.8 showed
+  `{"amount":"1500.00","currency":"USD"}`. A test that compared a
+  screen's details compares the new text.
+- **A failed approval request keeps a seal that did not hold**
+  (security). Failing makes the seal again only if it held, so a request
+  changed around the application, then failed, still fails its seal.
+  Code that reads `sealed()` on failed requests, to report them, finds
+  these.
 - **`check` warns of web names a gateway takes through an allowed
   module** (`architecture.W001`). The infrastructure layer may import
   `domainkit.http.client` and `domainkit.http.uploads`, but from 2.9
@@ -70,6 +271,96 @@ migration comes with these items.
   `default_credentials` calls `environment_credentials` from
   `domainkit.cloud.aws`, so patch it there
   (`monkeypatch.setattr("domainkit.cloud.aws.environment_credentials", ...)`).
+
+### `migrate` makes the user lookups' indexes, on PostgreSQL
+
+Logins by address, signups, the checks for a taken address or username,
+and the admin API's list of users read the whole users table in 2.8. On
+PostgreSQL, `migrate` now makes, on the user table, a project's own too
+(`AUTH.USER_TABLE`), those of these indexes that are missing:
+
+- `ix_<table>_<EMAIL_FIELD>_lower`, on `lower()` of the `EMAIL_FIELD`
+  (`ix_domainkit_users_email_lower` on the default table);
+- `ix_<table>_<USERNAME_FIELD>_lower`, on `lower()` of the
+  `USERNAME_FIELD` (`ix_domainkit_users_username_lower`);
+- `ix_<table>_<field>_id`, on the field the admin API lists users by,
+  then the id: the first of `AUTH.IDENTIFIERS` the table does not
+  encrypt, else the `USERNAME_FIELD` (`ix_domainkit_users_email_id` where
+  addresses come first). None where that column is unique, as its own
+  index serves the order, or the table has no `id`.
+
+A column kept as anything but text, such as bytes of a type of your
+own, gets no `lower()` index; an encrypted one gets none. No
+`makemigrations`: they are not declared on the table, and revisions
+leave them alone, by name. SQLite gets none, as it cannot reflect an
+index on `lower()` ([ADR 0185](adr/0185-bound-keyset-pages-index-the-user-lookups-and-read-fewer-grants.md)).
+
+`migrate` reads the table's indexes from the catalog first, and makes
+only those missing: with none to make, it takes no lock on the table.
+Building one holds writes to the table while it runs. On a large users
+table, make them before you deploy, without holding writes, under the
+same names; `migrate` then finds them and builds none. For the default
+table, with addresses first in `AUTH.IDENTIFIERS`:
+
+```sql
+CREATE INDEX CONCURRENTLY ix_domainkit_users_email_lower ON domainkit_users (lower(email));
+CREATE INDEX CONCURRENTLY ix_domainkit_users_username_lower ON domainkit_users (lower(username));
+CREATE INDEX CONCURRENTLY ix_domainkit_users_email_id ON domainkit_users (email, id);
+```
+
+A concurrent build that fails leaves an invalid index of that name, which
+`migrate` takes as made: drop it, and build it again.
+
+### A repository that overrides `count` counts every match in an export
+
+An export now asks its repository's `count` for at most `max_export + 1`
+matches: `count(criteria, include_deleted=..., at_most=...)`. A
+repository of the project's that overrides `count` keeps working: the
+export asks it as 2.8 did, without `at_most`, and it counts every match.
+The export does not read the override's signature, since a decorator's
+need not tell the truth.
+
+To count less, leave `count` alone and override the hooks under it.
+`_count(criteria)` counts every match. `_count_at_most(criteria, limit)`
+counts no more than `limit`, and by default answers the smaller of
+`_count` and `limit`. A repository that overrides only `_count` needs
+nothing more: a count that stops is asked of it, and its answer stops
+at `at_most`.
+
+### Keyset pages, admin changes, and exports read less
+
+Nothing to change; plans and costs change.
+
+- **A keyset page starts at its position.** What follows a position
+  begins with a bound on the ordering's first field, so an index whose
+  first column is that field is read from the position. A list ordered
+  ascending by a field that may be missing still reads from the start:
+  order it descending, or put a field that is never missing first
+  ([Pages](queries.md#pages)).
+- **The admin API reads only the grants on objects that count.** A
+  backend that reads its grants from a table can answer
+  `object_grants_beyond(holder, permissions)` to leave out, in its query,
+  the grants of the permissions staff hold on whole models
+  ([Backends](auth/users.md#backends)). One that does not keeps working:
+  its `object_grants` is filtered.
+- **An export counts at most `max_export + 1` matches**
+  (`count(at_most=...)`), and flags' `GET /settings` reads its values in
+  one statement.
+
+### Make and apply approvals' migration
+
+With `domainkit.contrib.approvals` installed, the requests table
+(`domainkit_approval_requests`) gains a nullable column, `tenant_id`,
+the tenant a request was submitted in
+([ADR 0183](adr/0183-keep-live-events-and-approval-requests-to-their-tenant-and-rows-of-no-tenant-to-keys-held-everywhere.md)).
+Run `python manage.py makemigrations`, review the revision, then
+`migrate` it before the new code serves. Until then every read of the
+requests fails with a database error, so their routes and the worker's
+runs answer `500`. Requests stored before have no tenant.
+
+The same table gains an index, `ix_domainkit_approval_requests_scope`, of
+`(tenant_id, action, policy, submitted_at)`, which an approver's list
+reads through. The same `makemigrations` makes it.
 
 ## 2.7 to 2.8
 

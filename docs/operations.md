@@ -236,12 +236,10 @@ seconds), then gets `503 database_busy`.
 - [performance.md](performance.md) gives what a request costs, and how
   many cores a load needs.
 
-Each process opens up to `POOL_SIZE` + `MAX_OVERFLOW` connections to each
-network database (5 + 10 by default), and admits up to
-`MAX_CONCURRENT_REQUESTS` requests at once (1,000). Past about four
-requests per connection, requests wait for a connection where the
-shedding queue does not see them, up to `POOL_TIMEOUT`, then fail with
-503. `check` warns about both in staging and production:
+By default a pool holds 5 + 10 connections to each network database.
+Past about four requests per connection, requests wait for a connection
+where the shedding queue does not see them. `check` warns about both in
+staging and production:
 
 - `deploy.W004`: a network database without `POOL_SIZE`;
 - `deploy.W006`: a pool that holds fewer than a quarter of
@@ -398,16 +396,36 @@ or use the inbox ([messaging.md](contrib/messaging.md#once-in-the-database-the-i
   pool at least `MESSAGING.CONCURRENCY + 1` connections (`POOL_SIZE` +
   `MAX_OVERFLOW`). `check` warns about a smaller one where deployed
   (`messaging.W003`).
-- **Health.** `runworker --heartbeat-file /tmp/worker-alive` checks,
-  from the worker's own event loop, what `/ready` checks (domains,
-  databases, ledgers, caches) and the broker it consumes from, every
-  `--heartbeat-interval` seconds (15). While all hold it rewrites the
-  file; a failing check, or a stuck loop, lets it age, and it goes when
-  the worker stops. A container's health check reads its age:
+- **Health.** `runworker --heartbeat-file /tmp/worker-alive` rewrites
+  the file from the worker's own event loop every `--heartbeat-interval`
+  seconds (15), whatever its dependencies do: a stuck loop lets it age,
+  and it goes when the worker stops. A container's health check, or a
+  liveness probe, reads its age:
 
   ```dockerfile
   HEALTHCHECK --interval=30s CMD test $(( $(date +%s) - $(stat -c %Y /tmp/worker-alive) )) -lt 60
   ```
+
+  It does not age while the broker, a database, or a cache is away. A
+  restart would not bring them back, and while the broker is away the
+  relaying workers run the outbox themselves (ADR
+  [0187](adr/0187-keep-the-workers-heartbeat-to-its-liveness-fail-deliveries-whose-task-ended-and-share-provider-clients.md)).
+  It keeps a schedule of its own: no check holds it up, however long
+  `READINESS_TIMEOUT` is.
+- **Readiness.** Beside the heartbeat, every `--heartbeat-interval`, the
+  worker checks what `/ready` checks (domains, databases, ledgers,
+  caches) and the broker it consumes from. `--ready-file
+  /tmp/worker-ready` is rewritten while all hold, and removed as soon as
+  one round fails or raises, which is logged. A readiness probe
+  (`test -f /tmp/worker-ready`) or an alert reads it: a fresh heartbeat
+  without a ready file is a worker that carries on degraded, such as a
+  relay running the outbox while the broker is away. Give the probe the
+  tolerance you want with its retries (`failureThreshold`, or
+  `HEALTHCHECK --retries`). A round that never ends leaves the last
+  ready file in place, so check its age too, as the heartbeat's:
+  `test $(( $(date +%s) - $(stat -c %Y /tmp/worker-ready) )) -lt 60`. To
+  have a container restarted when a dependency fails, as before 2.9,
+  point its health check at the ready file instead.
 
   `--metrics-port` is no health signal: it answers from a thread of its
   own, however stuck the loop is.

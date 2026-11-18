@@ -86,7 +86,7 @@ code `not_authenticated`, so it knows to log in. A refused user gets
 | `IsAuthenticatedOrReadOnly` | Anyone for `GET`, `HEAD`, `OPTIONS` (`SAFE_METHODS`); users otherwise. A WebSocket handshake is a `GET`, so anyone may open one: guard sockets that take writes with `IsAuthenticated`. |
 | `IsAdminUser` | Staff users (`is_staff`), with credentials that carry no scopes. |
 | `IsSuperuser` | Active superusers, with credentials that carry no scopes. |
-| `HasPermissions(*keys)` | Users granted every permission, by any backend. |
+| `HasPermissions(*keys, everywhere=False)` | Users granted every permission, by any backend. `everywhere=True` counts only what they hold where no tenant is served: a member's role does not count ([rows of no tenant](../tenancy.md#rows-of-no-tenant)). `HasObjectPermissions` takes it too. |
 | `ModelPermissions(model)` | Django's model permissions by method (`MODEL_ACTIONS`): `GET` and `HEAD` need `view`, `POST` `add`, `PUT` and `PATCH` `change`, `DELETE` `delete`. `OPTIONS` needs a user, and a WebSocket handshake `view`. `model` is a mapped class or `"<domain>.<model>"`. |
 | `HasObjectPermissions(*keys)` | Users granted every permission on the object, by a backend with object permissions. The request itself needs an active user who logged in; check each object with `check_object_permissions`. |
 | `HasScope(*keys)` | Users whose credentials' scopes cover every key; credentials without scopes cover all. |
@@ -202,8 +202,7 @@ application starts in development and tests, and refused in staging and
 production, where the application does not start:
 
 ```text
-The application has problems:
-  security.E101: GET /reports declares no access rule: add Depends(Require(...)), or dependencies=[Public] if anyone may call it.
+The application has problems: security.E101: GET /reports declares no access rule: add Depends(Require(...)), or dependencies=[Public] if anyone may call it.
 ```
 
 The application is checked when it is built, and again when it starts
@@ -421,7 +420,11 @@ Every route needs a staff user (`is_staff`) or a superuser, with
 credentials that carry no scopes, and the model permission of its
 action: `view`, `add`, `change`, or `delete` on the user model
 (`auth.change_user`, or `accounts.change_account` for a custom user),
-`auth.*_group`, or `auth.view_permission`.
+`auth.*_group`, or `auth.view_permission`. The permission counts as the
+staff member holds it everywhere: with multi-tenancy, a member's role in
+the tenant served opens no route of the admin API, nor of the staff APIs
+of flags, webhooks, the audit trail, and the admin site
+([rows of no tenant](../tenancy.md#rows-of-no-tenant)).
 
 | Endpoint | Body | Answer |
 | --- | --- | --- |
@@ -781,7 +784,9 @@ Who may impersonate whom:
   lifetime.
 - **Checked again on every request.** Each request with the token checks
   that its staff member is still active, still staff or a superuser, and
-  still holds the `change` permission on the user model. It also checks
+  still holds the `change` permission on the user model, as they hold it
+  everywhere: a role in the tenant the request is served as counts for
+  nothing there, since users belong to no tenant (since 2.9). It also checks
   again that the staff member holds every permission the user holds, as
   when the token was issued. Deactivating or deleting the staff member,
   taking that permission away, or granting the user a permission the
@@ -807,6 +812,13 @@ What the token may do:
   and decided in one's own name only."). Otherwise one person could make
   a request and decide it, under two names.
 - **It is never refreshed.** Logging out with it ends it at once.
+- **What it is answered is kept apart.** A page cached per user
+  (`cache_page(vary_on_user=True)`) and a response kept for an
+  `Idempotency-Key` are kept for the staff member acting as that user,
+  apart from the staff member's own, the user's, and those of each other
+  user the staff member acts as (since 2.9). A kept response is about
+  the user too: erasing them drops it. Rate limits, throttles, and live
+  connections count the staff member, whomever they act as.
 
 `impersonated(request)`, in `domainkit.contrib.auth.integration`, tells a
 route of yours whether staff act as the user, and `request.auth.impersonator`

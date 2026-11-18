@@ -29,6 +29,7 @@ from .models import (
     MAX_ACTION,
     MAX_PERSON,
     MAX_REASON,
+    MAX_TENANT,
     ApprovalRequest,
     Decision,
     RequestStatus,
@@ -58,15 +59,27 @@ requests = Table(
     Column("decided_at", UTCDateTime),
     Column("executed_at", UTCDateTime),
     Column("run_token", String(64)),
+    Column("tenant_id", String(MAX_TENANT)),
     Column("version", Integer, nullable=False),
     Index("ix_domainkit_approval_requests_status", "status", "expires_at"),
     Index("ix_domainkit_approval_requests_submitted_at", "submitted_at"),
+    Index(
+        "ix_domainkit_approval_requests_scope",
+        "tenant_id",
+        "action",
+        "policy",
+        "submitted_at",
+    ),
     info=INFO,
 )
 """Commands waiting for approval, and what became of them.
 
 ``submitted_at`` is indexed for the listing's default order, newest first
-(PERF-29).
+(PERF-29). ``tenant_id`` is the tenant a request was submitted in, null
+for none (ADR 0183). ``(tenant_id, action, policy, submitted_at)`` is
+indexed for an approver's list, which reads, of the tenant served, the
+requests of each action and policy that names them, newest first
+(A28-PERF-04).
 """
 
 decisions = Table(

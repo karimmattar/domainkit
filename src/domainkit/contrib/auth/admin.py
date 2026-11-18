@@ -55,7 +55,6 @@ from pydantic import (
 )
 from sqlalchemy import exists, func, select
 
-from domainkit.db.encrypted import EncryptedType
 from domainkit.ddd import DuplicateValue, PermissionDenied
 from domainkit.ddd.query import And, F
 from domainkit.ddd.query import Selection as Listing
@@ -118,6 +117,7 @@ from .models import (
 )
 from .repositories import GroupRepository, user_search
 from .settings import auth_settings, identifier_fields
+from .tables import listing_field
 from .throttling import Attempt, Limit, attempt
 from .tokens import LoginMethod, LoginOrigin, logging_in
 from .uow import AuthUnitOfWork
@@ -145,6 +145,9 @@ NAME_FIELDS: Final = ("first_name", "last_name")
 """The fields ``/users/names`` joins into a name without ``AUTH.NAME_FIELDS``."""
 
 router = APIRouter(tags=["auth admin"])
+NAMES: Final = "auth_admin_"
+"""What every route's name starts with, and so its operation id: a project's
+resource of users or groups clashes with none of them (ADR 0192)."""
 pages = Pagination(default_limit=PAGE_SIZE, max_limit=MAX_PAGE_SIZE)
 _errors = error_responses
 """OpenAPI entries for the error statuses an endpoint returns."""
@@ -154,9 +157,14 @@ def staff_rules(model: ModelLike) -> ModelActions:
     """Staff (``is_staff``) or superusers, with the model permission of each action.
 
     Credentials limited to scopes are refused: what staff grant is bounded
-    by their permissions, never by a token's scopes.
+    by their permissions, never by a token's scopes. The permission counts
+    as the staff member holds it everywhere: users, groups, and what the
+    other staff APIs serve belong to no tenant, so a member's role in the
+    tenant served opens none of them (ADR 0183).
     """
-    return ModelActions(model, IsUnscoped(), IsAdminUser() | IsSuperuser())
+    return ModelActions(
+        model, IsUnscoped(), IsAdminUser() | IsSuperuser(), everywhere=True
+    )
 
 
 def staff(action: str, model: Callable[[], type]) -> Any:  # noqa: ANN401 - Depends.
@@ -572,11 +580,7 @@ async def user_listing(
 
 def _ordered_by(model: type[AbstractBaseUser]) -> str:
     """The first identifier that is not encrypted, else the username, as before."""
-    columns = get_user_table().c
-    for name in identifier_fields(model):
-        if not isinstance(columns[name].type, EncryptedType):
-            return name
-    return model.USERNAME_FIELD
+    return listing_field(model, get_user_table())
 
 
 async def group_listing() -> Listing:
@@ -597,12 +601,18 @@ users = ResourceRouter(
     filters=user_listing,
     pagination=pages,
     rule=staff_rules(get_user_model),
+    name_prefix=NAMES,
 )
 """``GET /users`` (``search`` matches part of an identifier; ``id`` names
 users) and ``/users/{id}``."""
 
 
-@router.get("/users/names", responses=_errors(*COMMON), dependencies=[_users("view")])
+@router.get(
+    "/users/names",
+    name="auth_admin_list_user_names",
+    responses=_errors(*COMMON),
+    dependencies=[_users("view")],
+)
 async def list_user_names(
     actor: Annotated[AnyUser, _users("view")],
     listing: Annotated[Listing, Depends(user_listing)],
@@ -635,6 +645,7 @@ groups = ResourceRouter(
     filters=group_listing,
     pagination=pages,
     rule=staff_rules(lambda: Group),
+    name_prefix=NAMES,
 )
 """``GET /groups`` (by name) and ``/groups/{id}``."""
 router.include_router(users)
@@ -643,6 +654,7 @@ router.include_router(groups)
 
 @router.post(
     "/users",
+    name="auth_admin_create_user",
     status_code=status.HTTP_201_CREATED,
     responses=_errors(*CHANGE),
     dependencies=[_user_change("add")],
@@ -676,6 +688,7 @@ async def create_user(
 
 @router.post(
     "/users/authorization",
+    name="auth_admin_ask_to_create_user",
     status_code=status.HTTP_201_CREATED,
     responses=_errors(*ASK),
     dependencies=[_users("add")],
@@ -745,6 +758,7 @@ def _created(body: AdminUserIn, change: AdminChange) -> "AdminAct":
 
 @router.patch(
     "/users/{user_id}",
+    name="auth_admin_update_user",
     responses=_errors(*CHANGE),
     dependencies=[_user_change("change")],
 )
@@ -786,6 +800,7 @@ async def update_user(
 
 @router.post(
     "/users/{user_id}/authorization/patch",
+    name="auth_admin_ask_to_update_user",
     status_code=status.HTTP_201_CREATED,
     responses=_errors(*ASK),
     dependencies=[_users("change")],
@@ -953,6 +968,7 @@ async def _updating(
 
 @router.delete(
     "/users/{user_id}",
+    name="auth_admin_delete_user",
     status_code=status.HTTP_204_NO_CONTENT,
     responses=_errors(*ONE),
     dependencies=[_user_change("delete")],
@@ -974,6 +990,7 @@ async def delete_user(
 
 @router.post(
     "/users/{user_id}/authorization/delete",
+    name="auth_admin_ask_to_delete_user",
     status_code=status.HTTP_201_CREATED,
     responses=_errors(*ASK),
     dependencies=[_users("delete")],
@@ -1006,6 +1023,7 @@ async def _changing(
 
 @router.post(
     "/users/{user_id}/password",
+    name="auth_admin_set_password",
     status_code=status.HTTP_204_NO_CONTENT,
     responses=_errors(*CHANGE, status.HTTP_429_TOO_MANY_REQUESTS),
     dependencies=[_user_change("change")],
@@ -1061,6 +1079,7 @@ async def set_password(
 
 @router.post(
     "/users/{user_id}/password/authorization",
+    name="auth_admin_ask_to_set_password",
     status_code=status.HTTP_201_CREATED,
     responses=_errors(*ASK),
     dependencies=[_users("change")],
@@ -1201,6 +1220,7 @@ def _password_act(user: AbstractBaseUser, body: AdminPasswordIn) -> "AdminAct":
 
 @router.post(
     "/users/{user_id}/logout",
+    name="auth_admin_log_out_user",
     status_code=status.HTTP_204_NO_CONTENT,
     responses=_errors(*ONE),
     dependencies=[_user_change("change")],
@@ -1220,6 +1240,7 @@ async def log_out_user(
 
 @router.post(
     "/users/{user_id}/logout/authorization",
+    name="auth_admin_ask_to_log_out_user",
     status_code=status.HTTP_201_CREATED,
     responses=_errors(*ASK),
     dependencies=[_users("change")],
@@ -1242,6 +1263,7 @@ async def ask_to_log_out_user(
 
 @router.post(
     "/users/{user_id}/impersonate",
+    name="auth_admin_impersonate",
     status_code=status.HTTP_201_CREATED,
     responses=_errors(*CHANGE),
     dependencies=[_user_change("change")],
@@ -1287,6 +1309,7 @@ async def impersonate(
 
 @router.post(
     "/users/{user_id}/impersonate/authorization",
+    name="auth_admin_ask_to_impersonate",
     status_code=status.HTTP_201_CREATED,
     responses=_errors(*ASK),
     dependencies=[_users("change")],
@@ -1342,6 +1365,7 @@ async def _impersonating(
 
 @router.put(
     "/users/{user_id}/groups",
+    name="auth_admin_set_user_groups",
     responses=_errors(*CHANGE),
     dependencies=[_user_change("change")],
 )
@@ -1363,6 +1387,7 @@ async def set_user_groups(
 
 @router.post(
     "/users/{user_id}/groups/authorization",
+    name="auth_admin_ask_to_set_user_groups",
     status_code=status.HTTP_201_CREATED,
     responses=_errors(*ASK),
     dependencies=[_users("change")],
@@ -1414,6 +1439,7 @@ async def _grouping(
 
 @router.put(
     "/users/{user_id}/permissions",
+    name="auth_admin_set_user_permissions",
     responses=_errors(*CHANGE),
     dependencies=[_user_change("change")],
 )
@@ -1435,6 +1461,7 @@ async def set_user_permissions(
 
 @router.post(
     "/users/{user_id}/permissions/authorization",
+    name="auth_admin_ask_to_set_user_permissions",
     status_code=status.HTTP_201_CREATED,
     responses=_errors(*ASK),
     dependencies=[_users("change")],
@@ -1477,6 +1504,7 @@ async def _granting(
 
 @router.post(
     "/groups",
+    name="auth_admin_create_group",
     status_code=status.HTTP_201_CREATED,
     responses=_errors(*CHANGE),
     dependencies=[_group_change("add")],
@@ -1504,6 +1532,7 @@ async def create_group(
 
 @router.post(
     "/groups/authorization",
+    name="auth_admin_ask_to_create_group",
     status_code=status.HTTP_201_CREATED,
     responses=_errors(*ASK),
     dependencies=[_groups("add")],
@@ -1537,6 +1566,7 @@ async def _creating_group(
 
 @router.patch(
     "/groups/{group_id}",
+    name="auth_admin_rename_group",
     responses=_errors(*CHANGE),
     dependencies=[_group_change("change")],
 )
@@ -1561,6 +1591,7 @@ async def rename_group(
 
 @router.post(
     "/groups/{group_id}/authorization/patch",
+    name="auth_admin_ask_to_rename_group",
     status_code=status.HTTP_201_CREATED,
     responses=_errors(*ASK),
     dependencies=[_groups("change")],
@@ -1586,6 +1617,7 @@ async def ask_to_rename_group(
 
 @router.put(
     "/groups/{group_id}/permissions",
+    name="auth_admin_set_group_permissions",
     responses=_errors(*CHANGE),
     dependencies=[_group_change("change")],
 )
@@ -1613,6 +1645,7 @@ async def set_group_permissions(
 
 @router.post(
     "/groups/{group_id}/permissions/authorization",
+    name="auth_admin_ask_to_set_group_permissions",
     status_code=status.HTTP_201_CREATED,
     responses=_errors(*ASK),
     dependencies=[_groups("change")],
@@ -1671,6 +1704,7 @@ def _granted_to(
 
 @router.delete(
     "/groups/{group_id}",
+    name="auth_admin_delete_group",
     status_code=status.HTTP_204_NO_CONTENT,
     responses=_errors(*ONE),
     dependencies=[_group_change("delete")],
@@ -1696,6 +1730,7 @@ async def delete_group(
 
 @router.post(
     "/groups/{group_id}/authorization/delete",
+    name="auth_admin_ask_to_delete_group",
     status_code=status.HTTP_201_CREATED,
     responses=_errors(*ASK),
     dependencies=[_groups("delete")],
@@ -1717,7 +1752,10 @@ async def ask_to_delete_group(
 
 
 @router.get(
-    "/permissions", responses=_errors(*COMMON), dependencies=[_permissions("view")]
+    "/permissions",
+    name="auth_admin_list_permissions",
+    responses=_errors(*COMMON),
+    dependencies=[_permissions("view")],
 )
 async def list_permissions(
     actor: Annotated[AnyUser, _permissions("view")],
@@ -1958,7 +1996,7 @@ async def may_change(actor: AnyUser, user: AbstractBaseUser) -> None:
         )
     refusal = "You can only change users whose permissions you have"
     await may_grant(actor, granted | _keys(*user.groups), refusal)
-    await may_hold(actor, await object_grants(user), refusal)
+    await may_hold(actor, await _grants_that_count(actor, user), refusal)
     await _may_change_member(actor, user, refusal)
 
 
@@ -2020,7 +2058,22 @@ async def _may_change_group(actor: AnyUser, group: Group) -> None:
     """Refuse to change a group that grants what ``actor`` lacks, on objects too."""
     refusal = "You can only change groups whose permissions you have"
     await may_grant(actor, group.permission_keys(), refusal)
-    await may_hold(actor, await object_grants(group), refusal)
+    await may_hold(actor, await _grants_that_count(actor, group), refusal)
+
+
+async def _grants_that_count(
+    actor: AnyUser, holder: AbstractBaseUser | Group
+) -> frozenset[ObjectGrant]:
+    """The grants of ``holder`` on objects that ``may_hold`` weighs for ``actor``.
+
+    Read only where they count (A28-PERF-05): for staff, but the grants of
+    the permissions they hold on whole models, left out in the query. A
+    superuser holds every grant, and while a backend does not list its
+    grants only superusers pass, so ``may_hold`` needs none then.
+    """
+    if actor.is_superuser or backends_without_object_grants():
+        return frozenset()
+    return await object_grants(holder, beyond=await get_all_permissions(actor))
 
 
 async def may_grant(

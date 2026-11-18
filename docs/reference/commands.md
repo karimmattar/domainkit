@@ -34,6 +34,11 @@ python manage.py migrate --help
 python manage.py messages list --help
 ```
 
+`python manage.py help migrate` prints the same as `migrate --help`, and
+`python manage.py help` lists the commands. `--version` prints
+domainkit's version, as `python manage.py --version` or
+`domainkit --version`. *New in 2.9.*
+
 `init` and `docs` are the commands that run before a project exists. You
 run them as `domainkit init`, or as `python -m domainkit init` where the
 `domainkit` script is not on the `PATH`.
@@ -370,17 +375,34 @@ python manage.py diffsettings --all
 | --- | --- |
 | `--all` | Prints every setting, and marks the defaults with `###`. |
 
-Secrets stay hidden, as in `repr(settings)`. So do the entries of
-free-form settings named like secrets (`password`, `token`, `key`, ...),
-and passwords in URLs. A class or function inside a setting, as in
-`LOGGING`, is shown by its dotted path.
+Each installed domain's settings (`AUTH`, `APPROVALS`, `LIMITS`, ...)
+are shown as the domain's schema validated them, with its defaults
+filled in, so you can read the values a project runs with. *Changed in
+2.9:* they were hidden whole.
+
+Secrets stay hidden:
+
+- values typed as secrets (`SecretStr`, bytes), such as connection URLs,
+  keys, and tokens;
+- settings and entries named like secrets: `password`, `secret`,
+  `token`, `key`, `credential`, `auth`, `sid`, or `pin`;
+- a URL's password, and its user when it may be a key, and
+  `password=...` pairs, as in a query or a libpq connection string;
+- in a domain's settings, all text that no type describes: in a mapping,
+  or a value typed `Any`, such as `NOTIFICATIONS["SMS_OPTIONS"]`, only
+  the keys, numbers, and booleans show. A provider's options are read by
+  the provider, so `diffsettings` cannot tell its secrets from the rest.
+
+Type the secrets of your own domains' settings as `SecretStr`, so that
+they stay hidden wherever they are read. A class or function inside a
+setting, as in `LOGGING`, is shown by its dotted path.
 
 In a new project, `python manage.py diffsettings` prints (long lines cut):
 
 ```text
 # config.settings.local: settings that differ from defaults
 ASGI_APPLICATION = 'config.asgi:application'
-AUTH = '**********'
+AUTH = {'USER_MODEL': 'domainkit.contrib.auth.models.User', 'USER_TABLE': None, 'PASSWORD_HASHERS': '**********', ...
 DATABASES = {'default': {'URL': '**********', 'MIGRATION_URL': None, ...
 DEBUG = True
 INSTALLED_DOMAINS = ['domainkit.contrib.messaging', 'domainkit.contrib.contenttypes', 'domainkit.contrib.auth']
@@ -890,8 +912,9 @@ Before 2.4 they did not start.
 | `--database` | A target or an alias whose outboxes to run (default: every database that hosts domains). |
 | `--queue` | Runs only this queue's messages; repeat it for more (default: every queue). |
 | `--no-relay` | With a broker: only consumes, and never reads the outbox. |
-| `--heartbeat-file` | Rewrites this file while the worker's checks hold, from its own event loop: `/ready`'s checks and the broker's. A container's health check reads its age; it is removed when the worker stops ([The worker](../operations.md#the-worker)). |
-| `--heartbeat-interval` | Seconds between checks for `--heartbeat-file` (default: 15; more than 0, at most 3600). |
+| `--heartbeat-file` | Rewrites this file from the worker's own event loop while it runs, whatever its checks find. A container's health check reads its age; it is removed when the worker stops ([The worker](../operations.md#the-worker)). Before 2.9 it aged while a check failed. |
+| `--ready-file` | Rewrites this file while the worker's checks hold (`/ready`'s and the broker's), and removes it when one fails: its readiness. It is removed when the worker stops. |
+| `--heartbeat-interval` | Seconds between rounds for `--heartbeat-file` and `--ready-file` (default: 15; more than 0, at most 3600). |
 
 ### `messages`: see and act on the outbox
 

@@ -4,7 +4,8 @@ domainkit comes with optional apps under `domainkit.contrib`. Each app
 adds one feature that many services need, such as an outbox, an audit
 trail, or users. You turn on only the apps you use. This page lists
 every app, the page that explains it, its setting and its tables, and
-which apps need which.
+which apps need which. [Choosing a feature](choosing.md) says which app
+a need takes, where two look alike, and when to use none.
 
 ## The apps and their guides
 

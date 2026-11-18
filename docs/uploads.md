@@ -28,6 +28,19 @@ The decisions are in
 [ADR 0167](adr/0167-check-an-upload-whole-and-let-a-resource-take-one.md) and
 [ADR 0169](adr/0169-granians-http-versions-failed-starts-fcm-dry-runs-write-once-probes-clamd-over-tls-and-dropped-files.md).
 
+## When to use it, and when not to
+
+- **Use `save_upload`**, or a resource route that takes a file, when the
+  application must check a file before it is kept: its type, its size,
+  what it holds, a virus scan.
+- **Use presigned URLs** for large files that the client sends to, or
+  fetches from, object storage itself. The file does not pass through
+  the application, so `save_upload`'s checks do not run on it.
+- **Do not keep files in the database**: store them in a
+  [`Storage`](#storages), and keep their names in your rows.
+  [Choosing a feature](choosing.md#storing-data-and-files) compares the
+  ways in.
+
 ## A first example
 
 A route that accepts a PDF or an image of up to 2 MB, and stores it:

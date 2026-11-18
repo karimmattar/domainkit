@@ -181,6 +181,21 @@ fails, and names the variable, when one is missing.
   graceful timeout (`SERVE["GRACEFUL_TIMEOUT"]`, 10 seconds) plus
   `SHUTDOWN_TIMEOUT` (15), and 45 seconds for workers
   ([Running the web processes](operations.md#running-the-web-processes)).
+- [ ] **A stopping process serves until the load balancer lets it go.**
+  On `SIGTERM` the server stops taking connections at once, while the
+  load balancer may send it requests for a few seconds more, which then
+  get `502` or a refused connection. On Kubernetes, wait in a `preStop`
+  hook before `SIGTERM` comes, and count the wait in the grace period
+  ([Requests fail during a rollout](runbook.md#requests-fail-during-a-rollout)):
+
+  ```yaml
+  terminationGracePeriodSeconds: 35  # the wait, 10 + 15 to stop, and room
+  containers:
+    - name: web
+      lifecycle:
+        preStop:
+          sleep: {seconds: 5}  # Kubernetes 1.30 or later; else exec "sleep 5"
+  ```
 - [ ] **Roll forward, not back.** To undo a schema change, write a new
   revision. A downgrade in staging and production needs
   `--allow-data-loss`, and is recorded in the audit trail before it runs

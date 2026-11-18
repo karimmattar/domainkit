@@ -48,6 +48,7 @@ from domainkit.http.live_events import (
     LiveEvents,
     _send_all,
     _Subscriber,
+    _Tenancy,
     live_events,
     payload,
 )
@@ -171,7 +172,7 @@ async def test_both_halves_of_a_rule_must_allow(
     me = Someone()
     rule = Choosy(request_allowed, event_allowed)
     request = connection(me)
-    subscriber = _Subscriber(request, (DomainEvent,), rule)
+    subscriber = _Subscriber(request, (DomainEvent,), rule, _Tenancy(None))
     event = granted(me.id)
 
     allowed = await subscriber._allowed(event)
@@ -490,7 +491,7 @@ def test_subscribers_of_a_closed_loop_are_skipped() -> None:
     hub = LiveEvents(EventBus())
 
     async def make() -> _Subscriber:
-        return _Subscriber(connection(), (DomainEvent,), AllowAny())
+        return _Subscriber(connection(), (DomainEvent,), AllowAny(), _Tenancy(None))
 
     stale = asyncio.run(make())
     hub._subscribers.add(stale)
@@ -513,9 +514,12 @@ class Hub(LiveEvents):
         connection: HTTPConnection,
         *types: type[DomainEvent],
         rule: EventRule,
+        per_tenant: bool = True,
     ) -> AsyncIterator[AsyncIterator[DomainEvent]]:
         """Subscribe, then say so."""
-        async with super().subscribe(connection, *types, rule=rule) as events:
+        async with super().subscribe(
+            connection, *types, rule=rule, per_tenant=per_tenant
+        ) as events:
             self.subscribed.set()
             yield events
 

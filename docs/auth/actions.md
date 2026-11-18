@@ -21,6 +21,16 @@ On this page you learn how to:
 - confirm another way, from an app of your own;
 - authorize an act in a test.
 
+## When to use it, and when not to
+
+- **Use it when** the user confirms one act, with the arguments shown,
+  once: ending a membership, closing an account, deciding a request.
+- **Do not use it** when any guarded act may go ahead for a few minutes:
+  a [step-up](step-up.md#stepping-up) asks for one code for all of them.
+  Do not use it to get another person's agreement: that is
+  [approvals](../contrib/approvals.md), whose steps an authorization can
+  guard ([held for approval](#held-for-approval)).
+
 ## A first example
 
 Declare the act: its purpose, the command its service takes, what it is
@@ -271,7 +281,17 @@ AUTH = {"ADMIN_ACTION": True, "AUTHORIZATIONS": {"TYPED_LINKS": "refused"}}
 - **`holds_link(text)`** reads text as a person reads it: full-width forms
   as their letters, characters drawn as nothing (zero-width spaces)
   dropped, the dots that look like one (`。`, `．`, a middle dot, a bullet)
-  as a dot, `example[.]com` and `ann[at]example` as what they spell. It
+  as a dot, `example[.]com` and `ann[at]example` as what they spell
+  (since 2.9 also `example (dot) com`, `example<dot>com`, `https : //`,
+  and white space or new lines around them), and since 2.9 a name spaced
+  out, in the text as typed: `example . com` (white space or new lines on
+  both sides of the dot, but before a capital, which starts a sentence:
+  `Rejected . No receipt`), and before `com` alone, `example .com`,
+  `example. com` and `example dot com`. Other words follow a full stop,
+  a dot, or `dot` in prose, and many are top-level domains (`vs. net`,
+  `the .NET service`, `a dot net developer`, `Done. Info sent`). A cut of
+  the text, which the screen may show, is read without these: `i.e.
+  company` cut to `i.e. com…` holds none. It
   finds a scheme (`https://`, `tel:`, `mailto:`), an at sign before a
   letter or a digit, an IP address, a name ending in a top-level domain
   IANA lists or one kept for special use (`evil.example`, also with
@@ -294,8 +314,19 @@ AUTH = {"ADMIN_ACTION": True, "AUTHORIZATIONS": {"TYPED_LINKS": "refused"}}
   `01310-100`), seven digits or more alone or beside a currency
   (`build 1234567`, `EUR 1250000`), digits in threes by dots or spaces
   with no cents (`1.234.567`, `612 345 678`: numbers to call in Spain), a
-  code with a run of seven digits (`JIRA-1234567`), and an amount in a
-  text that asks for a call.
+  code with a run of seven digits (`JIRA-1234567`), an amount in a
+  text that asks for a call, `com` after `dot` (`the dot com era`), a
+  top-level domain in lower case after a dot spaced on both sides (`fine
+  . me too`), and one after `(dot)` (`the key (dot) is broken`).
+- **What it does not read** (it is a heuristic, not a parser): a name
+  split by spaces alone (`evil com`); another top-level domain than
+  `com` after `dot`, `(.)`, or a dot with white space on one side
+  (`evil dot io`, `evil. net`); a capital after a dot spaced on both
+  sides (`evil . Com`); a number in hexadecimal (`0xC0A80101`, which a
+  browser takes as an address, but which error codes are written as); an
+  IPv6 address; and digits written as words. Where typed text must never
+  carry a hint of a place to go, check it in `on_typed_text` your own
+  way, or do not show it.
 - **`on_typed_text`** runs a project's own check on each typed text, as
   typed, whatever the setting: raise to refuse the act. One text may be
   checked more than once (at a twin's two screens, then at the act), so a

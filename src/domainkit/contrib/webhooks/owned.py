@@ -140,7 +140,11 @@ def owned_router(  # noqa: C901, PLR0915
         found = await uow.subscriptions.get(SubscriptionId(subscription_id))
         return _owned(found, me)
 
-    @routes.get("/subscriptions", responses=error_responses(*COMMON, 422))
+    @routes.get(
+        "/subscriptions",
+        name="webhooks_list_own_subscriptions",
+        responses=error_responses(*COMMON, 422),
+    )
     async def list_own_subscriptions(
         me: Owner, limit: PageSize = 50, offset: Offset = 0
     ) -> list[SubscriptionOut]:
@@ -151,6 +155,7 @@ def owned_router(  # noqa: C901, PLR0915
 
     @routes.post(
         "/subscriptions",
+        name="webhooks_create_own_subscription",
         status_code=status.HTTP_201_CREATED,
         responses=error_responses(*CHANGE),
     )
@@ -183,7 +188,11 @@ def owned_router(  # noqa: C901, PLR0915
             **SubscriptionOut.of(subscription).model_dump(), secret=secret
         )
 
-    @routes.get("/subscriptions/{subscription_id}", responses=error_responses(*ONE))
+    @routes.get(
+        "/subscriptions/{subscription_id}",
+        name="webhooks_read_own_subscription",
+        responses=error_responses(*ONE),
+    )
     async def read_own_subscription(
         subscription_id: UUID, me: Owner
     ) -> SubscriptionOut:
@@ -192,7 +201,9 @@ def owned_router(  # noqa: C901, PLR0915
             return SubscriptionOut.of(await mine(uow, subscription_id, me))
 
     @routes.patch(
-        "/subscriptions/{subscription_id}", responses=error_responses(*CHANGE)
+        "/subscriptions/{subscription_id}",
+        name="webhooks_update_own_subscription",
+        responses=error_responses(*CHANGE),
     )
     async def update_own_subscription(
         subscription_id: UUID, body: SubscriptionPatch, me: Owner
@@ -213,6 +224,7 @@ def owned_router(  # noqa: C901, PLR0915
 
     @routes.post(
         "/subscriptions/{subscription_id}/rotate-secret",
+        name="webhooks_rotate_own_secret",
         responses=error_responses(*CHANGE),
     )
     async def rotate_own_secret(
@@ -233,6 +245,7 @@ def owned_router(  # noqa: C901, PLR0915
 
     @routes.delete(
         "/subscriptions/{subscription_id}",
+        name="webhooks_delete_own_subscription",
         status_code=status.HTTP_204_NO_CONTENT,
         responses=error_responses(*ONE),
     )
@@ -246,6 +259,7 @@ def owned_router(  # noqa: C901, PLR0915
 
     @routes.get(
         "/subscriptions/{subscription_id}/deliveries",
+        name="webhooks_list_own_deliveries",
         responses=error_responses(*ONE, 422),
     )
     async def list_own_deliveries(

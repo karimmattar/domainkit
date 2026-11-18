@@ -278,6 +278,34 @@ LINKS: Final = (
     "evil\u2060.com",
     "evil\u00ad.com",
     "evil\ufeff.com",
+    "Call support, then open secure-login . com",
+    "verify at secure-login .com",
+    "verify at secure-login. com",
+    "secure-login dot com",
+    "write to help at secure-login dot com",
+    "evil DOT Com",
+    "evil. COM",
+    "evil . org/login",
+    "visit evil . co . uk",
+    "evil\u3000.com",
+    "evil\u00a0.\u00a0com",
+    "203 . 0 . 113 . 7",
+    "https : //evil",
+    "hxxps[:] //evil",
+    "evil<dot>com",
+    "ann <at> example",
+    "secure-login (dot) com",
+    "secure-login ( dot ) com",
+    "secure-login (.) com",
+    "help (at) secure-login (dot) com",
+    "secure-login    .    com",
+    "secure-login     dot     com",
+    "secure-login\n.\ncom",
+    "secure-login\n. com",
+    "secure-login .\ncom",
+    "secure-login dot\ncom",
+    "evil\n.com",
+    "example    [.]    com",
 )
 """Links, as written and as written to pass for something else."""
 NUMBERS: Final = (
@@ -378,6 +406,47 @@ PLAIN: Final = (
     "\u0661\u0660\u0660 \u062c\u0646\u064a\u0647",
 )
 """Reasons and names that hold no link: versions, codes, dates, amounts, files."""
+PROSE: Final = (
+    "Approved. It is fine",
+    "Checked. Me too",
+    "Done. Info sent to the team",
+    "ok. go ahead",
+    "Paid. Net 30 terms",
+    "Customer's email is missing a dot in the domain",
+    "the dot next to the name",
+    "on the dot at nine",
+    "Mr. Smith",
+    "No. 5 in the queue",
+    "wait . what",
+    "Ticket 42 . Closed",
+    "time: 10:30 // see notes",
+    "Gross vs. net amounts differ",
+    "Refund approved, i.e. company credit only",
+    "See the attached, e.g. organisation chart",
+    "Expense exceeds the limit, incl. network costs",
+    "Paid in full, approx. commission withheld",
+    "Rejected: duplicate, etc. complete the form again",
+    "Approved. compliance checked",
+    "Done. network restored",
+    "Hiring a dot net developer",
+    "Rebuild the .NET service",
+    "Attach the .zip file",
+    "Use a .app bundle",
+    "Wrong . Please resend",
+    "Total 10 . Thanks",
+    "invoice no. 5 net of tax",
+    "Approved per dept. org policy",
+    "Support case 1234 . Resolved",
+    "Rejected . No receipt",
+    "Sent to team . In review",
+    "Called customer . To follow up",
+    "Customer said yes . Me too",
+    "Please call . At home",
+    "Use a period (.) at the end",
+)
+"""Sentences whose next word, after a full stop, a dot, or ``dot``, is a
+top-level domain or starts with one (since 2.9): ``Done. Info sent``, ``vs.
+net``, ``i.e. company``, a stray space (``Rejected . No receipt``)."""
 READ_AS_LINKS: Final = (
     "notes.md",
     "Q3.report",
@@ -393,10 +462,15 @@ READ_AS_LINKS: Final = (
     "JIRA-1234567",
     "user_1234567",
     "Amount 1.250.000,00; I will call you",
+    "the dot com era",
+    "fine . me too",
+    "the key (dot) is broken",
 )
 """Text that holds no link, read as one: a top-level domain after a dot, seven
 digits or more apart by spaces, dots or hyphens, or not grouped, an amount or a
-code beside a word that asks for a call (ADR 0180's false positives)."""
+code beside a word that asks for a call (ADR 0180's false positives); ``com``
+after ``dot``, a top-level domain in lower case after a dot spaced on both
+sides, and one after ``(dot)`` (since 2.9)."""
 
 
 @pytest.mark.parametrize("text", LINKS + NUMBERS)
@@ -405,7 +479,7 @@ def test_a_link_an_address_or_a_number_is_read_as_a_person_reads_it(text: str) -
     assert holds_link(text)
 
 
-@pytest.mark.parametrize("text", PLAIN)
+@pytest.mark.parametrize("text", PLAIN + PROSE)
 def test_text_without_one_holds_no_link(text: str) -> None:
     """A version, a code touching its letters, a date, an amount, a file's name."""
     assert not holds_link(text)
@@ -444,6 +518,42 @@ def test_typed_text_with_a_link_is_refused_as_the_setting_says(
         check_typed("x.com")
     assert LinkNotShown().code == "link_not_shown"
     assert status_code_for(LinkNotShown()) == 422
+
+
+def test_a_name_spelled_out_is_refused_where_typed(use_auth: UseAuth) -> None:
+    """Spaced out, or ``dot`` for its dot, it reaches no screen (audit A28-SEC-05)."""
+    use_auth(AUTHORIZATIONS={"TYPED_LINKS": "refused"})
+    spelled = (
+        "Call support, then open secure-login . com",
+        "verify at secure-login .com",
+        "verify at secure-login. com",
+        "secure-login dot com",
+        "write to help at secure-login dot com",
+    )
+
+    for text in spelled:
+        with pytest.raises(LinkNotShown):
+            check_typed(text)
+        with pytest.raises(LinkNotShown):
+            laid_out({"Reason": Typed(text)})
+    check_typed("Approved. It is fine; info sent to the team")
+
+
+@pytest.mark.parametrize("text", PROSE)
+def test_prose_is_shown_whatever_a_screen_cuts_of_it(
+    use_auth: UseAuth, text: str
+) -> None:
+    """Cuts are read without spelled-out names: ``i.e. company`` cut to ``i.e. com…``.
+
+    ``check_typed`` checks each cut from the twentieth character, as a screen
+    may show it; the lead review found prose refused by its cuts alone. A cut
+    of a dotted name or of a number may still read as a link on its own
+    (``finance.re…``, ADR 0180), so ``PLAIN`` is not read this way.
+    """
+    use_auth(AUTHORIZATIONS={"TYPED_LINKS": "refused"})
+
+    check_typed(f"Reviewed by the desk: {text}")
+    assert laid_out({"Reason": Typed(f"Reviewed by the desk: {text}")}, whole=False)
 
 
 def test_a_project_checks_what_was_typed_its_own_way(use_auth: UseAuth) -> None:
@@ -488,7 +598,7 @@ def test_a_typed_line_is_checked_as_it_is_shown(use_auth: UseAuth) -> None:
     shown = [dict(laid_out(details, whole=False)) for details in cuts]
     use_auth(AUTHORIZATIONS={"TYPED_LINKS": "refused"})
 
-    assert not any(map(holds_link, (domain, number, first, "evil\n.com")))
+    assert not any(map(holds_link, (domain, number, first, "\n.com")))
     assert shown[0]["Reason"].endswith(" evil.co…")
     assert shown[1]["Name"].endswith(" 123…")
     assert shown[2]["Adds"].endswith(" evil.co…")
@@ -497,7 +607,7 @@ def test_a_typed_line_is_checked_as_it_is_shown(use_auth: UseAuth) -> None:
         with pytest.raises(LinkNotShown):
             laid_out(details, whole=False)
     with pytest.raises(LinkNotShown):
-        laid_out({"Reason": Typed("evil\n.com")})
+        laid_out({"Reason": Typed("\n.com")})
     assert laid_out({"Adds": (Typed("555 010"), Typed("0100"))}) == [
         ("Adds", "555 010, 0100")
     ]

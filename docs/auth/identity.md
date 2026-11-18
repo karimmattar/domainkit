@@ -166,6 +166,10 @@ Answers that hold tokens are marked `Cache-Control: no-store`.
 - **Keys and discovery documents** are kept for an hour. A key id not
   seen before reads the keys again, once, so a provider's key rotation
   never refuses a login.
+- **One client** calls every provider, so its connections are reused,
+  and a provider that fails `HTTP_CLIENT.BREAKER_FAILURES` times in a
+  row is not called for `BREAKER_COOLDOWN` seconds: its logins fail at
+  once meanwhile.
 
 ### Where a login ends
 
@@ -289,6 +293,47 @@ What the ACS believes:
   format is an email address. A SAML email counts as verified for
   `SIGNUP`.
 - **Encrypted assertions are not read.**
+
+Anyone may post to the ACS, so what it reads is bounded before the
+signature is checked (since 2.9):
+
+- At most 1,000,000 base64 characters, and 50,000 nodes, counted on the
+  XML's bytes as a Word document's are ([The XML parsed](../documents.md#the-xml-parsed)):
+  each `<` twice, each `=` once. A response of a thousand group values
+  makes some 7,000.
+- A DTD or an entity is refused before parsing. The XML is read as UTF-8,
+  with a byte order mark or not, whatever it declares, so the count sees
+  what is parsed: a response not in UTF-8 is refused.
+- Then it is read once more, for what checking a signature costs: an
+  element sits at most 32 levels deep, has at most 32 namespace
+  declarations on its path from the root (a prefix declared again counts
+  again; Okta declares `xs` and `xsi` again on each attribute value, but
+  on siblings, so each path holds them once), each of a URI of 128
+  characters at most, and 32 attributes (namespace declarations aside).
+  A `SignedInfo` holds at most 32 elements and 16 KiB. Identity
+  providers write fewer than ten levels, an encrypted assertion's
+  included, about five declarations on a path, namespace URIs under 60
+  characters, up to some seven attributes on an element, and a
+  `SignedInfo` of some ten elements, under 2 KiB.
+- Each response is parsed in a thread of its own, which ends with it,
+  never on the event loop's. lxml keeps every name a thread parses for
+  as long as the thread lives; the names go with the thread. At most 4
+  are parsed at once on a loop. A response that finds none of them free
+  within 5 seconds is refused.
+- Within these bounds, the whole check of XML written to cost the most
+  (the bytes counted, both readings, and signxml up to its refusal) took
+  up to 50 ms and 15 MiB for a response no one signed. For one the
+  provider signed and that was then changed, whose signed part signxml
+  canonicalizes before its digest refuses it, the costliest shapes took
+  up to 275 ms, most of their runs 150 to 230 ms, and up to 46 MiB over
+  what the process held before, with inclusive or exclusive
+  canonicalization (measured on a shared machine at a load average near
+  8).
+  The thread is not a daemon: a worker that exits while a response is
+  parsed waits for that long, rather than stop the parse halfway.
+
+A response past these bounds gets `?error=saml_refused`, as one that
+does not hold, and so does one that lxml or signxml cannot read.
 
 SAML logs in; it does not link. Its identities are kept under the
 provider name `saml:<name>`.
