@@ -38,7 +38,7 @@ from its `CACHES` entry, whose `URL` is the store's to read.
 
 SQLite calls block, so they run in a thread. Times come from the
 framework's clock, in wall time (the file outlives the process), which
-tests can freeze:
+tests can freeze. Make a new file, `src/config/cache.py`:
 
 ```python title="src/config/cache.py (new file)"
 """A cache in a SQLite file: entries outlive the process."""
@@ -198,7 +198,7 @@ class SqliteStore(Store):
 ### Step 3: name it as the default cache
 
 `BACKEND` makes the store, and the `URL` says where its file is, with a
-scheme of its own:
+scheme of its own. Add it to `src/config/settings/base.py`:
 
 ```python title="src/config/settings/base.py"
 CACHES = {
@@ -215,7 +215,8 @@ now keeps its entries in `cache.sqlite3`.
 ### Step 4: test the store
 
 The test points the cache at a file of its own. It checks what `Cache`
-asks of a store: values, expiry, counters, and keys added only once:
+asks of a store: values, expiry, counters, and keys added only once.
+Make a new file, `tests/test_cache_store.py`:
 
 ```python title="tests/test_cache_store.py (new file)"
 """The cache keeps values in the file, until they expire."""

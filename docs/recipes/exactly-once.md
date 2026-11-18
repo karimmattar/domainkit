@@ -24,7 +24,9 @@ here is run as written by `domainkit_tests/test_recipes.py`.
 
 ### Step 1: make an account to credit
 
-Make a project with an `accounts` domain:
+Make a project with an `accounts` domain. It is layered (`--minimal` is
+a small layered domain), so the task gets a layer of its own,
+`infrastructure`, apart from the rules:
 
 ```bash
 domainkit init ledgerAPI ledger
@@ -32,7 +34,8 @@ cd ledger
 python manage.py startdomain accounts --aggregate Account --minimal
 ```
 
-Give the account a balance, and a method that credits it:
+In `src/domains/accounts/domain/model.py`, give the account a balance,
+and a method that credits it:
 
 ```python title="src/domains/accounts/domain/model.py"
 from decimal import Decimal
@@ -53,7 +56,8 @@ class Account:
 
 The task opens a [unit of work](../learning.md#words) on the database, so
 it lives in the `infrastructure` layer. `@task` registers it with the
-worker; `@inbox` makes its commit happen once per message:
+worker; `@inbox` makes its commit happen once per message. Make a new
+file, `src/domains/accounts/infrastructure/tasks.py`:
 
 ```python title="src/domains/accounts/infrastructure/tasks.py (new file)"
 """Background work of the accounts domain, run by the worker."""
@@ -80,7 +84,7 @@ async def credit_account(account_id: UUID, amount: Decimal) -> None:
 ### Step 3: register the task
 
 The worker finds a task by its name, once the task's module is imported.
-Import it where the domain starts:
+Import it where the domain starts, in `src/domains/accounts/apps.py`:
 
 ```python title="src/domains/accounts/apps.py"
 import domains.accounts.infrastructure.tasks  # noqa: F401 - registers the tasks.
@@ -97,7 +101,8 @@ python manage.py migrate
 
 The test makes the first run fail after its commit, as a worker that died
 there would. Then it runs the message until it is done, and checks that
-the account was credited once:
+the account was credited once. Make a new file,
+`tests/domains/accounts/test_credit.py`:
 
 ```python title="tests/domains/accounts/test_credit.py (new file)"
 """A credit runs twice and lands once."""

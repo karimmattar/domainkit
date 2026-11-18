@@ -256,8 +256,10 @@ def test_open_routes_are_logged_where_people_develop(
         app = get_asgi_application()
 
     assert application_problems(app) == OPEN
-    listed = "\n".join(f"  security.E101: {problem}" for problem in OPEN)
-    assert caplog.messages == [f"The application has problems:\n{listed}"]
+    # One record a problem, each on a line of its own (A28-DX-12).
+    assert caplog.messages == [
+        f"The application has problems: security.E101: {problem}" for problem in OPEN
+    ]
 
 
 @pytest.mark.usefixtures("open_project")
@@ -306,7 +308,7 @@ def test_routes_added_after_the_build_are_checked_as_it_starts(
         pass
 
     assert caplog.messages == [
-        f"The application has problems since it was built:\n  security.E101: {LATE}"
+        f"The application has problems since it was built: security.E101: {LATE}"
     ]
 
 
@@ -319,7 +321,7 @@ def test_applications_built_elsewhere_are_checked_whole_as_they_start(
         check_started(app_of(late_router()))
 
     assert caplog.messages == [
-        f"The application has problems since it was built:\n  security.E101: {LATE}"
+        f"The application has problems since it was built: security.E101: {LATE}"
     ]
 
 
@@ -349,7 +351,7 @@ def test_problems_found_at_the_build_are_not_logged_again(
 ) -> None:
     """Starting logs only what the build did not."""
     app = get_asgi_application()
-    assert len(caplog.messages) == 1  # The build's.
+    assert len(caplog.messages) == len(OPEN)  # The build's, one a problem.
     caplog.clear()
     with (
         caplog.at_level(logging.WARNING, logger="domainkit.http.application"),

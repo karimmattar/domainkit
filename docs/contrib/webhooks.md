@@ -17,6 +17,18 @@ On this page you learn how to:
 - keep subscription secrets safe, and change `SECRET_KEY` without
   losing them.
 
+## When to use it, and when not to
+
+- **Use it when** another service, yours or a customer's, must learn of
+  an event: signed, sent only after the commit, and tried again until it
+  answers.
+- **Do not use it** to show changes to a browser or an app while it is
+  open: use [live events](../live.md). Do not use it to react inside
+  your own service: a [durable handler](messaging.md#durable-event-handlers)
+  needs no HTTP call and no signature.
+- **A receiver may get a delivery twice**, under the same `webhook-id`
+  ([how a delivery runs](#how-a-delivery-runs)).
+
 ## Install
 
 Install the app with messaging, which runs the deliveries, and the

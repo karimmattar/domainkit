@@ -12,17 +12,50 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 
 ### Added
 
+- `--version` prints domainkit's version (`python manage.py --version`,
+  `domainkit --version`), and `help <command>` prints the command's
+  options, as `<command> --help` does
+  ([Running a command](docs/reference/commands.md#running-a-command),
+  [upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-12).
+
+- `.github/workflows/docs.yml` publishes the documentation site to GitHub
+  Pages when a release tag is pushed: whatever tag starts it, the site
+  of the newest final release, once `release.yml`'s tag checks pass that
+  release, so a tag that those checks refuse publishes nothing.
+  `release_check.py --as-pushed` judges a tag as when it was pushed. The
+  workflow's one job that writes may write to Pages alone, and it reads
+  no secret. The repository's owner turns Pages on once
+  ([One-time setup](docs/versioning.md#one-time-setup), ADR 0189)
+  (audit A28-DX-02).
+
+- [Choosing a feature](docs/choosing.md): which tool a need takes where
+  two look alike (idempotency keys or the inbox, money limits or rate
+  limits, a step-up, an authorization, or approvals, a balance field or
+  the ledger, rows, databases, or schemas per tenant), and which to
+  leave alone. Sixteen feature pages open with "When to use it, and when
+  not to", and link the tool to use instead (audit A28-DX-05).
+
+- Runbook entries for a write that ran past its deadline, a retry that
+  finds the request ran (`409 idempotency_response_unavailable`), webhook
+  deliveries that fail, codes and mail that do not arrive, and requests
+  that fail during a rollout; the request flow, request deadlines, and
+  the rollout checklist say what a deadline answer tells about a commit,
+  and how a stopping process keeps serving
+  ([Runbook](docs/runbook.md#find-the-entry)) (audit A28-REL-06).
+
 - `runworker --ready-file PATH`: the worker's readiness. Each round of
   `--heartbeat-interval` rewrites the file while `/ready`'s checks and
   the broker's hold, and removes it when one fails; it goes when the
   worker stops. A fresh heartbeat without it is a degraded worker
   ([The worker](docs/operations.md#the-worker), ADR 0187) (audit
   A28-REL-02).
+
 - `domainkit.http.client.reset_circuits()` and `CircuitBreaker.reset()`:
   close every client's circuits. The test plugin calls the first before
   each test, so a client that backends share carries no open circuit
   into the next test ([What each test starts from](docs/testing.md#what-each-test-starts-from))
   (audit A28-ARCH-02).
+
 - `unfinished_arguments(target, argument)`
   (`domainkit.contrib.messaging.admin`): a query of one argument of each
   message of a task that has not finished (pending, running, or held),
@@ -30,6 +63,34 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   whether a task still waits for one of its rows (audit A28-REL-05).
 
 ### Changed
+
+- `diffsettings` shows each installed domain's settings (`AUTH`,
+  `APPROVALS`, `LIMITS`, ...) as its schema validated them, defaults
+  filled in, and marks those left at their defaults under `--all`; 2.8
+  hid a domain's settings whole. It fails closed: values typed as
+  secrets, names that suggest one (`sid` and `pin` now among them), URL
+  passwords and `password=` pairs, and all text in a mapping or a value
+  typed `Any` (a provider's options) stay hidden
+  ([diffsettings](docs/reference/commands.md#diffsettings-show-the-settings),
+  [upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-10).
+
+- In development and tests, each problem the application finds at its
+  build or start (a route without an access rule, say) is logged as a
+  warning of its own, on one line; 2.8 logged them in one record, which
+  the log escaped onto one line with `\n` between them
+  ([upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-12).
+
+- `createsuperuser`'s note on a superuser that no code can reach says
+  "no verification code can be sent to the superuser ... until its email
+  address is verified" (audit A28-DX-12).
+
+- PyPI's "Documentation" link opens the first page, `docs/index.md`, not
+  `docs/reference.md` (audit A28-DX-02).
+
+- The site's navigation keeps the pages for those who make domainkit
+  (decisions, the style guide, the roadmap, the audits) under "Project",
+  apart from the reference; their addresses do not change. The feature
+  inventory says that it records the review of 1.5 (audit A28-DX-13).
 
 - `runworker --heartbeat-file` is the worker's liveness: its event loop
   rewrites the file every `--heartbeat-interval` seconds, on a schedule
@@ -42,6 +103,7 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   first and takes `ready`
   ([upgrading.md](docs/upgrading.md#28-to-29), ADR 0187) (audit
   A28-REL-02).
+
 - The worker's log lines about a failing message name its id, as
   `messages list` shows it and `messages retry` takes it: a retry, a dead
   letter, an outcome that could not be written, a lost lease, a message
@@ -49,6 +111,38 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   (audit A28-REL-08).
 
 ### Fixed
+
+- The tutorial and the recipes name the file each block makes or
+  changes in the text above it, which GitHub shows; a block's title, the
+  only place that named it, is shown by the site alone. `test_docs.py`
+  fails on a titled block whose file the text does not name (audit
+  A28-DX-01).
+
+- The README's quick start makes the four-file domain that `startdomain`
+  makes by default, and that the tutorial starts from, and describes
+  `--layered` and `--minimal` as they are. It counts the tutorial's six
+  parts, and says when a route answers 401, 403, or 404. The recipes
+  that make a layered domain say why (audit A28-DX-03).
+
+- The first example of [Authenticating requests](docs/auth/authentication.md#a-first-example)
+  runs in a project made by `init`: it logs in by email address, and
+  sends a host the local settings accept. `test_walkthroughs.py` runs it
+  (audit A28-DX-09).
+
+- The tutorial says that its commands need a POSIX shell, and to use WSL
+  or Git Bash on Windows
+  ([Before you start](docs/tutorial.md#before-you-start)) (audit
+  A28-DX-11).
+
+- [Free-threaded Python](docs/runtime.md#free-threaded-python) names
+  the `documents` (`fill_docx`, `placeholders`) and `saml` extras, whose
+  lxml turns the GIL back on for the rest of the process, beside
+  `immudb` (audit A28-PERF-06).
+
+- [What a request costs](docs/performance.md#what-a-request-costs) shows
+  each rung's calls, round trips, and modules as `benchmarks/budgets.toml`
+  holds them, and `test_docs.py` fails when the two differ (audit
+  A28-PERF-09).
 
 - A webhook delivery whose last attempt ends without an outcome is
   marked failed, where it stayed `pending` for good: listed by
@@ -63,6 +157,7 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   overwrites a finished delivery's outcome
   ([How a delivery runs](docs/contrib/webhooks.md#how-a-delivery-runs),
   ADR 0187) (audit A28-REL-05).
+
 - Text message providers, the search engines, identity providers, and
   captcha checks share one HTTP client each, as mail and push did, where
   each backend made per call had its own. A provider that is down opens
@@ -72,6 +167,7 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   `notifications` (text messages and push), `identity`, and `captcha`,
   and mail's as `mail`, where they were `other` (ADR 0187) (audit
   A28-ARCH-02).
+
 - A stopping relay that is still publishing to a broker that answers is
   cancelled after `HELPER_GRACE` (5 seconds), and its messages are given
   back. Only a relay running the outbox, its breaker open, waits for what
