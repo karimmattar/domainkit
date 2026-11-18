@@ -19,6 +19,11 @@ and a status.
   trail), and telling others (each transfer sent as a signed webhook
   through the outbox, and a receiver that verifies it)
   ([the tutorial](docs/tutorial.md)) (audit A28-DX-07).
+- Two recipes, walked by `domainkit_tests/test_recipes.py`:
+  organizations in the path (`PathTenant`, `TenantOwned` rows, and
+  members' permissions), and an upload with checks (a checked PDF or a
+  picture, typed by its content, of 2 MB at most)
+  ([recipes](docs/recipes.md)) (audit A28-DX-07).
 
 ### Changed
 

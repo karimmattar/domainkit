@@ -88,6 +88,8 @@ nav:
       - recipes/jwt-keys.md
       - recipes/behind-a-proxy.md
       - recipes/read-replica.md
+      - recipes/tenancy.md
+      - recipes/uploads.md
       - recipes/api-keys.md
       - recipes/permission-rules.md
       - recipes/sms-backend.md
