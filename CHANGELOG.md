@@ -24,6 +24,12 @@ and a status.
   commands over rows every tenant shares. Unset, nothing changes
   ([Rows of no tenant](docs/tenancy.md#rows-of-no-tenant), ADR 0183)
   (audit A28-SEC-04).
+- `tenancy.I001`: with `TENANCY` set, `check` names the installed apps
+  whose rows every tenant shares, `domainkit.contrib.accounting` and
+  `domainkit.contrib.limits`. It is an info, which `check --deploy` lists
+  and never refuses
+  ([Rows of no tenant](docs/tenancy.md#rows-of-no-tenant), ADR 0183)
+  (audit A28-SEC-04).
 
 ### Security
 

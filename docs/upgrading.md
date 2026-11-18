@@ -74,6 +74,9 @@ project that relied on 2.8's behaviour changes, and what to run.
   Grant those keys to the staff who use them, directly or through a
   group ([Rows of no tenant](tenancy.md#rows-of-no-tenant)). Routes of
   your own over rows every tenant shares say `everywhere=True`.
+- **`check` names the apps whose rows every tenant shares**
+  (`tenancy.I001`). It is an info: nothing to change, and
+  `check --deploy` never refuses it.
 
 ### Make and apply approvals' migration
 

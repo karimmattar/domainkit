@@ -726,6 +726,10 @@ served (`HasPermissions`, `HasObjectPermissions`, `HasModelPermission`,
 of approvals takes it too, for its makers and approvers
 ([guarding a use case](contrib/approvals.md#guarding-a-use-case)).
 
+With `TENANCY` set, `check` names the installed apps whose rows every
+tenant shares (`tenancy.I001`). It is an info: `check --deploy` lists it
+and never refuses it.
+
 ## Reading the tenant in code
 
 | Function | Answers |
