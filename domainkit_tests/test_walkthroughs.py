@@ -474,8 +474,13 @@ def test_part_5_tests_the_rules_and_passes_the_production_checks(
 
 
 AUTHENTICATION = ROOT / "docs" / "auth" / "authentication.md"
-_LOGGED = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d+ [A-Z]+ \[")
-"""A log line the project's development settings print beside the output."""
+_LOGGED = re.compile(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d+ [A-Z]+ \[[^\n]*\n?")
+"""A log record the project's development settings print beside the output.
+
+The request is served in another thread, so its access log can land in the
+middle of a line the example prints: the record is taken out wherever it
+starts, with its own line end.
+"""
 
 
 @WALKED
@@ -515,7 +520,7 @@ def test_the_first_authentication_example_runs_in_a_new_project(
     )
 
     assert done.returncode == 0, done.stdout + done.stderr
-    output = [line for line in done.stdout.splitlines() if not _LOGGED.match(line)]
+    output = _LOGGED.sub("", done.stdout).splitlines()
     assert output == printed.splitlines()
 
 

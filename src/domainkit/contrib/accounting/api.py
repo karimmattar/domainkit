@@ -98,6 +98,9 @@ __all__ = [
 
 PAGES: Final = Pagination(default_limit=50, max_limit=200)
 TAGS: Final = ["accounting"]
+NAMES: Final = "accounting_"
+"""What every route's name starts with, and so its operation id: a project's
+resource of the same name clashes with none of them (ADR 0192)."""
 MAX_STATEMENT_BYTES: Final = 10 * 1024 * 1024
 """The largest statement ``POST /accounts/{id}/statements`` takes."""
 Source = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9_.:-]{0,63}$")]
@@ -267,6 +270,7 @@ accounts = ResourceRouter(
     pagination=PAGES,
     rule=ModelActions(Account, everywhere=True),
     tags=TAGS,
+    name_prefix=NAMES,
 )
 """The chart of accounts: list, read, open, close, and reconcile."""
 accounts.command_route(OpenAccount, service=open_account, body=AccountIn)
@@ -285,6 +289,7 @@ entries = ResourceRouter(
     pagination=PAGES,
     rule=ModelActions(Entry, everywhere=True),
     tags=TAGS,
+    name_prefix=NAMES,
 )
 """Journal entries: list, read, post, and reverse; never change or delete."""
 entries.command_route(PostEntry, service=post_from_body, body=EntryIn)
@@ -308,6 +313,7 @@ holds = ResourceRouter(
     pagination=PAGES,
     rule=ModelActions(Hold, everywhere=True),
     tags=TAGS,
+    name_prefix=NAMES,
 )
 """Holds: list, read, place, capture, and release."""
 holds.command_route(PlaceHold, service=place_from_body, body=HoldIn)
@@ -333,6 +339,7 @@ periods = ResourceRouter(
     pagination=PAGES,
     rule=ModelActions(Period, everywhere=True),
     tags=TAGS,
+    name_prefix=NAMES,
 )
 """Accounting periods: list, read, open, close, and their reports."""
 periods.command_route(OpenPeriod, service=open_period, body=PeriodIn)
