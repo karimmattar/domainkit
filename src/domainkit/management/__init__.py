@@ -14,6 +14,7 @@ from importlib.util import find_spec
 from pathlib import Path
 from typing import TextIO
 
+import domainkit
 from domainkit.conf import settings
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management.actions import ActionCommand, Option, action, option
@@ -104,6 +105,11 @@ def execute_from_command_line(argv: Sequence[str] | None = None) -> None:
     """Dispatch ``argv`` (default ``sys.argv``) to a command and exit on errors."""
     argv = list(sys.argv if argv is None else argv)
     prog = Path(argv[0]).name
+    if argv[1:] == ["--version"]:
+        sys.stdout.write(f"{domainkit.__version__}\n")
+        return
+    if argv[1:2] == ["help"] and len(argv) > 2:  # help <command>, as in Django.
+        argv = [argv[0], argv[2], "--help"]
     name = argv[1] if len(argv) > 1 else "help"
     if name in {"help", "--help", "-h"}:
         sys.stdout.write(_usage(prog))
@@ -130,5 +136,8 @@ def _usage(prog: str) -> str:
         lines.append(f"[{package}]")
         lines.extend(f"    {name}" for name in names)
     lines.append("")
-    lines.append(f"Run '{prog} <command> --help' for a command's options.")
+    lines.append(
+        f"Run '{prog} help <command>' for a command's options, and "
+        f"'{prog} --version' for domainkit's version."
+    )
     return "\n".join(lines) + "\n"

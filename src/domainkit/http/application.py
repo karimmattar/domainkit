@@ -12,7 +12,7 @@ from starlette.types import Message, Receive, Scope, Send
 
 from domainkit import setup
 from domainkit.apps.hooks import on_check_application
-from domainkit.checks import CheckFailed, CheckMessage
+from domainkit.checks import CheckFailed, CheckMessage, describe
 from domainkit.conf import settings
 from domainkit.conf.global_settings import DEPLOYED_ENVIRONMENTS
 from domainkit.db.drivers import connect_args
@@ -289,10 +289,13 @@ def _report(problems: list[str], heading: str) -> None:
     """
     if not problems:
         return
-    failed = CheckFailed(heading, problems)
     if settings.ENVIRONMENT in DEPLOYED_ENVIRONMENTS:
-        raise failed
-    logger.warning("%s", failed)
+        raise CheckFailed(heading, problems)
+    # One record a problem: a record of several lines would be escaped onto
+    # one, as the log keeps a line break in a message from forging a line.
+    for problem in problems:
+        lines = describe(problem, indent="").splitlines()
+        logger.warning("%s: %s", heading, " ".join(line.strip() for line in lines))
 
 
 def _load[T](path: str, expected: type[T], setting: str) -> T:

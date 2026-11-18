@@ -34,6 +34,11 @@ python manage.py migrate --help
 python manage.py messages list --help
 ```
 
+`python manage.py help migrate` prints the same as `migrate --help`, and
+`python manage.py help` lists the commands. `--version` prints
+domainkit's version, as `python manage.py --version` or
+`domainkit --version`. *New in 2.9.*
+
 `init` and `docs` are the commands that run before a project exists. You
 run them as `domainkit init`, or as `python -m domainkit init` where the
 `domainkit` script is not on the `PATH`.
@@ -370,17 +375,22 @@ python manage.py diffsettings --all
 | --- | --- |
 | `--all` | Prints every setting, and marks the defaults with `###`. |
 
-Secrets stay hidden, as in `repr(settings)`. So do the entries of
-free-form settings named like secrets (`password`, `token`, `key`, ...),
-and passwords in URLs. A class or function inside a setting, as in
-`LOGGING`, is shown by its dotted path.
+Each installed domain's settings (`AUTH`, `APPROVALS`, `LIMITS`, ...)
+are shown as the domain's schema validated them, with its defaults
+filled in, so you can read the values a project runs with. *Changed in
+2.9:* they were hidden whole.
+
+Secrets stay hidden: secret values (URLs, `SecretStr` keys and tokens),
+settings and entries named like secrets (`password`, `secret`, `token`,
+`key`, `credential`, `auth`), and passwords in URLs. A class or function
+inside a setting, as in `LOGGING`, is shown by its dotted path.
 
 In a new project, `python manage.py diffsettings` prints (long lines cut):
 
 ```text
 # config.settings.local: settings that differ from defaults
 ASGI_APPLICATION = 'config.asgi:application'
-AUTH = '**********'
+AUTH = {'USER_MODEL': 'domainkit.contrib.auth.models.User', 'USER_TABLE': None, 'PASSWORD_HASHERS': '**********', ...
 DATABASES = {'default': {'URL': '**********', 'MIGRATION_URL': None, ...
 DEBUG = True
 INSTALLED_DOMAINS = ['domainkit.contrib.messaging', 'domainkit.contrib.contenttypes', 'domainkit.contrib.auth']

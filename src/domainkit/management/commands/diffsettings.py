@@ -2,8 +2,9 @@
 
 import re
 from argparse import ArgumentParser
-from typing import Final
+from typing import Any, Final
 
+from domainkit.apps import registry
 from domainkit.conf import unwrap_settings
 from domainkit.conf.global_settings import HIDDEN
 from domainkit.management.base import BaseCommand
@@ -18,11 +19,11 @@ UNSHOWN: Final = frozenset({"SETTINGS_MODULE"})
 class Command(BaseCommand):
     """Print ``NAME = value`` for each changed setting; ``--all`` for every one.
 
-    Secrets stay hidden, as in ``repr(settings)``: secret values (URLs,
-    tokens), domain settings (``AUTH``, ``EVIDENCE``, ...) as a whole, and
-    settings or entries of free-form settings whose names suggest secrets
-    (a project's ``PAYMENT_API_KEY``), or passwords in URLs written as plain
-    text.
+    A domain's settings (``AUTH``, ``APPROVALS``, ...) are shown as their
+    schema validated them, defaults filled in. Secrets stay hidden: secret
+    values (URLs, tokens, keys), settings or entries whose names suggest
+    secrets (a project's ``PAYMENT_API_KEY``, ``AUTH.TOKEN_TTL``), and
+    passwords in URLs written as plain text.
     """
 
     help = "Show settings that differ from the defaults (--all: every setting)."
@@ -43,16 +44,35 @@ class Command(BaseCommand):
         defaults = (
             type(current).model_construct().model_dump(mode="json", fallback=_named)
         )
+        domains = _domain_settings()
+        values |= {name: value for name, (value, _) in domains.items()}
+        defaults |= {name: default for name, (_, default) in domains.items()}
         self.write(f"# {current.SETTINGS_MODULE}: settings that differ from defaults")
         for name in sorted(set(values) - UNSHOWN):
             value = _scrub(values[name])
             unchanged = name in defaults and _scrub(defaults[name]) == value
-            if SECRET_KEY.search(name):
+            if SECRET_KEY.search(name) and name not in domains:
                 value = HIDDEN
             if unchanged and not every:
                 continue
             mark = "### " if unchanged else ""
             self.write(f"{mark}{name} = {value!r}")
+
+
+def _domain_settings() -> dict[str, tuple[Any, Any]]:
+    """Each installed domain's settings, validated, and its schema's defaults.
+
+    By the name they are read from (``AUTH``). Secret values are dumped
+    hidden, as their type (``SecretStr``) dumps them.
+    """
+    return {
+        config.settings_name: (
+            registry.settings(schema).model_dump(mode="json", fallback=_named),
+            schema.model_construct().model_dump(mode="json", fallback=_named),
+        )
+        for config in registry
+        if (schema := config.settings_class) is not None
+    }
 
 
 def _named(value: object) -> str:

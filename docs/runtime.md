@@ -118,8 +118,8 @@ checks it. It does these steps, in order:
 6. It checks the application: every route must name its access rule
    (`security.E101`), and operation ids must not clash (`openapi.E001`).
    Installed domains add their own checks. In staging and production, a
-   problem stops the process with `CheckFailed`. Elsewhere, it is logged
-   as a warning.
+   problem stops the process with `CheckFailed`. Elsewhere, each problem
+   is logged as a warning of its own, on one line.
 7. In staging and production, it logs a warning for server options that
    read larger WebSocket messages than `MAX_REQUEST_BODY_SIZE`, and for a
    unix socket that `TRUSTED_PROXIES` does not trust.
@@ -128,8 +128,7 @@ A route without a rule shows what step 6 does. In development, the
 application starts and logs:
 
 ```text
-The application has problems:
-  security.E101: GET /reports declares no access rule: add Depends(Require(...)), or dependencies=[Public] if anyone may call it.
+The application has problems: security.E101: GET /reports declares no access rule: add Depends(Require(...)), or dependencies=[Public] if anyone may call it.
 ```
 
 With `ENVIRONMENT = "production"`, the same problem stops the import:

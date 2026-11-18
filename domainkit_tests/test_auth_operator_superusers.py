@@ -47,9 +47,9 @@ __all__ = ["_identifiers", "app", "prompts"]  # The fixtures the tests take.
 
 WRONG: Final = "Error: That is not the code sent, or it no longer works."
 UNREACHED: Final = (
-    "Note: no code reaches the superuser, to reset its password or enroll a "
-    "phone, until it proves its email address: run createsuperuser --promote "
-    "boss --verify"
+    "Note: no verification code can be sent to the superuser (to reset its "
+    "password or enroll a phone) until its email address is verified: run "
+    "createsuperuser --promote boss --verify"
 )
 UNKNOWN: Final = (
     "No user proved {!r}: name the user by its username or its id, or by an "
@@ -489,8 +489,9 @@ def test_the_note_says_when_no_code_could_ever_reach(
     _, no_field = run("--noinput", "--username", "carl", "--email", "c@example.com")
 
     none = (
-        "Note: the superuser has no email address nor mobile number: no code "
-        "reaches it, to reset its password or enroll a phone.\n"
+        "Note: the superuser has no email address nor mobile number: no "
+        "verification code can be sent to it (to reset its password or enroll a "
+        "phone).\n"
     )
     assert bare == none
     assert unproved == ""

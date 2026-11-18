@@ -187,7 +187,7 @@ def test_diffsettings_shows_changes_with_secrets_hidden(restore_logging: None) -
     lines = output.splitlines()
     assert lines[0] == "# domainkit_tests.settings: settings that differ from defaults"
     assert "DEBUG = True" in lines
-    assert "ALPHA = '**********'" in lines
+    assert "ALPHA = {'GREETING': 'hi'}" in lines
     assert not [
         line
         for line in lines
@@ -227,6 +227,63 @@ def test_diffsettings_hides_project_settings_named_like_secrets(
     assert PASSWORD not in output + every
     assert "PAYMENT_API_KEY = '**********'" in output.splitlines()
     assert "PAYMENT_REGION = 'us'" in output.splitlines()
+
+
+KEYED = {
+    "apps.py": """
+        from typing import Any
+
+        from pydantic import BaseModel, SecretStr
+
+        from domainkit.apps import DomainConfig
+
+
+        class KeyedSettings(BaseModel):
+            ADDRESS: str
+            TOKEN: SecretStr
+            REGION: str = "eu"
+            OPTIONS: dict[str, Any] = {}
+
+
+        class KeyedConfig(DomainConfig):
+            settings_class = KeyedSettings
+    """
+}
+
+
+def test_diffsettings_shows_a_domains_settings_with_its_secrets_hidden(
+    make_package: MakePackage,
+) -> None:
+    """Validated, with defaults; secret values and secret-named entries hidden.
+
+    The domain's name looks like a secret's (``API_KEYS``), but its
+    settings are typed, so they are shown, scrubbed, not hidden whole.
+    """
+    make_package("api_keys", KEYED)
+    keyed = {
+        "ADDRESS": f"https://vault:{PASSWORD}@vault.internal",
+        "TOKEN": PASSWORD,
+        "OPTIONS": {"api_key": PASSWORD, "pool": 4},
+    }
+    with override_settings(INSTALLED_DOMAINS=["api_keys"], ALPHA=UNSET, API_KEYS=keyed):
+        output = run("diffsettings")
+
+    assert PASSWORD not in output
+    assert (
+        "API_KEYS = {'ADDRESS': 'https://vault:**********@vault.internal', "
+        "'TOKEN': '**********', 'REGION': 'eu', "
+        "'OPTIONS': {'api_key': '**********', 'pool': 4}}"
+    ) in output.splitlines()
+
+
+def test_diffsettings_leaves_a_domains_default_settings_out() -> None:
+    """Settings a domain reads but the module leaves unset are its defaults."""
+    with override_settings(ALPHA=UNSET):
+        changed = run("diffsettings").splitlines()
+        every = run("diffsettings", "--all").splitlines()
+
+    assert not [line for line in changed if line.startswith("ALPHA")]
+    assert "### ALPHA = {'GREETING': 'hello'}" in every
 
 
 def test_diffsettings_all_marks_defaults() -> None:

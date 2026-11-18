@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+import domainkit
 from domainkit import setup
 from domainkit.apps import registry
 from domainkit.apps.hooks import on_deployment_warnings
@@ -153,6 +154,31 @@ def test_command_line_dispatch(
     with override_settings(ALPHA={"GREETING": 5}), pytest.raises(SystemExit):
         execute_from_command_line(["manage.py", "check"])
     assert "Configuration error: Invalid ALPHA settings" in capsys.readouterr().err
+
+
+def test_the_command_line_prints_its_version_and_a_commands_help(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--version`` prints domainkit's; ``help <command>`` its options."""
+    execute_from_command_line(["manage.py", "--version"])
+    assert capsys.readouterr().out == f"{domainkit.__version__}\n"
+
+    with pytest.raises(SystemExit) as exit_info:
+        execute_from_command_line(["manage.py", "help", "greet"])
+    assert exit_info.value.code == 0
+    printed = capsys.readouterr().out
+    assert printed.startswith("usage: manage.py greet ")
+    assert "--shout" in printed
+
+    with pytest.raises(SystemExit) as exit_info:
+        execute_from_command_line(["manage.py", "help", "nope"])
+    assert exit_info.value.code == 1
+    assert "Error: Unknown command 'nope'" in capsys.readouterr().err
+
+    execute_from_command_line(["manage.py", "help"])
+    assert "Run 'manage.py help <command>' for a command's options" in (
+        capsys.readouterr().out
+    )
 
 
 def test_base_command_contract() -> None:
