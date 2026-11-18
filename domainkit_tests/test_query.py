@@ -688,6 +688,9 @@ def test_what_follows_a_position_is_what_sorts_after_it() -> None:
 
     A bound on the first field comes first where one range holds everything
     after the position, so a database reads an index from there (ADR 0185).
+    Where the rest of the position's group is followed by the whole other
+    group, the two are separate parts, in the order they are read, and
+    ``following`` joins them.
     """
     one = make_gadget("one", stock=None, size=Size.LARGE)
     two = make_gadget("two", stock=1, size=Size.SMALL)
@@ -698,7 +701,7 @@ def test_what_follows_a_position_is_what_sorts_after_it() -> None:
         Gadget, (Ordering("stock", True), Ordering("id")), (None, one.id)
     )
     assert stock_desc == Or(
-        (F("stock").isnull(False), And((F("stock").isnull(), F("id") > one.id)))
+        (And((F("stock").isnull(), F("id") > one.id)), F("stock").isnull(False))
     )
     sized = following(Gadget, (Ordering("size"), Ordering("id")), (Size.SMALL, two.id))
     assert sized == And(
@@ -714,7 +717,15 @@ def test_what_follows_a_position_is_what_sorts_after_it() -> None:
     )
     nullable = following(Gadget, (Ordering("stock"), Ordering("id")), (1, two.id))
     assert nullable == Or(
-        (F("stock") > 1, F("stock").isnull(), And((F("stock") == 1, F("id") > two.id)))
+        (
+            And(
+                (
+                    F("stock") >= 1,
+                    Or((F("stock") > 1, And((F("stock") == 1, F("id") > two.id)))),
+                )
+            ),
+            F("stock").isnull(),
+        )
     )
     down = following(Gadget, (Ordering("stock", True), Ordering("id")), (1, two.id))
     assert down == And(

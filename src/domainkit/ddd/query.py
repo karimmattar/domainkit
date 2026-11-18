@@ -1251,10 +1251,10 @@ def following_parts(
     first, value = ordering[0], position[0]
     name = F(first.field)
     if value is None and not first.descending:  # The missing values come last.
-        return (And.of(name.isnull(), Or.of(*alternatives)),)
+        return (_under(name.isnull(), Or.of(*alternatives)),)
     if value is None:  # The rest of the missing values, then the present ones.
         rest = Or.of(*alternatives[1:])  # The first is the first field's.
-        return (And.of(name.isnull(), rest), name.isnull(value=False))
+        return (_under(name.isnull(), rest), name.isnull(value=False))
     bound = _from(name, value, first.descending)
     if first.descending or not fields[first.field].nullable:
         return (And.of(bound, Or.of(*alternatives)),)
@@ -1262,6 +1262,13 @@ def following_parts(
     # of the present values, then every missing one.
     after = _past(name, value, False)
     return (And.of(bound, Or.of(after, *alternatives[1:])), name.isnull())
+
+
+def _under(bound: Criteria, rest: Criteria) -> Criteria:
+    """``rest`` within ``bound``, which a lone alternative already starts with."""
+    if isinstance(rest, And) and rest.parts[0] == bound:
+        return rest
+    return And.of(bound, rest)
 
 
 def _from(name: F, value: object, descending: bool) -> Criteria:
