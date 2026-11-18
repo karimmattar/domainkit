@@ -65,10 +65,11 @@ Option 1.
   - its `tag` job makes the three checks of `release.yml`'s `tag` job on
     that release (the tag is the version, on a commit of `main`, the
     release commit), with the run's own scripts; `test_ci.py` checks
-    that they are the same steps. `release_check.py --as-pushed` judges
-    the tag as when it was pushed, leaving out the tags newer than it,
-    such as a later line's pre-release. So a tag that those checks
-    refuse publishes nothing;
+    that they are the same steps. `release_check.py --as-pushed` leaves
+    out every tag of a newer version, such as a later line's
+    pre-release, whether it was pushed before the release or after: a
+    newer tag never refuses the release here, even one that refused it in
+    `release.yml`. A tag that the other checks refuse publishes nothing;
   - its `site` job builds the site of that release as CI's `docs-site`
     job does, with `--strict` and the docs group alone, and uploads it
     as the Pages artifact;
@@ -101,6 +102,10 @@ Option 1.
   has published it. A tag that `release.yml` refuses later, for its CI
   run or at its approval, is not seen here. Only admins create `v*`
   tags (`.github/rulesets/release-tag-creation.json`).
+- A stray final `v*` tag, newer than every release, freezes the site, as
+  it blocks every new minor or major release in `release.yml`: each run
+  takes it for the newest release, and its checks refuse it, until it is
+  deleted.
 - A later decision can add versions (option 2) without a change to what
   the code names, as [0152](0152-link-the-pages-the-code-names-to-the-releases-tag.md)
   foresaw.

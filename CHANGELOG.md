@@ -21,10 +21,11 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 - `.github/workflows/docs.yml` publishes the documentation site to GitHub
   Pages when a release tag is pushed: whatever tag starts it, the site
   of the newest final release, once `release.yml`'s tag checks pass that
-  release, so a tag that those checks refuse publishes nothing.
-  `release_check.py --as-pushed` judges a tag as when it was pushed. The
-  workflow's one job that writes may write to Pages alone, and it reads
-  no secret. The repository's owner turns Pages on once
+  release with every tag of a newer version left out, pushed before the
+  release or after (`release_check.py --as-pushed`): a tag that the other
+  checks refuse publishes nothing. The workflow's one job that writes may
+  write to Pages alone, and it reads no secret. The repository's owner
+  turns Pages on once
   ([One-time setup](docs/versioning.md#one-time-setup), ADR 0189)
   (audit A28-DX-02).
 
