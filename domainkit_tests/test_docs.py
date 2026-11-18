@@ -746,10 +746,12 @@ def test_every_setting_row_states_its_default_and_bounds(
 
 
 AUDIT_PAGE = DOCS / "audit" / "0.9.0.md"
+AUDIT_28_PAGE = DOCS / "audit" / "2.8.0.md"
 _AUDIT_ID = re.compile(
-    r"\b(?:DJ-\d+|N-?\d+|ASYNC-R?\d+|R\d{2}|FX-\d+|SEC-(?:r\d|a|1[0-6][abc]|121)-\d+|"
+    r"\b(?<!A28-)(?:DJ-\d+|N-?\d+|ASYNC-R?\d+|R\d{2}|FX-\d+|SEC-(?:r\d|a|1[0-6][abc]|121)-\d+|"
     r"(?:PERF|FIN|AUTH|CONC|WEB|DATA|TEST|INFRA|DOCS|DSGN)-\d+)\b"
 )
+_AUDIT_28_ID = re.compile(r"\bA28-(?:SEC|ARCH|REL|PERF|TEST|DX)-\d{2}\b")
 
 
 def test_every_audit_id_the_changelog_cites_is_on_the_audit_page() -> None:
@@ -765,9 +767,25 @@ def test_every_audit_id_the_changelog_cites_is_on_the_audit_page() -> None:
     assert "docs/audit/0.9.0.md" in changelog.split("## [Unreleased]")[0]
 
 
-def test_open_security_findings_are_listed_without_their_detail() -> None:
-    """Until a release fixes one, the audit page names its id and severity only."""
-    page = AUDIT_PAGE.read_text(encoding="utf-8")
+def test_every_2_8_audit_id_the_changelog_cites_is_on_its_page() -> None:
+    """``(audit A28-REL-01)`` is on the 2.8 audit's page, never read as 0.9.0's."""
+    page = AUDIT_28_PAGE.read_text(encoding="utf-8")
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    listed = set(_AUDIT_28_ID.findall(page))
+
+    assert sorted(set(_AUDIT_28_ID.findall(changelog)) - listed) == []
+    assert "docs/audit/2.8.0.md" in changelog.split("## [Unreleased]")[0]
+    assert _AUDIT_ID.findall("(audit A28-PERF-01, A28-TEST-02)") == []
+
+
+@pytest.mark.parametrize(
+    "audit_page", [AUDIT_PAGE, AUDIT_28_PAGE], ids=lambda page: page.name
+)
+def test_open_security_findings_are_listed_without_their_detail(
+    audit_page: Path,
+) -> None:
+    """Until a release fixes one, an audit page names its id and severity only."""
+    page = audit_page.read_text(encoding="utf-8")
     security = re.findall(r"^### Security: .*?(?=^#)", page, re.MULTILINE | re.DOTALL)
 
     # Every row, so that a page the pattern no longer reads fails here; a
