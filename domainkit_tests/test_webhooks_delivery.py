@@ -31,6 +31,7 @@ from domainkit.contrib.webhooks.delivery import KEY_LOST
 from domainkit.contrib.webhooks.models import Subscription, SubscriptionId, secret_box
 from domainkit.contrib.webhooks.tables import (
     CANCELLED,
+    ERASED,
     FAILED,
     PENDING,
     SUCCEEDED,
@@ -388,9 +389,7 @@ async def test_deliveries_that_are_not_pending_are_left_alone(
     (erased,) = [each.id for each in await rows(deliveries) if each.id != row.id]
     async with connections.engine().begin() as connection:
         await connection.execute(
-            update(deliveries)
-            .where(deliveries.c.id == erased)
-            .values(body=delivery_module.ERASED)
+            update(deliveries).where(deliveries.c.id == erased).values(body=ERASED)
         )
 
     with caplog.at_level(logging.INFO, "domainkit.contrib.webhooks.delivery"):
