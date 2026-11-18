@@ -1,15 +1,17 @@
 """The API surface: operation ids, the ``openapi`` command, versions, deprecations."""
 
+import importlib
 import io
 import json
 import re
 from collections.abc import Iterator
 from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Response, status
+from fastapi.routing import APIRoute, iter_route_contexts
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
@@ -180,6 +182,54 @@ def test_clashing_operation_ids_are_problems() -> None:
             pytest.raises(ImproperlyConfigured, match="Operation id 'same'"),
         ):
             get_asgi_application()
+
+
+CONTRIB_ROUTERS: Final = {
+    "domainkit.contrib.accounting.api": "accounting_",
+    "domainkit.contrib.approvals.api": "approvals_",
+    "domainkit.contrib.limits.api": "limits_",
+    "domainkit.contrib.webhooks.admin": "webhooks_",
+    "domainkit.contrib.webhooks.owned": "webhooks_",
+    "domainkit.contrib.flags.admin": "flags_",
+    "domainkit.contrib.auth.admin": "auth_admin_",
+}
+"""The routers of contrib apps that serve a project's records, and their names'
+start (ADR 0192)."""
+
+
+def route_names(router: APIRouter) -> list[str]:
+    """The names of every route ``router`` serves, its included routers' too."""
+    app = FastAPI()
+    app.include_router(router)
+    return [
+        context.original_route.name
+        for context in iter_route_contexts(app.routes)
+        if isinstance(context.original_route, APIRoute)
+    ]
+
+
+@pytest.mark.parametrize(("module", "start"), CONTRIB_ROUTERS.items())
+def test_a_contrib_routers_names_start_with_its_app(module: str, start: str) -> None:
+    """So a project's resource of the same name has ids and links of its own."""
+    names = route_names(importlib.import_module(module).router)
+
+    assert names
+    assert [name for name in names if not name.startswith(start)] == []
+
+
+def test_a_resource_named_as_the_ledgers_accounts_clashes_with_nothing() -> None:
+    """A project's ``accounts`` beside the ledger: no operation id twice (E001)."""
+    from domainkit.contrib.accounting.api import router as accounting
+
+    project = APIRouter()
+    project.add_api_route("/accounts", same, methods=["GET"], name="list_accounts")
+    project.add_api_route("/accounts/{account_id}", same, name="read_account")
+    with override_settings(OPENAPI_OPERATION_IDS="route_name"):
+        app = FastAPI(generate_unique_id_function=openapi_module.operation_id)
+        app.include_router(project, prefix="/api/v1/accounts")
+        app.include_router(accounting, prefix="/api/accounting")
+
+        assert duplicate_operation_ids(app) == []
 
 
 def test_deprecated_routes_send_their_headers(client: TestClient) -> None:

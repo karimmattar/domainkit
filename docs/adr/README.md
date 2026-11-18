@@ -52,7 +52,7 @@ statuses, and the amendments they name.
 | [0028](0028-one-secret-key-signs-and-derives.md) | Sign with one `SECRET_KEY`, and derive a key per purpose from it | Accepted |
 | [0029](0029-messages-to-people-leave-through-the-outbox.md) | Send mail, text messages, and push notifications through the outbox | Accepted; amended 2026-10-25 (at the end) |
 | [0030](0030-encrypt-totp-secrets-under-a-derived-key.md) | Encrypt TOTP secrets with AES-GCM under a key derived from `SECRET_KEY` | Accepted |
-| [0031](0031-operation-ids-from-route-names.md) | Operation ids from route names, for new projects | Accepted |
+| [0031](0031-operation-ids-from-route-names.md) | Operation ids from route names, for new projects | Accepted; amended by [0192](0192-start-a-contrib-routers-route-names-with-its-app.md) |
 | [0032](0032-problem-details-as-an-error-format.md) | Offer RFC 9457 problem details as an error format | Accepted |
 | [0033](0033-feature-flags-in-the-database.md) | Keep feature flags and dynamic settings in the database, cached whole | Accepted; amended 2026-10-28 (at the end) |
 | [0034](0034-cron-schedules-by-wall-clock-time.md) | Run cron schedules by wall-clock time, queued ahead of each run | Accepted |
@@ -196,6 +196,7 @@ statuses, and the amendments they name.
 | [0185](0185-bound-keyset-pages-index-the-user-lookups-and-read-fewer-grants.md) | Bound keyset pages, index the user lookups, and read fewer grants | Accepted |
 | [0189](0189-publish-the-documentation-site-from-the-newest-releases-tag.md) | Publish the documentation site from the newest release's tag | Accepted |
 | [0190](0190-keep-runnable-examples-as-projects-that-domainkits-tests-run.md) | Keep runnable examples as projects that domainkit's tests run | Accepted |
+| [0192](0192-start-a-contrib-routers-route-names-with-its-app.md) | Start a contrib router's route names with its app | Accepted |
 
 ### Decisions still without a record
 

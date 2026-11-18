@@ -77,6 +77,9 @@ __all__ = [
 
 PAGES: Final = Pagination(default_limit=50, max_limit=200)
 TAGS: Final = ["approvals"]
+NAMES: Final = "approvals_"
+"""What every route's name starts with, and so its operation id: a project's
+resource of the same name clashes with none of them (ADR 0192)."""
 VIEW_EVERY: Final = "approvals.view_every_approvalrequest"
 """The permission that shows every request, not only one's own and those one decides."""
 READS: Final = frozenset({"GET", "HEAD"})
@@ -231,6 +234,7 @@ requests = ResourceRouter(
     rule=RequestActions(),
     scope=visible,
     tags=TAGS,
+    name_prefix=NAMES,
 )
 """Approval requests: list, read, approve, reject, and cancel."""
 requests.command_route(

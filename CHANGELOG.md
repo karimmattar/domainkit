@@ -167,6 +167,17 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   holds them, and `test_docs.py` fails when the two differ (audit
   A28-PERF-09).
 
+- A project's resource named as a contrib app's no longer clashes with
+  it: the routes of the ledger, approvals, limits, the webhooks admin and
+  owner's API, the flags admin, and the auth admin are named after their
+  app (`accounting_list_accounts`, `auth_admin_list_users`), and so are
+  their operation ids. A resource named `accounts` beside the ledger
+  failed `check` (`openapi.E001`), and its `Location` and links could
+  name the ledger's routes. A client generated from the OpenAPI document
+  calls them by the new names once generated again
+  ([upgrading.md](docs/upgrading.md#28-to-29), ADR 0192) (audit
+  A28-DX-06).
+
 ## [2.8.0] - 2026-11-18
 
 2.8 answers fourteen of a project's fifteen notes on 2.7 (the last,

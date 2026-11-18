@@ -41,6 +41,9 @@ __all__ = ["limits", "router"]
 
 PAGES: Final = Pagination(default_limit=50, max_limit=200)
 TAGS: Final[list[str | Enum]] = ["limits"]
+NAMES: Final = "limits_"
+"""What every route's name starts with, and so its operation id: a project's
+resource of the same name clashes with none of them (ADR 0192)."""
 VIEW_LIMITS: Final = Depends(Require(HasModelPermission("view", Limit)))
 Code = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9_.:-]{0,63}$")]
 Kind = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{0,31}$")]
@@ -101,6 +104,7 @@ limits = ResourceRouter(
     pagination=PAGES,
     rule=ModelActions(Limit),
     tags=TAGS,
+    name_prefix=NAMES,
 )
 """The limits: list, read, make, change, and remove."""
 limits.command_route(SetLimit, service=define_limit, body=LimitIn)

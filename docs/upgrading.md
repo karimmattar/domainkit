@@ -146,6 +146,30 @@ Nothing to change; plans and costs change.
   (`count(at_most=...)`), and flags' `GET /settings` reads its values in
   one statement.
 
+### A client generated from the OpenAPI document calls contrib routes by new names
+
+The routes of these contrib routers are named after their app, and so
+are their operation ids ([Operation ids](reference/responses.md#operation-ids),
+ADR 0192). A project's resource named `accounts`, `users`, or
+`subscriptions` failed `check` beside the ledger, the auth admin, or the
+webhooks admin (`openapi.E001`), and its `Location` and links could name
+the contrib route. The paths, the methods, and the answers are
+unchanged, so a client that calls the URLs changes nothing, and
+`openapi --diff` reports nothing. A client generated from the document
+calls each method by its new name once you generate it again, and code
+that builds a URL with `url_path_for` names the new name. With
+`OPENAPI_OPERATION_IDS = "fastapi"`, FastAPI's ids start with the new
+name too.
+
+| Router | Each route's name now starts with | Names kept |
+| --- | --- | --- |
+| `domainkit.contrib.accounting.api` | `accounting_`: `accounting_list_accounts`, `accounting_post_entry` | `accounting_trial_balance`, `accounting_general_ledger`, `accounting_import_statement`, `accounting_reconcile`, `accounting_breaks` |
+| `domainkit.contrib.approvals.api` | `approvals_`: `approvals_list_approval_requests`, `approvals_approve_request`, `approvals_approve_request_authorization` | `approvals_submit`, `approvals_submit_authorization` |
+| `domainkit.contrib.limits.api` | `limits_`: `limits_list_limits`, `limits_set_limit` | `limits_usage` |
+| `domainkit.contrib.webhooks.admin` and `.owned` | `webhooks_`: `webhooks_list_subscriptions`, `webhooks_list_own_subscriptions` | none |
+| `domainkit.contrib.flags.admin` | `flags_`: `flags_list_flags`, `flags_change_setting` | none |
+| `domainkit.contrib.auth.admin` | `auth_admin_`: `auth_admin_list_users`, `auth_admin_create_user`, `auth_admin_ask_to_create_user` | none |
+
 ## 2.7 to 2.8
 
 2.8 follows up 2.7. Each item of this list says what a project that
