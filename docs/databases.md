@@ -1675,7 +1675,10 @@ this way. A `LedgerWrite` has `key` and `transaction`. A `LedgerEntry`
 also has `value` and `revision` (1 for the first write of the key).
 
 Tests use `LEDGERS = {"evidence": {"URL": "memory://"}}`: a
-`MemoryLedger`, the same port in memory, without proofs.
+`MemoryLedger`, the same port in memory, without proofs. Closing the
+ledgers (`ledgers.close_all()`, as a command, `outbox.run_queued()`, and
+an application's shutdown do) keeps what a memory ledger holds, as a
+server keeps it; `ledgers.reset()` forgets it (since 2.9).
 
 ### Trust in the ledger
 

@@ -242,6 +242,26 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   that could not be given back, and one whose target no worker knows
   (audit A28-REL-08).
 
+- Tests cover two refusals that none reached: an act's authorization
+  spent a second time in code off auth's database, refused and told to
+  the trail as `used`, and a relay's probe that finds the broker away,
+  which opens the breaker again before any row is leased (audit
+  A28-TEST-02).
+
+- The routes of the ledger, approvals, limits, the webhooks admin and
+  owner's API, the flags admin, the auth admin, and the audit trail's
+  history are renamed: each new name is the 2.8 name with its app's
+  prefix, `accounting_`, `approvals_`, `limits_`, `webhooks_`, `flags_`,
+  `auth_admin_`, or `audit_` (`list_accounts` is
+  `accounting_list_accounts`), and so is each operation id. Code that
+  calls `url_path_for` with a 2.8 name, and a client generated from the
+  OpenAPI document, use the new names. A project's resource named
+  `accounts` beside the ledger failed `check` (`openapi.E001`), and its
+  `Location` and links could name the ledger's routes; a resource named
+  as a contrib app's now clashes with none of them
+  ([upgrading.md](docs/upgrading.md#28-to-29), ADR 0192) (audit
+  A28-DX-06).
+
 - `RATE_LIMIT_EXEMPT_PATHS`, `CONCURRENCY_EXEMPT_PATHS`,
   `ACCESS_LOG_QUIET_PATHS`, and `AUTH.AUTHENTICATION_EXEMPT_PATHS` default
   to `()`, and add to `PROBE_PATHS`: they exempt what they did by default,
@@ -327,6 +347,22 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   back. Only a relay running the outbox, its breaker open, waits for what
   is left of `DRAIN_TIMEOUT` first, even while it is still claiming;
   every relay did, so shutdown took up to 25 seconds (audit A28-TEST-07).
+
+- A memory ledger (`memory://`) keeps what it holds when the ledgers
+  close. `outbox.run_queued()` in a sync test, a command, and an
+  application's shutdown close them, and the evidence a queued handler
+  had recorded was gone when the test read it. `ledgers.reset()`, which
+  the test plugin calls before each test, still empties them
+  ([Ledgers](docs/databases.md#ledgers-immudb)) (audit A28-DX-06).
+
+- What a person deciding an approval request is shown of an argument
+  that is `Money`, or of a list's item that is, is its amount and
+  currency, `1500.00 USD`, as `Money` writes itself; 2.8 showed its JSON,
+  `{"amount":"1500.00","currency":"USD"}`. It holds for the approver's,
+  the maker's, and the rejecting and cancelling screens of a guard
+  without `show`
+  ([Approving with an authorization](docs/contrib/approvals.md#approving-with-an-authorization))
+  (audit A28-DX-06).
 
 - A request that commits a unit of work is answered as committed: the
   commit lifts its deadline, from whichever of the request's tasks
@@ -459,6 +495,14 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   change users as they hold it everywhere, whatever tenant the request is
   served as: users belong to no tenant, so a member's role in one keeps no
   impersonation going (audit A28-SEC-04).
+
+- A failed approval request keeps the seal it had when that seal did not
+  hold: failing makes the seal again only if it held, as an erasure's
+  pseudonym does. The failed record of a request changed around the
+  application, failed by its run (`request_tampered`) or by `privacy
+  erase` (`maker_not_allowed`), still fails its seal
+  ([Approvals](docs/contrib/approvals.md),
+  [upgrading.md](docs/upgrading.md#28-to-29)). Found in review.
 
 ## [2.8.0] - 2026-11-18
 

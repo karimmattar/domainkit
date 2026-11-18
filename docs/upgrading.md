@@ -203,6 +203,46 @@ project that relied on 2.8's behaviour changes, and what to run.
 - **The worker's log lines about a failing message name its id**, after
   its target: `Dead-lettered task shop.flaky (message 0f8e...) after 2
   attempts`. Change a log rule or an alert that matches the whole line.
+- **Contrib routes are renamed, and so are their operation ids.** Each
+  new name is the 2.8 name with its app's prefix, for every route
+  renamed: `accounting_` on the ledger's, `approvals_` on approvals',
+  `limits_` on limits', `webhooks_` on the webhooks admin's and owner's,
+  `flags_` on the flags admin's, `auth_admin_` on the auth admin's, and
+  `audit_` on the audit trail's history (`list_accounts` is
+  `accounting_list_accounts`, `read_history` is `audit_read_history`).
+  The routes named so already keep their names: `accounting_trial_balance`,
+  `accounting_general_ledger`, `accounting_import_statement`,
+  `accounting_reconcile`, `accounting_breaks`, `approvals_submit`,
+  `approvals_submit_authorization`, and `limits_usage`. The paths, the
+  methods, and the answers are unchanged, so a client that calls the
+  URLs changes nothing, and `openapi --diff` reports nothing. Code that
+  builds a URL with `url_path_for` and a 2.8 name uses the new name, and
+  a client generated from the OpenAPI document calls each method by its
+  new name once you generate it again. With `OPENAPI_OPERATION_IDS =
+  "fastapi"`, FastAPI's ids start with the new name too. FastAPI writes
+  an operation's summary, and the title of a response schema declared
+  inline, from the name: 50 summaries ("Delete User" is "Auth Admin
+  Delete User") and 7 titles ("Response List Flags" is "Response Flags
+  List Flags") change with them. A project's resource named `accounts`,
+  `users`, or `subscriptions` failed `check` beside the ledger, the auth
+  admin, or the webhooks admin (`openapi.E001`), and its `Location` and
+  links could name the contrib route; it clashes with none now
+  ([Operation ids](reference/responses.md#operation-ids), ADR 0192).
+- **A memory ledger keeps what it holds when the ledgers close.** In
+  tests, evidence recorded before `outbox.run_queued()`, a command, or a
+  client's shutdown is still there after it. A test that relied on the
+  close to empty a `memory://` ledger calls `ledgers.reset()`; the test
+  plugin calls it before each test, as before.
+- **An approval screen shows money as its amount and currency.** A
+  guard without `show` lists the command's arguments, and an argument
+  that is `Money` now reads `1500.00 USD`, where 2.8 showed
+  `{"amount":"1500.00","currency":"USD"}`. A test that compared a
+  screen's details compares the new text.
+- **A failed approval request keeps a seal that did not hold**
+  (security). Failing makes the seal again only if it held, so a request
+  changed around the application, then failed, still fails its seal.
+  Code that reads `sealed()` on failed requests, to report them, finds
+  these.
 - **A request that committed is answered as committed**
   ([ADR 0186](adr/0186-answer-a-commit-as-committed-a-lost-database-as-unavailable-start-loudly-and-name-the-probes-once.md)).
   Once a unit of work commits, in the request's task or in one it
