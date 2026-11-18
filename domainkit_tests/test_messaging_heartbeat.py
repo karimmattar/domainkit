@@ -234,6 +234,18 @@ async def test_a_check_that_raises_leaves_the_worker_beating(
     await beating
 
 
+@pytest.mark.usefixtures("messaging", "checked")
+async def test_a_ready_file_that_cannot_be_written_is_named_as_such(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The checks held: the round says so, and logs the file it could not write."""
+    ready = tmp_path / "gone" / "ready"
+
+    assert await heartbeats.beat(None, None, ready) is True
+    assert f"Could not write or remove the ready file {ready}" in caplog.messages
+    assert not any("checks raised" in message for message in caplog.messages)
+
+
 async def test_a_heartbeat_file_that_cannot_be_written_ages_and_says_so(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

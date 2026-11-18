@@ -62,21 +62,31 @@ async def beat(
     """
     if path is not None:
         await _touch(path)
+    held = await _held(broker)
+    if ready is not None:
+        try:
+            if held:
+                await _touch(ready)
+            else:
+                await asyncio.to_thread(ready.unlink, missing_ok=True)
+        except OSError:
+            logger.exception("Could not write or remove the ready file %s", ready)
+    return held
+
+
+async def _held(broker: str | None) -> bool:
+    """Whether every check holds; a failing one, or one that raises, is logged."""
     try:
         failing = await failures(broker)
-        if not failing:
-            if ready is not None:
-                await _touch(ready)
-            return True
+    except Exception:
+        logger.exception("The worker's checks raised; it is not ready, and carries on")
+        return False
+    if failing:
         logger.warning(
             "The worker is not ready, and carries on: failing %s", ", ".join(failing)
         )
-    except Exception:
-        logger.exception("The worker's checks raised; it is not ready, and carries on")
-    if ready is not None:
-        with suppress(OSError):
-            await asyncio.to_thread(ready.unlink, missing_ok=True)
-    return False
+        return False
+    return True
 
 
 async def heartbeat(

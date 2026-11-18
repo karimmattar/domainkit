@@ -421,9 +421,11 @@ or use the inbox ([messaging.md](contrib/messaging.md#once-in-the-database-the-i
   without a ready file is a worker that carries on degraded, such as a
   relay running the outbox while the broker is away. Give the probe the
   tolerance you want with its retries (`failureThreshold`, or
-  `HEALTHCHECK --retries`). To have a container restarted when a
-  dependency fails, as before 2.9, point its health check at the ready
-  file instead.
+  `HEALTHCHECK --retries`). A round that never ends leaves the last
+  ready file in place, so check its age too, as the heartbeat's:
+  `test $(( $(date +%s) - $(stat -c %Y /tmp/worker-ready) )) -lt 60`. To
+  have a container restarted when a dependency fails, as before 2.9,
+  point its health check at the ready file instead.
 
   `--metrics-port` is no health signal: it answers from a thread of its
   own, however stuck the loop is.
