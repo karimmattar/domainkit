@@ -43,6 +43,19 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   and how a stopping process keeps serving
   ([Runbook](docs/runbook.md#find-the-entry)) (audit A28-REL-06).
 
+- `examples/`: three runnable projects, each made by `domainkit init`,
+  with a walkthrough that opens with the problem it solves, and tests.
+  `payments-ledger` keeps wallets in double-entry books: payments under
+  an `Idempotency-Key`, holds captured or released, refunds as
+  reversals, and the trial balance. `maker-checker` holds large payouts
+  for approval, the maker and the approver each confirming the act.
+  `outbox-webhooks` sends transfers through a durable handler, with
+  retries and dead letters, and signed webhooks to a receiver that
+  verifies them. domainkit's tests play each one's CI workflow, on
+  SQLite and on PostgreSQL, so a change that breaks one fails CI; the
+  wheel and the sdist leave them out (ADR 0190). README.md and
+  `docs/learning.md` link them (audit A28-DX-06).
+
 - `Repository.count(criteria, at_most=n)`: a count that stops at `n`.
   SQL counts a subquery with `LIMIT n`, so a database reads no further
   matches; a repository of one's own counts all and stops

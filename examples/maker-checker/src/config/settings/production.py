@@ -1,0 +1,65 @@
+"""Settings for production: addresses and secrets come from the environment.
+
+Set PAYOUTS_API_SETTINGS_MODULE=config.settings.production,
+PAYOUTS_API_ALLOWED_HOSTS (comma-separated), PAYOUTS_API_DATABASE_URL,
+PAYOUTS_API_REDIS_URL (rediss://, with a password), PAYOUTS_API_SECRET_KEY (50
+random characters or more: python -c "import secrets;
+print(secrets.token_urlsafe(50))"; better as PAYOUTS_API_SECRET_KEY_FILE),
+and PAYOUTS_API_TRUSTED_PROXIES: the networks of the load balancers or proxies
+in front of the application (comma-separated, such as 10.0.0.0/8), or empty
+when callers connect directly. Startup fails when one is missing, and the
+deployment checks refuse DEBUG, wildcard hosts, weak keys, proxies trusted
+from every address, network databases without verified TLS, and password
+and code guesses counted in each process rather than in Redis. To replace
+the key, move the old one to PAYOUTS_API_SECRET_KEY_FALLBACKS until what it
+signed has expired. The API docs
+are off, browsers are told to use HTTPS only, and callers are rate limited;
+PAYOUTS_API_API_DOCS, PAYOUTS_API_SECURE_HSTS_SECONDS, and PAYOUTS_API_RATE_LIMIT change that.
+Logs are JSON lines on stdout, at PAYOUTS_API_LOG_LEVEL (INFO unless set);
+PAYOUTS_API_ACCESS_LOG_SAMPLE_RATE writes a share of the access lines (all
+unless set), always those answered 400 and up, and slow ones.
+"""
+
+from domainkit.log import build_logging_config
+
+from config.settings.base import *
+from config.settings.base import env
+
+ENVIRONMENT = "production"
+ALLOWED_HOSTS = env.list("ALLOWED_HOSTS")
+SECRET_KEY = env.str("SECRET_KEY")
+SECRET_KEY_FALLBACKS = env.list("SECRET_KEY_FALLBACKS", [])
+# The proxies' X-Forwarded-For names each caller; without them, every caller
+# behind a load balancer shares its address, and so its rate limit.
+TRUSTED_PROXIES = env.list("TRUSTED_PROXIES")
+DATABASES = {
+    "default": {"URL": env.str("DATABASE_URL"), "SSLMODE": "verify-full"},
+}
+API_DOCS = env.bool("API_DOCS", False)
+SECURE_HSTS_SECONDS = env.int("SECURE_HSTS_SECONDS", 31_536_000)  # A year.
+RATE_LIMIT = env.str("RATE_LIMIT", "300/minute")
+# Requests, and password and code guesses, are counted in Redis, once for
+# every process and replica; counted in each process, a guesser would get
+# the rates once per process, so startup refuses that here (auth.E105).
+# While Redis is down, password and code checks are refused with 503.
+RATE_LIMIT_BACKEND = "domainkit.http.ratelimit.RedisBackend"
+RATE_LIMIT_CACHE = "shared"
+# Who a token names is kept for 5 seconds per process, so a revoked token
+# works up to 5 seconds longer in the other replicas; with the shared cache,
+# every replica sees a revocation at once:
+# AUTH = {**AUTH, "PRINCIPAL_CACHE": {"STAMPS": "shared"}}
+# A cache computation goes on after the request that started it ends; bound
+# it, so one that hangs frees its key instead of holding it until a restart.
+# 30 seconds is REQUEST_TIMEOUT's default.
+CACHES = {
+    "default": {"COMPUTE_TIMEOUT": 30.0},
+    "shared": {
+        "URL": env.str("REDIS_URL"),
+        "KEY_PREFIX": "payoutsAPI",
+        "COMPUTE_TIMEOUT": 30.0,
+    },
+}
+LOGGING = build_logging_config(log_format="json", level=env.str("LOG_LEVEL", "INFO"))
+# 0.1 writes about one successful request in ten (docs/runtime.md, "Sampling
+# the access log"); every answer from 400 up, and slow ones, are always written.
+ACCESS_LOG_SAMPLE_RATE = env.float("ACCESS_LOG_SAMPLE_RATE", 1.0)

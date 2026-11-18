@@ -1,0 +1,68 @@
+# The image of ledgerAPI: it serves config.asgi:application with uvicorn,
+# as a user without privileges who can write nothing in /app.
+#
+#   docker build -t ledgerapi .
+#   docker run --rm --env-file /etc/ledgerAPI/production.env ledgerapi python manage.py migrate
+#   docker run --rm -p 8000:8000 --env-file /etc/ledgerAPI/production.env ledgerapi
+#
+# Every setting comes from the environment (LEDGER_API_*), as
+# src/config/settings/production.py lists them. Keep the env file out of the
+# project, as above, or better in a secret store: nothing secret is built
+# in. .dockerignore lets in only manage.py, pyproject.toml,
+# requirements.lock, src/, and migrations/, and keeps env files, keys, and
+# databases out even there. WEB_CONCURRENCY sets uvicorn's worker processes
+# (one per core; one unless set), unless SERVE["WORKERS"] does.
+#
+# Lock what the image installs, each file by its hash, and commit the lock:
+#
+#   uv pip compile pyproject.toml --generate-hashes -o requirements.lock
+#
+# Without requirements.lock, each build installs the newest releases
+# pyproject.toml allows. The base image is pinned by digest, so each build
+# starts from the same files; .github/dependabot.yml has Dependabot propose
+# the new digest each week, with the lock and the workflow's actions.
+
+FROM scratch AS wheels
+# Empty. `docker build --build-context wheels=<directory> .` installs the
+# wheels in <directory> (a fork, a release candidate) first, so they win over
+# a release of the same version on the package index.
+
+FROM python:3.13-slim@sha256:ae14d4ce8771606477a81446e7ef429edd6762305fc50c84507c1041fa8285d1 AS build
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1
+WORKDIR /app
+# requirements.loc[k] copies the lock if there is one, and nothing if not.
+COPY pyproject.toml requirements.loc[k] ./
+# The project's dependencies in a virtual environment: those the lock names,
+# each checked against its hash, or else those pyproject.toml names.
+RUN --mount=type=bind,from=wheels,target=/wheels \
+    python -m venv /opt/venv \
+    && if [ -f requirements.lock ]; then \
+        /opt/venv/bin/pip install --require-hashes --no-deps -r requirements.lock; \
+    else \
+        echo "No requirements.lock: installing the newest releases pyproject.toml allows." >&2 \
+        && python -c "import tomllib; print('\n'.join(tomllib.load(open('pyproject.toml', 'rb'))['project']['dependencies']))" > requirements.txt \
+        && if ls /wheels/*.whl >/dev/null 2>&1; then \
+            /opt/venv/bin/pip install --no-deps /wheels/*.whl; \
+        fi \
+        && /opt/venv/bin/pip install --find-links /wheels -r requirements.txt; \
+    fi
+
+FROM python:3.13-slim@sha256:ae14d4ce8771606477a81446e7ef429edd6762305fc50c84507c1041fa8285d1
+ENV PATH=/opt/venv/bin:$PATH \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    DOMAINKIT_PROJECT_ROOT=/app \
+    LEDGER_API_SETTINGS_MODULE=config.settings.production
+RUN useradd --system --uid 10001 --no-create-home --shell /usr/sbin/nologin app
+WORKDIR /app
+COPY --from=build /opt/venv /opt/venv
+# What .dockerignore lets in, owned by root: the application reads its
+# code and cannot change it.
+COPY . .
+USER 10001
+EXPOSE 8000
+# python manage.py serve starts uvicorn, as Granian is not installed, with
+# the limits of "Server limits" (https://github.com/karimmattar/domainkit/blob/v2.3.0/docs/reference/servers.md#the-serve-command)
+# from SERVE. Proxy headers are the application's (TRUSTED_PROXIES), not
+# uvicorn's.
+CMD ["python", "manage.py", "serve"]
