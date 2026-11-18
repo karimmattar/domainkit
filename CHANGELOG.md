@@ -793,6 +793,10 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   ([diffsettings](docs/reference/commands.md#diffsettings-show-the-settings),
   [upgrading.md](docs/upgrading.md#28-to-29)) (audit A28-DX-10).
 
+- Approvals asks each maker and approver rule on a request context of
+  its own when an approved command runs, so nothing a rule keeps on it
+  reaches another call (audit A28-SEC-07).
+
 ## [2.8.0] - 2026-11-18
 
 2.8 answers fourteen of a project's fifteen notes on 2.7 (the last,
