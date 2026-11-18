@@ -698,7 +698,8 @@ keys a user holds everywhere: a company's finance role that names
 reads no account (`403`). Staff granted the keys everywhere reach them
 from any tenant. Approvals' guards of postings, captures, and reversals,
 of making superusers, and of admin changes count their makers' and
-approvers' keys the same way.
+approvers' keys the same way, and show their requests to those who hold
+`approvals.view_every_approvalrequest` everywhere, not through a role.
 
 Routes of your own over such rows say so with `everywhere=True`:
 

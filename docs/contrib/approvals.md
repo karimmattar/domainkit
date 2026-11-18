@@ -1264,8 +1264,11 @@ an account, a password reset, the reason staff act as someone. Since 2.4,
 Any other request is `404 approval_request_not_found`, as if it were not
 there. `approvals.view_every_approvalrequest` shows every request: give it
 to auditors. With multi-tenancy, each of these is a request of the tenant
-being served ([Requests and tenants](#requests-and-tenants)). Approving, rejecting, and cancelling are not narrowed: their
-own rules answer, as before. Approval systems work the same way: an
+being served ([Requests and tenants](#requests-and-tenants)), and that
+key held only through a member's role shows every request but those of a
+guard `everywhere`, which go to those who hold it everywhere. Approving,
+rejecting, and cancelling are not narrowed: their own rules answer, as
+before. Approval systems work the same way: an
 approver's list holds what is waiting for them, and administrators see
 everything (ADR 0154).
 

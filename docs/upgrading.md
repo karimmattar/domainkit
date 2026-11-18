@@ -111,7 +111,10 @@ project that relied on 2.8's behaviour changes, and what to run.
   is served. Do not set their `tenant_id` by hand, which breaks their
   seal: decide or cancel them where no tenant is served, or let them
   expire. Before you deploy, let the worker run the requests already
-  approved: once deployed, such a request runs as no tenant. Without
+  approved: once deployed, such a request runs as no tenant. A member who
+  holds `approvals.view_every_approvalrequest` only through a role no
+  longer reads the requests of a guard `everywhere`, such as approvals'
+  own guards of postings, superusers, and admin changes. Without
   `TENANCY`, nothing changes.
 - **Limits and the ledger count the keys held everywhere** (security).
   With `MembershipBackend`, a member's role no longer reaches the routes
