@@ -275,8 +275,9 @@ Options weighed:
 
 - `outbound`, the outgoing client and its guard, is a layer 2 package
   ([0195](0195-move-the-outgoing-client-below-the-adapters-and-hold-module-state-to-its-resets.md)). The 16 adapters' imports of `domainkit.http.client` are gone
-  from the edges that stay, and the settings import the checker when they
-  validate `EXTRA_LAYERS`, not with `domainkit.conf`: 5 edges are left.
+  from the edges that stay, and so is the settings' import of the
+  checker: the four built-in layer names are the settings' own, which
+  `domainkit.architecture` imports. 4 edges are left.
 - `ALLOWED_CORE` loses `DEPLOYED_ENVIRONMENTS` (from `domainkit.conf`),
   `CURSOR_PATTERN` (from `domainkit.http`), `client_group` (from
   `domainkit.context`), and the guard's eight names, which

@@ -26,8 +26,8 @@ inside functions:
 Three more follow-ups of 0188 were left:
 
 - `domainkit.conf.global_settings` imported the import checker,
-  `domainkit.architecture`, for its four layer names. Importing
-  `domainkit.conf` loaded it.
+  `domainkit.architecture`, for its four layer names, so every process
+  that loaded its settings loaded the checker.
 - `ALLOWED_CORE` held 101 core names that apps import and no `__all__`
   publishes. The most used was `DEPLOYED_ENVIRONMENTS`, by 14 apps
   (A28-ARCH-06).
@@ -38,7 +38,7 @@ Three more follow-ups of 0188 were left:
 
 Constraints: 2.9 is a minor release, so every import a project makes
 keeps working. The settings module and the rate limit's are edited by
-other 2.9 work, so this change touches only their import lines. The
+other 2.9 work, so this change touches only the lines it moves there. The
 lists of 0188 only shrink.
 
 How others do it:
@@ -70,22 +70,26 @@ process that calls no service needs no `httpclient` extra.
   found in `sys.modules` as it finds the HTTP clients. A second resolver
   no longer replaces the first one's closer. `register("guard lookups",
   ...)` now raises `ValueError`, as for the framework's other kinds.
-- **A caller's address group** is `domainkit.context.client_group`, public,
-  with the rate limit's rule: IPv4 as is, IPv4-mapped IPv6 as IPv4, IPv6
-  by its `RATE_LIMIT_IPV6_PREFIX` network, each remembered for the latest
-  4,096 hosts. The guard and auth's throttles use it.
-  `domainkit.http.ratelimit` keeps its own copy until the other work on
-  that module is done; a test gives both every host and four prefixes,
-  and asserts one answer. The two cache constants move to
+- **A caller's address group** is `domainkit.context.client_group`,
+  public, moved from the rate limit with its rule unchanged: IPv4 as is,
+  IPv4-mapped IPv6 as IPv4, IPv6 by its `RATE_LIMIT_IPV6_PREFIX` network,
+  each remembered for the latest 4,096 hosts. It is defined once: the
+  rate limit, auth's throttles, and the guard import it, and the rate
+  limit's module still holds it, the same function. Grouping
+  callers decides who shares a budget, so two copies that drift apart
+  would let one caller count as two. The two cache constants move to
   `domainkit.context` too; `domainkit.http.middleware` imports them.
 - **The guard's public names**, decided anew in the new package: its
   `__all__` lists what an app that takes URLs from its users needs, as
   webhooks does: `checked_url`, `checked_host`, `checked_address`,
   `lookup`, `lookups_for`, `tls_context`, `UnsafeURL`, `MAX_URL_LENGTH`,
-  and the `Address` and `Network` types. 1.0 took the old module's names
-  out of the API because no page used them; the runtime guide and an app
-  use these. The resolver, its bounds, and the address tables stay
-  internal.
+  and the `Address` and `Network` types. This reverses 1.0's choice,
+  which took the guard's names out of the API because no page used them.
+  Now an app uses them: webhooks checks a subscription's URL when it is
+  saved and resolves it as it is called, and a project's own outbound
+  calls to URLs its users chose need the same checks without writing
+  them again. The resolver, its bounds, and the address tables stay
+  internal, and `domainkit.http.guard` stays internal as it was.
 - **The logger keeps its name**, `domainkit.http.client`: logging
   settings and alerts name it, and a new name would end them without a
   word.
@@ -126,12 +130,12 @@ that imports the old path changes nothing in 2.9.
 
 ### The settings and the checker
 
-`ArchitectureConfig` imports the checker's layer names when it validates
-`EXTRA_LAYERS`, not at the top of the settings module: importing
-`domainkit.conf` loads no checker. Loading settings still does, since the
-default `ARCHITECTURE` is validated too. Defining the four names in the
-settings module would end that; it waits for the other work on that
-module.
+The four built-in layer names (`domain`, `application`,
+`infrastructure`, `api`) are the settings' own: `LAYERS`, in the
+settings module, which `ArchitectureConfig` checks `EXTRA_LAYERS` and the
+other tables against. `domainkit.architecture` imports them from there,
+the same object under the same name, so loading the settings, the
+default `ARCHITECTURE` validated with them, loads no checker.
 
 ### Names the apps used
 
@@ -177,8 +181,13 @@ Options weighed:
   and error reports call no service; layer 2 is the narrower promise.
 - **Keep the guard's lazy import of the rate limit**, listed among the
   edges that stay. The list only shrinks.
-- **Move `client_group` out of the rate limit's module now.** Other 2.9
-  work edits it; the copy and its test hold until that lands.
+- **A copy of `client_group` beside the guard**, with a test that the
+  copies agree, while other 2.9 work edits the rate limit's module. The
+  test samples hosts; one rule for who shares a budget, defined once,
+  cannot drift.
+- **Import the checker's layer names lazily** in the settings. Importing
+  `domainkit.conf` would load no checker, but validating the default
+  `ARCHITECTURE` would, in every process.
 - **Warn on the old paths in 2.9.** Every project's adapters would warn
   in a minor release that asks nothing of them yet.
 - **Rename the logger** after the module: see above.
@@ -193,16 +202,15 @@ Options weighed:
 
 ## Consequences
 
-- No adapter imports the serving package; `test_core_layers.py` lists 5
-  edges up, from 21. A worker that calls S3 loads no `domainkit.http`.
+- No adapter imports the serving package; `test_core_layers.py` lists 4
+  edges up, from 21. A worker that calls S3 loads no `domainkit.http`,
+  and no process loads the import checker unless it checks.
 - Projects keep importing `domainkit.http.client` and
   `domainkit.http.guard`, and may move to `domainkit.outbound` when they
   choose. Their tests that patch a name of the client patch it at the new
   path.
 - New module state fails a test until it has a public reset, or a review
   lets it join `UNRESET`.
-- `client_group` exists twice until the rate limit imports it; a change
-  to one fails the test that compares them.
 - The published names follow the deprecation policy.
 
 ## References

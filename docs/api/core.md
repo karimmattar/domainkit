@@ -118,7 +118,7 @@ Django-style settings access.
 - `DatabaseConfig`: One `DATABASES` entry: an SQLAlchemy async URL plus connection options.
 - `DebugToolbarConfig`: `DEBUG_TOOLBAR`: what `DebugToolbarMiddleware` adds while `DEBUG`.
 - `Env`: Read prefixed variables and convert them, failing with the variable name.
-- `HttpClientConfig`: `HTTP_CLIENT`: what `domainkit.http.client` clients do by default.
+- `HttpClientConfig`: `HTTP_CLIENT`: what `domainkit.outbound.client` clients do by default.
 - `LedgerConfig`: One `LEDGERS` entry: write once, read many, verified on the client.
 - `SearchConfig`: `SEARCH`: the search engine documents are indexed in (`domainkit.search`).
 - `ServeConfig`: `SERVE`: the server `manage.py serve` starts, and its limits.

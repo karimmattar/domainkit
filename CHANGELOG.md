@@ -244,8 +244,9 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   `domainkit.conf.DEPLOYED_ENVIRONMENTS`, `domainkit.http.CURSOR_PATTERN`,
   and `domainkit.context.client_group`, the address a caller is counted
   by (an IPv6 network for an IPv6 address), which rate limits, auth's
-  throttles, and the guard's lookups share (ADR 0195) (audit
-  A28-ARCH-06).
+  throttles, and the guard's lookups share. It is the rate limit's, moved:
+  `domainkit.http.ratelimit.client_group` is the same function (ADR 0195)
+  (audit A28-ARCH-06).
 
 - `domainkit.contrib.messaging.unregister_task(key)`, which forgets one
   task, as a test of a worker that does not know it needs, and
@@ -468,11 +469,13 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   ([upgrading.md](docs/upgrading.md#28-to-29), ADR 0195) (audit
   A28-ARCH-04).
 
-- Importing `domainkit.conf` no longer imports the layer checker,
-  `domainkit.architecture`: the settings import it when they validate
-  `ARCHITECTURE` (audit A28-ARCH-04).
+- Loading the settings no longer imports the layer checker,
+  `domainkit.architecture`: the four built-in layer names are the
+  settings' own (`domainkit.conf.global_settings.LAYERS`), which
+  `domainkit.architecture.LAYERS` imports, the same object (ADR 0195)
+  (audit A28-ARCH-04).
 
-- The framework's guards shrink: the core has 5 imports up its layers,
+- The framework's guards shrink: the core has 4 imports up its layers,
   from 21, and the apps use 90 unpublished core names, from 101.
   `domainkit_tests/test_module_state.py` fails on module state a test can
   leave behind that has no public reset, beside a list of 2.9's that may

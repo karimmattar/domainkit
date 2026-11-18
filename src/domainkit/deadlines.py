@@ -32,7 +32,7 @@ task enforces are put back after it, later by the time it took.
 Outside a request there is no deadline until a block sets one with
 ``timeout``: a worker bounds a task the same way. Transactions on
 PostgreSQL lower ``statement_timeout`` to the time remaining, and
-``domainkit.http.client`` bounds every call by it.
+``domainkit.outbound.client`` bounds every call by it.
 
 The time remaining is read with ``domainkit.clock.monotonic``, so a frozen
 clock stops it; the timers that cancel the work run on the event loop's

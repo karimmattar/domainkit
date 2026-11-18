@@ -48,6 +48,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final, Self
 
+from domainkit.conf.global_settings import LAYERS as LAYERS
+
 if TYPE_CHECKING:
     from domainkit.conf.global_settings import ArchitectureConfig
 
@@ -63,9 +65,6 @@ __all__ = [
     "check_domains",
     "layer_warnings",
 ]
-
-LAYERS: Final = ("domain", "application", "infrastructure", "api")
-"""Layer packages of a domain, innermost first."""
 
 LAYER_MODULES: Final = MappingProxyType(
     {
@@ -235,7 +234,7 @@ def project_rules() -> LayerRules:
     Without a settings module (a script, a test of the rules themselves) the
     defaults apply.
     """
-    from domainkit.conf import settings  # The settings import this module.
+    from domainkit.conf import settings  # Read only when the rules are asked for.
     from domainkit.exceptions import ImproperlyConfigured
 
     try:

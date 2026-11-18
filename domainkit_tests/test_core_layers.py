@@ -89,11 +89,6 @@ ALLOWED: Final = frozenset(
         # For type checkers only: DomainConfig.databases(router) answers
         # where the domain's data lives (ADR 0101), so it names the router.
         ("domainkit.apps.config", "domainkit.db.routing", "typing"),
-        # The settings validate ARCHITECTURE.EXTRA_LAYERS against the
-        # built-in layer names, which the layer checker defines. Imported
-        # when they are validated, so importing domainkit.conf loads no
-        # checker (ADR 0195).
-        ("domainkit.conf.global_settings", "domainkit.architecture", "lazy"),
         # The settings make the default virus scanner when asked for it.
         ("domainkit.conf.global_settings", "domainkit.storage.scanning", "lazy"),
         # A tenant's schema is named by tenancy's rule when its tables are

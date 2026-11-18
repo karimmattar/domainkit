@@ -138,22 +138,30 @@ def test_importing_domainkit_http_loads_neither_fastapi_nor_sqlalchemy() -> None
 
 
 @pytest.mark.reads_own_source
-def test_importing_the_settings_loads_no_layer_checker() -> None:
-    """``domainkit.architecture`` is the settings' only when they are validated.
+def test_loading_the_settings_loads_no_layer_checker() -> None:
+    """The settings name the built-in layers; the layer checker imports them.
 
-    The settings check ``ARCHITECTURE.EXTRA_LAYERS`` against the checker's
-    layers; 2.8 imported it with ``domainkit.conf`` (audit A28-ARCH-04).
+    They check ``ARCHITECTURE.EXTRA_LAYERS`` against those layers, the
+    default ``ARCHITECTURE`` too, so in 2.8 every process that loaded its
+    settings imported the checker (audit A28-ARCH-04).
     """
     script = textwrap.dedent(
         """\
         import sys
 
-        import domainkit.conf
+        from domainkit.conf import ArchitectureConfig, Settings
 
+        Settings()
+        extra = {"EXTRA_LAYERS": ("ports",), "FORBIDDEN_LAYERS": {"ports": ("api",)}}
+        ArchitectureConfig(**extra)
         print("domainkit.architecture" in sys.modules)
+        from domainkit import architecture
+        from domainkit.conf import global_settings
+
+        print(architecture.LAYERS is global_settings.LAYERS)
         """
     )
-    assert run(script) == ["False"]
+    assert run(script) == ["False", "True"]
 
 
 @pytest.mark.reads_own_source
