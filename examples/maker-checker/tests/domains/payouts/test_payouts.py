@@ -56,3 +56,13 @@ def test_the_payout_route_refuses_a_large_payout(maker: Person) -> None:
 
     assert (refused.status_code, refused.json()["code"]) == (403, "approval_required")
     assert maker.api.get(URL).json()["items"] == []
+
+
+def test_an_iban_is_sent_as_typed_and_kept_as_banks_store_it(maker: Person) -> None:
+    """In groups of four, longer than 34 characters with its spaces: taken."""
+    body = payout("2500.00", iban="MT84 MALT 0110 0001 2345 MTLC AST0 01S")
+
+    sent = maker.api.post(URL, json=body, headers=maker.confirm(URL, body))
+
+    assert sent.status_code == 201, sent.json()
+    assert sent.json()["iban"] == "MT84MALT011000012345MTLCAST001S"

@@ -40,7 +40,7 @@ payouts` its domain. These files were then changed:
 | `src/config/settings/base.py` | The audit trail and approvals are installed; submitting and approving are acts (`APPROVALS`). |
 | `src/config/settings/test.py` | The tests run on PostgreSQL when `PAYOUTS_API_TEST_DATABASE_URL` names one. |
 | `src/config/urls.py` | The authenticator app's routes and the routes that confirm an act, at `/auth`; approvals at `/api/approvals`. |
-| `src/domains/payouts/domain.py` | The `Payout` aggregate, its rules, and its permissions. |
+| `src/domains/payouts/domain.py` | The `Payout` aggregate, its rules (an IBAN's check digits among them), and its permissions. |
 | `src/domains/payouts/controllers.py` | `send_payout`, guarded twice, and the act that confirms it. |
 | `src/domains/payouts/routes.py` | `POST /api/v1/payouts`, which asks for the act. |
 | `src/domains/payouts/apps.py` | The guard of large payouts, and the act, registered. |
@@ -63,10 +63,11 @@ pytest
 ```
 
 The example holds no migrations: `makemigrations` writes them for the
-domainkit you installed. `init` writes a `.env` that names the settings
-module, and `.env` is never committed, so the `export` line does its job.
-An approved payout runs in the worker: `python manage.py runworker`
-beside `runserver`.
+domainkit you installed. In a project of your own, made from this one,
+commit the migrations it writes. `init` writes a `.env` that names the
+settings module, and `.env` is never committed, so the `export` line does
+its job. An approved payout runs in the worker: `python manage.py
+runworker` beside `runserver`.
 
 ## One use case, guarded twice
 
@@ -108,14 +109,21 @@ guard(
 
 Over `THRESHOLD`, a payout needs one approval from a holder of
 `payouts.approve_payout`, never its maker. A currency the threshold does
-not name always needs approval: the control fails closed. `show` is what
-an approver reads of the request, the same lines the maker confirms:
+not name always needs approval: the control fails closed.
+
+The threshold judges one payout at a time: the example has no cap on
+what a clerk sends in a day. Three payouts of 9,999.99 each go through
+without an approver. A project counts what each person moves in a window
+with [`domainkit.contrib.limits`](../../docs/contrib/limits.md), which
+refuses the payout that would pass the day's limit. `show` is what
+an approver reads of the request, the same lines the maker confirms,
+with the IBAN as banks store it:
 
 ```python
 def shown(command: SendPayout) -> dict[str, str]:
     """What a person deciding on the payout reads: how much, to whom, where."""
     amount = f"{command.amount.amount} {command.amount.currency.code}"
-    return {"Pay": f"{amount} to {command.payee}", "IBAN": command.iban}
+    return {"Pay": f"{amount} to {command.payee}", "IBAN": compact_iban(command.iban)}
 ```
 
 ## A payout under the threshold: the maker confirms it
@@ -231,7 +239,8 @@ assert trail == [
 | `test_the_maker_never_approves_their_own_payout` | Holding the approvers' permission is not enough. |
 | `test_an_approval_is_for_the_request_its_approver_confirmed` | An authorization approves one request. |
 | `test_a_rejected_payout_is_never_sent`, `test_the_maker_withdraws_a_request` | Rejecting and cancelling end a request. |
-| `tests/domains/payouts/test_model.py` | The payout's own rules. |
+| `test_an_iban_is_sent_as_typed_and_kept_as_banks_store_it` | An IBAN typed in groups of four is taken. |
+| `tests/domains/payouts/test_model.py` | The payout's own rules, the IBAN's check digits among them. |
 
 domainkit's CI runs them on SQLite and on PostgreSQL, with the project's
 ruff, mypy, `check`, and migrations, for every change to the framework.

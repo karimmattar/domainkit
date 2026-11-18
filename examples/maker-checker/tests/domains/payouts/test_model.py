@@ -19,13 +19,14 @@ def test_a_payout_records_that_it_was_sent() -> None:
     [
         (" ", "DE89370400440532013000", "1.00"),
         ("Acme Supplies Ltd", "DE89-3704", "1.00"),
+        ("Acme Supplies Ltd", "DE88370400440532013000", "1.00"),  # Check digits.
         ("Acme Supplies Ltd", "DE89370400440532013000", "0.00"),
     ],
 )
 def test_a_payout_names_its_payee_and_account_and_moves_money(
     payee: str, iban: str, amount: str
 ) -> None:
-    """A blank payee, a malformed IBAN, or nothing to move is refused (422)."""
+    """Refused (422): no payee, no IBAN, wrong check digits, nothing to move."""
     with pytest.raises(InvalidPayout):
         Payout.send(payee, iban, usd(amount))
 

@@ -20,7 +20,13 @@ from domainkit.contrib.auth.actions import Action, Shown
 from domainkit.ddd import Command
 from domainkit.money import Money
 
-from domains.payouts.domain import Iban, Payee, Payout, PayoutsUnitOfWork
+from domains.payouts.domain import (
+    Payee,
+    Payout,
+    PayoutsUnitOfWork,
+    PrintedIban,
+    compact_iban,
+)
 
 SEND_PAYOUT: Final = "payouts.send_payout"
 """The guarded action, and the purpose of the act that confirms it."""
@@ -30,10 +36,10 @@ always does (a threshold fails closed)."""
 
 
 class SendPayout(Command):
-    """Send ``amount`` to ``payee``'s account ``iban``."""
+    """Send ``amount`` to ``payee``'s account ``iban``, as it was typed."""
 
     payee: Payee
-    iban: Iban
+    iban: PrintedIban
     amount: Money
 
 
@@ -55,7 +61,7 @@ def large(command: SendPayout) -> bool:
 def shown(command: SendPayout) -> dict[str, str]:
     """What a person deciding on the payout reads: how much, to whom, where."""
     amount = f"{command.amount.amount} {command.amount.currency.code}"
-    return {"Pay": f"{amount} to {command.payee}", "IBAN": command.iban}
+    return {"Pay": f"{amount} to {command.payee}", "IBAN": compact_iban(command.iban)}
 
 
 SEND: Final = Action(

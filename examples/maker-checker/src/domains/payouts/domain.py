@@ -23,8 +23,12 @@ from domainkit.money import Money
 
 PayoutId = NewType("PayoutId", UUID)
 Payee = Annotated[str, MaxLength(100)]
-Iban = Annotated[str, MaxLength(34)]
+LONGEST_IBAN: Final = 34
 SHORTEST_IBAN: Final = 15
+Iban = Annotated[str, MaxLength(LONGEST_IBAN)]
+"""An IBAN as banks store it: no spaces, at most 34 characters."""
+PrintedIban = Annotated[str, MaxLength(LONGEST_IBAN + LONGEST_IBAN // 4)]
+"""An IBAN as people type it: in groups of four, a space between."""
 
 
 class PayoutNotFound(NotFound):
@@ -59,10 +63,10 @@ class Payout(AggregateRoot[PayoutId]):
     @classmethod
     def send(cls, payee: str, iban: str, amount: Money) -> Self:
         """Send ``amount`` to ``payee``'s account ``iban``."""
-        iban = iban.replace(" ", "").upper()
+        iban = compact_iban(iban)
         if not payee.strip():
             raise InvalidPayout("Name the payee.")
-        if not (iban.isascii() and iban.isalnum() and len(iban) >= SHORTEST_IBAN):
+        if not iban_holds(iban):
             raise InvalidPayout("This is not an IBAN.")
         if amount.amount <= 0:
             raise InvalidPayout("A payout moves more than nothing.")
@@ -87,3 +91,26 @@ class PayoutsUnitOfWork(UnitOfWork, ABC):
     """One transaction over the payouts domain's repositories."""
 
     payouts: PayoutRepository
+
+
+def compact_iban(iban: str) -> str:
+    """``iban`` as banks store it: without spaces, in capitals."""
+    return iban.replace(" ", "").upper()
+
+
+def iban_holds(iban: str) -> bool:
+    """Whether ``iban``, compact, is an IBAN whose check digits hold (ISO 13616).
+
+    The country and check digits move to the end, each letter becomes a
+    number (A is 10, Z is 35), and the whole number leaves 1 divided by 97.
+    """
+    if not (
+        SHORTEST_IBAN <= len(iban) <= LONGEST_IBAN
+        and iban.isascii()
+        and iban.isalnum()
+        and iban[:2].isalpha()
+        and iban[2:4].isdigit()
+    ):
+        return False
+    digits = "".join(str(int(char, 36)) for char in iban[4:] + iban[:4])
+    return int(digits) % 97 == 1
