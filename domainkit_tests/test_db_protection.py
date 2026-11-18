@@ -9,6 +9,7 @@ audit trail's did not (A28-ARCH-07). The ledger is never kept per tenant
 tenant's audit trail is checked in ``test_audit_tenants.py``.
 """
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -102,13 +103,13 @@ def test_each_place_names_the_command_that_protects_it(
 
 
 @pytest.mark.anyio
-async def test_other_databases_get_no_triggers_and_lack_none(
-    make_database: MakeDatabase,
-) -> None:
-    """Only PostgreSQL has roles to keep out: elsewhere nothing is made or asked."""
-    url = make_database("plain")
-    if url.startswith("postgresql"):
-        pytest.skip("a database other than PostgreSQL")
+@pytest.mark.usefixtures("database_access")
+async def test_other_databases_get_no_triggers_and_lack_none(tmp_path: Path) -> None:
+    """Only PostgreSQL has roles to keep out: elsewhere nothing is made or asked.
+
+    A SQLite file of its own, whichever database the suite runs on.
+    """
+    url = f"sqlite+aiosqlite:///{tmp_path / 'plain.sqlite3'}"
     with override_settings(DATABASES={"default": {"URL": url}}):
         async with connections.engine().begin() as connection:
             assert await protect_append_only(connection, LEDGER) == []
