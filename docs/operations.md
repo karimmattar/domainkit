@@ -412,15 +412,20 @@ or use the inbox ([messaging.md](contrib/messaging.md#once-in-the-database-the-i
   restart would not bring them back, and while the broker is away the
   relaying workers run the outbox themselves (ADR
   [0187](adr/0187-keep-the-workers-heartbeat-to-its-liveness-fail-deliveries-whose-task-ended-and-share-provider-clients.md)).
-- **Readiness.** `--ready-file /tmp/worker-ready` checks, in the same
-  round, what `/ready` checks (domains, databases, ledgers, caches) and
-  the broker the worker consumes from. It rewrites the file while all
-  hold, and removes it when one fails, which is logged. A readiness
-  probe (`test -f /tmp/worker-ready`) or an alert reads it: a fresh
-  heartbeat without a ready file is a worker that carries on degraded,
-  such as a relay running the outbox while the broker is away. To have
-  a container restarted when a dependency fails, as before 2.9, point
-  its health check at the ready file instead.
+  It keeps a schedule of its own: no check holds it up, however long
+  `READINESS_TIMEOUT` is.
+- **Readiness.** Beside the heartbeat, every `--heartbeat-interval`, the
+  worker checks what `/ready` checks (domains, databases, ledgers,
+  caches) and the broker it consumes from. `--ready-file
+  /tmp/worker-ready` is rewritten while all hold, and removed as soon as
+  one round fails or raises, which is logged. A readiness probe
+  (`test -f /tmp/worker-ready`) or an alert reads it: a fresh heartbeat
+  without a ready file is a worker that carries on degraded, such as a
+  relay running the outbox while the broker is away. Give the probe the
+  tolerance you want with its retries (`failureThreshold`, or
+  `HEALTHCHECK --retries`). To have a container restarted when a
+  dependency fails, as before 2.9, point its health check at the ready
+  file instead.
 
   `--metrics-port` is no health signal: it answers from a thread of its
   own, however stuck the loop is.

@@ -9,11 +9,13 @@ that is stuck lets it age. A container's health check reads its age::
 It says that the worker lives, not that what it calls answers. While the
 broker is away, the relaying workers run the outbox themselves (ADR 0142),
 and while a database or a cache is away, the worker waits for it: a
-restart would help neither (ADR 0187).
+restart would help neither (ADR 0187). So the file is touched on a
+schedule of its own, which no check holds up, however slow.
 
-Each round also checks what ``/ready`` checks for the application (the
-domains, the databases, the ledgers, the caches), and the broker the
-worker consumes from. A failing check is logged. ``--ready-file
+Beside it, rounds of checks run, ``--heartbeat-interval`` apart: what
+``/ready`` checks for the application (the domains, the databases, the
+ledgers, the caches), and the broker the worker consumes from. A failing
+check is logged, and so is a check that raises. ``--ready-file
 /tmp/worker-ready`` is rewritten while every check holds, and removed
 when one fails: a readiness probe, or an alert, reads it. A fresh
 heartbeat beside a missing ready file is a degraded worker.
@@ -25,7 +27,9 @@ the worker stops.
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from functools import partial
 from pathlib import Path
 
 from domainkit import clock
@@ -53,21 +57,26 @@ async def beat(
     """Touch ``path``, then run the checks: touch ``ready`` if all hold, else remove it.
 
     Return whether every check held. ``path`` is touched whatever they
-    find: it is the worker's liveness.
+    find: it is the worker's liveness. A check that raises counts as
+    failing, and is logged: the round never raises.
     """
     if path is not None:
         await _touch(path)
-    failing = await failures(broker)
-    if failing:
+    try:
+        failing = await failures(broker)
+        if not failing:
+            if ready is not None:
+                await _touch(ready)
+            return True
         logger.warning(
             "The worker is not ready, and carries on: failing %s", ", ".join(failing)
         )
-        if ready is not None:
-            await asyncio.to_thread(ready.unlink, missing_ok=True)
-        return False
+    except Exception:
+        logger.exception("The worker's checks raised; it is not ready, and carries on")
     if ready is not None:
-        await _touch(ready)
-    return True
+        with suppress(OSError):
+            await asyncio.to_thread(ready.unlink, missing_ok=True)
+    return False
 
 
 async def heartbeat(
@@ -78,17 +87,44 @@ async def heartbeat(
     broker: str | None,
     ready: Path | None = None,
 ) -> None:
-    """Beat every ``interval`` seconds until ``stop``; then remove both files."""
+    """Touch ``path`` and check every ``interval`` seconds until ``stop``.
+
+    The touches keep a schedule of their own: no round of checks holds
+    them up, and a round under way at ``stop`` is cut short. Both files
+    are removed at the end.
+    """
     try:
-        while not stop.is_set():
-            await beat(path, broker, ready)
-            with suppress(TimeoutError):
-                async with asyncio.timeout(interval):
-                    await stop.wait()
+        async with asyncio.TaskGroup() as group:
+            if path is not None:
+                group.create_task(_every(interval, stop, partial(_live, path)))
+            checking = group.create_task(
+                _every(interval, stop, partial(beat, None, broker, ready))
+            )
+            await stop.wait()
+            checking.cancel()
     finally:
         for each in (path, ready):
             if each is not None:
                 await asyncio.to_thread(each.unlink, missing_ok=True)
+
+
+async def _every(
+    interval: float, stop: asyncio.Event, step: Callable[[], Awaitable[object]]
+) -> None:
+    """Await ``step()``, then wait ``interval`` seconds, until ``stop``."""
+    while not stop.is_set():
+        await step()
+        with suppress(TimeoutError):
+            async with asyncio.timeout(interval):
+                await stop.wait()
+
+
+async def _live(path: Path) -> None:
+    """Touch ``path``; a failed write is logged, and the file ages."""
+    try:
+        await _touch(path)
+    except OSError:
+        logger.exception("Could not touch the heartbeat file %s", path)
 
 
 async def _touch(path: Path) -> None:

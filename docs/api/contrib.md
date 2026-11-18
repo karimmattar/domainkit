@@ -538,7 +538,7 @@ The worker's health signals: a file it touches while it lives, one while it is r
 
 - `beat`: Touch `path`, then run the checks: touch `ready` if all hold, else remove it.
 - `failures`: What fails now: `/ready`'s checks, and `broker` (`broker:<alias>`).
-- `heartbeat`: Beat every `interval` seconds until `stop`; then remove both files.
+- `heartbeat`: Touch `path` and check every `interval` seconds until `stop`.
 
 ## `domainkit.contrib.messaging.testing`
 
