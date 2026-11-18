@@ -194,6 +194,16 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   ([Approving with an authorization](docs/contrib/approvals.md#approving-with-an-authorization))
   (audit A28-DX-06).
 
+### Security
+
+- A failed approval request keeps the seal it had when that seal did not
+  hold: failing makes the seal again only if it held, as an erasure's
+  pseudonym does. The failed record of a request changed around the
+  application, failed by its run (`request_tampered`) or by `privacy
+  erase` (`maker_not_allowed`), still fails its seal
+  ([Approvals](docs/contrib/approvals.md),
+  [upgrading.md](docs/upgrading.md#28-to-29)). Found in review.
+
 ## [2.8.0] - 2026-11-18
 
 2.8 answers fourteen of a project's fifteen notes on 2.7 (the last,

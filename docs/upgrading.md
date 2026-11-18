@@ -78,6 +78,10 @@ project that relied on 2.8's behaviour changes, and what to run.
   that is `Money` now reads `1500.00 USD`, where 2.8 showed
   `{"amount":"1500.00","currency":"USD"}`. A test that compared a
   screen's details compares the new text.
+- **A failed approval request keeps a seal that did not hold.** Failing
+  makes the seal again only if it held, so a request changed around the
+  application, then failed, still fails its seal. Code that reads
+  `sealed()` on failed requests, to report them, finds these.
 2.9 answers the audit of 2.8. Each part below says what a project that
 relied on 2.8's behaviour changes, and what to run.
 

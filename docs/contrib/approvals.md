@@ -435,9 +435,11 @@ A request that fails a check is `failed`, with the refusal's code as its
 `reason` (`request_tampered`, `fingerprint_mismatch`,
 `invalid_arguments`, `policy_removed`, `maker_not_allowed`), and runs
 nothing. So does a request whose use case refuses it (a `DomainError`,
-such as `insufficient_funds`): the maker may submit it again. A use case
-that lost a race (`ConcurrentUpdate`) or failed in another way is tried
-again by the worker, with its backoff.
+such as `insufficient_funds`): the maker may submit it again. Failing
+makes the request's seal again only if it held, so the failed record of
+a row changed around the application still fails its seal (since 2.9).
+A use case that lost a race (`ConcurrentUpdate`) or failed in another
+way is tried again by the worker, with its backoff.
 
 Where the use case's unit of work commits to the requests' database,
 the request is marked `executed` in that same transaction, with its
