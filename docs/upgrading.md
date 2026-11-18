@@ -82,10 +82,11 @@ relied on 2.7's behaviour changes, and what to run.
   where it submitted a new request; confirm the change again.
 - **Making staff and a user's return hold what else the call sets.**
   `auth.set_staff` and `auth.reactivate` requests hold `values`: the
-  fields and flags the `PATCH` sets beside the grant. A pending request
-  of 2.7 is still found and spent by the same call when it sets nothing
-  else; one sent with fields is submitted again, and approved again,
-  holding them.
+  fields and flags the `PATCH` changes beside the grant (a value the
+  user holds already is left out, and a text staff typed is checked as
+  typed text). A pending request of 2.7 is still found and spent by the
+  same call when it changes nothing else; one that changes fields is
+  submitted again, and approved again, holding them.
 - **A username, an address, or a number another user has is refused
   first**, before your `on_admin_change` checks and at the twin (`409`),
   where the commit refused it after them. A check of yours that expected
