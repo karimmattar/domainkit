@@ -59,6 +59,7 @@ __all__ = [
     "Violation",
     "check_domain",
     "check_domains",
+    "layer_warnings",
 ]
 
 LAYERS: Final = ("domain", "application", "infrastructure", "api")
@@ -114,7 +115,23 @@ _PUBLIC_ONLY: Final = ("domainkit.http.problems",)
 
 ``from domainkit.http.problems import HTTPException`` would pass otherwise:
 the rules read names, and a module holds every name it imports. The 2.7
-modules (``client``, ``uploads``) are not held to it yet (ADR 0182).
+modules (``client``, ``uploads``) are not held to it yet (ADR 0182): they
+are warned of (``_PUBLIC_FROM_3_0``).
+"""
+
+_PUBLIC_FROM_3_0: Final = ("domainkit.http.client", "domainkit.http.uploads")
+"""Allowed modules whose other names ``layer_warnings`` warns of; 3.0 refuses them.
+
+``from domainkit.http.uploads import UploadFile`` passed in 2.8, and so did
+Starlette's ``StreamingResponse`` and every name either module imports
+(ADR 0188).
+"""
+
+_SERVING: Final = MappingProxyType({"domainkit.http.uploads": frozenset({"serve"})})
+"""Names of an allowed module's ``__all__`` that answer a request with a response.
+
+A route answers; a gateway hands it what to answer with. Warned of by
+``layer_warnings``, refused by 3.0.
 """
 
 FORBIDDEN_LAYERS: Final = {
@@ -307,6 +324,55 @@ def check_domains(
     return [
         violation for name in names for violation in check_domain(name, names, rules)
     ]
+
+
+def layer_warnings(
+    installed: Iterable[str], rules: LayerRules | None = None
+) -> list[Violation]:
+    """Imports the rules let through in 2.x and 3.0 refuses (``architecture.W001``).
+
+    Of each domain in ``installed``, under ``rules`` (the project's): a
+    name a layer takes from an allowed module (``ALLOWED_MODULES``) that
+    its ``__all__`` does not list, such as Starlette's ``UploadFile`` from
+    ``domainkit.http.uploads``, and ``serve``, which builds a route's
+    response. ``check`` lists them as warnings, so ``check --deploy``
+    fails until the import changes (ADR 0188).
+    """
+    rules = project_rules() if rules is None else rules
+    names = [name for name in installed if not _within(name, FRAMEWORK_PACKAGES)]
+    found = []
+    for name in names:
+        for module, imported in iter_imports(name):
+            layer = _layer(name, module, rules)
+            if layer is not None and (rule := _refused_in_3_0(layer, imported, rules)):
+                found.append(Violation(module, imported, rule))
+    return list(dict.fromkeys(found))
+
+
+def _refused_in_3_0(layer: str, imported: str, rules: LayerRules) -> str | None:
+    """The rule 3.0 adds that ``imported`` breaks in ``layer``, if any."""
+    library = _closest(imported, rules.forbidden_libraries.get(layer, ()))
+    exception = _closest(imported, rules.allowed_modules.get(layer, ()))
+    if (
+        library is None
+        or exception is None
+        or exception not in _PUBLIC_FROM_3_0
+        or len(exception) <= len(library)
+        or imported == exception
+    ):
+        return None
+    name = imported.removeprefix(f"{exception}.").partition(".")[0]
+    if name in _SERVING.get(exception, ()):
+        return (
+            f"the {layer} layer may not answer a request with {exception}.{name}, "
+            "which is its route's; 3.0 refuses it"
+        )
+    if name not in _public_names(exception):
+        return (
+            f"the {layer} layer may import only the __all__ of {exception}; "
+            "3.0 refuses the rest"
+        )
+    return None
 
 
 def _layer_rule(

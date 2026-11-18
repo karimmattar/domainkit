@@ -24,7 +24,7 @@ statuses, and the amendments they name.
 | --- | --- | --- |
 | [0001](0001-record-architecture-decisions.md) | Record architecture decisions | Accepted |
 | [0002](0002-django-conventions-for-ddd-services.md) | Django's conventions for domain-driven services | Accepted |
-| [0003](0003-enforced-layer-rules.md) | Layer rules enforced by `check` | Accepted; amended by [0037](0037-one-clock-frozen-per-context.md), [0166](0166-let-a-domain-layer-mark-its-texts-extract-the-projects-own-and-add-a-translation-alone.md), [0167](0167-check-an-upload-whole-and-let-a-resource-take-one.md), [0182](0182-let-a-gateway-raise-a-routes-problems-and-name-users-by-the-fields-a-project-chooses.md), and 2026-10-25, 2026-11-15, 2026-11-16 and 2026-11-17 (at the end) |
+| [0003](0003-enforced-layer-rules.md) | Layer rules enforced by `check` | Accepted; amended by [0037](0037-one-clock-frozen-per-context.md), [0166](0166-let-a-domain-layer-mark-its-texts-extract-the-projects-own-and-add-a-translation-alone.md), [0167](0167-check-an-upload-whole-and-let-a-resource-take-one.md), [0182](0182-let-a-gateway-raise-a-routes-problems-and-name-users-by-the-fields-a-project-chooses.md), [0188](0188-write-down-the-cores-layering-and-hold-the-boundaries-it-draws.md), and 2026-10-25, 2026-11-15, 2026-11-16, 2026-11-17 and 2026-11-18 (at the end) |
 | [0004](0004-async-sqlalchemy-imperative-mapping.md) | Async SQLAlchemy with imperative mapping | Accepted; amended 2026-10-25 (at the end) |
 | [0005](0005-transactional-outbox.md) | A transactional outbox instead of a broker | Accepted; amended by [0118](0118-run-a-keys-messages-in-commit-order-by-holding-the-later-ones-in-the-outbox.md), and 2026-11-01 (at the end) |
 | [0006](0006-environment-prefix-from-project-name.md) | Environment variable prefix from the project name | Accepted |
@@ -192,7 +192,7 @@ statuses, and the amendments they name.
 | [0179](0179-bind-the-admin-acts-groups-by-id-and-keep-a-held-confirmation-to-its-request.md) | Bind the admin act's groups by id, and keep a held confirmation to its request | Accepted |
 | [0180](0180-refuse-links-a-person-typed-for-a-screen-and-a-reason-past-a-line.md) | Refuse links a person typed for a screen, and a reason past a line | Accepted |
 | [0181](0181-decide-a-body-limit-per-request-count-before-the-rules-hand-over-the-file-received-and-bound-the-xml-parsed.md) | Decide a body limit per request, count before the rules, hand over the file received, and bound the XML parsed | Accepted |
-| [0182](0182-let-a-gateway-raise-a-routes-problems-and-name-users-by-the-fields-a-project-chooses.md) | Let a gateway raise a route's problems, and name users by the fields a project chooses | Accepted |
+| [0182](0182-let-a-gateway-raise-a-routes-problems-and-name-users-by-the-fields-a-project-chooses.md) | Let a gateway raise a route's problems, and name users by the fields a project chooses | Accepted; amended by [0188](0188-write-down-the-cores-layering-and-hold-the-boundaries-it-draws.md) on 2026-11-18 (at the end) |
 | [0188](0188-write-down-the-cores-layering-and-hold-the-boundaries-it-draws.md) | Write down the core's layering, and hold the boundaries it draws | Accepted |
 
 ### Decisions still without a record

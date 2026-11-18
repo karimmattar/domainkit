@@ -52,6 +52,7 @@ Enforce the dependency rules of a domain-driven package layout.
 - `Violation`: One import that breaks a rule.
 - `check_domain`: Return the rule violations in domain `package`.
 - `check_domains`: Check every domain in `installed`, under `rules` (the project's).
+- `layer_warnings`: Imports the rules let through in 2.x and 3.0 refuses (`architecture.W001`).
 
 ## `domainkit.checks`
 

@@ -520,7 +520,10 @@ sooner when another sent the same file, which tells of that file.
 A gateway of the infrastructure layer may call `save_upload` with the
 bytes its route hands it: the [layer rules](reference/settings.md#layer-rules)
 allow `domainkit.http.uploads` there since 2.5. They keep Starlette's
-`UploadFile` out. A gateway that takes the route's file as it is,
+`UploadFile` out, and since 2.9 `check` warns when it is imported through
+`domainkit.http.uploads`, as of every name the module does not list in its
+`__all__`, and of `serve`, which only a route answers with
+(`architecture.W001`, refused in 3.0). A gateway that takes the route's file as it is,
 without reading it into memory first, types it as `Upload`, from the
 same module: a form's file, bytes, or a stream, as `save_upload` and
 `receive_upload` take them (since 2.7). It may catch `UploadRefused`
