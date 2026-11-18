@@ -1,10 +1,12 @@
 """SAML 2.0 single sign-on: only what the provider signed, for this request."""
 
+import asyncio
 import base64
+import threading
 import zlib
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Final
 from urllib.parse import parse_qsl, urlsplit
 
 import pytest
@@ -15,8 +17,12 @@ from cryptography.x509.oid import NameOID
 from fastapi.testclient import TestClient
 from lxml import etree
 from signxml.signer import XMLSigner
+from signxml.verifier import XMLVerifier
 
 from domainkit.conf import override_settings
+from domainkit.contrib.identity import saml
+from domainkit.contrib.identity.providers import Claims
+from domainkit.contrib.identity.settings import SamlSettings
 from domainkit_tests.conftest import ExitStackClients, Migrated
 from domainkit_tests.support.auth import bearer, create_user
 from domainkit_tests.test_identity_providers import PROVIDERS
@@ -27,6 +33,9 @@ FRONTEND = "https://app.example.com/login/done"
 SIGNER = XMLSigner(c14n_algorithm="http://www.w3.org/2001/10/xml-exc-c14n#")
 """Exclusive canonicalization, as identity providers sign SAML."""
 ACS = "https://api.example.com/auth/identity/saml/okta/acs"
+XS = "http://www.w3.org/2001/XMLSchema"
+XSI = "http://www.w3.org/2001/XMLSchema-instance"
+DS = "http://www.w3.org/2000/09/xmldsig#"
 
 
 def certificate() -> tuple[str, str]:
@@ -109,13 +118,17 @@ def response(
     key: str = KEY,
     cert: str = CERT,
     status: str = "urn:oasis:names:tc:SAML:2.0:status:Success",
+    attributes: str = "",
     **overrides: str,
 ) -> str:
     """A SAMLResponse, base64, signed as ``sign`` says.
 
-    ``sign`` is ``response``, ``assertion`` or ``none``.
+    ``sign`` is ``response``, ``assertion`` or ``none``; ``attributes`` are
+    added to the assertion's.
     """
-    assertion = assertion_xml(request_id, **overrides)
+    assertion = assertion_xml(request_id, **overrides).replace(
+        "</saml:AttributeStatement>", f"{attributes}</saml:AttributeStatement>"
+    )
     if sign == "assertion":
         signed = SIGNER.sign(
             etree.fromstring(assertion), key=key, cert=cert, reference_uri="_a1"
@@ -306,3 +319,520 @@ def test_a_saml_login_is_finished_only_in_the_browser_that_started_it(
     assert elsewhere == {"error": "saml_refused"}
     assert stolen.json()["code"] == "identity_not_linked"
     assert redeemed.status_code == 200, redeemed.json()
+
+
+def unsigned(names: int, *, extra: str = "") -> str:
+    """A SAMLResponse of ``names`` distinct element names, signed by no one."""
+    body = "".join(f"<n{index}x/>" for index in range(names))
+    xml = (
+        f'{extra}<samlp:Response xmlns:samlp="{saml.PROTOCOL}">{body}</samlp:Response>'
+    )
+    return base64.b64encode(xml.encode()).decode()
+
+
+def test_the_acs_parses_each_response_in_a_thread_of_its_own(
+    app: App, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Never on the event loop's, nor on a thread that outlives it (audit A28-PERF-03).
+
+    lxml keeps every name a thread parses for as long as the thread lives:
+    on the loop's thread, each response of new names grew it for good, and
+    blocked the loop while it parsed.
+    """
+    client = app(SAML={"okta": OKTA}, SIGNUP=True, FRONTEND_URL=FRONTEND)
+    verified = saml.verified_claims
+    seen: list[tuple[threading.Thread, bool]] = []
+
+    def recording(*arguments: Any) -> Claims:  # noqa: ANN401 - verified_claims'.
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            seen.append((threading.current_thread(), False))
+        else:
+            seen.append((threading.current_thread(), True))
+        return verified(*arguments)
+
+    monkeypatch.setattr(saml, "verified_claims", recording)
+    for _ in "ab":
+        request_id, relay = start(client)
+        assert "ticket" in acs(client, response(request_id), relay)
+
+    (first, on_a_loop), (second, again_on_a_loop) = seen
+    first.join(5)
+    second.join(5)
+    assert (on_a_loop, again_on_a_loop) == (False, False)
+    assert first is not second
+    assert first.name == second.name == "domainkit.identity.saml"
+    assert (first.is_alive(), second.is_alive()) == (False, False)
+
+
+@pytest.mark.anyio
+async def test_the_names_a_response_holds_go_with_its_thread() -> None:
+    """The loop's thread keeps none of the names lxml parsed for it."""
+    config = SamlSettings(**OKTA)
+    now = datetime.now(UTC)
+    before = etree.memory_debugger.dict_size()
+
+    with pytest.raises(saml.AssertionRefused, match="no valid signature"):
+        await saml._alone(
+            lambda: saml.verified_claims(config, unsigned(5_000), "_x", now)
+        )
+
+    assert etree.memory_debugger.dict_size() == before
+
+
+def test_a_response_past_its_bounds_is_refused_before_it_is_parsed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Characters, nodes as their bytes can make them, and a DTD; read as UTF-8.
+
+    A DTD was refused once parsed; now before. Each ``<`` counts twice and
+    each ``=`` once: a response at ``MAX_NODES`` is parsed, one past it is not.
+    """
+    config = SamlSettings(**OKTA)
+    now = datetime.now(UTC)
+    parsed: list[bytes] = []
+
+    def verify(self: XMLVerifier, data: bytes, **_: Any) -> Any:  # noqa: ANN401
+        parsed.append(data)
+        raise etree.XMLSyntaxError("stop here", 1, 1, 1)
+
+    monkeypatch.setattr(XMLVerifier, "verify", verify)
+    # 2 * (names + 2) + 1 nodes: the root's tags, and its xmlns.
+    at_the_bound = (saml.MAX_NODES - 5) // 2
+    refused = [
+        ("over 1,000,000 characters", "A" * (saml.MAX_RESPONSE + 4)),
+        ("more than 50,000 nodes", unsigned(at_the_bound + 1)),
+        ("a DTD or an entity", unsigned(1, extra="<!DOCTYPE r [<!ELEMENT r ANY>]>")),
+        ("a DTD or an entity", unsigned(1, extra='<!entity x "y">')),
+    ]
+    for reason, encoded in refused:
+        with pytest.raises(saml.AssertionRefused, match=reason):
+            saml.verified_claims(config, encoded, "_x", now)
+    with pytest.raises(saml.AssertionRefused, match="no valid signature"):
+        saml.verified_claims(config, unsigned(at_the_bound), "_x", now)
+
+    assert parsed == [base64.b64decode(unsigned(at_the_bound))]
+
+
+def test_a_response_is_read_as_utf_8(app: App) -> None:
+    """With a byte order mark too; in UTF-16, or Latin-1 past ASCII, refused.
+
+    Each is signed as identity providers sign: its canonical form is the
+    same, in UTF-8, so 2.8 believed all three.
+    """
+    client = app(SAML={"okta": OKTA}, SIGNUP=True, FRONTEND_URL=FRONTEND)
+
+    def utf_8_marked(request_id: str) -> str:
+        signed = base64.b64decode(response(request_id))
+        return base64.b64encode(b"\xef\xbb\xbf" + signed).decode()
+
+    def utf_16(request_id: str) -> str:
+        signed = base64.b64decode(response(request_id)).decode()
+        declared = f'<?xml version="1.0" encoding="UTF-16"?>{signed}'
+        return base64.b64encode(declared.encode("utf-16")).decode()
+
+    def latin_1(request_id: str) -> str:
+        signed = base64.b64decode(response(request_id, subject="00u\u00e9")).decode()
+        written = signed.replace("&#233;", "\u00e9")  # lxml wrote a reference.
+        declared = f'<?xml version="1.0" encoding="ISO-8859-1"?>{written}'
+        return base64.b64encode(declared.encode("latin-1")).decode()
+
+    sent = []
+    for encoded in (utf_8_marked, utf_16, latin_1):
+        request_id, relay = start(client)
+        sent.append(acs(client, encoded(request_id), relay))
+
+    assert "ticket" in sent[0]
+    assert sent[1:] == [{"error": "saml_refused"}] * 2
+
+
+@pytest.mark.anyio
+async def test_parses_at_once_are_bounded_and_a_cancelled_one_keeps_its_slot() -> None:
+    """``PARSES`` at once on a loop; the others wait for a thread to end.
+
+    A request cancelled while its response is parsed holds its slot until
+    the thread ends: the thread runs on, and counts.
+    """
+    claims = Claims(subject="00u1", email=None, email_verified=False)
+    release = threading.Event()
+    started = threading.Semaphore(0)
+    running: list[int] = []
+
+    def work() -> Claims:
+        running.append(1)
+        started.release()
+        release.wait(10)
+        return claims
+
+    tasks = [asyncio.create_task(saml._alone(work)) for _ in range(saml.PARSES + 1)]
+    for _ in range(saml.PARSES):
+        assert await asyncio.to_thread(started.acquire, timeout=10)
+    await asyncio.sleep(0.05)
+    waiting = len(running)
+    tasks[0].cancel()
+    await asyncio.sleep(0.05)
+    still = len(running)
+    release.set()
+    answers = await asyncio.gather(*tasks[1:])
+
+    assert waiting == still == saml.PARSES
+    assert tasks[0].cancelled()
+    assert answers == [claims] * saml.PARSES
+    assert len(running) == saml.PARSES + 1
+
+
+def signature(references: int = 1) -> str:
+    """A ``ds:Signature`` of ``references`` references, that no one signed.
+
+    Its ``SignedInfo`` holds 3 elements, and 3 more a reference.
+    """
+    reference = (
+        '<ds:Reference URI=""><ds:DigestMethod Algorithm="http://www.w3.org/2001/'
+        '04/xmlenc#sha256"/><ds:DigestValue>AAAA</ds:DigestValue></ds:Reference>'
+    )
+    return (
+        f'<ds:Signature xmlns:ds="{DS}"><ds:SignedInfo><ds:CanonicalizationMethod '
+        'Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315"/>'
+        '<ds:SignatureMethod Algorithm="http://www.w3.org/2001/04/xmldsig-more#'
+        f'rsa-sha256"/>{reference * references}</ds:SignedInfo>'
+        "<ds:SignatureValue>AAAA</ds:SignatureValue></ds:Signature>"
+    )
+
+
+def declaring(
+    count: int, *, nested: int = 1, inside: str = "", again: bool = False
+) -> str:
+    """A response whose elements declare ``count`` namespaces, over ``nested`` levels.
+
+    ``samlp`` is declared on the root besides, and ``ds`` where ``inside``
+    is a signature. ``again`` declares the same prefixes at each level, of
+    other URIs.
+    """
+    per = count // nested
+    opened = [
+        "<e "
+        + " ".join(
+            f'xmlns:{"" if again else f"p{level}"}x{index}="urn:p{level}x{index}"'
+            for index in range(per)
+        )
+        + ">"
+        for level in range(nested)
+    ]
+    xml = (
+        f'<samlp:Response xmlns:samlp="{saml.PROTOCOL}">{"".join(opened)}{inside}'
+        f"{'</e>' * nested}</samlp:Response>"
+    )
+    return base64.b64encode(xml.encode()).decode()
+
+
+def test_canonicalization_is_bounded_before_signxml_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Declarations on an element's path, its depth, a SignedInfo's elements.
+
+    Counted before signxml reads the response, within ``MAX_NODES`` (lead
+    review): a prefix declared again on the path counts again, so 32
+    declarations pass, flat, nested, or declaring the same prefixes again;
+    an element 32 levels deep passes, the signature's ``DigestMethod`` there
+    (27 levels, then the signature's 5), and one 33 deep does not; a
+    ``SignedInfo`` of 32 elements does.
+    """
+    config = SamlSettings(**OKTA)
+    now = datetime.now(UTC)
+    parsed: list[bytes] = []
+
+    def verify(self: XMLVerifier, data: bytes, **_: Any) -> Any:  # noqa: ANN401
+        parsed.append(data)
+        raise etree.XMLSyntaxError("stop here", 1, 1, 1)
+
+    monkeypatch.setattr(XMLVerifier, "verify", verify)
+    over = "more than 32 namespace declarations"
+    refused = [
+        (over, declaring(31, inside=signature())),
+        (over, declaring(12_000, inside=signature(40))),
+        (over, declaring(40, nested=10, inside=signature())),
+        (over, declaring(290, nested=10, inside=signature(), again=True)),
+        ("deeper than 32 levels", declaring(0, nested=28, inside=signature())),
+        ("more than 32 elements", declaring(0, inside=signature(10))),
+    ]
+    for reason, encoded in refused:
+        with pytest.raises(saml.AssertionRefused, match=reason):
+            saml.verified_claims(config, encoded, "_x", now)
+    passed = [
+        declaring(30, inside=signature()),
+        declaring(30, nested=10, inside=signature()),
+        declaring(30, nested=10, inside=signature(), again=True),
+        declaring(0, inside=signature(9)),
+        declaring(0, nested=27, inside=signature()),
+    ]
+    for encoded in passed:
+        with pytest.raises(saml.AssertionRefused, match="no valid signature"):
+            saml.verified_claims(config, encoded, "_x", now)
+
+    assert parsed == [base64.b64decode(each) for each in passed]
+
+
+def ascending(count: int) -> str:
+    """``count`` attributes, their names in ascending order."""
+    return " ".join(f'a{index:06d}=""' for index in range(count))
+
+
+def transformed(inner: str) -> str:
+    """A ``signature()`` whose reference's one transform holds ``inner``."""
+    enveloped = "http://www.w3.org/2000/09/xmldsig#enveloped-signature"
+    return signature().replace(
+        "<ds:DigestMethod",
+        f'<ds:Transforms><ds:Transform Algorithm="{enveloped}">{inner}'
+        "</ds:Transform></ds:Transforms><ds:DigestMethod",
+    )
+
+
+def test_attributes_and_a_signed_infos_bytes_are_bounded_before_signxml_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Attributes on any element, and a SignedInfo's bytes (lead review).
+
+    Canonicalization sorts each element's attributes, in a ``SignedInfo``
+    and in the signed part alike; a ``SignedInfo`` past 16 KiB is refused
+    whatever it holds. 32 attributes pass, in any order.
+    """
+    config = SamlSettings(**OKTA)
+    now = datetime.now(UTC)
+    parsed: list[bytes] = []
+
+    def verify(self: XMLVerifier, data: bytes, **_: Any) -> Any:  # noqa: ANN401
+        parsed.append(data)
+        raise etree.XMLSyntaxError("stop here", 1, 1, 1)
+
+    monkeypatch.setattr(XMLVerifier, "verify", verify)
+    foreign = '<x:a xmlns:x="urn:x" {}/>'
+    refused = [
+        ("more than 32 attributes", transformed(foreign.format(ascending(33)))),
+        ("more than 32 attributes", transformed(foreign.format(ascending(24_000)))),
+        ("more than 32 attributes", f"<e {ascending(33)}/>"),
+        (
+            "more than 16,384 bytes",
+            transformed(f'<x:a xmlns:x="urn:x">{"A" * 16_384}</x:a>'),
+        ),
+    ]
+    for reason, inside in refused:
+        with pytest.raises(saml.AssertionRefused, match=reason):
+            saml.verified_claims(config, declaring(0, inside=inside), "_x", now)
+    passed = [
+        declaring(0, inside=transformed(foreign.format(ascending(32)))),
+        declaring(0, inside=f"<e {ascending(32)}/>{signature()}"),
+        declaring(0, inside=transformed(f'<x:a xmlns:x="urn:x">{"A" * 15_000}</x:a>')),
+    ]
+    for encoded in passed:
+        with pytest.raises(saml.AssertionRefused, match="no valid signature"):
+            saml.verified_claims(config, encoded, "_x", now)
+
+    assert parsed == [base64.b64decode(each) for each in passed]
+
+
+def test_a_signed_response_whose_signed_part_holds_too_many_attributes_is_refused(
+    app: App,
+) -> None:
+    """Its SignedInfo holds; signxml would canonicalize the signed part next.
+
+    Attributes added to a signed element after signing are refused before
+    signxml reads the response; 32 reach it, and the digest refuses them.
+    The SignedInfo identity providers write takes under 2 KiB.
+    """
+    client = app(SAML={"okta": OKTA}, SIGNUP=True, FRONTEND_URL=FRONTEND)
+    config = SamlSettings(**OKTA)
+    now = datetime.now(UTC)
+    signed = base64.b64decode(response("_x"))
+    (signed_info,) = etree.fromstring(signed).iter(f"{{{DS}}}SignedInfo")
+
+    def added(count: int) -> str:
+        altered = signed.replace(
+            b"<samlp:Status>", f"<samlp:Status {ascending(count)}>".encode(), 1
+        )
+        return base64.b64encode(altered).decode()
+
+    request_id, relay = start(client)
+    logged_in = acs(client, response(request_id), relay)
+    _, relay = start(client)
+    sent = acs(client, added(24_000), relay)
+
+    assert len(etree.tostring(signed_info)) < 2048
+    assert "ticket" in logged_in
+    assert sent == {"error": "saml_refused"}
+    with pytest.raises(saml.AssertionRefused, match="more than 32 attributes"):
+        saml.verified_claims(config, added(33), "_x", now)
+    with pytest.raises(
+        saml.AssertionRefused, match=r"no valid signature \(InvalidDigest"
+    ):
+        saml.verified_claims(config, added(32), "_x", now)
+
+
+def deep(levels: int, leaves: int) -> str:
+    """``levels`` nested elements declaring 29 prefixes again, and ``leaves`` in them.
+
+    Each level declares the same prefixes, of other URIs; the empty leaves
+    are in the deepest.
+    """
+    opened = "".join(
+        "<d "
+        + " ".join(f'xmlns:p{index}="urn:{level}:{index}"' for index in range(29))
+        + ">"
+        for level in range(levels)
+    )
+    return f"{opened}{'<e/>' * leaves}{'</d>' * levels}"
+
+
+def test_namespaces_declared_again_deep_are_refused_signed_or_not(
+    app: App, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """29 prefixes in scope, declared again at each of 250 levels (lead review).
+
+    Unsigned, or in the signed part of a response the provider signed and
+    that was then changed, whose ``SignedInfo`` holds: refused before signxml
+    reads it, and through the ACS.
+    """
+    client = app(SAML={"okta": OKTA}, SIGNUP=True, FRONTEND_URL=FRONTEND)
+    config = SamlSettings(**OKTA)
+    now = datetime.now(UTC)
+    signed = base64.b64decode(response("_x"))
+    changed = signed.replace(
+        b"<samlp:Status>", f"<samlp:Status>{deep(250, 20_000)}".encode()
+    )
+    root = f'<samlp:Response xmlns:samlp="{saml.PROTOCOL}">'
+    unsigned = f"{root}{deep(250, 20_000)}{signature()}</samlp:Response>"
+
+    _, relay = start(client)
+    sent = acs(client, base64.b64encode(changed).decode(), relay)
+    parsed: list[bytes] = []
+    monkeypatch.setattr(
+        XMLVerifier, "verify", lambda self, data, **_: parsed.append(data)
+    )
+    for xml in (changed, unsigned.encode()):
+        with pytest.raises(
+            saml.AssertionRefused, match="more than 32 namespace declarations"
+        ):
+            saml.verified_claims(config, base64.b64encode(xml).decode(), "_x", now)
+
+    assert sent == {"error": "saml_refused"}
+    assert parsed == []
+
+
+def uri(length: int) -> str:
+    """A namespace URI of ``length`` characters."""
+    return "urn:" + "u" * (length - 4)
+
+
+def test_a_namespace_uri_past_128_characters_is_refused_before_signxml_runs(
+    app: App, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exclusive canonicalization writes a declaration again on each element using it.
+
+    A URI of 128 characters reaches signxml, one of 129 does not, declared
+    on a response no one signed, or in the signed part of one the provider
+    signed and that was then changed: refused before signxml reads it, and
+    through the ACS (lead review).
+    """
+    client = app(SAML={"okta": OKTA}, SIGNUP=True, FRONTEND_URL=FRONTEND)
+    config = SamlSettings(**OKTA)
+    now = datetime.now(UTC)
+    signed = base64.b64decode(response("_x"))
+
+    def changed(length: int) -> bytes:
+        used = f'<w xmlns:c="{uri(length)}">{"<c:e/>" * 4_000}</w>'
+        return signed.replace(b"<samlp:Status>", f"<samlp:Status>{used}".encode())
+
+    def unsigned(length: int) -> bytes:
+        root = f'<samlp:Response xmlns:samlp="{saml.PROTOCOL}">'
+        used = f'<w xmlns:c="{uri(length)}"><c:e/></w>'
+        return f"{root}{used}{signature()}</samlp:Response>".encode()
+
+    _, relay = start(client)
+    sent = acs(client, base64.b64encode(changed(129)).decode(), relay)
+    parsed: list[bytes] = []
+
+    def verify(self: XMLVerifier, data: bytes, **_: Any) -> Any:  # noqa: ANN401
+        parsed.append(data)
+        raise etree.XMLSyntaxError("stop here", 1, 1, 1)
+
+    monkeypatch.setattr(XMLVerifier, "verify", verify)
+    for xml in (changed(129), unsigned(129)):
+        with pytest.raises(saml.AssertionRefused, match="more than 128 characters"):
+            saml.verified_claims(config, base64.b64encode(xml).decode(), "_x", now)
+    for xml in (changed(128), unsigned(128)):
+        with pytest.raises(saml.AssertionRefused, match="no valid signature"):
+            saml.verified_claims(config, base64.b64encode(xml).decode(), "_x", now)
+
+    assert sent == {"error": "saml_refused"}
+    assert parsed == [changed(128), unsigned(128)]
+
+
+def test_an_okta_response_that_declares_namespaces_again_logs_in(app: App) -> None:
+    """``xs`` and ``xsi`` on each of 500 group values: 1,000 declared, 2 in scope."""
+    client = app(SAML={"okta": OKTA}, SIGNUP=True, FRONTEND_URL=FRONTEND)
+    request_id, relay = start(client)
+    values = "".join(
+        f'<saml:AttributeValue xmlns:xs="{XS}" xmlns:xsi="{XSI}" '
+        f'xsi:type="xs:string">group-{index}</saml:AttributeValue>'
+        for index in range(500)
+    )
+    groups = f'<saml:Attribute Name="groups">{values}</saml:Attribute>'
+    encoded = response(request_id, attributes=groups)
+
+    assert base64.b64decode(encoded).count(b"xmlns:xsi=") == 500
+    assert "ticket" in acs(client, encoded, relay)
+
+
+VALUE: Final = "<ds:SignatureValue>AAAA</ds:SignatureValue>"
+
+
+@pytest.mark.parametrize(
+    ("declared", "inside"),
+    [
+        ('xmlns:r="relative/uri"', signature()),
+        ("", signature().replace(VALUE, "")),
+        ("", signature().replace(VALUE, "<ds:SignatureValue/>")),
+    ],
+    ids=["a relative namespace", "no signature value", "an empty signature value"],
+)
+def test_what_lxml_or_signxml_raise_of_a_response_refuses_it(
+    app: App, declared: str, inside: str
+) -> None:
+    """Canonicalization, the signature's schema, signxml's own reading: never a 500.
+
+    lxml's ``C14NError`` and ``DocumentInvalid``, and signxml's ``TypeError``
+    on an empty value, reached the ACS as a 500 (lead review).
+    """
+    client = app(SAML={"okta": OKTA}, SIGNUP=True, FRONTEND_URL=FRONTEND)
+    _, relay = start(client)
+    root = f'<samlp:Response {declared} xmlns:samlp="{saml.PROTOCOL}">'
+    xml = f"{root}{inside}</samlp:Response>"
+
+    sent = acs(client, base64.b64encode(xml.encode()).decode(), relay)
+
+    assert sent == {"error": "saml_refused"}
+
+
+@pytest.mark.anyio
+async def test_a_response_that_waits_too_long_for_a_slot_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Past ``SLOT_WAIT``, refused: a parse under way never holds others for long."""
+    monkeypatch.setattr(saml, "SLOT_WAIT", 0.2)
+    release = threading.Event()
+    started = threading.Semaphore(0)
+
+    def work() -> Claims:
+        started.release()
+        release.wait(10)
+        return Claims(subject="00u1", email=None, email_verified=False)
+
+    held = [asyncio.create_task(saml._alone(work)) for _ in range(saml.PARSES)]
+    for _ in range(saml.PARSES):
+        assert await asyncio.to_thread(started.acquire, timeout=10)
+    try:
+        with pytest.raises(saml.AssertionRefused, match="no slot free"):
+            await saml._alone(work)
+    finally:
+        release.set()
+        await asyncio.gather(*held)

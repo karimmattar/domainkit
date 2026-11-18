@@ -3,11 +3,13 @@
 import csv
 import io
 import json
+import re
+import unicodedata
 from uuid import UUID
 
 import pytest
 
-from domainkit.ddd.query import F
+from domainkit.ddd.query import Criteria, F
 from domainkit.resources import FieldPolicy
 from domainkit.resources.renderers import (
     CSV,
@@ -146,6 +148,73 @@ def test_exports_stop_at_their_bound_even_if_more_arrive(
     assert len(lines.splitlines()) == 2
 
 
+def test_an_export_counts_no_further_than_one_past_its_bound(
+    store: InMemoryGadgets, use_auth: UseAuth, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The count stops at ``max_export + 1``: enough to refuse (A28-PERF-08)."""
+    use_auth()
+    asked: list[int] = []
+    counted = store._count_at_most
+
+    async def recording(criteria: Criteria | None, limit: int) -> int:
+        asked.append(limit)
+        return await counted(criteria, limit)
+
+    monkeypatch.setattr(store, "_count_at_most", recording)
+    small = client_of(gadgets(store, exports=("csv",), max_export=2))
+    roomy = client_of(gadgets(store, exports=("csv",), max_export=3))
+
+    too_many = small.get("/gadgets", headers=as_("viewer", Accept=CSV))
+    fits = roomy.get("/gadgets", headers=as_("viewer", Accept=CSV))
+
+    assert asked == [3, 4]
+    assert (too_many.status_code, fits.status_code) == (422, 200)
+    assert len(rows(fits.text)) == 4
+
+
+def test_an_export_counts_all_where_count_keeps_its_2_8_signature(
+    store: InMemoryGadgets, use_auth: UseAuth, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A repository that overrides ``count`` as 2.8 had it is asked so."""
+    use_auth()
+    counted = store.count
+
+    async def count(criteria: object = None, *, include_deleted: bool = False) -> int:
+        return await counted(criteria, include_deleted=include_deleted)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(store, "count", count)
+    small = client_of(gadgets(store, exports=("csv",), max_export=2))
+    roomy = client_of(gadgets(store, exports=("csv",), max_export=3))
+
+    too_many = small.get("/gadgets", headers=as_("viewer", Accept=CSV))
+    fits = roomy.get("/gadgets", headers=as_("viewer", Accept=CSV))
+
+    assert (too_many.status_code, fits.status_code) == (422, 200)
+
+
+def test_an_export_asks_a_decorated_count_as_2_8_did(
+    store: InMemoryGadgets, use_auth: UseAuth, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A wrapper's signature is not read: ``*args, **kwargs`` may hide 2.8's."""
+    use_auth()
+    counted = store.count
+
+    async def count(criteria: object = None, *, include_deleted: bool = False) -> int:
+        return await counted(criteria, include_deleted=include_deleted)  # type: ignore[arg-type]
+
+    async def logged(*args: object, **options: object) -> int:  # No functools.wraps.
+        return await count(*args, **options)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(store, "count", logged)
+    small = client_of(gadgets(store, exports=("csv",), max_export=2))
+    roomy = client_of(gadgets(store, exports=("csv",), max_export=3))
+
+    too_many = small.get("/gadgets", headers=as_("viewer", Accept=CSV))
+    fits = roomy.get("/gadgets", headers=as_("viewer", Accept=CSV))
+
+    assert (too_many.status_code, fits.status_code) == (422, 200)
+
+
 def test_exports_are_declared_and_documented(store: InMemoryGadgets) -> None:
     """Unknown formats are refused; OpenAPI lists the media types and 406."""
     with pytest.raises(TypeError, match="not pdf"):
@@ -253,6 +322,59 @@ def test_cells_are_safe_from_formulas() -> None:
 def test_formulas_behind_spaces_or_in_other_widths_are_guarded(text: str) -> None:
     """Spreadsheets skip leading spaces, and read wide and small signs as signs."""
     assert guarded(text) == f"'{text}"
+
+
+@pytest.mark.parametrize(
+    "hidden",
+    [
+        "\u200e",  # A left-to-right mark.
+        "\u200f",  # A right-to-left mark.
+        "\u061c",  # The Arabic letter mark.
+        "\u202e",  # A right-to-left override.
+        "\u2066",  # A left-to-right isolate.
+        "\u00ad",  # A soft hyphen.
+        "\u2061",  # The function application.
+        "\u034f",  # The combining grapheme joiner.
+        "\ufe0f",  # A variation selector.
+        "\u3164",  # The Hangul filler.
+        "\U000e0041",  # A tag.
+        "\u0600",  # The Arabic number sign: a format character that shows a mark.
+        "\ufff9",  # An interlinear annotation anchor.
+        "\x01",
+        " \u200e\u00ad",
+    ],
+)
+def test_formulas_behind_what_shows_nothing_are_guarded(hidden: str) -> None:
+    """Format characters, other default ignorables, and controls (audit A28-ARCH-13).
+
+    2.8 read past five of them alone. Whether a spreadsheet skips each one
+    is not known, nor which spreadsheet opens the file: a formula behind
+    one is guarded all the same, and a number stays a number.
+    """
+    assert guarded(f"{hidden}=1+1") == f"'{hidden}=1+1"
+    assert guarded(f"{hidden}@SUM(1)") == f"'{hidden}@SUM(1)"
+    assert guarded(f"{hidden}-1") == f"{hidden}-1"
+    assert guarded(hidden) == hidden
+
+
+def test_every_character_that_shows_nothing_is_read_past() -> None:
+    """Each control, format character, and default ignorable this Python knows.
+
+    One definition of what shows nothing serves screens, Office documents'
+    checks, and CSV cells.
+    """
+    from domainkit.utils.text import IGNORABLE
+
+    ignored = re.compile(f"[{IGNORABLE}]")
+    hidden = [
+        character
+        for character in map(chr, [*range(0x20000), *range(0xE0000, 0xE1000)])
+        if unicodedata.category(character) in {"Cc", "Cf"} or ignored.match(character)
+    ]
+
+    assert len(hidden) > 4_000
+    assert [each for each in hidden if guarded(f"{each}=1") != f"'{each}=1"] == []
+    assert guarded("x=1") == "x=1"
 
 
 def test_numbers_behind_spaces_stay_numbers() -> None:

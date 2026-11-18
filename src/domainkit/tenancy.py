@@ -100,6 +100,11 @@ __all__ = [
     "tenants_beyond",
 ]
 
+SHARED_APPS: Final = {
+    "domainkit.contrib.accounting": "the ledger",
+    "domainkit.contrib.limits": "the limits",
+}
+"""The contrib apps whose rows belong to no tenant, and what they keep (ADR 0183)."""
 CONNECTION: Final = "domainkit_connection"
 """The name ``PathTenant`` takes the connection by, kept apart from path parameters."""
 ID_TYPES: Final = (str, int, UUID)
@@ -761,6 +766,41 @@ def _path_tenants(dependant: Dependant) -> list[PathTenant]:
     for each in dependant.dependencies:
         found.extend(_path_tenants(each))
     return found
+
+
+def shared_apps() -> list[str]:
+    """``tenancy.I001``: installed apps whose rows every tenant shares.
+
+    While ``TENANCY`` is set: ``domainkit.contrib.accounting`` and
+    ``domainkit.contrib.limits`` keep one ledger and one set of limits for
+    every tenant. Their routes count the permissions a user holds
+    everywhere, never a member's role, so nothing is to fix: an info, which
+    ``check --deploy`` lists and never refuses, so a project knows which
+    apps keep no tenant's rows apart (ADR 0183).
+    """
+    from domainkit.apps import registry
+    from domainkit.conf import settings
+
+    if settings.TENANCY is None:
+        return []
+    shared = [
+        f"{name} ({kept})"
+        for name, kept in SHARED_APPS.items()
+        if registry.is_installed(name)
+    ]
+    if not shared:
+        return []
+    return [
+        CheckMessage(
+            "tenancy.I001",
+            f"TENANCY is set, and {' and '.join(shared)} keep rows that belong "
+            "to no tenant: every tenant shares them. Their routes count only "
+            "the permissions a user holds everywhere, never a member's role.",
+            hint="Keep each tenant's rows apart by what names them (an "
+            "account's code, a limit's subject), and reach them from code that "
+            "knows the tenant (docs/tenancy.md, 'Rows of no tenant').",
+        )
+    ]
 
 
 def unsaid_throttles(app: FastAPI) -> list[str]:

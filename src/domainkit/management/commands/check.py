@@ -35,7 +35,7 @@ from domainkit.http.servers import (
     unix_socket_warnings,
 )
 from domainkit.management.base import BaseCommand, CommandError
-from domainkit.tenancy import unsaid_throttles
+from domainkit.tenancy import shared_apps, unsaid_throttles
 
 
 class Command(BaseCommand):
@@ -139,6 +139,7 @@ def _warnings(app: FastAPI) -> list[str]:
     warnings += _tagged("probes.W001", _partial_probe_lists())
     if not deployed:  # A deployment migrates as it rolls out, after its checks.
         warnings += _tagged("migrations.W001", migrations.unapplied_warnings())
+    warnings += shared_apps()
     return warnings
 
 

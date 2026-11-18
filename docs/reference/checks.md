@@ -247,6 +247,7 @@ in `SILENCED_CHECKS`, it silences nothing.
 | `security.I001` | in staging and production: where a request's scheme comes from ([below](#information-https)) |
 | `keys.I001` | in every environment: `KEYS.DATA_KEYS` keeps retired keys, as a rotation does until `keys reencrypt` moved what they seal; `keys status --check` says when they can go ([keys.md](../contrib/keys.md#rotating)) |
 | `documents.I001` | in staging and production, with `DOCUMENTS["RENDERER"]` set: Gotenberg's flags are not checked, since they are set where it runs and its API does not show them; the hint names those to set ([documents.md](../documents.md#hardening-gotenberg)). New in 2.5 |
+| `tenancy.I001` | in every environment, with `TENANCY` set: the installed apps whose rows every tenant shares, `domainkit.contrib.accounting` and `domainkit.contrib.limits`. Their routes count only the permissions a user holds everywhere ([tenancy.md](../tenancy.md#rows-of-no-tenant)) |
 
 A domain's own infos (`<label>.I001`, from `on_deployment_warnings`) are
 listed the same way: never a failure, and nothing to silence.

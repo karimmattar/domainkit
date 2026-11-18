@@ -29,8 +29,10 @@ class Command(BaseCommand):
     all in this process unless ``--database`` picks one target. With
     ``MESSAGING.BROKER``, they relay their outboxes to the broker and run
     what it delivers; ``--once`` always works from the outbox directly.
-    ``--heartbeat-file`` rewrites a file while the worker's checks hold
-    (``domainkit.contrib.messaging.heartbeat``): a container's health check.
+    ``--heartbeat-file`` rewrites a file while the worker's loop runs, and
+    ``--ready-file`` one while its checks hold
+    (``domainkit.contrib.messaging.heartbeat``): a container's health check,
+    and its readiness.
     Whatever the source, the process runs at most ``MESSAGING.CONCURRENCY``
     messages at once: every outbox and queue draws from one ``Budget``. The
     installed domains start first, as when the application serves
@@ -82,15 +84,23 @@ class Command(BaseCommand):
             "--heartbeat-file",
             type=Path,
             metavar="PATH",
-            help="rewrite this file while the worker's checks hold, from its own "
-            "event loop: what a container's health check reads (removed on stop)",
+            help="rewrite this file while the worker's event loop runs, whatever "
+            "its checks find: what a container's health check reads (removed on stop)",
+        )
+        parser.add_argument(
+            "--ready-file",
+            type=Path,
+            metavar="PATH",
+            help="rewrite this file while the worker's checks hold (/ready's and the "
+            "broker's), remove it when one fails: its readiness (removed on stop)",
         )
         parser.add_argument(
             "--heartbeat-interval",
             type=_seconds,
             default=15.0,
             metavar="SECONDS",
-            help="seconds between checks for --heartbeat-file (default: %(default)s)",
+            help="seconds between beats and checks for --heartbeat-file and "
+            "--ready-file (default: %(default)s)",
         )
 
     async def handle(
@@ -104,6 +114,7 @@ class Command(BaseCommand):
         relay: bool,
         heartbeat_file: Path | None = None,
         heartbeat_interval: float = 15.0,
+        ready_file: Path | None = None,
         **options: object,
     ) -> None:
         """Run until a signal arrives, or once."""
@@ -153,10 +164,14 @@ class Command(BaseCommand):
             loop.add_signal_handler(signal_number, on_signal)
         beating = (
             None
-            if heartbeat_file is None
+            if heartbeat_file is None and ready_file is None
             else asyncio.create_task(
                 heartbeat(
-                    heartbeat_file, heartbeat_interval, stop, broker=config.BROKER
+                    heartbeat_file,
+                    heartbeat_interval,
+                    stop,
+                    broker=config.BROKER,
+                    ready=ready_file,
                 ),
                 name="domainkit.worker.heartbeat",
             )
@@ -186,7 +201,7 @@ class Command(BaseCommand):
             main.uncancel()
             self.write("Stopped running messages at once; they run again.")
         finally:
-            if beating is not None:  # Its file goes: a stopped worker is no one's.
+            if beating is not None:  # Its files go: a stopped worker is no one's.
                 beating.cancel()
                 with suppress(asyncio.CancelledError):
                     await beating

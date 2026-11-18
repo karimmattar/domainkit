@@ -1,7 +1,7 @@
 """Install ``domainkit.contrib.auth`` (after ``domainkit.contrib.contenttypes``)."""
 
 import dataclasses
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from http.cookies import SimpleCookie
 from importlib import import_module
 from typing import Any, Final
@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 
 from fastapi import FastAPI, Response
 from fastapi.dependencies.models import Dependant
-from sqlalchemy import Table
+from sqlalchemy import Connection, Table, inspect
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from domainkit.apps import DomainConfig, registry
@@ -55,7 +55,14 @@ from .permissions import declared_permissions, sync_permissions
 from .principals import invalidate_all, stamp_committed, stamp_pending, watch
 from .routing import AccountRoutes, on_account_routes
 from .settings import PRINCIPAL_TTL, AuthSettings, auth_settings
-from .tables import DEFAULT_USER_TABLES, permissions, start_mappers, users
+from .tables import (
+    DEFAULT_USER_TABLES,
+    listing_field,
+    lookup_indexes,
+    permissions,
+    start_mappers,
+    users,
+)
 from .validators import get_password_validators, preset_contradictions
 
 CONTENTTYPES = "domainkit.contrib.contenttypes"
@@ -126,6 +133,8 @@ class AuthConfig(DomainConfig):
         on_stage(self.stamp_changes)
         on_committed(self.after_commit)
         on_migrated(self.create_permissions)
+        self._leave_lookup_indexes()
+        on_migrated(self.index_lookups)
         invalidate_all()  # Settings, models, or databases may have changed.
         declared_permissions()
         if registry.is_installed(MESSAGING):
@@ -561,6 +570,44 @@ class AuthConfig(DomainConfig):
         # The permissions table's foreign key needs the content types one.
         if database == self.database and await has_tables(connection, permissions):
             await sync_permissions(connection)
+
+    async def index_lookups(self, connection: AsyncConnection, database: str) -> None:
+        """Make the user lookups' indexes after ``migrate``, on PostgreSQL.
+
+        ``lower()`` of the address and the username, and the admin's order
+        (``lookup_indexes``), each where missing. The table's indexes are
+        read first, from the catalog, and only a missing one is made: a
+        ``CREATE INDEX`` locks the table against writes even when the index
+        exists, so a ``migrate`` with nothing to make waits for no writer.
+        Not on SQLite, which cannot reflect an index on ``lower()``: such an
+        index would warn at every ``makemigrations`` and snapshot, so they
+        are not declared on the table either, and revisions leave them alone
+        (A28-PERF-02).
+        """
+        if database != self.database or connection.dialect.name != "postgresql":
+            return
+        present = await connection.run_sync(_index_names, self.user_table.name)
+        if present is None:
+            return
+        preparer = connection.dialect.identifier_preparer
+        table = preparer.format_table(self.user_table)
+        for name, indexed in self._lookup_indexes(preparer.quote).items():
+            if name not in present:  # IF NOT EXISTS: another migrate made it.
+                await connection.exec_driver_sql(
+                    f"CREATE INDEX IF NOT EXISTS {preparer.quote(name)} "
+                    f"ON {table} ({indexed})"
+                )
+
+    def _lookup_indexes(self, quote: Callable[[str], str] = str) -> dict[str, str]:
+        """The user lookups' indexes, by name (``lookup_indexes``)."""
+        model, table = self.user_model, self.user_table
+        return lookup_indexes(model, table, listing_field(model, table), quote)
+
+    def _leave_lookup_indexes(self) -> None:
+        """Have revisions leave the lookups' indexes alone, by their names."""
+        info = self.user_table.info
+        names = (*info.get("unmanaged_index_names", ()), *self._lookup_indexes())
+        info["unmanaged_index_names"] = (*dict.fromkeys(names),)
 
     def _check_routing(self) -> None:
         """Users, their links, and content types must share one target.
@@ -1062,3 +1109,20 @@ async def _export_logins(subject: str) -> Mapping[str, object]:
     from .erasure import export_logins
 
     return await export_logins(subject)
+
+
+def _index_names(connection: Connection, table: str) -> set[str] | None:
+    """The names of ``table``'s indexes, in the schema the connection works in.
+
+    None where it has no such table yet. Read from the catalog, which takes
+    no lock on the table.
+    """
+    inspector = inspect(connection)
+    schema = connection.exec_driver_sql("SELECT current_schema()").scalar()
+    if not inspector.has_table(table, schema=schema):
+        return None
+    return {
+        str(index["name"])
+        for index in inspector.get_indexes(table, schema=schema)
+        if index["name"] is not None
+    }

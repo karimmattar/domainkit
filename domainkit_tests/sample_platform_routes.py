@@ -29,10 +29,15 @@ from domainkit.http.uploads import IMAGES, PDF, save_upload, serve
 from domainkit.i18n import get_language
 
 ACTOR_HEADER: Final = "X-Test-Actor"
+IMPERSONATING_HEADER: Final = "X-Test-Impersonating"
+"""The user ``X-Test-Actor`` acts as, as an impersonation's credentials say."""
 
 
 class ActorFromHeader:
-    """Make ``X-Test-Actor`` the actor, as authentication would."""
+    """Make ``X-Test-Actor`` the actor, as authentication would.
+
+    ``X-Test-Impersonating`` names the user the actor acts as, if any.
+    """
 
     def __init__(self, app: ASGIApp) -> None:
         """Wrap ``app``."""
@@ -44,11 +49,13 @@ class ActorFromHeader:
         if context is None:  # Lifespan events have no request.
             await self.app(scope, receive, send)
             return
-        actor = Headers(scope=scope).get(ACTOR_HEADER)
+        headers = Headers(scope=scope)
+        actor = headers.get(ACTOR_HEADER)
         if actor is None:
             await self.app(scope, receive, send)
             return
-        with bind_request(replace(context, actor=actor)):
+        impersonating = headers.get(IMPERSONATING_HEADER)
+        with bind_request(replace(context, actor=actor, impersonating=impersonating)):
             await self.app(scope, receive, send)
 
 
@@ -238,11 +245,12 @@ def page_routes() -> APIRouter:
     @pages.get("/me/basket")
     @cache_page(ttl=60, vary_on_user=True)
     async def basket() -> dict[str, str | None]:
-        """The caller's basket, cached per user."""
+        """The caller's basket, cached per user: the user staff act as, if any."""
         context = current_request()
         actor = context.actor if context else None
-        computed.append(f"basket:{actor}")
-        return {"owner": actor}
+        acting_as = context.impersonating if context else None
+        computed.append(f"basket:{actor}" + (f" as {acting_as}" if acting_as else ""))
+        return {"owner": acting_as or actor}
 
     @pages.get("/greeting")
     @cache_page(ttl=60, name="shared.greeting")

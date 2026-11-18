@@ -19,7 +19,7 @@ from typing import Any, Final
 from urllib.parse import quote
 
 from . import SearchBackend, SearchError, SearchResult, check_page
-from ._http import call
+from ._http import call, shared_client
 
 __all__ = ["MeilisearchBackend"]
 
@@ -33,13 +33,11 @@ class MeilisearchBackend(SearchBackend):
         self, url: str, api_key: str | None = None, *, timeout: float = 10.0
     ) -> None:
         """Call ``url``, with ``api_key`` (a key allowed what the calls do)."""
-        from domainkit.http.client import HttpClient
-
         self.url = url.rstrip("/")
         self._headers = (
             {} if api_key is None else {"Authorization": f"Bearer {api_key}"}
         )
-        self.client = HttpClient(base_url=self.url, timeout=timeout, propagate=False)
+        self.client = shared_client(self.url, timeout)
 
     def __repr__(self) -> str:
         """The server; never the key."""

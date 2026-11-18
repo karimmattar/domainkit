@@ -46,7 +46,7 @@ from domainkit import deadlines
 from domainkit.cache.core import DEFAULT_TTL, TTL, adapter
 from domainkit.cache.handler import caches
 from domainkit.conf import DEFAULT_CACHE_ALIAS
-from domainkit.context import current_request
+from domainkit.context import caller_key, current_request
 from domainkit.i18n.translation import get_language
 from domainkit.utils.headers import none_match, patch_vary
 
@@ -71,7 +71,8 @@ def cache_page(
     """Cache what an async GET endpoint returns, for ``ttl``, in ``cache``.
 
     ``vary`` lists request headers the answer depends on (``X-Tenant``).
-    ``vary_on_user`` caches answers to users too, one entry per actor.
+    ``vary_on_user`` caches answers to users too, one entry per actor, and
+    one for each user staff act as (``domainkit.context.caller_key``).
     ``max_age`` lets clients reuse an answer that long without asking
     again. ``name`` (default: the endpoint's import path) starts every key.
 
@@ -175,17 +176,23 @@ _UNCHECKED: Final = ""
 def _user(request: Request) -> str | None:
     """The actor, ``""`` for credentials without one, or None for anonymous callers.
 
-    Without an actor (no ``RequestContextMiddleware``), credentials that
-    middleware accepted (``request.auth``) still count, by their user's id:
-    a cookie or a client certificate sends no ``Authorization`` header.
+    Staff acting as a user (an impersonation) have entries apart, for each
+    user they act as (``caller_key``). Without an actor (no
+    ``RequestContextMiddleware``), credentials that middleware accepted
+    (``request.auth``) still count, by their user's id and, if they act
+    as the user, their staff member's (``Credentials.impersonator``): a
+    cookie or a client certificate sends no ``Authorization`` header.
     """
     context = current_request()
     if context is not None and context.actor:
-        return context.actor
+        return caller_key(context.actor, context.impersonating)
     credentials = request.scope.get("auth")
     if credentials is not None:
         user_id = getattr(getattr(credentials, "user", None), "id", None)
-        return _UNCHECKED if user_id is None else str(user_id)
+        if user_id is None:
+            return _UNCHECKED
+        staff = getattr(credentials, "impersonator", None)
+        return str(user_id) if staff is None else caller_key(str(staff), str(user_id))
     return _UNCHECKED if "authorization" in request.headers else None
 
 
