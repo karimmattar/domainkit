@@ -19,6 +19,12 @@ msgstr ""
 msgid "The database is unavailable; try again shortly."
 msgstr ""
 
+msgid "The database was lost as the change was committed, so it may have been made; check before you send it again."
+msgstr ""
+
+msgid "The request ran out of time as the change was committed, so it may have been made; check before you send it again."
+msgstr ""
+
 msgid ""
 "A value cannot be stored: it is too long, out of range, or holds a "
 "character the database refuses."

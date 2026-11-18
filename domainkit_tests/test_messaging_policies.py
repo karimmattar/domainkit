@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import math
 import re
 import uuid
@@ -28,6 +29,7 @@ from domainkit.contrib.messaging import (
     task,
 )
 from domainkit.contrib.messaging import admin as outbox_admin
+from domainkit.contrib.messaging import outbox as messaging_outbox
 from domainkit.contrib.messaging import registry as tasks
 from domainkit.contrib.messaging import retry as retry_module
 from domainkit.contrib.messaging import worker as worker_module
@@ -46,7 +48,7 @@ from domainkit.contrib.messaging.tables import (
 )
 from domainkit.db import connections
 from domainkit.db.hooks import on_transaction_committed
-from domainkit.ddd import EventBus
+from domainkit.ddd import EventBus, HandlerTimedOut
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.ratelimit import Decision
 from domainkit.management import CommandError
@@ -484,6 +486,44 @@ async def test_what_follows_enqueue_runs_free_of_the_deadline() -> None:
         left = deadlines.remaining()
 
     assert (seen, left, bound.expired()) == ([None], None, False)
+    assert [row["target"] for row in await rows()] == ["tests.low"]
+
+
+@pytest.mark.usefixtures("tables")
+async def test_an_after_commit_hook_of_enqueue_that_hangs_is_cut_off(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``on_transaction_committed`` gets ``EVENT_HANDLER_TIMEOUT``, then is cut off.
+
+    The task is queued; the hook that hangs is logged and reported as
+    ``HandlerTimedOut``.
+    """
+    reports: list[tuple[BaseException, dict[str, object]]] = []
+    monkeypatch.setattr(
+        messaging_outbox,
+        "report_error",
+        lambda exc, **context: reports.append((exc, context)),
+    )
+
+    async def hangs(database: str) -> None:
+        await asyncio.Event().wait()
+
+    on_transaction_committed(hangs, domain="messaging")
+    with (
+        override_settings(EVENT_HANDLER_TIMEOUT=0.1),
+        caplog.at_level(logging.ERROR, "domainkit.contrib.messaging"),
+    ):
+        async with asyncio.timeout(5):
+            await enqueue(low, label="queued")
+
+    cut = "After-commit work of 'messaging' took more than 0.1s"
+    assert caplog.messages == [f"{cut}; cut off"]
+    [(exc, context)] = reports
+    assert (type(exc), str(exc), context) == (
+        HandlerTimedOut,
+        cut,
+        {"domain": "messaging"},
+    )
     assert [row["target"] for row in await rows()] == ["tests.low"]
 
 

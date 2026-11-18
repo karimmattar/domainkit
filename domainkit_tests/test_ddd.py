@@ -30,6 +30,7 @@ from domainkit.ddd import (
     ValueObject,
     event_bus,
 )
+from domainkit.ddd.uow import failed_in_doubt
 
 pytestmark = pytest.mark.anyio
 
@@ -473,6 +474,32 @@ async def test_a_commit_that_fails_unanswered_is_in_doubt(
     with pytest.raises(type(failure)):
         await commit()
     assert (uow.committed, uow.in_doubt) == (0, in_doubt)
+
+
+async def test_an_error_raised_from_a_commit_in_doubt_is_in_doubt() -> None:
+    """``failed_in_doubt`` follows what an error was raised from, a while.
+
+    A timeout raised from the cancellation of a commit is in doubt; an
+    error of a refused commit is not; a chain that runs on for ever, or
+    loops, is followed 16 errors deep, then taken for none.
+    """
+    lost = LosesItsAnswer(ConnectionError("the reply was lost"))
+    refused = LosesItsAnswer(OrderTooLarge("refused"))
+    for uow in (lost, refused):
+        try:
+            async with uow:
+                await uow.commit()
+        except Exception as exc:  # noqa: BLE001 - the commit's error, whatever it is.
+            caught = exc
+        try:
+            raise TimeoutError("cut off") from caught
+        except TimeoutError as timeout:
+            wrapped = timeout
+        assert failed_in_doubt(wrapped) is (uow is lost)
+    loop = ValueError("first")
+    loop.__context__ = ValueError("second")
+    loop.__context__.__context__ = loop
+    assert failed_in_doubt(loop) is False
 
 
 async def test_handlers_a_cancellation_stops_are_logged_and_reported(

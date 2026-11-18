@@ -495,10 +495,13 @@ then is cancelled, logged, and reported to the error reporters as
 The request's deadline, and a worker task's timeout, do not cut the
 handlers off: what follows a commit runs free of them
 (`deadlines.after_commit`). A request is answered as committed, and a
-task keeps the time it had left when it committed. When the work itself
-is cancelled (a shutdown, a task cancelled), the handler cut off and
-those that did not run are logged and reported as `HandlerCancelled`.
-A handler may have its own limit:
+task keeps the time it had left when it committed. The domains'
+after-commit hooks (`on_committed`, `on_transaction_committed`) get
+`EVENT_HANDLER_TIMEOUT` each too, and one still running then is cut off
+and reported as `HandlerTimedOut`. When the work itself is cancelled (a
+shutdown, a task cancelled), the handler cut off and those that did not
+run are logged and reported as `HandlerCancelled`. A handler may have
+its own limit:
 
 ```python
 event_bus.subscribe(InvoicePaid, refresh_totals, timeout=2)
@@ -1278,10 +1281,15 @@ starts:
 - A long-lived endpoint that does slow work before it starts answering
   uses `RequestTimeout(None)`, or a longer deadline.
 - A request that commits a unit of work is answered as committed: the
-  commit lifts its deadline, as the response's start does. Its in-process
-  event handlers run, each within its own timeout. *New in 2.9*: before,
-  the deadline could cut them off and answer 503 for a change that was
-  made.
+  commit lifts its deadline, as the response's start does, whichever of
+  the request's tasks commits (one it started with `asyncio.gather` or a
+  task group, or the one a `BaseHTTPMiddleware` serves the route in). Its
+  in-process event handlers and after-commit hooks run, each within its
+  own timeout. *New in 2.9*: before, the deadline could cut them off and
+  answer 503 for a change that was made.
+- A request cut off as its `COMMIT` was sent may have made its change: it
+  is answered 503 `deadline_exceeded` without `Retry-After`, with a
+  detail that says to check before sending it again.
 - Code can lift the deadline of the work it is doing with
   `domainkit.deadlines.current_deadline().clear()`.
 - Tasks a request starts share its deadline while the request runs, and
@@ -1324,18 +1332,20 @@ Workers and commands bound their own work the same way:
 request there is no deadline until a block sets one.
 
 A deadline cuts off work that has not committed. A unit of work runs
-what follows its commit in `deadlines.after_commit()`: no deadline the
-task enforces cuts it off, and the code inside sees none.
+what follows its commit in `deadlines.after_commit()`: no deadline cuts
+it off, and the code inside sees none.
 
-- A deadline made `until_commit` stays lifted, and so do the blocks it
-  bounds: the work committed, and its answer must say so.
-  `DeadlineMiddleware` makes each request's so:
+- A deadline made `until_commit` stays lifted, and so does every block it
+  bounds, in any task: the work committed, and its answer must say so.
+  This holds when the commit is made in a task that only shares the
+  deadline. `DeadlineMiddleware` makes each request's so:
   `deadlines.timeout(seconds, until_commit=True)`.
-- The others are put back when the block ends, later by the time it
-  took: what follows the commit does not count against the work's time.
-  A worker's task keeps the time it had left.
-- A deadline another task enforces, or one the task only shares, is left
-  as it is.
+- The other deadlines the committing task enforces are put back when the
+  block ends, later by the time it took: what follows the commit does not
+  count against the work's time. A worker's task keeps the time it had
+  left.
+- Any other deadline, one that another task enforces and no commit ends,
+  is left as it is.
 
 The deadline itself is a `deadlines.Deadline`:
 
@@ -1405,7 +1415,11 @@ timers that cancel work run on the event loop's own clock.
   task's transactions and outgoing calls keep to it as a request's do.
   The in-process handlers of a commit it makes do not count against it,
   so slow handlers no longer fail a task that committed, and run it, and
-  commit it, again.
+  commit it, again. So `TASK_TIMEOUT` no longer bounds a run's whole
+  time: what follows each commit adds to it, up to `EVENT_HANDLER_TIMEOUT`
+  for each handler and hook. Keep `VISIBILITY_TIMEOUT` above both, or a
+  run still in its handlers may be claimed again
+  ([messaging.md](contrib/messaging.md)).
 - **Cache computations** run under the cache's `COMPUTE_TIMEOUT`, or,
   when they borrow their caller's resources, under that caller's
   deadline ([cache.md](cache.md#what-a-factory-may-use)).
@@ -1822,7 +1836,7 @@ Each setting has its full row on
 | `SLOW_CALLBACK_DURATION` | `0.1` | With `DEBUG`, log each loop step that holds the loop this long. `None` turns it off. |
 | `LOGGING` | minimal | The `dictConfig` mapping `setup()` applies. `build_logging_config` makes one. |
 | `ERROR_REPORTERS` | `()` | Reporters by dotted path, run on the reporting thread. |
-| `EVENT_HANDLER_TIMEOUT` | `10.0` | Seconds an in-process event handler may run. |
+| `EVENT_HANDLER_TIMEOUT` | `10.0` | Seconds an in-process event handler, or a domain's after-commit hook, may run. |
 | `ACCESS_LOG_SAMPLE_RATE` | `1.0` | The share of successful requests that write an access line. |
 | `ACCESS_LOG_SLOW_DURATION` | `1.0` | Seconds after which a request always writes its line. |
 | `ACCESS_LOG_PATH` | `"template"` | `"raw"` logs the path as sent. |

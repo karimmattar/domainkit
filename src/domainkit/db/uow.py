@@ -34,6 +34,7 @@ and deadlocks (``40P01``); SQLite reports neither. ``lock(name)`` is
 the database's write lock.
 """
 
+import asyncio
 import hashlib
 import logging
 import re
@@ -46,7 +47,7 @@ from typing import Any, Final, Self
 from weakref import WeakKeyDictionary
 
 from sqlalchemy import BigInteger, Connection, bindparam, event, func, select, text
-from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, AsyncSessionTransaction
 from sqlalchemy.orm.exc import StaleDataError
 
@@ -63,6 +64,7 @@ from domainkit.ddd import (
     DeferredTask,
     DomainEvent,
     EventBus,
+    HandlerTimedOut,
     LockNotAvailable,
     UnitOfWork,
 )
@@ -339,13 +341,28 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
             await hook.call(self, events, tasks)
 
     async def _committed(self) -> None:
-        """Run the ``on_committed`` hooks; a failure is reported, never raised."""
+        """Run the ``on_committed`` hooks; a failure is reported, never raised.
+
+        No deadline cuts them off any more (``deadlines.after_commit``), so
+        each runs within ``EVENT_HANDLER_TIMEOUT``, as an in-process handler
+        does: one still running then is cut off, logged and reported as
+        ``HandlerTimedOut``, and the next one runs.
+        """
+        seconds = settings.EVENT_HANDLER_TIMEOUT
         for hook in on_committed.hooks():
             try:
-                await hook.call(self)
+                async with asyncio.timeout(seconds) as limit:
+                    await hook.call(self)
             except Exception as exc:  # The data is committed: report, carry on.
-                logger.exception("After-commit work of %r failed", hook.domain)
-                report_error(exc, domain=hook.domain)
+                if not limit.expired():
+                    logger.exception("After-commit work of %r failed", hook.domain)
+                    report_error(exc, domain=hook.domain)
+                    continue
+                cut = HandlerTimedOut(
+                    f"After-commit work of {hook.domain!r} took more than {seconds:g}s"
+                )
+                logger.error("%s; cut off", cut)
+                report_error(cut, domain=hook.domain)
 
     async def _commit(self) -> None:
         """Commit, translating what the database refused.
@@ -413,16 +430,23 @@ class SqlAlchemyUnitOfWork(UnitOfWork):
         return isinstance(exc, DBAPIError) and sqlstate_of(exc) in CONFLICTS
 
     def _refused(self, exc: BaseException) -> bool:
-        """Whether the database answered the commit with a refusal: nothing stored.
+        """Whether the commit surely stored nothing.
 
         A constraint, a stale version, a lost race, or another error the
-        server sent back. A connection lost or cut off (SQLSTATE class
-        ``08``), a timeout, or a cancellation leaves the outcome unknown:
-        the server may have applied the ``COMMIT`` whose answer never came.
+        server sent back; and SQLAlchemy's own errors that are no driver's
+        (a value it could not bind, a flush it refused, a pool out of
+        connections), raised before a ``COMMIT`` could be answered. A
+        connection lost or cut off (SQLSTATE class ``08``), a timeout, or a
+        cancellation leaves the outcome unknown: the server may have
+        applied the ``COMMIT`` whose answer never came.
         """
-        if isinstance(exc, StaleDataError) or super()._refused(exc):
+        if super()._refused(exc):
             return True
-        if not isinstance(exc, DBAPIError) or exc.connection_invalidated:
+        if not isinstance(exc, SQLAlchemyError):
+            return False
+        if not isinstance(exc, DBAPIError):
+            return True
+        if exc.connection_invalidated:
             return False
         return not (sqlstate_of(exc) or "").startswith(CONNECTION_EXCEPTION)
 

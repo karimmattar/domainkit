@@ -66,6 +66,7 @@ from domainkit.ddd.exceptions import (
     PermissionDenied,
     PreconditionFailed,
 )
+from domainkit.ddd.uow import failed_in_doubt
 from domainkit.deadlines import DeadlineExceeded
 from domainkit.exceptions import DomainkitError as DomainkitError
 from domainkit.exceptions import ServiceBusy, UpstreamError
@@ -100,8 +101,10 @@ DATABASE_UNAVAILABLE: Final = "database_unavailable"
 UNAVAILABLE_RETRY_AFTER: Final = "5"
 """Seconds a client should wait while the database cannot be reached: longer
 than ``database_busy``'s, as a restart or a failover takes seconds."""
-_POOL: Final = "sqlalchemy.pool"
-"""The package whose frames show that a connection was being opened."""
+_POOL: Final = "sqlalchemy.pool.base"
+"""The module of the pool's ``__connect``, which opens each connection."""
+_EVENTS: Final = "sqlalchemy.event"
+"""The package that calls an engine's or a pool's listeners."""
 
 _BODILESS: Final = frozenset({status.HTTP_204_NO_CONTENT, status.HTTP_304_NOT_MODIFIED})
 _METHODS: Final = ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
@@ -417,7 +420,9 @@ def database_refusal(exc: BaseException) -> APIError | None:
     The pool out of connections, and statements cancelled by a timeout or
     lost to another transaction, are 503 ``database_busy``: try again
     shortly. A database that cannot be reached, or cannot serve now, is
-    503 ``database_unavailable`` (``unreachable``). A value the database
+    503 ``database_unavailable`` (``unreachable``), with ``Retry-After``
+    unless the connection was lost as a commit was sent: that change may
+    have been made (``failed_in_doubt``). A value the database
     cannot store (a NUL character, a number or text too long for its
     column) is 422 ``invalid_value``. Integrity errors are answered as
     ``integrity_refusal`` says.
@@ -427,6 +432,13 @@ def database_refusal(exc: BaseException) -> APIError | None:
     if isinstance(exc, IntegrityError):
         return integrity_refusal(exc)
     if unreachable(exc):
+        if failed_in_doubt(exc):  # Lost as it committed: it may be stored.
+            return APIError(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "The database was lost as the change was committed, so it may "
+                "have been made; check before you send it again.",
+                code=DATABASE_UNAVAILABLE,
+            )
         return APIError(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "The database is unavailable; try again shortly.",
@@ -474,13 +486,23 @@ def unreachable(exc: BaseException) -> bool:
 
 
 def _raised_connecting(exc: BaseException) -> bool:
-    """Whether ``exc`` was raised while SQLAlchemy's pool opened a connection."""
+    """Whether ``exc`` was raised as SQLAlchemy's pool opened a connection.
+
+    By the driver, or the engine's creator, under the pool's ``__connect``:
+    not by a listener (a pool's ``connect`` or ``checkout`` listener of a
+    project's), whose error is the project's own.
+    """
+    connecting = False
     trace = exc.__traceback__
     while trace is not None:
-        if trace.tb_frame.f_globals.get("__name__", "").startswith(_POOL):
-            return True
+        frame = trace.tb_frame
+        module = frame.f_globals.get("__name__", "")
+        if module == _POOL and frame.f_code.co_name == "__connect":
+            connecting = True
+        elif connecting and module.startswith(_EVENTS):
+            return False
         trace = trace.tb_next
-    return False
+    return connecting
 
 
 def integrity_refusal(exc: IntegrityError) -> APIError | None:

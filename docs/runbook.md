@@ -78,14 +78,19 @@ settings. Commands that change data take `--operator NAME` (or read
 **You see** these, while a database is down, restarting, or failing over:
 
 - requests that use it answer `503 database_unavailable`, with
-  `Retry-After: 5`. Requests that do not use it are served;
+  `Retry-After: 5`. Requests that do not use it are served. A request
+  whose connection was lost as it committed gets no `Retry-After`, and a
+  detail that says its change may have been made;
 - one warning per reason every 10 seconds, with a count of the requests
   since:
   `The database is unavailable (ConnectionRefusedError): GET /orders
   answered 503 database_unavailable`. The reason is the socket's error,
   or a SQLSTATE: class `08` (the connection failed or was lost), `57P01`
   (shutting down), `57P03` (starting up, or a failover), `53300` (too
-  many connections). None of it is sent to the error reporters;
+  many connections). None of it is sent to the error reporters. It is
+  told from asyncpg's errors and SQLAlchemy's; through psycopg, a
+  connection that cannot be opened may still answer `500
+  internal_error`;
 - `/ready` answers 503, so the load balancer takes the replicas out.
   With `READINESS_DETAILS` it names `database:<alias>`;
 - the worker logs `Could not reach the outbox of '<alias>' (N failures in
@@ -107,9 +112,10 @@ settings. Commands that change data take `--operator NAME` (or read
   Nothing needs a restart: each pool opens new connections.
 - Too many connections: lower the pools, or put PgBouncer in front.
 - Tell client developers that `Retry-After` is safe for reads and for
-  writes sent with an `Idempotency-Key`. A write whose connection was
-  lost as it committed may have been applied; without a key, a retry may
-  apply it twice ([idempotency](contrib/idempotency.md)).
+  writes sent with an `Idempotency-Key`. A 503 without it, for a write
+  whose connection was lost as it committed, means the write may have
+  been applied: look it up before sending it again. Without a key, a
+  retry may apply it twice ([idempotency](contrib/idempotency.md)).
 
 ## The outbox backs up
 

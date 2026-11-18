@@ -219,17 +219,20 @@ and returns it.
    handlers. Nothing is published for work that did not commit.
 
 Once the database has committed, the request's deadline is lifted, as
-when the response starts. The in-process handlers all run, each within
-its own `EVENT_HANDLER_TIMEOUT`, and the request answers what it
-committed, however late. Before 2.9, the deadline could cut the handlers
-off and answer `503 deadline_exceeded` with `Retry-After: 1` for a
-change that was made.
+when the response starts, whichever of the request's tasks committed.
+The in-process handlers and the domains' after-commit hooks all run,
+each within its own `EVENT_HANDLER_TIMEOUT`, and the request answers what
+it committed, however late. Before 2.9, the deadline could cut the
+handlers off and answer `503 deadline_exceeded` with `Retry-After: 1`
+for a change that was made.
 
 A deadline that passes before the `COMMIT` rolls the work back. One that
 passes during it, or a connection lost before its answer came, leaves
-the outcome unknown: the request answers 503, and the change may have
-been made. The unit of work counts such a commit in `uow.in_doubt`. A
-client retries a write safely only with an
+the outcome unknown: the change may have been made. The unit of work
+counts such a commit in `uow.in_doubt`, and the request answers 503
+(`deadline_exceeded` or `database_unavailable`) without `Retry-After`,
+with a detail that says to check before sending it again. A client
+retries a write safely only with an
 [`Idempotency-Key`](contrib/idempotency.md).
 
 ## 9. The answer

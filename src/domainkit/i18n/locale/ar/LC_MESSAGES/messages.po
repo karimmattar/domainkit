@@ -19,6 +19,12 @@ msgstr "قاعدة البيانات مشغولة؛ أعد المحاولة بع�
 msgid "The database is unavailable; try again shortly."
 msgstr "قاعدة البيانات غير متاحة؛ أعد المحاولة بعد قليل."
 
+msgid "The database was lost as the change was committed, so it may have been made; check before you send it again."
+msgstr "انقطع الاتصال بقاعدة البيانات أثناء حفظ التغيير، فربما حُفظ؛ تحقّق قبل أن ترسله مرة أخرى."
+
+msgid "The request ran out of time as the change was committed, so it may have been made; check before you send it again."
+msgstr "نفد وقت الطلب أثناء حفظ التغيير، فربما حُفظ؛ تحقّق قبل أن ترسله مرة أخرى."
+
 msgid ""
 "A value cannot be stored: it is too long, out of range, or holds a "
 "character the database refuses."

@@ -23,10 +23,11 @@ A deadline governs the work inside its block: tasks that outlive the
 block are not bound by it.
 
 A deadline cuts off work that has not committed. What follows a commit
-runs in ``after_commit()``, where no deadline of the task cuts it off.
-A deadline made ``until_commit`` (an HTTP request's) is lifted there for
-good, so the request is answered as committed; the others are put back
-after it, later by the time it took.
+runs in ``after_commit()``, where no deadline cuts it off. A deadline
+made ``until_commit`` (an HTTP request's), and every block it bounds, in
+any task, is lifted there for good, so the request is answered as
+committed, whichever of its tasks committed. The other deadlines the
+task enforces are put back after it, later by the time it took.
 
 Outside a request there is no deadline until a block sets one with
 ``timeout``: a worker bounds a task the same way. Transactions on
@@ -95,6 +96,9 @@ class Deadline:
         self._outer: Deadline | None = None
         self._parent: Deadline | None = None
         """The deadline of the work this block was entered in, if any."""
+        self._bounded: list[Deadline] | None = None
+        """Blocks bounded by this deadline, in any task, that a commit lifts
+        with it (``until_commit``)."""
 
     def remaining(self) -> float | None:
         """Seconds left, never below 0; None without a deadline."""
@@ -142,6 +146,13 @@ class Deadline:
             and self._outer is not None
             and self._outer._ends_at_commit()
         )
+
+    def _lift(self) -> None:
+        """Lift it for good, and the blocks it bounds, wherever they run."""
+        self.clear()
+        for bounded in self._bounded or ():
+            if bounded.at is not None:
+                bounded._lift()
 
     def _enforce(
         self, timer: asyncio.Timeout | None, outer: "Deadline | None" = None
@@ -254,6 +265,14 @@ class Timeout:
         self.deadline = Deadline(limit)
         self.deadline.until_commit = self.until_commit
         self.deadline._parent = outer
+        if self._by_deadline and outer is not None and outer._ends_at_commit():
+            # Bounded by a deadline a commit lifts: lifted with it, whichever
+            # task commits, with a timer of its own (in a task that only
+            # shares the deadline) or without.
+            self.deadline.until_commit = True
+            if outer._bounded is None:
+                outer._bounded = []
+            outer._bounded.append(self.deadline)
         if self._by_deadline and outer is not None and outer._enforced():
             self.deadline._enforce(None, outer)
         elif limit is not None:
@@ -321,13 +340,14 @@ class AfterCommit:
         self._started = 0.0
 
     def __enter__(self) -> None:
-        """Lift each deadline this task enforces; note those to put back."""
+        """Lift the deadlines a commit ends; hold the others this task enforces."""
         deadline = _current.get()
         while deadline is not None:
             at = deadline.at
-            if at is not None and deadline._enforced():
-                if not deadline._ends_at_commit():
-                    self._held.append((deadline, at))
+            if at is not None and deadline._ends_at_commit():
+                deadline._lift()
+            elif at is not None and deadline._enforced():
+                self._held.append((deadline, at))
                 deadline.clear()
             deadline = deadline._parent
         if self._held:
@@ -353,18 +373,22 @@ def after_commit() -> AfterCommit:
     """Run what follows a commit in a ``with`` block no deadline cuts off.
 
     A unit of work runs its after-commit hooks and in-process event
-    handlers in it, each handler within its own timeout. Each deadline
-    this task enforces is lifted for the block, so what it runs sees none:
+    handlers in it, each within its own timeout. The deadlines of the
+    work are lifted for the block, so what it runs sees none:
 
     - one made ``until_commit``, an HTTP request's, stays lifted, and so
-      do the blocks it bounds: the work committed, and the request is
-      answered as committed, however long that takes;
-    - the others are put back when the block ends, later by the time it
-      took: what follows a commit does not count against the work's time.
-      A worker's task keeps the time it had left when it committed.
+      does every block it bounds, in any task: the work committed, and the
+      request is answered as committed, however long that takes. So it
+      is when the commit is made in a task the request started
+      (``asyncio.gather``, a task group, a ``BaseHTTPMiddleware``) that
+      only shares the deadline;
+    - the others this task enforces are put back when the block ends,
+      later by the time it took: what follows a commit does not count
+      against the work's time. A worker's task keeps the time it had
+      left when it committed.
 
-    A deadline that another task enforces, or that only shares, is left
-    as it is.
+    Any other deadline, one another task enforces and no commit ends, is
+    left as it is.
     """
     return AfterCommit()
 

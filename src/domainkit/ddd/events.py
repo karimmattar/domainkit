@@ -159,7 +159,12 @@ def _checked_key(key: str, what: str) -> str:
 
 
 class HandlerTimedOut(TimeoutError, DomainkitError):
-    """An in-process handler ran past its timeout and was cut off."""
+    """An in-process handler ran past its timeout and was cut off.
+
+    A domain's after-commit hook (``on_committed``,
+    ``on_transaction_committed``) past ``EVENT_HANDLER_TIMEOUT`` is reported
+    as one too.
+    """
 
 
 class HandlerCancelled(DomainkitError):

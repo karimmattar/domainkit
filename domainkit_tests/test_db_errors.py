@@ -18,14 +18,20 @@ from sqlalchemy import (
     PrimaryKeyConstraint,
     String,
     Table,
+    event,
     func,
     insert,
     text,
 )
 from sqlalchemy import UniqueConstraint as Unique
-from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.exc import (
+    DBAPIError,
+    IntegrityError,
+    InvalidRequestError,
+    StatementError,
+)
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
-from sqlalchemy.orm.exc import StaleDataError
+from sqlalchemy.orm.exc import FlushError, StaleDataError
 
 from domainkit.conf import DatabaseConfig, override_settings
 from domainkit.db import connections, create_engine
@@ -331,6 +337,31 @@ async def test_a_connection_that_cannot_be_opened_is_unavailable() -> None:
         assert found is not None
         assert (found.status_code, found.code) == (503, "database_unavailable")
     assert database_refusal(await failure(wrong_password)) is None
+
+
+@pytest.mark.usefixtures("database_access")
+@pytest.mark.parametrize("listened", ["checkout", "connect"])
+async def test_an_oserror_of_a_pools_listener_is_the_projects_own(
+    tmp_path: Path, listened: str
+) -> None:
+    """A project's listener that fails with an ``OSError`` of its own: a bug.
+
+    It writes an audit file, say, as a connection is handed out or opened:
+    a reported 500, not ``database_unavailable``.
+    """
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'heard.db'}")
+
+    def denied(*args: object) -> None:
+        raise PermissionError(13, "Permission denied: '/var/log/audit.log'")
+
+    event.listen(engine.sync_engine, listened, denied)
+    try:
+        with pytest.raises(PermissionError) as caught:
+            async with engine.connect():
+                pass  # pragma: no cover - the listener refuses first.
+    finally:
+        await engine.dispose()
+    assert database_refusal(caught.value) is None
 
 
 async def test_postgres_refusals_are_found_on_real_errors(engine: AsyncEngine) -> None:
@@ -749,6 +780,10 @@ def answered(sqlstate: str | None, *, invalidated: bool = False) -> DBAPIError:
         (answered("23514"), 0),
         (answered(None), 0),  # SQLite's errors are answers too.
         (StaleDataError("a version moved"), 0),
+        # SQLAlchemy's own, before a COMMIT could be answered.
+        (StatementError("bind failed", "INSERT", {}, ValueError("bad")), 0),
+        (InvalidRequestError("the session is closed"), 0),
+        (FlushError("an instance with that identity is present"), 0),
         (answered("08006"), 1),  # The connection failed.
         (answered(None, invalidated=True), 1),
         (TimeoutError("command_timeout"), 1),

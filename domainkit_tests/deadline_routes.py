@@ -9,9 +9,11 @@ import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy import insert, text, update
+from sqlalchemy.exc import DBAPIError
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 from domainkit import clock, deadlines
 from domainkit.ddd import AggregateRoot, DomainEvent, EventBus
@@ -251,13 +253,64 @@ class PaysAndTells(PaymentsUnitOfWork):
 
 
 @router.post("/pay-and-tell", status_code=201)
-async def pay_and_tell(after: float = 0.0) -> dict[str, Any]:
-    """Commit a payment whose handlers outlast the deadline, then wait ``after``."""
+async def pay_and_tell(after: float = 0.0, in_task: bool = False) -> dict[str, Any]:
+    """Commit a payment whose handlers outlast the deadline, then wait ``after``.
+
+    ``in_task`` commits in a task of its own (``asyncio.gather``), which
+    shares the request's deadline without enforcing it.
+    """
     deadline = deadlines.current_deadline()
     assert deadline is not None
     telling[:] = [deadline]
-    async with PaysAndTells(events=tellers) as uow:
-        await uow.session.execute(insert(payments))
-        await uow.commit()
+
+    async def commit() -> None:
+        async with PaysAndTells(events=tellers) as uow:
+            await uow.session.execute(insert(payments))
+            await uow.commit()
+
+    if in_task:
+        await asyncio.gather(commit())
+    else:
+        await commit()
     await asyncio.sleep(after)
     return {"paid": True, "remaining": deadlines.remaining()}
+
+
+class LosesItsCommitsAnswer(PaymentsUnitOfWork):
+    """Commits, then loses the connection before the answer comes: in doubt."""
+
+    async def _commit(self) -> None:
+        await super()._commit()
+        raise DBAPIError(
+            "COMMIT",
+            {},
+            ConnectionResetError("the connection was lost"),
+            connection_invalidated=True,
+        )
+
+
+class CommitsForEver(PaymentsUnitOfWork):
+    """Sends its ``COMMIT``, whose answer never comes: the deadline cuts it."""
+
+    async def _commit(self) -> None:
+        await forever()
+
+
+@router.post("/pay-unanswered", status_code=201)
+async def pay_unanswered(lost: bool = True) -> dict[str, bool]:
+    """Commit, and lose the answer (``lost``), or wait for it until cut off."""
+    unit = LosesItsCommitsAnswer if lost else CommitsForEver
+    async with unit() as uow:
+        await uow.session.execute(insert(payments))
+        await uow.commit()
+    return {"paid": True}  # pragma: no cover - the commit raised.
+
+
+class InATask(BaseHTTPMiddleware):
+    """Starlette's ``BaseHTTPMiddleware``: it serves the route in a task of its own."""
+
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        """Pass the request on."""
+        return await call_next(request)

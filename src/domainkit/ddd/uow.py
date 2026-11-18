@@ -84,6 +84,10 @@ NAMED_LOCKS: Final = RowLocks()
 one database would be for every transaction."""
 logger = logging.getLogger(__name__)
 _random = secrets.SystemRandom()
+_IN_DOUBT: Final = "domainkit_commit_in_doubt"
+"""The attribute that marks the error of a commit in doubt (``failed_in_doubt``)."""
+_CAUSES: Final = 16
+"""How far ``failed_in_doubt`` follows the errors an error was raised from."""
 
 
 class ReadOnlyError(RuntimeError, DomainkitError):
@@ -382,6 +386,7 @@ class UnitOfWork(ABC):
         except BaseException as exc:
             if not self._refused(exc):
                 self.in_doubt += 1
+                setattr(exc, _IN_DOUBT, True)  # What answers the request reads it.
             raise
         self.committed += 1
         if self._commits is not None:
@@ -599,6 +604,24 @@ class UnitOfWork(ABC):
     @abstractmethod
     async def _rollback(self) -> None:
         """Roll the underlying transaction back."""
+
+
+def failed_in_doubt(exc: BaseException) -> bool:
+    """Whether ``exc`` comes from a commit that may have been applied.
+
+    The error ``UnitOfWork.commit`` counted in ``in_doubt``, or one raised
+    from it, directly or not (a cancellation the deadline turned into a
+    timeout, say). A client must not take such a failure for a refusal,
+    nor send the change again without an ``Idempotency-Key``.
+    """
+    seen: BaseException | None = exc
+    for _ in range(_CAUSES):
+        if seen is None:
+            return False
+        if getattr(seen, _IN_DOUBT, False):
+            return True
+        seen = seen.__cause__ or seen.__context__
+    return False
 
 
 def expectations_of(uow: UnitOfWork) -> tuple[Expectation, ...]:
