@@ -170,7 +170,7 @@ everywhere.
 | Id | Warned |
 | --- | --- |
 | `apps.W001` | in every environment: a `start` or `stop` coroutine method of a `DomainConfig` that no hook point holds. Only registered functions run, so nothing calls it: register it in `ready()` with `on_startup(self.start)` or `on_shutdown(self.stop)` ([Extension points](extension-points.md)) |
-| `migrations.W001` | outside staging and production, from `check`, and from `runserver` as it starts: a database that lacks revisions of its target, with how many and which. A request that uses their tables would fail with a raw SQL error. Run `migrate`. A database that cannot be reached, or one in memory, says nothing. *New in 2.9* |
+| `migrations.W001` | outside staging and production, from `check`, and from `runserver` as it starts: a database that lacks revisions of its target, with how many and which, or whose revisions cannot be read (a file that is no database, a revision the project does not have). A request that uses their tables would fail with a raw SQL error. Run `migrate`. Each database gets 2 seconds at most to answer; one that cannot be reached, or one in memory, says nothing. *New in 2.9* |
 | `security.W001` | `API_DOCS = True`: anyone can read `/docs`, `/redoc`, and `/openapi.json` |
 | `security.W002` | `SECURE_HSTS_SECONDS = 0`: browsers are not told to keep to HTTPS |
 | `security.W003` | no `RATE_LIMIT`, or `RateLimitMiddleware` missing from `MIDDLEWARE` |
@@ -202,6 +202,7 @@ everywhere.
 | `ciba.W001` | in every environment: `CIBA.APPROVE_LOGINS` on with `AUTH.CREDENTIAL_CHANGE_DEVICE_LOGINS = "end"`, so a password change or reset signs the phone out too ([Credential changes and the phone](../auth/logging-in.md#credential-changes-and-the-phone)) |
 | `auth.W007` | in every environment: a backend of `AUTH.BACKENDS` other than `ModelBackend` that does not answer `object_grants`. Only superusers then change users and groups through the admin API ([auth.md](../auth/routes.md#the-admin-api)) |
 | `auth.W010` | in every environment: `TENANCY.MEMBER_PERMISSIONS` without `MEMBER_TENANTS`. Only superusers then change users through the admin API ([tenancy.md](../tenancy.md#members-permissions)) |
+| `probes.W001` | in every environment: `RATE_LIMIT_EXEMPT_PATHS`, `CONCURRENCY_EXEMPT_PATHS`, or `ACCESS_LOG_QUIET_PATHS` names some paths of `PROBE_PATHS`, but not all. Since 2.9 each list adds to `PROBE_PATHS`, so the probes it leaves out are exempt from it anyway. To count a probe, or log it at INFO, take it out of `PROBE_PATHS`, and add it to each list that should still exempt it ([upgrading](../upgrading.md#28-to-29)). *New in 2.9* |
 | `tenancy.W001` | in every environment: a `Throttle` on a route served as a tenant (a `PathTenant`'s, or any route under `TenantMiddleware` but a tenants' collection) that says neither `per_tenant=True` nor `per_tenant=False`. It counts per tenant, so a caller who belongs to ten tenants gets ten times its rate. Say which ([tenancy.md](../tenancy.md#caches-limits-and-logs)). New in 2.7 |
 | `audit.W001` to `audit.W005` | for the parts `AUDIT.REQUIRE` leaves out (all, with `REQUIRE_BASELINE = False`): what `audit.E001` to `audit.E005` refuse |
 | `accounting.W001`, `accounting.W002` | with `ACCOUNTING.REQUIRE_PROTECTION = False` only, logged at startup: what `accounting.E001` and `accounting.E002` refuse |

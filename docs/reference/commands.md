@@ -343,7 +343,9 @@ migration history (one head per target). It also warns about:
 
 - outside staging and production, migrations a database does not have
   yet (`migrations.W001`): run `migrate`. It asks each database, unless
-  it cannot be reached or is in memory;
+  it is in memory, and waits 2 seconds at most for it to answer;
+- a list of exempt paths that names some of `PROBE_PATHS`, not all
+  (`probes.W001`);
 - route handlers and dependencies of your domains written as `def`, which
   run on FastAPI's thread pool ([runtime.md](../runtime.md#finding-blocking-code));
 - event handlers and tasks written as `def`, which block the event loop;

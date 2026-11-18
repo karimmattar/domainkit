@@ -3,8 +3,10 @@
 import io
 import logging
 import os
+import socket
 import subprocess
 import sys
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -840,6 +842,53 @@ def test_unapplied_migrations_say_nothing_where_they_cannot_tell(
             ]
         assert found == said
     assert not unmade.exists()
+
+
+def test_a_database_whose_migrations_cannot_be_read_is_said_so(
+    migration_project: Path, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A file that is no database: a warning, never a traceback; no Alembic line."""
+    run("makemigrations", "-m", "notes")
+    broken = tmp_path / "broken.sqlite3"
+    broken.write_bytes(b"not a database, " * 64)
+    url = f"sqlite+aiosqlite:///{broken}"
+    caplog.set_level(logging.INFO, logger="alembic")
+    with override_settings(DATABASES={"default": {"URL": url}}):
+        found = migrations_module.unapplied_warnings()
+        checked = run("check")
+
+    said = (
+        "The migrations 'default' has cannot be read (DatabaseError: file is not "
+        "a database): check the database, then run 'python manage.py migrate'."
+    )
+    assert found == [said]
+    assert f"  Warning: migrations.W001: {said}" in checked.splitlines()
+    assert [r for r in caplog.records if r.name.startswith("alembic")] == []
+
+
+def test_a_database_that_never_answers_costs_the_check_little(
+    migration_project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``CHECK_CONNECT_TIMEOUT`` caps ``CONNECT_TIMEOUT`` for the check.
+
+    A host that takes the connection and never answers costs the check
+    that, then says nothing.
+    """
+    run("makemigrations", "-m", "notes")
+    monkeypatch.setattr(migrations_module, "CHECK_CONNECT_TIMEOUT", 0.2)
+    with socket.socket() as silent:
+        silent.bind(("127.0.0.1", 0))
+        silent.listen(1)  # Takes the connection, never says a word.
+        port = silent.getsockname()[1]
+        url = f"postgresql+asyncpg://postgres@127.0.0.1:{port}/postgres"
+        database = {"URL": url, "CONNECT_TIMEOUT": 30}
+        with override_settings(DATABASES={"default": database}):
+            started = time.monotonic()
+            found = migrations_module.unapplied_warnings()
+            took = time.monotonic() - started
+
+    assert found == []
+    assert took < 5
 
 
 def test_unapplied_migrations_are_not_asked_of_databases_refused() -> None:

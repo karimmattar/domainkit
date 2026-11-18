@@ -381,3 +381,47 @@ def test_check_names_the_app_an_optional_middleware_needs() -> None:
     )
     assert str(refused.value) == f"System check found problems:\n  {said}"
     assert said in str(stopped.value)
+
+
+@pytest.mark.parametrize(
+    ("change", "said"),
+    [
+        ({}, None),
+        (
+            {"RATE_LIMIT_EXEMPT_PATHS": ["/health", "/ready", "/metrics", "/hooks"]},
+            None,
+        ),
+        ({"RATE_LIMIT_EXEMPT_PATHS": ["/hooks"]}, None),
+        (
+            {"RATE_LIMIT_EXEMPT_PATHS": ["/health"]},
+            (
+                "RATE_LIMIT_EXEMPT_PATHS names /health of PROBE_PATHS, but not "
+                "/ready, /metrics"
+            ),
+        ),
+        (
+            {"ACCESS_LOG_QUIET_PATHS": ["/health", "/ready"]},
+            (
+                "ACCESS_LOG_QUIET_PATHS names /health, /ready of PROBE_PATHS, "
+                "but not /metrics"
+            ),
+        ),
+        ({"PROBE_PATHS": ["/health"], "CONCURRENCY_EXEMPT_PATHS": ["/health"]}, None),
+    ],
+)
+def test_a_list_that_leaves_a_probe_out_is_warned_of(
+    change: dict[str, Any], said: str | None
+) -> None:
+    """``probes.W001``: since 2.9 ``PROBE_PATHS`` exempts each probe it names.
+
+    A list that names some of them, not all, left the others out in 2.8, or
+    kept 2.8's default; now they are exempt anyway.
+    """
+    with override_settings(**change):
+        checked = run("check")
+    lines = [line for line in checked.splitlines() if "probes.W001" in line]
+    if said is None:
+        assert lines == []
+        return
+    (line,) = lines
+    assert line.startswith(f"  Warning: probes.W001: {said}: since 2.9, PROBE_PATHS")

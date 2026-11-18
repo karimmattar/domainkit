@@ -8,7 +8,6 @@ import copy
 from argparse import ArgumentParser
 from typing import Final
 
-from domainkit import setup
 from domainkit.checks import CheckMessage, describe, silence
 from domainkit.conf import settings
 from domainkit.management.base import BaseCommand, CommandError
@@ -76,7 +75,6 @@ class Command(BaseCommand):
             raise CommandError("Set ASGI_APPLICATION, e.g. 'config.asgi:application'.")
         host, port = parse_address(address)
         loop_factory(settings.EVENT_LOOP)  # Refuse a loop that is not installed.
-        setup()
         from domainkit.db import migrations  # Alembic, for this check alone.
 
         found = [
