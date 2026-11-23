@@ -38,9 +38,21 @@ never published), with each section below.
 
 ## 2.9 to 2.10
 
-2.10 closes a project's notes on 2.9. Each item of this list says what a
-project that relied on 2.9's behaviour notices, and what it may change.
+2.10 follows up a project's notes on 2.9. Each item of this list says
+what a project that relied on 2.9's behaviour changes, and what to run.
 
+- **Name the `uvicorn` extra now.** 2.10 adds `domainkit[uvicorn]`. It
+  installs nothing new: every 2.x install has uvicorn already. 3.0 will
+  install it only through this extra, so a project that names it now
+  needs no change then. Add it where the project serves with uvicorn:
+  its image runs `serve` without Granian (the `Dockerfile` that `init`
+  writes does), `runserver` serves with it, or a test uses
+  `live_server`. `init` writes it for a project served by uvicorn
+  ([uvicorn becomes an extra in 3.0](#uvicorn-becomes-an-extra-in-30)):
+
+  ```toml
+  dependencies = ["domainkit[postgres,redis,sqlite,uvicorn]>=2.10.0,<3"]
+  ```
 - **A 503 for a commit in doubt carries `"in_doubt": true`.** A `503
   deadline_exceeded` or `503 database_unavailable` whose change may have
   been made has a member more in its body, after the others, in either
@@ -1307,10 +1319,13 @@ delete its rows, and fail until it exists.
 Every install of 2.x brings uvicorn (`uvicorn[standard]`), even where
 Granian serves. In 3.0 it becomes an extra, `domainkit[uvicorn]`.
 `runserver` and the test plugin import it only when it serves, so
-`runserver --server granian` already runs without it. Nothing changes
-in 2.x, which has no such extra. On moving to 3.0, add it where the
-project uses uvicorn: its image runs it (the `Dockerfile` that `init`
-writes does), `runserver` serves with it, or a test uses `live_server`:
+`runserver --server granian` already runs without it. 2.x keeps it in
+every install. 2.10 adds the extra ahead of 3.0: in 2.x it installs
+nothing new, so a project can name it before it moves
+([2.9 to 2.10](#29-to-210)).
+Add it where the project uses uvicorn: its image runs it (the
+`Dockerfile` that `init` writes does), `runserver` serves with it, or a
+test uses `live_server`:
 
 ```toml
 dependencies = ["domainkit[postgres,redis,sqlite,uvicorn]>=3.0,<4"]

@@ -12,6 +12,11 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 
 ### Added
 
+- The `uvicorn` extra, `domainkit[uvicorn]`. It installs nothing new in
+  2.x, where every install has uvicorn already; 3.0 brings uvicorn only
+  through it. `init` writes it for a project served by uvicorn, so the
+  move to 3.0 needs no change there
+  ([upgrading.md](docs/upgrading.md#29-to-210)) (user report S3).
 - A `503 deadline_exceeded` or `503 database_unavailable` whose commit is
   in doubt says so in its body, `"in_doubt": true`, in either
   `ERROR_FORMAT`, besides its missing `Retry-After`: a client that reads
