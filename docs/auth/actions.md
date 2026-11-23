@@ -572,9 +572,15 @@ POST /documents/42/approve
   `*`, or an empty value, names no version, and counts as none.
 - **The digest covers it**, beside the arguments and what `binds` read.
   The act's `If-Match` must name the same version, however written
-  (`W/"4-…"` or `"4"`). Another, several, `*`, or none is `403
+  (`W/"4-…"` or `"4"`). Another, `*`, or none is `403
   action_not_authorized`, and voids the authorization, as other
   arguments do.
+- **The act reads `If-Match` as its twin does** (since 2.10, user
+  report A17): the same header answers the same at both. Several tags,
+  on one line or several, are `422`; a tag that names no version, or a
+  malformed value, is `412`. Neither voids the authorization: sent
+  again with the tag the twin held, the act is made. An authorization
+  asked without `If-Match` holds as in 2.7, whatever the act sends.
 - **At the act**, `If-Match` holds the write as before (`412`), and
   `binds` reads the record again (`409 action_record_changed`). A
   `binds` that loads it at a version the authorization does not hold

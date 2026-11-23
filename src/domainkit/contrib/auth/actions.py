@@ -1173,7 +1173,8 @@ class _Accepted:
     code: str
     route: str
     if_match: str | None = None
-    """The request's ``If-Match``, which the act's digest is computed with."""
+    """The request's ``If-Match``, its lines joined (since 2.10), which the act's
+    digest is computed with."""
     versions: frozenset[int] | None = None
     """The versions its digest covers, once taken; None: none (ADR 0178)."""
     taken: bool = False
@@ -1257,7 +1258,7 @@ async def accepted_authorization(
         return None
     verdict.authorization = found
     _kept_on(connection).accepted[purpose] = _Accepted(
-        found, code, _route_of(connection), connection.headers.get(IF_MATCH)
+        found, code, _route_of(connection), _if_match_of(connection)
     )
     return found
 
@@ -1322,6 +1323,12 @@ def _route_of(connection: HTTPConnection) -> str:
     route = connection.scope.get("route")
     path = getattr(route, "path", None) or connection.url.path
     return f"{connection.scope.get('method', 'GET')} {path}"
+
+
+def _if_match_of(connection: HTTPConnection) -> str | None:
+    """The request's ``If-Match``, its lines joined: one list (RFC 9110, 5.3)."""
+    lines = connection.headers.getlist(IF_MATCH)
+    return ", ".join(lines) if lines else None
 
 
 # The act's side: spent once ------------------------------------------------------
@@ -1532,15 +1539,22 @@ USERS: Final = "action_authorization_users"
 async def _take(action: Action, command: object) -> _Accepted:
     """The kept authorization of ``action``, if it binds ``command``; it is taken.
 
-    The digest is computed with the versions the request's ``If-Match``
-    names (ADR 0178), and, unless the action requires them, without: an
-    authorization asked with ``If-Match`` holds only for an act that names
-    the same versions; one asked without, for any.
+    Unless the action requires ``If-Match``, the digest is computed first
+    without it: an authorization asked without one holds for any, and the
+    act's ``If-Match`` holds its write alone, as before 2.8. Else the
+    act's ``If-Match`` is read as its twin read it (``asked_versions``,
+    its lines one list: since 2.10, user report A17), and the digest is
+    computed with the version it names (ADR 0178): an authorization asked
+    with ``If-Match`` holds only for an act that names the same version.
 
     Raises:
         AuthorizationRequired: None is kept.
+        RequestValidationError: ``If-Match`` lists several tags (422), as
+            at the twin; nothing is voided.
         PreconditionRequired: The action requires ``If-Match``, and the
             request names no version (428); nothing is voided.
+        PreconditionFailed: ``If-Match`` names no version this API made
+            (412), as at the twin: no record is at one; nothing is voided.
         ActionNotAuthorized: It binds other arguments, another subject, or
             other versions: it is voided, in a transaction of its own.
     """
@@ -1549,23 +1563,28 @@ async def _take(action: Action, command: object) -> _Accepted:
     if accepted is None:
         raise AuthorizationRequired(action.purpose)
     accepted.taken = True
+    bound = accepted.authorization.bound
+    subject = action.subject_of(command)
+
+    def holds(versions: frozenset[int] | None) -> bool:
+        asked = replace(
+            accepted.authorization,
+            digest=action.digest_of(command, bound, versions),
+            subject=subject,
+        )
+        return _matches(accepted.code, asked)
+
+    if not action.require_if_match and holds(None):  # Asked without If-Match.
+        accepted.versions = None
+        return accepted
     versions = _versions(accepted.if_match)
     if versions is None and action.require_if_match:
         raise _precondition_required()
-    held = [versions]
-    if versions is not None and not action.require_if_match:
-        held.append(None)  # Asked without If-Match: as before 2.8.
-    bound = accepted.authorization.bound
-    subject = action.subject_of(command)
-    for each in held:
-        asked = replace(
-            accepted.authorization,
-            digest=action.digest_of(command, bound, each),
-            subject=subject,
-        )
-        if _matches(accepted.code, asked):
-            accepted.versions = each
-            return accepted
+    if versions == frozenset():
+        raise PreconditionFailed(STALE)
+    if versions is not None and holds(versions):
+        accepted.versions = versions
+        return accepted
     async with AuthUnitOfWork() as uow:
         await uow.authorizations.void(accepted.authorization.id, utc_now())
         await uow.commit()
@@ -1574,17 +1593,22 @@ async def _take(action: Action, command: object) -> _Accepted:
 
 
 def _versions(header: str | None) -> frozenset[int] | None:
-    """The versions ``If-Match`` names, compared as a resource's write compares them.
+    """The version the act's ``If-Match`` names, one tag, as its twin reads it.
 
-    None without one, an empty one, or ``*``, which names none; an empty
-    set for a value that names no version this API made, which nothing
-    matches.
+    ``asked_versions`` (since 2.10, user report A17): None without one,
+    an empty one, or ``*``, which names none; an empty set for a value that
+    names no version this API made, which nothing matches.
+
+    Raises:
+        RequestValidationError: The value lists more than one tag (422).
     """
-    if header is None or not header.strip():
-        return None
-    from domainkit.resources.conditional import expected_versions
+    from domainkit.resources.conditional import asked_versions
 
-    return expected_versions(header)
+    return asked_versions(header)
+
+
+STALE: Final = "This was changed since you read it; read it again before changing it."
+"""Why an act whose ``If-Match`` names no version is refused (412), as its twin is."""
 
 
 def _precondition_required() -> APIError:
