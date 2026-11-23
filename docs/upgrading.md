@@ -59,7 +59,11 @@ check refuses more (below).
   when named. Word, LibreOffice and pandoc name parts so; a
   package made by a tool that names a part with `%20` or letters outside
   ASCII is refused, and is taken once repacked with plain names
-  ([Checking documents](uploads.md#checking-documents)).
+  ([Checking documents](uploads.md#checking-documents)). Reading every
+  such part costs more time on a document of many parts: one of some
+  2,000 parts that 2.9 checked in a fraction of a second takes some
+  5 seconds, within the check's own bounds (`UPLOAD_CHECKS`), which
+  refuse what runs past them.
 - **Await `afill_docx` and `aplaceholders` in async code.** They read at
   most `DOCUMENTS["DOCX_AT_ONCE"]` Word documents at once in the process
   (2 by default, 680 MiB at most at the default `ArchiveLimits`), where
