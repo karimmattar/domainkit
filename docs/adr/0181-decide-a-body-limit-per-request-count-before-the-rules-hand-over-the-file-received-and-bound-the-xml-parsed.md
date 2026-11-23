@@ -1,6 +1,6 @@
 # 0181. Decide a body limit per request, count before the rules, hand over the file received, and bound the XML parsed
 
-- Status: Accepted; amended 2026-11-18 (at the end)
+- Status: Accepted; amended 2026-11-18 and 2026-11-23 (at the end)
 - Date: 2026-11-17
 - Amends: [0175](0175-bound-page-content-check-an-acts-upload-once-and-read-a-signed-body-last.md) and [0176](0176-bound-what-a-pdf-decodes-list-placeholders-fill-drafts-and-clean-less.md)
 
@@ -295,3 +295,41 @@ parsed. The ACS now takes this record's design:
   150 to 230 ms, and up to 46 MiB over what the process held before,
   with inclusive or exclusive canonicalization, both readings and
   signxml's refusal included (measured at a load average near 8).
+
+## Amendment (2026-11-23): a body limit decided before the rules
+
+The project noted that a body limit decided per request is refused on a
+route whose rule reads the body (user report U7). `DeviceSigned` reads
+it to check what the device signed, even where `DEVICES.CONTENT_DIGEST`
+is `"required"`. So a phone's upload took a fixed number, and a setting
+used as the bound was read when the route was declared: a change took a
+restart.
+
+- **`upload_route(body_limit=BeforeRules(decide))`**, a new form of the
+  body limit (`domainkit.resources.BeforeRules`). `decide` is given the
+  request alone, sync or async, and returns 1 byte to 1 GiB
+  (`ValueError` otherwise, a 500, the body unread). No rule has run when
+  it decides, so it decides from the settings and what the request
+  says (its path, its headers), not from who sends it.
+- It runs first among the route's `before_rules`, after the resource's
+  own dependencies and its tenant's, on the act and on its twin, and
+  holds the body as a limit decided once the reach holds does
+  (`hold_body`): a declared length over it is 413 before a byte is
+  read, a streamed body as soon as it passes it, whatever reads it after,
+  the rule included. The file is held to it too, where it is less than
+  `max_size`. The route marks its endpoint (`decides_body_limit`), so a
+  declared length is checked against 1 GiB before routing, as for the
+  other form. What reads the body before it (`IdempotencyMiddleware`, a
+  resource's own dependency) is held as on a command route without
+  `body_limit`, and the file to the limit decided.
+- A limit decided once the reach holds, on a route whose rule reads the
+  body, is still refused when the route is declared, and the refusal
+  names `BeforeRules`.
+- Options weighed:
+
+  | Option | What it costs |
+  | --- | --- |
+  | `hold_body` public, for a `before_rules` dependency of the project's, the report's second option | The route would not know its limit is decided: a declared length over its number is refused before routing, and the file is not held. The order would be the project's to keep: in `dependencies`, after the rules, it holds nothing the rule read, and nothing says so. |
+  | A callable of the request alone, told from the other form by its signature | The call site does not show when it runs; a callable with a default parameter reads both ways. |
+  | The callable of the request and the aggregate, run before the rules with no aggregate where a rule reads the body | An existing callable would be given `None` on a route on one aggregate. |
+  | **`BeforeRules(decide)`, chosen** | One name more. The framework puts the decision first, and holds what reads the body after it, as ASP.NET's per-request limit must be set before the body is read [7]. |

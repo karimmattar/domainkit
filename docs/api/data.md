@@ -328,6 +328,7 @@ REST resources over aggregates: routes, schemas, conditional writes, policies.
 - `BatchAnswer`: One result per item, in order, and how many failed.
 - `BatchError`: Why one item failed, as a request of its own would have been told.
 - `BatchResult`: What became of one item.
+- `BeforeRules`: An upload route's body limit, decided from the request alone, before its rules.
 - `DomainSchema`: A read schema `schema_for` made; `from_domain` fills it from an object.
 - `ExportTooLarge`: `422`: an export would hold more rows than the resource allows.
 - `FieldNotEditable`: A partial change sets a field the caller may not change.

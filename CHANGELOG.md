@@ -21,6 +21,15 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   members of the error's own that its body adds, as a domain error's
   `extensions()` does ([A commit in doubt](docs/reference/problems.md#a-commit-in-doubt),
   ADR 0186) (user report S4).
+- `upload_route(body_limit=BeforeRules(decide))`
+  (`domainkit.resources`): a body limit decided per request from the
+  request alone, before the rules, first among `before_rules`, on the act
+  and on its twin. It holds every read of the body after it, a rule's
+  included, so a route whose rule reads the body (`DeviceSigned`) takes a
+  limit read from a setting at each request. A limit decided once the
+  reach holds is still refused on such a route, and the refusal names
+  `BeforeRules` ([A body limit decided before the rules](docs/resources.md#a-body-limit-decided-before-the-rules),
+  ADR 0181) (user report U7).
 
 ## [2.9.0] - 2026-11-18
 

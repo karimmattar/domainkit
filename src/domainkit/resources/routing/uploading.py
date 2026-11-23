@@ -34,7 +34,9 @@ value. It runs once the reach is checked, before the body is read, on
 the act and on its twin; the storage an alias names, and the directory,
 are checked then too. A body limit so decided holds the body from then
 on (``hold_body``), and the file to it too, whatever read the body
-before.
+before. A route whose rule reads the body (``DeviceSigned``) decides
+its limit before the rules instead, from the request alone
+(``BeforeRules``, since 2.10): first among its ``before_rules``.
 
 A service that names a ``received`` parameter is given the file as it
 was received (``ReceivedUpload``), its temporary file open from its
@@ -53,7 +55,7 @@ from typing import TYPE_CHECKING, Any, Final, Literal, Protocol, cast
 from urllib.parse import unquote
 
 import anyio
-from fastapi import Request, Response, params, status
+from fastapi import Depends, Request, Response, params, status
 from fastapi.routing import APIRoute
 from starlette.datastructures import UploadFile
 
@@ -61,7 +63,7 @@ from domainkit.ddd.exceptions import PreconditionFailed
 from domainkit.ddd.messages import Command
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.http.errors import error_responses
-from domainkit.http.middleware import MAX_ROUTE_BODY_SIZE, hold_body
+from domainkit.http.middleware import DECIDED, MAX_ROUTE_BODY_SIZE, hold_body
 from domainkit.http.uploads import FileType, ReceivedUpload, receive_upload
 from domainkit.storage.base import Storage, StoredUpload, new_name
 from domainkit.storage.handler import storages
@@ -70,7 +72,7 @@ from ..conditional import PreconditionRequired, expected_versions
 from . import reach
 from .authorizing import BY_NAME, SUFFIX
 from .commands import CommandRoute
-from .context import RouteContext
+from .context import BeforeRules, RouteContext
 
 if TYPE_CHECKING:
     from domainkit.ddd.uow import Retry
@@ -157,7 +159,7 @@ class UploadRoute(CommandRoute):
         name: str | None,
         summary: str | None,
         provide: Mapping[str, Callable[..., object]] | None,
-        body_limit: "int | Decided[int] | None",
+        body_limit: "int | Decided[int] | BeforeRules | None",
         retry: "Retry | None",
         dependencies: Sequence[params.Depends] = (),
         before_rules: Sequence[params.Depends] = (),
@@ -193,10 +195,15 @@ class UploadRoute(CommandRoute):
         self.storage = storage
         self.directory = directory
         self.body_limit = body_limit if callable(body_limit) else None
-        """The body limit, when it is decided per request."""
+        """The body limit, when it is decided per request, once the reach holds."""
+        self.decided_first = body_limit if isinstance(body_limit, BeforeRules) else None
+        """The body limit, when it is decided per request before the rules."""
         declared = default if body_limit is None else body_limit
-        if callable(declared):  # Until it is decided, held as a command route's.
-            declared = None
+        if callable(declared) or isinstance(declared, BeforeRules):
+            declared = None  # Until it is decided, held as a command route's.
+        if self.decided_first is not None:  # Before any read of the body.
+            before_rules = (Depends(_holding(self.decided_first)), *before_rules)
+        per_request = self.body_limit is not None or self.decided_first is not None
         self.receives = _asks_received(service)
         """Whether the service is given the file received (``received=``)."""
         super().__init__(
@@ -216,7 +223,7 @@ class UploadRoute(CommandRoute):
             # The file gives these: named here so the command's fields check.
             provide={**(provide or {}), **dict.fromkeys(given, _from_the_file)},
             body_limit=declared,
-            body_limit_per_request=self.body_limit is not None,
+            body_limit_per_request=per_request,
             retry=retry,
             dependencies=dependencies,
             before_rules=before_rules,
@@ -230,7 +237,8 @@ class UploadRoute(CommandRoute):
         """Refuse a rule that reads the body, on a route that decides its limit.
 
         The rule reads the body before the limit is decided, held to the
-        limit of a command route without one: never to the decided one.
+        limit of a command route without one: never to the decided one. A
+        limit decided before the rules (``BeforeRules``) holds it.
 
         Raises:
             ImproperlyConfigured: One of the route's rules reads the body.
@@ -241,7 +249,9 @@ class UploadRoute(CommandRoute):
                 raise ImproperlyConfigured(
                     f"{self.router.prefix}{self.spec.path} decides its body limit "
                     f"per request, but {type(rule).__name__} reads the body before "
-                    "it is decided: give body_limit= a number, the most a request "
+                    "it is decided: give body_limit= a BeforeRules "
+                    "(domainkit.resources), a limit decided from the request "
+                    "alone before the rules; or a number, the most a request "
                     "may send."
                 )
 
@@ -367,7 +377,8 @@ class UploadRoute(CommandRoute):
 
         Before the body is read: the storage an alias names is looked up,
         and the directory checked as a storage takes it. A file is held to
-        the body limit decided, where that is less than its size.
+        the body limit decided, where that is less than its size: now, or
+        before the rules (``BeforeRules``).
 
         Raises:
             TypeError: A callable decided something of the wrong kind.
@@ -380,9 +391,12 @@ class UploadRoute(CommandRoute):
         max_size = _size(await _decided(self.max_size, request, aggregate))
         storage = await _decided(self.storage, request, aggregate)
         directory = await _decided(self.directory, request, aggregate)
-        limit = None
+        limit: int | None = None
         if self.body_limit is not None:
             limit = _body(await _decided(self.body_limit, request, aggregate))
+        elif self.decided_first is not None:  # Before the rules, and held since.
+            limit = request.scope[DECIDED]
+        if limit is not None:
             max_size = min(max_size, limit)  # The file is never more than its body.
         if not isinstance(storage, Storage | str) or not isinstance(directory, str):
             raise TypeError(
@@ -492,6 +506,21 @@ class UploadRoute(CommandRoute):
 
 async def _from_the_file() -> None:
     """Nothing: the file gives the field, once it is received (``build``)."""
+
+
+def _holding(first: BeforeRules) -> Callable[[Request], Awaitable[None]]:
+    """The dependency that decides the body limit before the rules, and holds it.
+
+    It runs first among the route's ``before_rules``: the limit then holds
+    every read of the body, a rule's included.
+    """
+
+    async def hold_first(request: Request) -> None:
+        found = first.decide(request)
+        limit = _body(await found if inspect.isawaitable(found) else found)
+        hold_body(request.scope, limit)
+
+    return hold_first
 
 
 async def _decided[T](

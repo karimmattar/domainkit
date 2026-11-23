@@ -49,6 +49,12 @@ project that relied on 2.9's behaviour notices, and what it may change.
   schema must let the member through. A client may read it in place of
   the header: `body.get("in_doubt") is True`
   ([A commit in doubt](reference/problems.md#a-commit-in-doubt)).
+- **An upload route whose rule reads the body may decide its limit per
+  request.** A route with `DeviceSigned` that takes a fixed `body_limit`,
+  read from a setting when it is declared, may take
+  `body_limit=BeforeRules(lambda request: ...)` instead, which reads the
+  setting at each request
+  ([A body limit decided before the rules](resources.md#a-body-limit-decided-before-the-rules)).
 
 ## 2.8 to 2.9
 
