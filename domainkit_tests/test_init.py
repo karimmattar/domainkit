@@ -25,7 +25,12 @@ from domainkit.management import (
     call_command,
     execute_from_command_line,
 )
-from domainkit.management.commands.init import TEMPLATE_DIR, docs_url, requirement
+from domainkit.management.commands.init import (
+    EXTRAS,
+    TEMPLATE_DIR,
+    docs_url,
+    requirement,
+)
 from domainkit.utils import formatting
 from domainkit_tests.test_sec12c_2_image_bakes_env_file import ignored
 
@@ -98,7 +103,7 @@ def test_init_creates_a_project_that_passes_check_and_its_tests(
         f"Created billingAPI in {project}.\n"
         "Next steps:\n"
         f"  cd {project.relative_to(Path.cwd(), walk_up=True)}\n"
-        '  pip install "domainkit[postgres,redis,sqlite,testing]"'
+        '  pip install "domainkit[postgres,redis,sqlite,uvicorn,testing]"'
         "   # or: uv sync, for both\n"
         "  pip install --group dev   # ruff formats what the generators write\n"
         "  python manage.py check\n"
@@ -769,7 +774,9 @@ def test_the_projects_workflow_passes_on_a_new_project(tmp_path: Path) -> None:
     listing = re.search(r'(python -c ".*") > requirements.txt', install["run"])
     assert listing is not None
     listed = run(project, *shlex.split(listing[1])[1:])
-    assert listed.stdout.splitlines() == [requirement(domainkit.__version__)]
+    assert listed.stdout.splitlines() == [
+        requirement(domainkit.__version__, (*EXTRAS[None], "uvicorn"))
+    ]
 
 
 def test_the_projects_workflow_pins_the_actions_domainkits_ci_does(
