@@ -40,6 +40,13 @@ never published), with each section below.
 
 2.10 follows up a project's notes on 2.9. Each item of this list says
 what a project that relied on 2.9's behaviour changes, and what to run.
+There is no migration to make. On PostgreSQL, `migrate` builds the user
+lookups' indexes concurrently, outside a transaction
+([below](#migrate-builds-the-user-lookups-indexes-concurrently)). With
+`AUTH.AUTHORIZATIONS.TYPED_LINKS` set to `"refused"`, read the stored
+group names before you deploy, and rename those that hold a link
+(below). Where approvals hold making a user staff, a request stored by
+2.9 is never spent: the call submits a new one (below).
 
 - **Name the `uvicorn` extra now.** 2.10 adds `domainkit[uvicorn]`. It
   installs nothing new: every 2.x install has uvicorn already. 3.0 will

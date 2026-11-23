@@ -10,6 +10,27 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 
 ## [Unreleased]
 
+## [2.10.0] - 2026-11-23
+
+2.10 closes the user reports left open after 2.9 (A26, A17, D2, S3, S4,
+U7, U9), with nothing that breaks a 2.9 project's code. Making a user
+staff holds, shows and binds what they come back with, as a return does,
+and the admin API's act of either shows and binds it; an act reads
+`If-Match` as its twin does (ADR 0172, 0178). Screens read a top-level
+domain inside a name, a group's stored name, and the groups a user is
+given back, and `shows_link` reads stored text as a screen shows it (ADR
+0180). `ARCHITECTURE["LAYER_MODULES"]` makes a module of the project's
+own a built-in layer (ADR 0199), and on PostgreSQL `migrate` builds the
+user lookups' indexes concurrently, building again one a failed build
+left invalid (ADR 0185). Office files that import a chunk, name a part
+as Office does not, or hold instruction text outside a field are
+refused, and Word documents are read a bounded number at once (ADR 0175,
+0201). `domainkit[uvicorn]` is a new extra, which 3.0 will need; a 503
+whose commit is in doubt says so in its body (ADR 0186); an upload route
+may decide its body limit before its rules (ADR 0181). No migration:
+read [upgrading.md](docs/upgrading.md#29-to-210) before you deploy,
+above all where `AUTH.AUTHORIZATIONS.TYPED_LINKS` is `"refused"`.
+
 ### Added
 
 - The `uvicorn` extra, `domainkit[uvicorn]`. It installs nothing new in
@@ -9903,7 +9924,8 @@ First version, extracted from a production service template.
 - `domainkit.testing`: a pytest plugin with migrated `database` and `client`
   fixtures, used by the tests `startdomain` generates.
 
-[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.9.0...HEAD
+[Unreleased]: https://github.com/karimmattar/domainkit/compare/v2.10.0...HEAD
+[2.10.0]: https://github.com/karimmattar/domainkit/compare/v2.9.0...v2.10.0
 [2.9.0]: https://github.com/karimmattar/domainkit/compare/v2.8.2...v2.9.0
 [2.8.2]: https://github.com/karimmattar/domainkit/compare/v2.8.1...v2.8.2
 [2.8.1]: https://github.com/karimmattar/domainkit/compare/v2.8.0...v2.8.1
