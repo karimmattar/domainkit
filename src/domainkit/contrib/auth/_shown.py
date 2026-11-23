@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Final
 from domainkit.conf import settings
 from domainkit.i18n import gettext, gettext_noop, ngettext, pgettext
 
-from .screens import TooMuchToShow, Typed, laid_out
+from .screens import TooMuchToShow, Typed, TypedName, laid_out
 from .settings import auth_settings, identifier_fields
 from .users import get_user_model
 
@@ -70,6 +70,13 @@ def group_item(
     "readers (…9abc) 3 perms", and "+ 2 object grants" where it holds any:
     short, so that a screen puts two or more on a line. A name too long for
     its line is cut, never refused: the act binds the id.
+
+    The name is marked typed (since 2.10): a person typed it, though it was
+    stored before. ``laid_out`` runs the ``on_typed_text`` checks on it,
+    and with ``AUTH.AUTHORIZATIONS.TYPED_LINKS`` refused, refuses a group
+    whose name holds a link, whole or as the item shows it, until it is
+    renamed: a ``TypedName``, a ``str`` as before. The id and the counts
+    are not read.
     """
     ident = str(group_id)
     ident = "…" + ident[-SHOWN_ID:] if len(ident) > SHOWN_ID else ident
@@ -80,16 +87,28 @@ def group_item(
         more = ngettext("{count} object grant", "{count} object grants", object_grants)
         grants += " + " + more.format(count=object_grants)
     line = pgettext("held group", "{name} ({id}) {grants}")
-    return _fitting(lambda text: line.format(name=text, id=ident, grants=grants), name)
+
+    def make(text: str) -> str:
+        return line.format(name=text, id=ident, grants=grants)
+
+    shown = _fitting(make, name)
+    return TypedName(make(shown), name, shown)
 
 
-def list_item(name: str) -> str:
-    """``name``, cut where need be, so that a list shows it on one line."""
-    return _fitting(lambda text: text, name)
+def list_item(name: str, *, typed: bool = False) -> str:
+    """``name``, cut where need be, so that a list shows it on one line.
+
+    With ``typed`` (since 2.10), the name is marked typed, as
+    ``group_item`` marks a group's: a ``TypedName``, which ``laid_out``
+    reads whole and as the line shows it; with no id or count beside it,
+    its line is read again too, as any typed text's.
+    """
+    shown = _fitting(lambda text: text, name)
+    return TypedName(shown, name, shown) if typed else shown
 
 
 def _fitting(make: Callable[[str], str], name: str) -> str:
-    """``make(name)``, the name cut and ended with ``…`` where a line needs it.
+    """``name``, cut and ended with ``…`` where ``make(name)`` needs it to fit a line.
 
     Measured as a screen lays a list's item out (quoted, escaped), so what
     a grant gives is never refused for the length of a name.
@@ -102,14 +121,13 @@ def _fitting(make: Callable[[str], str], name: str) -> str:
             return False
         return True
 
-    whole = make(name)
-    if fits(whole):
-        return whole
-    low, high, best = 0, len(name) - 1, make("…")
+    if fits(make(name)):
+        return name
+    low, high, best = 0, len(name) - 1, "…"
     while low <= high:
         middle = (low + high) // 2
-        candidate = make(name[:middle] + "…")
-        if fits(candidate):
+        candidate = name[:middle] + "…"
+        if fits(make(candidate)):
             best, low = candidate, middle + 1
         else:
             high = middle - 1
