@@ -94,6 +94,7 @@ The SQL commit and migration hooks a domain registers (`domainkit.apps.hooks`).
 
 - `on_committed`: Follow up after a SQL unit of work committed: `(uow)`.
 - `on_migrated`: Fill a database `migrate` upgraded: `(owner_connection, alias)`.
+- `on_migrated_committed`: Follow up once the `on_migrated` hooks committed: `(owner_connection, alias)`.
 - `on_stage`: Add rows to a committing SQL unit of work: `(uow, events, tasks)`.
 - `on_stage_transaction`: Join a transaction committed outside a unit of work: `(connection, alias)`.
 - `on_transaction_committed`: Follow up after such a transaction committed: `(alias)`.

@@ -106,6 +106,7 @@ These hooks come from `domainkit.db.hooks`, and are registered in
 | Work after each commit | `async def hook(uow)` | `on_committed(hook)` (called by the unit of work, each within `EVENT_HANDLER_TIMEOUT`, free of the request's deadline; failures and hooks cut off, `HandlerTimedOut`, are reported, never raised) |
 | The same, for a commit outside a unit of work | `async def hook(connection, database)` / `async def hook(database)` | `on_stage_transaction(hook)` / `on_transaction_committed(hook)` (called by `messaging.enqueue` around its own transaction, the second within `EVENT_HANDLER_TIMEOUT`; idempotency uses them to hold the key) |
 | Rows after each `migrate` (Django's `post_migrate`) | `async def hook(connection, database)` | `on_migrated(hook)` (called by `migrate` for each database it upgraded, in one transaction as the schema owner, and by `flush`) |
+| An index built `CONCURRENTLY` after each `migrate` | `async def hook(connection, database) -> str \| None` | `on_migrated_committed(hook)` (called once the `on_migrated` hooks committed, on a connection outside a transaction, in the same schema, and by `flush`; `migrate` prints the line a hook returns. A hook that raises fails `migrate` after the `on_migrated` hooks committed: run it again, and both run again. Since 2.10) |
 
 ```python
 from sqlalchemy.ext.asyncio import AsyncConnection

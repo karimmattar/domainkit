@@ -30,6 +30,7 @@ from domainkit.conf.global_settings import ArchitectureConfig, Settings
 from domainkit.exceptions import DomainkitError, ImproperlyConfigured
 from domainkit.http import errors, problems, uploads
 from domainkit.http.errors import install_exception_handlers
+from domainkit.management.base import CommandError
 from domainkit_tests.conftest import MakePackage
 
 ROOT: Final = Path(__file__).parents[1]
@@ -356,6 +357,62 @@ def test_extending_keeps_every_default_and_adds_each_entry_once() -> None:
             "FORBIDDEN_LIBRARIES\n  Dictionary should have at most 12 items",
         ),
         ({"PUBLIC_SURFACE": ["domain"], "LAYERS": ["x"]}, "Extra inputs"),
+        (
+            {"LAYER_MODULES": {"gateways": "adapters"}},
+            (
+                "LAYER_MODULES names layers that are not built in: \\['adapters'\\]; "
+                "name domain, application, infrastructure, or api"
+            ),
+        ),
+        (
+            {"EXTRA_LAYERS": ["ports"], "LAYER_MODULES": {"gateways": "ports"}},
+            "LAYER_MODULES names layers that are not built in: \\['ports'\\]",
+        ),
+        (
+            {"LAYER_MODULES": {"models": "api", "api": "infrastructure"}},
+            (
+                "LAYER_MODULES names built-in layers or their modules: "
+                "\\['api', 'models'\\]; they keep their layers"
+            ),
+        ),
+        (
+            {"EXTRA_LAYERS": ["gateways"], "LAYER_MODULES": {"gateways": "api"}},
+            (
+                "LAYER_MODULES and EXTRA_LAYERS both name \\['gateways'\\]: a module "
+                "is one layer"
+            ),
+        ),
+        (
+            {"LAYER_MODULES": {"gate.ways": "api"}},
+            "LAYER_MODULES.`gate.ways`.\\[key\\]\n  String should match",
+        ),
+        ({"LAYER_MODULES": {f"m{n}": "api" for n in range(65)}}, "at most 64 items"),
+        (
+            {"LAYER_MODULES": {"gateways": "infrastructure"}, "PUBLIC_SURFACE": ["x"]},
+            "PUBLIC_SURFACE names parts outside the layers: \\['x'\\]",
+        ),
+        (
+            {
+                "LAYER_MODULES": {"gateways": "infrastructure"},
+                "FORBIDDEN_LIBRARIES": {"gateways": ["httpx"]},
+            },
+            (
+                "FORBIDDEN_LIBRARIES names layers that are not in the layer rules: "
+                "\\['gateways'\\]; name the layer of each module of LAYER_MODULES "
+                "\\(gateways is infrastructure\\) \\[type"
+            ),
+        ),
+        (
+            {
+                "LAYER_MODULES": {"gateways": "infrastructure"},
+                "FORBIDDEN_LAYERS": {"api": ["gateways", "ports"]},
+            },
+            (
+                "\\['gateways', 'ports'\\]; name the layer of each module of "
+                "LAYER_MODULES \\(gateways is infrastructure\\); add the others to "
+                "EXTRA_LAYERS"
+            ),
+        ),
     ],
 )
 def test_architecture_settings_are_validated(
@@ -486,6 +543,223 @@ def test_the_simple_layout_holds_each_file_to_its_layer(
         ("flat.orders.controllers", "flat.shop.models"),
         ("flat.orders.controllers", "flat.shop.models.b"),
     }
+
+
+GATEWAYS: Final = {"LAYER_MODULES": {"gateways": "infrastructure"}}
+"""``ARCHITECTURE`` that makes a domain's ``gateways.py`` its infrastructure layer."""
+
+
+@pytest.fixture
+def gateways(make_package: MakePackage) -> str:
+    """A simple layout whose ``gateways.py`` calls a provider and takes uploads."""
+    make_package(
+        "flatgw.identity",
+        {
+            "domain.py": "",
+            "controllers.py": "from flatgw.identity.gateways import Sms\n",
+            "models.py": "Phone = None\n",
+            "gateways.py": """
+                from domainkit.outbound.client import CircuitOpen, HttpClient
+                from domainkit.http.client import HttpClient as Old
+                from domainkit.http.uploads import CHECKED_PDF, UploadFile, save_upload
+                from domainkit.http.problems import APIError, HTTPException
+                from domainkit.http.errors import install_exception_handlers
+                import fastapi
+                from flatgw.identity.models import Phone
+                from flatgw.identity.routes import router
+                Sms = None
+            """,
+            "routes.py": "router = None\n",
+        },
+    )
+    return "flatgw.identity"
+
+
+def test_a_project_module_is_held_to_the_built_in_layer_it_names(
+    gateways: str,
+) -> None:
+    """``LAYER_MODULES`` makes ``gateways.py`` the infrastructure layer.
+
+    It is held to that layer's libraries, with its exceptions: the client,
+    at its 2.9 home and its 2.8 path, the uploads' checks, and the
+    problems' ``__all__``. The application layer may not import it, and it
+    may not import the api layer. Unnamed, it is held to nothing (user
+    report D2).
+    """
+    assert check_domain(gateways) == []
+    assert layer_warnings([gateways]) == []
+    with override_settings(ARCHITECTURE=GATEWAYS):
+        refused = {
+            (v.module.removeprefix(f"{gateways}."), v.imported, v.rule)
+            for v in check_domain(gateways)
+        }
+        warned = {
+            (v.module.removeprefix(f"{gateways}."), v.imported, v.rule)
+            for v in layer_warnings([gateways])
+        }
+    domainkit = "the infrastructure layer must not use domainkit"
+    outer = "the infrastructure layer must not depend on outer layers"
+    inner = "the application layer must not depend on outer layers"
+    public = "the infrastructure layer may import only the __all__ of "
+
+    assert refused == {
+        (
+            "gateways",
+            "domainkit.http.problems.HTTPException",
+            public + "domainkit.http.problems",
+        ),
+        ("gateways", "domainkit.http.errors", domainkit),
+        ("gateways", "domainkit.http.errors.install_exception_handlers", domainkit),
+        ("gateways", "fastapi", "the infrastructure layer must not use fastapi"),
+        ("gateways", f"{gateways}.routes", outer),
+        ("gateways", f"{gateways}.routes.router", outer),
+        ("controllers", f"{gateways}.gateways", inner),
+        ("controllers", f"{gateways}.gateways.Sms", inner),
+    }
+    assert warned == {
+        (
+            "gateways",
+            "domainkit.http.uploads.UploadFile",
+            public + "domainkit.http.uploads; 3.0 refuses the rest",
+        )
+    }
+
+
+def test_check_holds_a_project_module_to_the_layer_it_names(
+    gateways: str, make_package: MakePackage
+) -> None:
+    """``check`` refuses its forbidden libraries and warns of what 3.0 refuses.
+
+    The client's 2.9 home and the uploads' ``__all__`` pass.
+    """
+    from domainkit.management import call_command
+
+    make_package(
+        "flatgw.files",
+        {
+            "gateways.py": """
+                from domainkit.outbound.client import HttpClient
+                from domainkit.http.uploads import UploadFile, save_upload
+            """
+        },
+    )
+
+    def checked(domain: str, **change: Any) -> list[str]:  # noqa: ANN401 - settings.
+        output = io.StringIO()
+        with override_settings(INSTALLED_DOMAINS=[*DOMAINS, domain], **change):
+            try:
+                call_command("check", stdout=output)
+            except CommandError as refused:
+                return str(refused).splitlines()
+        return output.getvalue().splitlines()
+
+    refused = checked(gateways, ARCHITECTURE=GATEWAYS)
+    warned = checked("flatgw.files", ARCHITECTURE=GATEWAYS)
+
+    assert checked(gateways)[0].startswith("System check identified no issues.")
+    assert refused[0] == "System check found problems:"
+    assert (
+        "  architecture.E001: flatgw.identity.gateways imports fastapi: "
+        "the infrastructure layer must not use fastapi"
+    ) in refused
+    assert not any("outbound" in line or "save_upload" in line for line in refused)
+    assert warned[0].startswith("System check identified no issues and 1 warning.")
+    assert warned[1:] == [
+        (
+            "  Warning: architecture.W001: flatgw.files.gateways imports "
+            "domainkit.http.uploads.UploadFile: the infrastructure layer may "
+            "import only the __all__ of domainkit.http.uploads; 3.0 refuses the rest"
+        )
+    ]
+
+
+def test_a_project_rule_holds_a_named_module_as_it_holds_its_layer(
+    gateways: str,
+) -> None:
+    """A rule on the 2.8 path of the client reaches its 2.9 home in ``gateways.py``.
+
+    A rule on all of ``domainkit`` leaves it the client on either path,
+    through the exception, as it leaves ``models.py`` (ADR 0195).
+    """
+    by_name = {
+        **GATEWAYS,
+        "FORBIDDEN_LIBRARIES": {"infrastructure": ["domainkit.http.client"]},
+    }
+    everything = {**GATEWAYS, "FORBIDDEN_LIBRARIES": {"infrastructure": ["domainkit"]}}
+    with override_settings(ARCHITECTURE=by_name):
+        named = {v.imported for v in check_domain(gateways)}
+    with override_settings(ARCHITECTURE=everything):
+        whole = {v.imported for v in check_domain(gateways)}
+
+    assert {
+        "domainkit.outbound.client.HttpClient",
+        "domainkit.outbound.client.CircuitOpen",
+        "domainkit.http.client.HttpClient",
+    } <= named
+    assert not any(".client" in name for name in whole)
+    assert "domainkit.http.uploads.save_upload" not in whole
+
+
+def test_a_project_module_may_be_any_built_in_layer(
+    make_package: MakePackage,
+) -> None:
+    """``values.py`` as the domain layer, ``services.py`` as the application layer.
+
+    The domain layer imports itself, its named modules included; the
+    application layer may not import infrastructure. Other domains reach a
+    named module only where ``PUBLIC_SURFACE`` names it.
+    """
+    make_package(
+        "flatgw.billing",
+        {
+            "domain.py": "from flatgw.billing.values import Money\n",
+            "values.py": "import sqlalchemy\nfrom flatgw.billing.domain import x\n",
+            "services.py": (
+                "from flatgw.billing.values import Money\n"
+                "from flatgw.billing.models import Row\n"
+            ),
+            "models.py": "",
+        },
+    )
+    make_package(
+        "flatgw.shipping",
+        {"controllers.py": "from flatgw.billing.services import Pay\n"},
+    )
+    named = {"LAYER_MODULES": {"values": "domain", "services": "application"}}
+    installed = ["flatgw.billing", "flatgw.shipping"]
+    with override_settings(ARCHITECTURE=named):
+        found = {(v.module, v.imported) for v in check_domains(installed)}
+    with override_settings(ARCHITECTURE={**named, "PUBLIC_SURFACE": ["services"]}):
+        opened = {(v.module, v.imported) for v in check_domains(installed)}
+    pay = {
+        ("flatgw.shipping.controllers", "flatgw.billing.services"),
+        ("flatgw.shipping.controllers", "flatgw.billing.services.Pay"),
+    }
+
+    assert found == {
+        ("flatgw.billing.values", "sqlalchemy"),
+        ("flatgw.billing.services", "flatgw.billing.models"),
+        ("flatgw.billing.services", "flatgw.billing.models.Row"),
+        *pay,
+    }
+    assert opened == found - pay
+
+
+def test_extending_names_modules_but_keeps_the_built_in_ones() -> None:
+    """``models.py`` stays the infrastructure layer; ``gateways`` joins it."""
+    rules = LayerRules().extend(
+        layer_modules={"models": "api", "gateways": "infrastructure"}
+    )
+    config = LayerRules.from_config(ArchitectureConfig(**GATEWAYS))
+
+    assert dict(rules.layer_modules) == {
+        **architecture.LAYER_MODULES,
+        "gateways": "infrastructure",
+    }
+    assert config.layer_modules == rules.layer_modules
+    assert LayerRules().extend().layer_modules == architecture.LAYER_MODULES
+    with pytest.raises(TypeError):
+        rules.layer_modules["gateways"] = "api"  # type: ignore[index]
 
 
 @pytest.fixture

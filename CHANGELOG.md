@@ -35,6 +35,39 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   reach holds is still refused on such a route, and the refusal names
   `BeforeRules` ([A body limit decided before the rules](docs/resources.md#a-body-limit-decided-before-the-rules),
   ADR 0181) (user report U7).
+- `ARCHITECTURE["LAYER_MODULES"]` names a module of the project's own as
+  a built-in layer. With `{"gateways": "infrastructure"}`, a domain's
+  `gateways.py` is held, as `models.py` is, to that layer's libraries and
+  their exceptions (the client, the uploads' checks, the problems), to the
+  warning of the names 3.0 refuses (`architecture.W001`), and to the
+  layers that may not import it. A built-in layer or module, or a module
+  also in `EXTRA_LAYERS`, is refused. ADR 0199
+  ([Layer rules](docs/reference/settings.md#layer-rules)) (user report D2).
+- `domainkit.db.hooks.on_migrated_committed`: hooks that `migrate` and
+  `flush` call once the `on_migrated` hooks committed, with the schema
+  owner's connection outside a transaction, for what PostgreSQL runs only
+  so, such as `CREATE INDEX CONCURRENTLY`. `migrate` prints the line a
+  hook returns. `migrate --tenant` refuses to run them through PgBouncer
+  without `MIGRATION_URL`, which would not keep the tenant's schema
+  ([Extension points](docs/reference/extension-points.md)) (user report D2).
+
+### Changed
+
+- On PostgreSQL, `migrate` builds the user lookups' indexes with
+  `CREATE INDEX CONCURRENTLY`, under the same names, once its hooks
+  committed: the users table takes writes while they are built, where 2.9
+  held them. While another session builds an index on the table, it
+  builds none of them, leaves that build to end, and says so. ADR 0185's
+  amendment of 2026-11-23
+  ([upgrading.md](docs/upgrading.md#migrate-builds-the-user-lookups-indexes-concurrently))
+  (user report D2).
+
+### Fixed
+
+- `migrate` builds again a user lookup index that a failed concurrent
+  build left invalid (`pg_index.indisvalid`), by hand or by `migrate`: it
+  drops the index, and builds it. 2.9 took it as made, and the lookups it
+  serves read the whole table (user report D2).
 
 ## [2.9.0] - 2026-11-18
 

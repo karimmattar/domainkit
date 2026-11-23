@@ -75,6 +75,60 @@ what a project that relied on 2.9's behaviour changes, and what to run.
   `413 content_too_large`. On such a route, keep the command limit at or
   above the largest limit it decides, or keep a fixed number.
 
+### `migrate` builds the user lookups' indexes concurrently
+
+2.9's `migrate` built the indexes of [2.8 to 2.9](#migrate-makes-the-user-lookups-indexes-on-postgresql)
+in its hooks' transaction, with `CREATE INDEX`, which holds the table's
+writes while it runs. `migrate` now builds each with `CREATE INDEX
+CONCURRENTLY`, under the same names, once its hooks committed, on a
+connection outside a transaction: signups, logins, and profile changes
+go on while it builds. Each build waits for the transactions that write
+to the table when it starts, and for every transaction in the database
+that holds an older snapshot before it ends, so a long transaction
+delays `migrate`, not the writes. No migration to make, and nothing to
+build by hand before you deploy: on a large table, the build now runs in
+the deploy's `migrate` step, which takes as long as it does.
+
+An index that a concurrent build left invalid (`pg_index.indisvalid` is
+false), by hand or by `migrate`, now counts as missing: `migrate` drops
+it (`DROP INDEX CONCURRENTLY`) and builds it again. 2.9 took it as made.
+A valid index of the name stays, one you built by hand included. While
+another session builds an index on the users table, its index is
+invalid too: `migrate` builds none of them then, leaves that build
+alone, and prints `Database 'default': skipped the user lookups'
+indexes: an index on public.domainkit_users is being built; run migrate
+again once it ends`. Run it again once that build ended. SQLite gets
+none, as before ([ADR 0185](adr/0185-bound-keyset-pages-index-the-user-lookups-and-read-fewer-grants.md)).
+
+A domain of the project's may build its own indexes so: `migrate` calls
+the new hook point `domainkit.db.hooks.on_migrated_committed`, once the
+`on_migrated` hooks committed, with the schema owner's connection, where
+each statement commits as it runs, and prints the line a hook returns.
+A hook that raises fails `migrate` after the `on_migrated` hooks
+committed: run `migrate` again, and both run again
+([Extension points](reference/extension-points.md)). `migrate --tenant`
+runs them in the tenant's schema, set for their connection's session.
+Through PgBouncer (`PGBOUNCER` without `MIGRATION_URL`), which keeps no
+session, it refuses while any is registered, auth's among them, and asks
+for `MIGRATION_URL`: a direct connection for the schema owner.
+
+### A module of the project's own can be a built-in layer
+
+`ARCHITECTURE["LAYER_MODULES"]` makes a module of each domain one of the
+built-in layers: `{"gateways": "infrastructure"}` holds `gateways.py` to
+the infrastructure layer's rules, as `models.py` is
+([Layer rules](reference/settings.md#layer-rules),
+[ADR 0199](adr/0199-let-a-projects-module-be-a-built-in-layer.md)). A
+project that made such a module a layer of its own moves it from
+`EXTRA_LAYERS` to `LAYER_MODULES`: the settings refuse a module in both.
+Its `FORBIDDEN_LIBRARIES` and `FORBIDDEN_LAYERS` entries name the layer
+it is from then on, `infrastructure`, not the module, or go where that
+layer's rules hold them already: the settings refuse a rule keyed by the
+module, and say which layer to name. Once named,
+`check` reports the module's imports as the layer's: a web library is
+`architecture.E001`, and a name outside `domainkit.http.uploads`'
+`__all__` is `architecture.W001`, which `check --deploy` refuses.
+
 ## 2.8 to 2.9
 
 2.9 follows up the audit of 2.8. Each item of this list says what a
@@ -430,10 +484,12 @@ index on `lower()` ([ADR 0185](adr/0185-bound-keyset-pages-index-the-user-lookup
 
 `migrate` reads the table's indexes from the catalog first, and makes
 only those missing: with none to make, it takes no lock on the table.
-Building one holds writes to the table while it runs. On a large users
-table, make them before you deploy, without holding writes, under the
-same names; `migrate` then finds them and builds none. For the default
-table, with addresses first in `AUTH.IDENTIFIERS`:
+On 2.9, building one holds writes to the table while it runs; 2.10
+builds them concurrently ([2.9 to 2.10](#migrate-builds-the-user-lookups-indexes-concurrently)).
+On 2.9, with a large users table, make them before you deploy, without
+holding writes, under the same names; `migrate` then finds them and
+builds none. For the default table, with addresses first in
+`AUTH.IDENTIFIERS`:
 
 ```sql
 CREATE INDEX CONCURRENTLY ix_domainkit_users_email_lower ON domainkit_users (lower(email));
@@ -442,7 +498,8 @@ CREATE INDEX CONCURRENTLY ix_domainkit_users_email_id ON domainkit_users (email,
 ```
 
 A concurrent build that fails leaves an invalid index of that name, which
-`migrate` takes as made: drop it, and build it again.
+2.9's `migrate` takes as made: drop it, and build it again. 2.10's
+`migrate` does that itself.
 
 ### A repository that overrides `count` counts every match in an export
 

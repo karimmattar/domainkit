@@ -34,7 +34,8 @@ domain layer), ``controllers.py`` (application), ``models.py``
 installed domain. The tables below are the defaults; a project extends them
 with the ``ARCHITECTURE`` setting (``LayerRules.extend``): packages its domain
 layers may import, such as a shared kernel, libraries a layer must not use,
-and layers of its own.
+layers of its own, and modules of its own that are a built-in layer, as
+``gateways.py`` the infrastructure layer.
 """
 
 import ast
@@ -48,6 +49,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Final, Self
 
+from domainkit.conf.global_settings import LAYER_MODULES as LAYER_MODULES
 from domainkit.conf.global_settings import LAYERS as LAYERS
 
 if TYPE_CHECKING:
@@ -65,16 +67,6 @@ __all__ = [
     "check_domains",
     "layer_warnings",
 ]
-
-LAYER_MODULES: Final = MappingProxyType(
-    {
-        "domain": "domain",
-        "controllers": "application",
-        "models": "infrastructure",
-        "routes": "api",
-    }
-)
-"""The simple layout's modules, and the layer each one is."""
 
 DOMAIN_ALLOWED_PREFIXES: Final = (
     "domainkit.ddd",
@@ -203,6 +195,10 @@ class LayerRules:
     """Layers of the same domain that each layer must not import."""
     public_surface: tuple[str, ...] = field(default_factory=lambda: PUBLIC_SURFACE)
     """Parts of a domain that other domains may import."""
+    layer_modules: Mapping[str, str] = field(
+        default_factory=lambda: MappingProxyType(dict(LAYER_MODULES))
+    )
+    """Modules of a domain that are a layer, and the layer each one is (since 2.10)."""
 
     def extend(
         self,
@@ -212,6 +208,7 @@ class LayerRules:
         forbidden_libraries: Mapping[str, Iterable[str]] | None = None,
         forbidden_layers: Mapping[str, Iterable[str]] | None = None,
         public_surface: Iterable[str] = (),
+        layer_modules: Mapping[str, str] | None = None,
     ) -> Self:
         """These rules with more entries; nothing already here is removed.
 
@@ -219,7 +216,9 @@ class LayerRules:
         exceptions to them. A library entry that names a module's path of
         2.8 (``domainkit.http.client``), or a package that held it
         (``domainkit.http``), names its 2.9 home too (``MOVED``), where the
-        entry kept a layer from the old path.
+        entry kept a layer from the old path. A module ``layer_modules``
+        names is that layer, with its rules and their exceptions; one named
+        here already keeps its layer.
         """
         more = {
             layer: (*entries, *self._moved(layer, entries))
@@ -234,6 +233,9 @@ class LayerRules:
                 self.forbidden_layers, forbidden_layers or {}
             ),
             public_surface=_merged(self.public_surface, public_surface),
+            layer_modules=MappingProxyType(
+                {**(layer_modules or {}), **self.layer_modules}
+            ),
         )
 
     def _moved(self, layer: str, entries: Iterable[str]) -> Iterator[str]:
@@ -267,6 +269,7 @@ class LayerRules:
             forbidden_libraries=config.FORBIDDEN_LIBRARIES,
             forbidden_layers=config.FORBIDDEN_LAYERS,
             public_surface=config.PUBLIC_SURFACE,
+            layer_modules=config.LAYER_MODULES,
         )
 
 
@@ -426,8 +429,8 @@ def _layer_rule(
 ) -> str | None:
     """Return the broken layer rule, if any."""
     if layer == "domain":
-        own = f"{package}.domain"
-        allowed = (own, *rules.domain_allowed)
+        own = [f"{package}.{name}" for name in _names_of("domain", rules)]
+        allowed = (*own, *rules.domain_allowed)
         if not _is_stdlib(imported) and not _within(imported, allowed):
             return (
                 "the domain layer may import only the standard library, "
@@ -440,7 +443,7 @@ def _layer_rule(
     forbidden = [
         f"{package}.{name}"
         for outer in rules.forbidden_layers.get(layer, ())
-        for name in _names_of(outer)
+        for name in _names_of(outer, rules)
     ]
     if _within(imported, forbidden):
         return f"the {layer} layer must not depend on outer layers"
@@ -499,18 +502,18 @@ def _resolve(module: str, is_package: bool, level: int, target: str | None) -> s
 
 
 def _layer(package: str, module: str, rules: LayerRules) -> str | None:
-    """Return the layer ``module`` belongs to, or None for top-level modules."""
+    """Return the layer ``module`` belongs to, or None for a module of no layer."""
     if module == package:
         return None
     first = module.removeprefix(f"{package}.").partition(".")[0]
     if first in rules.layers:
         return first
-    return LAYER_MODULES.get(first)
+    return rules.layer_modules.get(first)
 
 
-def _names_of(layer: str) -> tuple[str, ...]:
-    """The package name of ``layer``, and its simple layout module's."""
-    return (layer, *(name for name, of in LAYER_MODULES.items() if of == layer))
+def _names_of(layer: str, rules: LayerRules) -> tuple[str, ...]:
+    """The package name of ``layer``, and the modules that are that layer."""
+    return (layer, *(name for name, of in rules.layer_modules.items() if of == layer))
 
 
 def _within(name: str, prefixes: Iterable[str]) -> bool:
