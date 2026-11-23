@@ -292,30 +292,46 @@ def test_the_act_binds_what_each_group_grants_and_which_it_takes_away(
     assert groups_of(bob) == {writers, clerks}
 
 
+def named_robert(user_id: UUID) -> None:
+    """Store "Robert" as the user's first name, as a way round the admin API would."""
+
+    async def rename() -> None:
+        async with AuthUnitOfWork() as uow:
+            user = await uow.users.get(user_id)  # type: ignore[arg-type]
+            user.update(first_name="Robert")
+            await uow.commit()
+
+    run_async(rename())
+
+
+ROBERT: Final = {"is_active": True, "fields": {"first_name": "Robert"}}
+"""A return that sets a name: held with it while the user is named otherwise."""
+
+
 def test_a_kept_confirmation_serves_the_request_it_was_kept_for_alone(
     client: TestClient, frozen: FrozenClock
 ) -> None:
     """Held for one request, a confirmation never submits or spends another.
 
-    Bob's return was confirmed ("Active: yes") and waits. Bob is put in
-    admins meanwhile: the same call would submit a request of its own (Bob
-    comes back with more); it is refused (``action_not_authorized``, the
-    trail's ``held_elsewhere``), and a new confirmation submits it. In 2.7
-    the same call submitted it, and once it was approved, the
-    confirmation held for the first request, which waited still, made it.
+    Bob's return, naming him Robert, was confirmed and waits. He is named
+    so meanwhile: the request would hold the return alone now (a value he
+    holds is not held), so the same call would submit a request of its
+    own; it is refused (``action_not_authorized``, the trail's
+    ``held_elsewhere``), and a new confirmation submits it. In 2.7 the
+    same call submitted it, and once it was approved, the confirmation
+    held for the first request, which waited still, made it.
     """
     ann = Staff(client, frozen, "ann", *WRITES)
     root = Staff(client, frozen, "root", superuser=True)
     bob = deactivated("bob")
     make_group("readers", *READS)
-    make_group("admins", *WRITES)
     join("bob", "readers")
     path = f"/users/{bob}"
-    body = {"is_active": True}
+    body = ROBERT
 
     authorization = ann.authorized(f"{path}/authorization/patch", body)
     first = pending(ann.call("PATCH", path, body, authorization))
-    join("bob", "admins")
+    named_robert(bob)
     refused = ann.call("PATCH", path, body, authorization)
     if refused.status_code == 403 and refused.json()["code"] == "approval_pending":
         approve(root, refused.json()["approval_request_id"])  # What 2.7 allowed.
@@ -339,6 +355,45 @@ def test_a_kept_confirmation_serves_the_request_it_was_kept_for_alone(
     assert made.status_code == 200, made.json()
     assert status_of(root, first) == "pending"
     assert status_of(root, second) == "executed"
+
+
+def test_a_kept_confirmation_of_a_return_given_more_since_is_void(
+    client: TestClient, frozen: FrozenClock
+) -> None:
+    """Bob's return waits; Bob is put in admins: the act is another one.
+
+    The act binds what Bob comes back with (since 2.10, user report A26),
+    as the request does: the call is refused (``action_not_authorized``),
+    its confirmation voided and the trail told (``changed``), and nothing
+    is submitted. A new confirmation, which shows admins, submits it.
+    """
+    ann = Staff(client, frozen, "ann", *WRITES)
+    root = Staff(client, frozen, "root", superuser=True)
+    bob = deactivated("bob")
+    make_group("readers", *READS)
+    make_group("admins", *WRITES)
+    join("bob", "readers")
+    path = f"/users/{bob}"
+    body = {"is_active": True}
+
+    authorization = ann.authorized(f"{path}/authorization/patch", body)
+    first = pending(ann.call("PATCH", path, body, authorization))
+    join("bob", "admins")
+    refused = ann.call("PATCH", path, body, authorization)
+    submitted = [each["id"] for each in stored_requests()]
+    again = ann.authorized(f"{path}/authorization/patch", body)
+    second = pending(ann.call("PATCH", path, body, again))
+    approve(root, second)
+    made = ann.call("PATCH", path, body, again)
+
+    problem(refused, 403, "action_not_authorized")
+    assert row(authorization)["consumed_at"] is not None
+    assert "changed" in [
+        each["details"]["reason"] for each in audited("auth.authorization")
+    ]
+    assert submitted == [UUID(first)]
+    assert made.status_code == 200, made.json()
+    assert status_of(root, first) == "pending"
 
 
 def test_calls_at_once_on_a_kept_confirmation_make_the_change_once(
@@ -484,17 +539,16 @@ def test_calls_at_once_after_a_rename_are_all_refused(
 def test_calls_at_once_on_a_pending_return_that_moved_on_submit_nothing(
     client: TestClient, frozen: FrozenClock
 ) -> None:
-    """Bob's return waits; Bob is put in admins: six calls at once submit nothing."""
+    """Bob's return waits; he is named meanwhile: six calls at once submit nothing."""
     ann = Staff(client, frozen, "ann", *WRITES)
     bob = deactivated("bob")
     make_group("readers", *READS)
-    make_group("admins", *WRITES)
     join("bob", "readers")
     path = f"/users/{bob}"
-    body = {"is_active": True}
+    body = ROBERT
     authorization = ann.authorized(f"{path}/authorization/patch", body)
     first = pending(ann.call("PATCH", path, body, authorization))
-    join("bob", "admins")
+    named_robert(bob)
 
     answers = at_once(ann, "PATCH", path, body, authorization)
 

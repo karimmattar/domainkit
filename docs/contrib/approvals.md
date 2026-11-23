@@ -954,7 +954,7 @@ screens do. Refuse such a grant, or hold its approval to what it reads:
 from domainkit.contrib.approvals import named_keys_held
 
 if user.is_superuser or named_keys_held(user):
-    raise GrantedByName()  # The project's own refusal: grant it through approvals.
+    raise NamedGrantRefused()  # Your own refusal: grant it through approvals.
 ```
  A guard that a setting turns on
 must be registered whenever its service can be called: a service

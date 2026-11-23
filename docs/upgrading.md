@@ -61,14 +61,26 @@ project that relied on 2.9's behaviour changes, and what to run.
   away first, make them staff, then add the groups back, each step
   held. A guard of your own that refused making staff a user who holds
   a named key (`422`) can go, or read `named_keys_held(user)`.
-- **The admin API's act shows what a user comes back with.** With
-  `AUTH.ADMIN_ACTION` on, the screen of a `PATCH /users/{id}` that
+- **The admin API's act shows and binds what a user comes back with.**
+  With `AUTH.ADMIN_ACTION` on, the screen of a `PATCH /users/{id}` that
   makes a user staff, or active again, shows "Superuser" and "Staff"
   where they are so, set by the change or not, and "Grants", the keys
   `NAMED_PERMISSIONS` names that they hold, directly or through a
-  group. The act's digest is unchanged; under `WHOLE`, a change that
-  filled the screen may no longer fit: make it in smaller steps. A
-  client or a test that matched the screen reads the new lines.
+  group. The act binds their flags, groups, permissions, and grants on
+  objects (`AdminAct.holds`): a user granted anything between the twin
+  and the act makes another act, refused (`403 action_not_authorized`)
+  and its authorization voided; ask again. The digest of such an act
+  changes, so an authorization of making staff or active again asked
+  under 2.9 and not yet spent, one held for approval with `HELD_TTL`
+  included, is refused once: confirm the change again. Every other
+  act's digest is unchanged. Under `WHOLE`, a change that filled the
+  screen may no longer fit: make it in smaller steps. A client or a
+  test that matched the screen reads the new lines.
+- **A user in very many groups made staff** makes a request larger
+  than `APPROVALS.MAX_ARGUMENTS_BYTES` (64 KiB by default), each group
+  held by id, name, and keys: it is refused when submitted, as the
+  return of such a user already is. Take some groups away first, make
+  them staff, then add the groups back.
 - **An act reads `If-Match` as its twin does**
   ([ADR 0178](adr/0178-bind-an-act-to-the-version-its-page-read.md)).
   An act that sends several tags, on one line or several, answers

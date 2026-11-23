@@ -717,7 +717,10 @@ PUT  /admin/auth/users/6f1c.../groups {"groups": ["auditors"]}
   they are so, set by the change or not, and the keys
   `NAMED_PERMISSIONS` names that they hold, directly or through a group
   ("Grants"), so the screen names them whether or not approvals hold
-  the change (user reports A26, A17).
+  the change (user reports A26, A17). The act binds what they come
+  back with (their flags, groups, permissions, and grants on objects):
+  granted anything since the staff member confirmed it, the user makes
+  another act (`403 action_not_authorized`, voided).
   A list
   goes over as many lines as it takes ("Adds", "Adds (2)"). Six lines at
   most: with `AUTH["AUTHORIZATIONS"]["WHOLE"]` on (since 2.7), a change

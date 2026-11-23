@@ -331,7 +331,7 @@ follow approval.
 
 | Option | What it costs |
 | --- | --- |
-| Refuse making staff a user who holds a named key or is a superuser (the project's `422 granted_by_name`) | Policy, not display: a project that makes such users staff may not. Grants on objects and other keys still pass unseen. |
+| Refuse making staff a user who holds a named key or is a superuser (a check of the project's own, `refuse_named_grants`) | Policy, not display: a project that makes such users staff may not. Grants on objects and other keys still pass unseen. |
 | Show what the user holds, read when the screen is built, and hold nothing more | The approval binds the user alone: what they hold when the call comes back is not what the approver read. |
 | Take groups and permissions away with staff | Changes what unmaking staff does, in a minor release; a user may keep groups for what is not staff's. |
 | **`SetStaff` holds what the user comes back with, as `Reactivate` does (the superuser flag as the change leaves it, each group as `HeldGroup`, their own permissions, their grants on objects: count and digest), and shows it as `show_reactivation` does** | The arguments change: a request stored by 2.9 is approved again (below). Under `WHOLE`, a user in many groups made staff no longer fits one screen, and is made staff in steps, as a return is. |
@@ -355,15 +355,29 @@ The fields have defaults, so a request of 2.9 still loads: it shows,
 and is rejected, cancelled, or expires as before; approved, it is never
 spent.
 
-**The act's screen.** A change of the admin API that makes a user staff,
-or active again, shows the flags they come back with ("Superuser",
+**The act.** A change of the admin API that makes a user staff, or
+active again, shows the flags they come back with ("Superuser",
 "Staff", set by the change or not) and the keys `NAMED_PERMISSIONS`
 names that they hold, directly or through a group ("Grants"), read from
-the stored user when the twin is asked. The act binds the change, not
-what the user holds: its digest is unchanged, so no authorization asked
-under 2.9 is refused. Binding the holds too would refuse those, for a
-window of one authorization's life; where approvals hold the change,
-`SetStaff` and `Reactivate` bind them.
+the stored user when the twin is asked. Where approvals hold nothing,
+that screen is the only one, so the act binds what it shows.
+
+| Option | What it costs |
+| --- | --- |
+| Show the holds, bind the change alone | A group joined between the twin and the act comes back with the user, though the screen confirmed named none (found in review). |
+| Bind them through `Action(binds=...)` | Read again only when the authorization is spent, after the `on_admin_change` checks and approvals' hold: a change refused then answers `409` once an approval may be spent. |
+| **`AdminAct.holds`: the SHA-256 of what the user comes back with (the superuser and staff flags as the change leaves them, each group by id, name, keys, and grants on objects, their own permissions, and their grants on objects), read by `comes_back_with` at the twin and at the act; left out of the arguments when None, as `groups` and `taken` are** | The act of making staff or active again asked under 2.9 is refused once (`403`, voided). The admin API reads every backend's `object_grants` for such a change, with `ADMIN_ACTION` on only. |
+
+So a user granted anything since the twin makes another act: the call
+is refused before the checks run (`403 action_not_authorized`, voided,
+the trail's `changed`), and the staff member asks again, on a screen
+that shows it. With approvals holding the change too, the request binds
+the same holds.
+
+**Large requests.** A user in very many groups, each held by id, name,
+and keys, makes a request larger than `APPROVALS.MAX_ARGUMENTS_BYTES`
+(64 KiB by default): it is refused when submitted (`InvalidArguments`),
+as a return of such a user already is.
 
 **A reading for a project's own grants.** `named_keys_held(user)`
 (`domainkit.contrib.approvals`, beside `held_groups`): the keys
@@ -373,10 +387,12 @@ screens show it apart. The act's screen reads the same in auth: auth
 imports nothing of approvals (ADR 0140).
 
 Consequences: **security, a change of behaviour in a minor release**: a
-request to make staff stored by 2.9 is approved again; approvers and
-staff read more lines; the project removes its `granted_by_name` hook.
-New names: `SetStaff.is_superuser`, `.groups`, `.permissions`,
-`.object_grants`, `.object_grants_digest`; `named_keys_held`. No table
+request to make staff stored by 2.9 is approved again, and an
+authorization of making staff or active again asked under 2.9 is asked
+again; approvers and staff read more lines; a project's own check that
+refused such grants can go. New names: `SetStaff.is_superuser`,
+`.groups`, `.permissions`, `.object_grants`, `.object_grants_digest`;
+`named_keys_held`; `AdminAct.holds`, `comes_back_with`. No table
 changes.
 
 Reference added:

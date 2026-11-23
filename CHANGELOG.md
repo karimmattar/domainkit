@@ -46,12 +46,16 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   [upgrading.md](docs/upgrading.md#29-to-210), ADR 0172) (user report
   A26).
 - The admin API's act of a change that makes a user staff, or active
-  again, shows what they come back with: "Superuser" and "Staff" where
-  they are so, set by the change or not, and the keys
+  again, shows and binds what they come back with: it shows "Superuser"
+  and "Staff" where they are so, set by the change or not, and the keys
   `NAMED_PERMISSIONS` names that they hold, directly or through a group
-  ("Grants"), whether or not approvals hold the change
+  ("Grants"), whether or not approvals hold the change; it binds their
+  flags, groups, permissions, and grants on objects (`AdminAct.holds`),
+  so a user granted anything since the twin makes another act (`403
+  action_not_authorized`, voided)
   ([Each change, authorized as one act](docs/auth/routes.md#each-change-authorized-as-one-act),
-  ADR 0172) (user reports A26, A17).
+  [upgrading.md](docs/upgrading.md#29-to-210), ADR 0172) (user reports
+  A26, A17).
 
 ## [2.9.0] - 2026-11-18
 

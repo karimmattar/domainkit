@@ -682,6 +682,59 @@ def test_making_staff_or_active_again_shows_what_the_user_comes_back_with(
     assert pairs(unnamed) == [who("ada"), ("Active", "no")]
 
 
+@pytest.mark.parametrize("shape", [ACTS, UNHELD], ids=["held", "unheld"])
+def test_the_act_binds_what_the_user_made_staff_comes_back_with(
+    migrated: Migrated, frozen: FrozenClock, shape: Shape
+) -> None:
+    """Put in a group between the twin and the act: another act, refused and void.
+
+    The act binds what the user comes back with, as the screen shows it
+    (``AdminAct.holds``, since 2.10): the flags, each group with its keys,
+    their own permissions, and their grants on objects. Where approvals
+    hold nothing, it was made with a group no screen had named (review of
+    user report A26). Asked again, the screen names the key, and the act
+    is made, or held for approval.
+    """
+    with (
+        migrated(shape),
+        TestClient(get_asgi_application()) as client,
+        override_settings(TENANCY=REACHING),
+    ):
+        root = Staff(client, frozen, "root", superuser=True)
+        make_group("officers", REACH)
+        ada = create_user("ada")
+        path, body = f"/users/{ada}", {"is_staff": True}
+        authorization = root.authorized(f"{path}/authorization/patch", body)
+        join("ada", "officers")
+        refused = root.call("PATCH", path, body, authorization)
+        voided = row(authorization)["consumed_at"] is not None
+        held = held_requests()
+        asked = root.ask(f"{path}/authorization/patch", body)
+        made = root.call("PATCH", path, body, root.confirm(asked.json()["id"]))
+
+    problem(refused, 403, "action_not_authorized")
+    assert voided
+    assert held == 0
+    assert {"label": "Grants", "value": REACH} in asked.json()["shown"]["details"]
+    if shape is UNHELD:
+        assert made.status_code == 200, made.json()
+        assert made.json()["is_staff"] is True
+    else:
+        problem(made, 403, "approval_pending")
+
+
+def test_only_a_change_that_makes_staff_or_active_again_binds_holds() -> None:
+    """Left out of every other act, as ``groups`` and ``taken`` are: they hold."""
+    bob = UUID(int=7)
+    making = AdminAct(
+        kind="update", user_id=bob, values={"is_staff": True}, holds="0" * 64
+    )
+    other = AdminAct(kind="update", user_id=bob, values={"first_name": "Bob"})
+
+    assert making.model_dump(mode="json")["holds"] == "0" * 64
+    assert "holds" not in other.model_dump(mode="json")
+
+
 def test_with_whole_on_the_twin_refuses_what_its_screen_cannot_show_whole(
     client: TestClient, frozen: FrozenClock
 ) -> None:
