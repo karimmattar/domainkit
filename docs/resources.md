@@ -807,8 +807,9 @@ templates.upload_route(
   the resource's `body_limits["command"]`, or `MAX_REQUEST_BODY_SIZE`.
   A rule that says it reads the body (`reads_body`, as `DeviceSigned`
   does) is refused with such a limit when the route is declared
-  (`ImproperlyConfigured`). Give a route that reads its body early a
-  number instead, the most a request may send. A probe for a disconnect
+  (`ImproperlyConfigured`). Give such a route a limit decided before the
+  rules ([below](#a-body-limit-decided-before-the-rules)), or a number,
+  the most a request may send. A probe for a disconnect
   (`request.is_disconnected()`) made before the route decides is
   cancelled before it takes a message: the server keeps it for the read,
   and the limit is fixed by the read.
@@ -831,6 +832,58 @@ templates.upload_route(
   its argument (`PdfCheck(max_pages=...)`).
 - A twin's verdict is remembered with the checks it ran: an act whose
   callable decides other types checks the file again.
+
+#### A body limit decided before the rules
+
+*New in 2.10.* A rule that reads the body reads it before the route
+decides its bounds: `DeviceSigned` does, to check what the device
+signed. A body limit decided once the reach holds would come too late
+for it, and is refused there. `BeforeRules` decides the limit before
+the rules instead, from the request alone:
+
+```python
+from domainkit.resources import BeforeRules
+
+
+def scan_body(request: Request) -> int:
+    return settings.SCANS_MAX_SIZE + 64 * 1024  # the file, and a form
+
+
+phones.upload_route(
+    AttachScan,
+    service=attach_scan,
+    field="scan",
+    types=(CHECKED_PDF,),
+    max_size=lambda request, phone: settings.SCANS_MAX_SIZE,
+    body_limit=BeforeRules(scan_body),
+    rule=DeviceSigned(),
+)
+```
+
+- `BeforeRules(decide)`: `decide` is given the request, sync or async,
+  and returns the most bytes the body may have, 1 to 1 GiB (`ValueError`
+  otherwise, a 500, the body unread). It runs first among the route's
+  `before_rules`, after the resource's own dependencies and its
+  tenant's, on the act and on its twin.
+- It holds every read of the body from then on, the rules' included: a
+  `Content-Length` over it is 413 before a byte is read, and a body sent
+  without one is 413 as soon as it passes it, before the rule has read
+  it all. It may be above the resource's `body_limits["command"]` or
+  `MAX_REQUEST_BODY_SIZE`. The file is never more than it.
+- No rule has run yet when it decides: decide from the settings and
+  what the request says (its path, its headers), not from who sends it.
+  It runs for every request, those the rules refuse included, as
+  `before_rules` do.
+- What reads the body before it reads it within the limit of a command
+  route without `body_limit`: `IdempotencyMiddleware`, for a request with
+  an `Idempotency-Key`; a dependency of the resource's own; and a FastAPI
+  body parameter (`Body`, `Form`, `File`) declared in any of the route's
+  dependencies, which FastAPI reads before any dependency runs. The file
+  is still held to the limit decided. Where that read matters, keep the
+  command limit at or above the largest limit decided.
+- A limit decided once the reach holds, on a route whose rule reads the
+  body, is still refused when the route is declared
+  (`ImproperlyConfigured`), and the refusal names `BeforeRules`.
 
 #### The file received
 

@@ -655,6 +655,7 @@ class RequestContextMiddleware:
             str(refusal.detail),
             code=refusal.code,
             errors=refusal.errors,
+            extensions=refusal.extensions(),
         )
         response.headers.update(refusal.headers or {})
         await response(scope, receive, send)

@@ -53,6 +53,27 @@ what a project that relied on 2.9's behaviour changes, and what to run.
   ```toml
   dependencies = ["domainkit[postgres,redis,sqlite,uvicorn]>=2.10.0,<3"]
   ```
+- **A 503 for a commit in doubt carries `"in_doubt": true`.** A `503
+  deadline_exceeded` or `503 database_unavailable` whose change may have
+  been made has a member more in its body, after the others, in either
+  `ERROR_FORMAT`; its code, its detail and its missing `Retry-After` are
+  as in 2.9. A client that checks an error's body against a closed
+  schema must let the member through. A client may read it in place of
+  the header: `body.get("in_doubt") is True`
+  ([A commit in doubt](reference/problems.md#a-commit-in-doubt)).
+- **An upload route whose rule reads the body may decide its limit per
+  request.** A route with `DeviceSigned` that takes a fixed `body_limit`,
+  read from a setting when it is declared, may take
+  `body_limit=BeforeRules(lambda request: ...)` instead, which reads the
+  setting at each request
+  ([A body limit decided before the rules](resources.md#a-body-limit-decided-before-the-rules)).
+  The swap has a cost where requests send an `Idempotency-Key`:
+  `IdempotencyMiddleware` reads such a body before the route decides,
+  held to the command limit (the resource's `body_limits["command"]`, or
+  `MAX_REQUEST_BODY_SIZE`), not to the limit decided. A keyed upload
+  that the fixed number took, past the command limit, is then refused
+  `413 content_too_large`. On such a route, keep the command limit at or
+  above the largest limit it decides, or keep a fixed number.
 
 ### `migrate` builds the user lookups' indexes concurrently
 

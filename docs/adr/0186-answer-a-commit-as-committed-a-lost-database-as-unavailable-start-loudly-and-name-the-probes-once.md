@@ -1,6 +1,6 @@
 # 0186. Answer a commit as committed, a lost database as unavailable, start loudly, and name the probes once
 
-- Status: Accepted; amended 2026-11-18 (at the end)
+- Status: Accepted; amended 2026-11-18 and 2026-11-23 (at the end)
 - Date: 2026-11-18
 - Amends: [0048](0048-request-deadlines.md), [0078](0078-deliver-events-in-process-after-commit-or-durably-through-the-outbox.md)
 
@@ -349,3 +349,58 @@ The review of this work closed four gaps before release:
 8. Starlette 1.8.0, `starlette/middleware/base.py`, `call_next`: the
    route runs in `task_group.start_soon(coro)`, which keeps an
    `Exception` it raises for the caller, not a cancellation.
+
+## Amendment (2026-11-23): a commit in doubt says so in its body
+
+A project noted that a `503` for a commit in doubt shares its code with
+one that kept nothing (user report S4). Only the missing `Retry-After`,
+and a detail translated for people, told them apart. A client that
+branches on `code` could not tell "nothing was saved, send it again"
+from "it may be saved, look first", and an RFC 9457 problem document
+carries no headers: a client that logs or queues the body loses the
+difference.
+
+- **`"in_doubt": true`**, a member of the problem document, on `503
+  deadline_exceeded` and `503 database_unavailable` when the commit is
+  in doubt (`failed_in_doubt`, `Deadline.in_doubt`), in either
+  `ERROR_FORMAT`, after the body's own members. The code and the
+  missing `Retry-After` stay as they were, so a client that branches on
+  the code, or on the header, keeps working. RFC 9457 lets a problem
+  carry members of its own, and asks clients to ignore those they do not
+  recognize [9].
+- **The member is there when it is true, never `false`.** A request that
+  kept nothing carries none. `false` would be spelled on two codes only,
+  not on `database_busy`, `overloaded`, or a 500, so a client must read a
+  missing member as "not said" anyway, as it must against a server before
+  2.10; and it would claim more than the framework knows: a request cut
+  off before its `COMMIT` kept nothing in the database, but may have
+  made an outgoing call. A client reads `body.get("in_doubt") is True`.
+- **`APIError(extensions=...)`**, which `extensions()` returns, as a
+  domain error's: `database_refusal` gives its member so, and
+  `RequestContextMiddleware` and `http_error_handler` add an
+  `APIError`'s members to the body as `error_response` adds a domain
+  error's. A batch item's result keeps its code and detail only, as it
+  does for a domain error's members.
+- Options weighed:
+  - **A code of its own now** (`commit_in_doubt`), the report's first
+    option. Databases do so: FoundationDB answers `commit_unknown_result`
+    (1021, "may or may not have committed") apart from `not_committed`
+    (1020) [10], and CockroachDB SQLSTATE `40003`
+    (`statement_completion_unknown`) [11]. But a client that branches on
+    `deadline_exceeded` or `database_unavailable` (to back off, or to
+    alert) would meet a code it does not know, in a minor release, where
+    a code keeps its meaning (`docs/reference/problems.md`). 3.0 may give
+    it one; until then the member says it.
+  - **A header** (`X-Commit-In-Doubt`): the document still would not say
+    it, which is the report's point.
+  - **The detail alone**: text for people, in their language.
+- The member costs 16 bytes on the answers in doubt. Any other
+  `APIError` answered costs one call, its `extensions()`, empty; a
+  request that succeeds costs nothing more.
+
+9. RFC 9457, *Problem Details for HTTP APIs*, 3.2 *Extension Members*:
+   <https://www.rfc-editor.org/rfc/rfc9457#section-3.2>
+10. FoundationDB, *Error Codes*:
+    <https://apple.github.io/foundationdb/api-error-codes.html>
+11. CockroachDB, *Common Errors and Solutions*, "result is ambiguous":
+    <https://www.cockroachlabs.com/docs/stable/common-errors#result-is-ambiguous>
