@@ -76,6 +76,34 @@ type Returns = type[BaseModel] | _Default | None
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
+class BeforeRules:
+    """An upload route's body limit, decided from the request alone, before its rules.
+
+    ``upload_route(body_limit=BeforeRules(decide))``: ``decide`` is given
+    the request, sync or async, and returns the most bytes its body may
+    have, 1 to 1 GiB. It runs first among the route's ``before_rules``, on
+    the act and on its twin, so the limit holds every read of the body
+    after the resource's own dependencies, a rule's too (``DeviceSigned``
+    reads it). No rule has run yet: it decides from the request, never
+    from who sends it (New in 2.10).
+    """
+
+    decide: Callable[[Request], int | Awaitable[int]]
+
+    def __post_init__(self) -> None:
+        """Check that ``decide`` can be called.
+
+        Raises:
+            TypeError: It cannot.
+        """
+        if not callable(self.decide):
+            raise TypeError(
+                "BeforeRules takes a callable of the request that returns the "
+                f"body limit, not {self.decide!r}."
+            )
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
 class Operation:
     """One route of a resource, as its rules and a generic client see it."""
 

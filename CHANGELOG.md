@@ -17,6 +17,24 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   through it. `init` writes it for a project served by uvicorn, so the
   move to 3.0 needs no change there
   ([upgrading.md](docs/upgrading.md#29-to-210)) (user report S3).
+- A `503 deadline_exceeded` or `503 database_unavailable` whose commit is
+  in doubt says so in its body, `"in_doubt": true`, in either
+  `ERROR_FORMAT`, besides its missing `Retry-After`: a client that reads
+  the problem document alone tells it from a request that kept nothing,
+  which carries no such member. The code stays the same; 3.0 may give it
+  one of its own, `commit_in_doubt`. `APIError` takes `extensions=`,
+  members of the error's own that its body adds, as a domain error's
+  `extensions()` does ([A commit in doubt](docs/reference/problems.md#a-commit-in-doubt),
+  ADR 0186) (user report S4).
+- `upload_route(body_limit=BeforeRules(decide))`
+  (`domainkit.resources`): a body limit decided per request from the
+  request alone, before the rules, first among `before_rules`, on the act
+  and on its twin. It holds every read of the body after it, a rule's
+  included, so a route whose rule reads the body (`DeviceSigned`) takes a
+  limit read from a setting at each request. A limit decided once the
+  reach holds is still refused on such a route, and the refusal names
+  `BeforeRules` ([A body limit decided before the rules](docs/resources.md#a-body-limit-decided-before-the-rules),
+  ADR 0181) (user report U7).
 
 ## [2.9.0] - 2026-11-18
 

@@ -96,7 +96,10 @@ class OrderShipped(Conflict):
 
 `ApprovalPending` (403 `approval_pending`) adds `approval_request_id`,
 the approval request it submitted: `request_id` is the HTTP request's
-([approvals](../contrib/approvals.md#what-a-direct-call-does)).
+([approvals](../contrib/approvals.md#what-a-direct-call-does)). An
+`APIError` adds what its `extensions=` names (since 2.10), and a 503
+whose commit may have been made adds `"in_doubt": true`
+([A commit in doubt](problems.md#a-commit-in-doubt)).
 
 With `ERROR_TYPE_BASE_URL` each code is a problem type of its own. Serve
 a page at that URL that describes each code:
@@ -127,9 +130,11 @@ from domainkit.http import APIError
 raise APIError(409, "This order was shipped already.", code="order_shipped")
 ```
 
-`APIError(status_code, detail, *, code, headers=None, errors=None)`
-takes the status, the message, the code, and optional headers and field
-errors (`FieldError(loc=..., msg=..., type=...)`). Both are defined in
+`APIError(status_code, detail, *, code, headers=None, errors=None,
+extensions=None)` takes the status, the message, the code, and optional
+headers, field errors (`FieldError(loc=..., msg=..., type=...)`), and
+members of the error's own, as a domain error's `extensions()` gives
+them (since 2.10). Both are defined in
 `domainkit.http.problems` (since 2.8), which the infrastructure layer
 may import, so a file gateway refuses a file as a route would
 ([uploads.md](../uploads.md#bytes-and-streams));
@@ -169,7 +174,7 @@ once, in the language active then.
 | a NOT NULL column (23502) | 422 | `missing_value`, with the field in `errors` |
 | a CHECK constraint (23514) | 422 | `check_violation`, with the fields of the columns it names |
 | a unique constraint outside a unit of work (23505) | 409 | as `DuplicateValue` |
-| a request past its deadline (`REQUEST_TIMEOUT`, or the route's `RequestTimeout`) | 503 | `deadline_exceeded`, with `Retry-After: 1`; logged once, as a warning |
+| a request past its deadline (`REQUEST_TIMEOUT`, or the route's `RequestTimeout`) | 503 | `deadline_exceeded`, with `Retry-After: 1`; logged once, as a warning. Cut off as it committed: no `Retry-After`, and `"in_doubt": true` ([A commit in doubt](problems.md#a-commit-in-doubt)) |
 | no slot under `MAX_CONCURRENT_REQUESTS`: the queue was full, or the wait ran out, for a new request or for the next chunk of a body it waited for | 503 | `overloaded`, with `Retry-After: 1`; warned about at most every 10 seconds |
 | a request body that took longer than `REQUEST_BODY_TIMEOUT` to arrive | 408 | `request_timeout`, with `Connection: close`; logged as a security event |
 | a URL a guarded `HttpClient` may not call, or one that leaves a client's base URL | 422 | `unsafe_url` ([runtime.md](../runtime.md#outgoing-http-calls)) |

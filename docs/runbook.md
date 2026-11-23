@@ -84,8 +84,9 @@ settings. Commands that change data take `--operator NAME` (or read
 
 - requests that use it answer `503 database_unavailable`, with
   `Retry-After: 5`. Requests that do not use it are served. A request
-  whose connection was lost as it committed gets no `Retry-After`, and a
-  detail that says its change may have been made;
+  whose connection was lost as it committed gets no `Retry-After`, a
+  detail that says its change may have been made, and `"in_doubt": true`
+  in its body;
 - one warning per reason every 10 seconds, with a count of the requests
   since:
   `The database is unavailable (ConnectionRefusedError): GET /orders
@@ -119,8 +120,11 @@ settings. Commands that change data take `--operator NAME` (or read
 - Tell client developers that `Retry-After` is safe for reads and for
   writes sent with an `Idempotency-Key`. A 503 without it, for a write
   whose connection was lost as it committed, means the write may have
-  been applied: look it up before sending it again. Without a key, a
-  retry may apply it twice ([idempotency](contrib/idempotency.md)).
+  been applied: look it up before sending it again. Its body says so
+  too, `"in_doubt": true`, for a client that reads the body alone
+  ([A commit in doubt](reference/problems.md#a-commit-in-doubt)).
+  Without a key, a retry may apply it twice
+  ([idempotency](contrib/idempotency.md)).
 
 ## A write ran past its deadline
 
@@ -128,11 +132,13 @@ settings. Commands that change data take `--operator NAME` (or read
 `PATCH`, or `DELETE`, and the warning `POST /payments ran past its
 deadline of 30s`. The client asks whether the change was made:
 
-- with `Retry-After: 1`, the deadline passed before the `COMMIT`: the
-  work was rolled back, and nothing was saved;
-- without `Retry-After`, and with a detail that says the change may have
-  been made, the deadline passed while the `COMMIT` was on the way: the
-  database may have applied it ([commit](request-flow.md#8-commit)).
+- with `Retry-After: 1`, and no `in_doubt` in the body, the deadline
+  passed before the `COMMIT`: the work was rolled back, and nothing was
+  saved;
+- without `Retry-After`, with `"in_doubt": true` in the body (since
+  2.10), and a detail that says the change may have been made, the
+  deadline passed while the `COMMIT` was on the way: the database may
+  have applied it ([commit](request-flow.md#8-commit)).
 
 **Check:**
 

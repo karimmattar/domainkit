@@ -48,7 +48,11 @@ INVALID_DETAIL: Final = "The request is invalid."
 
 
 class BatchError(BaseModel):
-    """Why one item failed, as a request of its own would have been told."""
+    """Why one item failed: the code and detail a request of its own would get.
+
+    No other member of that request's body: not an error's ``extensions()``,
+    nor ``in_doubt`` for an item whose commit may have been made.
+    """
 
     code: str
     detail: str
