@@ -134,6 +134,9 @@ that ``DEFANGED`` reads a long run once, not again from each of its spaces."""
 LABEL_LENGTH: Final = 63
 """The most characters a name's label holds (RFC 1035): a longer one is no
 top-level domain, and is not read for one."""
+READ_LENGTH: Final = 10_000
+"""How many characters of a text ``holds_link`` reads (since 2.10): its first
+10,000, as given and as a person reads them. No screen shows more."""
 DEFANGED: Final = (
     (re.compile(r"\s*[\[{<]\s*(?:\.|dot)\s*[\]}>]\s*"), "."),
     (re.compile(r"(?<=\w)\((?:\.|dot)\)(?=\w)|\s*\(\s*dot\s*\)\s*"), "."),
@@ -332,6 +335,9 @@ def holds_link(text: str, *, numbers: bool = True) -> bool:
     sign, a bracket, or beside a word that asks for a call (``call``,
     ``tel``, ``WhatsApp``, their Arabic words, a receiver's sign).
 
+    Since 2.10, only the first ``READ_LENGTH`` (10,000) characters are
+    read: a screen's line shows 64.
+
     It is a heuristic, and a reader still takes for a link some text it
     reads as none: a name split by spaces alone (``evil com``), ``dot``, or
     a dot with white space on one side, before another top-level domain
@@ -366,7 +372,7 @@ def _holds_link(text: str, *, spaced: bool, numbers: bool = True) -> bool:
     company`` cut to ``i.e. com…`` is no name, and the whole text, which
     the screen shows too, is read with.
     """
-    seen = _as_read(text)
+    seen = _as_read(text[:READ_LENGTH])[:READ_LENGTH]
     plain = seen
     for pattern, meant in SPACED if spaced else ():
         plain = pattern.sub(meant, plain)
@@ -390,26 +396,38 @@ def check_typed(text: str) -> None:
     grant of it is approved): refused where it is typed, as ``laid_out``
     refuses it as ``Typed``. A screen may show it cut, ended with ``…``,
     past its ``SHORTEST_CUT``-th character: each such cut is checked too
-    (``evil.corporate`` cut to ``evil.co…``).
+    (``evil.corporate`` cut to ``evil.co…``), since 2.10 each a line holds
+    alone. Since 2.10 it is also checked whole as a screen prints it: a
+    character it does not print shows as a backslash and its code, which
+    ends a name (a word joiner after ``evil.com``).
 
     Raises:
         LinkNotShown: ``TYPED_LINKS`` is ``"refused"``, and it or a cut of
             it holds a link.
         Exception: What an ``on_typed_text`` check raises.
     """
-    shown = _printable(text)
-    cuts = (shown[:end] + CUT for end in range(SHORTEST_CUT, len(shown)))
-    if _links_refused() and (
-        holds_link(text) or any(_holds_link(cut, spaced=False) for cut in cuts)
-    ):
+    if _links_refused() and (holds_link(text) or _cut_holds_link(_printable(text))):
         raise LinkNotShown
     _check_by_hooks(text)
+
+
+def _cut_holds_link(shown: str) -> bool:
+    """Whether ``shown``, a text as a screen prints it, holds a link as shown.
+
+    Whole, or cut and ended with ``…`` past its ``SHORTEST_CUT``-th
+    character, as a line may cut it, no longer than it shows
+    (``LINE_LENGTH``); without the spaced readings.
+    """
+    ends = range(SHORTEST_CUT, min(len(shown), LINE_LENGTH))
+    cuts = (shown[:end] + CUT for end in ends)
+    return any(_holds_link(each, spaced=False) for each in (shown, *cuts))
 
 
 def _check_typed(values: Iterable[object]) -> None:
     """Each ``Typed`` value of ``values``, or item of one, checked as typed.
 
-    A ``TypedName``'s name alone: whole, as stored, and as its text shows it.
+    A ``TypedName``'s name alone: whole, as stored, and as its text shows
+    it, whole or as a line may cut it (``_cut_holds_link``).
 
     Raises:
         LinkNotShown: ``TYPED_LINKS`` is ``"refused"`` and one holds a link.
@@ -421,9 +439,7 @@ def _check_typed(values: Iterable[object]) -> None:
             refused = _links_refused() if refused is None else refused
             if isinstance(text, TypedName):
                 shown = _printable(text.shown)
-                if refused and (
-                    holds_link(text.name) or _holds_link(shown, spaced=False)
-                ):
+                if refused and (holds_link(text.name) or _cut_holds_link(shown)):
                     raise LinkNotShown
                 _check_by_hooks(text.name)
                 continue

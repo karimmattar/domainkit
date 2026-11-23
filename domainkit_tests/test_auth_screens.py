@@ -782,7 +782,7 @@ def test_a_long_run_of_white_space_is_read_once() -> None:
     start = time.perf_counter()
 
     assert not holds_link(text)
-    assert holds_link("evil" + " " * 50_000 + "[.] com")
+    assert holds_link("evil" + " " * 5_000 + "[.] com")
     assert time.perf_counter() - start < 5
 
 
@@ -925,3 +925,84 @@ def test_a_group_item_copies_with_its_name() -> None:
     for each in (copy.deepcopy(item), pickle.loads(pickle.dumps(item))):  # noqa: S301
         assert (each, each.name, each.shown) == (item, item.name, item.shown)
         assert isinstance(each, TypedName)
+
+
+INVISIBLE: Final = ("⁠", "­", "​", "‮", "⁦")
+"""A word joiner, a soft hyphen, a zero-width space, two bidirectional controls."""
+
+
+@pytest.mark.parametrize("mark", INVISIBLE)
+def test_a_short_name_is_checked_as_a_screen_prints_it(
+    use_auth: UseAuth, mark: str
+) -> None:
+    """A character it does not print shows escaped, and ends the name before it.
+
+    Read as a person reads it, ``evil.com`` and the mark make one word;
+    printed, a backslash and the mark's code follow ``evil.com``, which a
+    phone links. Shorter than a cut, it is read whole as printed (review
+    of user report A17).
+    """
+    use_auth(AUTHORIZATIONS={"TYPED_LINKS": "refused"})
+    name = f"evil.com{mark}login"
+    item = group_item(name, GROUP_ID, 1)
+
+    assert not holds_link(name)
+    with pytest.raises(LinkNotShown):
+        check_typed(name)
+    with pytest.raises(LinkNotShown):
+        laid_out({"Adds": [item]})
+    check_typed(f"readers{mark}team")
+
+
+def test_a_group_name_is_checked_as_a_line_may_cut_it(use_auth: UseAuth) -> None:
+    """Cut past its twentieth character by "and 2 more", as by the item itself.
+
+    An item that shows the name after the framework's words, as a
+    project's own words may, is cut inside the name where a line needs
+    room for the count: ``evil.co… and 2 more`` (review of user report
+    A17).
+    """
+    use_auth()
+    name = "x" * 34 + "evil.corporate-team"
+    late = TypedName(f"(7) 1 perm {name}", name, name)
+    details = {**{f"k{each}": "v" for each in range(5)}, "Adds": [late, "b", "c"]}
+    shown = dict(laid_out(details, whole=False))
+    use_auth(AUTHORIZATIONS={"TYPED_LINKS": "refused"})
+
+    assert shown["Adds"].endswith("evil.co… and 2 more")
+    assert not holds_link(name)
+    with pytest.raises(LinkNotShown):
+        laid_out(details, whole=False)
+
+
+def test_a_long_text_is_read_as_far_as_a_screen_could_show_it() -> None:
+    """Its first 10,000 characters: a text the size of a request body reads at once.
+
+    No line of a screen shows more; past them, nothing is read for a link
+    (review of user report A17).
+    """
+    dotted = "a1111111." * 116_000
+    start = time.perf_counter()
+
+    assert not holds_link(dotted)
+    assert not shows_link(dotted)
+    assert time.perf_counter() - start < 5
+    assert holds_link("x" * 9_980 + " evil.com")
+    assert not holds_link("x" * 10_000 + " evil.com")
+
+
+def test_a_long_name_is_checked_as_far_as_a_line_could_cut_it(
+    use_auth: UseAuth,
+) -> None:
+    """Each cut a line holds, from the twentieth character to the sixty-third.
+
+    No screen shows a longer cut; each cut read is a reading of the text
+    (review of user report A17).
+    """
+    use_auth(AUTHORIZATIONS={"TYPED_LINKS": "refused"})
+    start = time.perf_counter()
+
+    check_typed("readers " * 2_500)
+    assert time.perf_counter() - start < 5
+    with pytest.raises(LinkNotShown):
+        check_typed("Approved; details at our partner evil.co".rjust(63) + "rporate")
