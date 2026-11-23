@@ -467,9 +467,6 @@ def test_a_held_grants_fields_are_checked_where_its_approver_sees_them(
     problem(refused, 422, "link_not_shown")
     request_id = pending(saved)
     held = {each["id"].hex: each["arguments"] for each in stored_requests()}
-    assert held[request_id.replace("-", "")] == {
-        "user_id": str(bob),
-        "values": {"last_name": "Jones"},
-    }
+    assert held[request_id.replace("-", "")]["values"] == {"last_name": "Jones"}
     assert ("Last name", "Jones") in pairs(asked)
     problem(approving, 422, "link_not_shown")

@@ -618,12 +618,12 @@ def test_making_staff_or_active_again_shows_what_the_user_comes_back_with(
 ) -> None:
     """The flags they come back with, and the keys named they hold ("Grants").
 
-    Made staff, a superuser shows as one; made staff or active again, a
-    user who holds the key that reaches every tenant, through a group,
-    shows it by name. Before 2.10 the screen said "Staff: yes" or
-    "Active: yes" alone, so where approvals held nothing it named nothing
-    the user came back with (user reports A26, A17). With approvals'
-    ``auth.set_staff`` held or not, the act shows the same.
+    Made staff, a superuser shows as one; made non-staff, then staff
+    again, or made active again, a user who holds the key that reaches
+    every tenant, through a group, shows it by name. Before 2.10 the
+    screen said "Staff: yes" or "Active: yes" alone (user reports A26,
+    A17). With approvals' ``auth.set_staff`` held or not, the act shows
+    the same.
     """
     with (
         migrated(shape),
@@ -632,13 +632,20 @@ def test_making_staff_or_active_again_shows_what_the_user_comes_back_with(
     ):
         root = Staff(client, frozen, "root", superuser=True)
         make_group("officers", REACH)
-        ada = create_user("ada")
+        ada = create_user("ada", is_staff=True)
         boss = create_user("boss", is_superuser=True)
         cleo = create_user("cleo", is_active=False)
         dan = create_user("dan", is_active=False, is_staff=True, is_superuser=True)
         join("ada", "officers")
         join("cleo", "officers")
         staff_body, back_body = {"is_staff": True}, {"is_active": True}
+        unmaking = {"is_staff": False}
+        unmade = root.call(
+            "PATCH",
+            f"/users/{ada}",
+            unmaking,
+            root.authorized(f"/users/{ada}/authorization/patch", unmaking),
+        )
         twins = {
             "ada": (ada, staff_body),
             "boss": (boss, staff_body),
@@ -661,6 +668,7 @@ def test_making_staff_or_active_again_shows_what_the_user_comes_back_with(
     def who(name: str) -> tuple[str, str]:
         return ("User", f"{name} ({end_of(twins[name][0])})")
 
+    assert unmade.status_code == 200, unmade.json()
     assert pairs(shown["ada"]) == [who("ada"), ("Staff", "yes"), ("Grants", REACH)]
     assert pairs(shown["boss"]) == [who("boss"), ("Superuser", "yes"), ("Staff", "yes")]
     assert pairs(shown["cleo"]) == [who("cleo"), ("Active", "yes"), ("Grants", REACH)]
