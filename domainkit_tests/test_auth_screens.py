@@ -12,23 +12,32 @@ email address, or a number to call is refused (``LinkNotShown``, 422),
 read as a person reads it (user report A17, ADR 0180).
 """
 
+import copy
+import pickle
+import time
 from decimal import Decimal
 from typing import Final
 from uuid import UUID
 
 import pytest
 
+from domainkit.contrib.approvals.authorizing import details_of
 from domainkit.contrib.auth.actions import Shown
+from domainkit.contrib.auth.integration import group_item
 from domainkit.contrib.auth.screens import (
     Details,
     LinkNotShown,
     TooMuchToShow,
     Typed,
+    TypedName,
+    _top_level_domains,
     check_typed,
+    fitted,
     holds_link,
     laid_out,
     named,
     on_typed_text,
+    shows_link,
 )
 from domainkit.http.errors import status_code_for
 from domainkit.i18n import override
@@ -306,8 +315,25 @@ LINKS: Final = (
     "secure-login dot\ncom",
     "evil\n.com",
     "example    [.]    com",
+    "evil.com.xy",
+    "foo.bar.baz",
+    "evil.com-login",
+    "evil.com\u00b7xy",
+    "secure-login.com.verify-account.xy",
+    "evil.co-uk",
+    "evil . com . xy",
+    "evil .com.xy",
+    "evil . Com",
+    "evil. Com",
+    "evil \u0660 com",
+    "evil\u0660 com",
+    "evil \u0660com",
+    "evil \u06f0 com",
+    "Renew at evil \u0660 com",
 )
-"""Links, as written and as written to pass for something else."""
+"""Links, as written and as written to pass for something else; since 2.10,
+a name inside a name, ``Com`` after a spaced dot, an Arabic-Indic zero spaced
+out between two names."""
 NUMBERS: Final = (
     "Call +1 555 010 0100 to confirm",
     "Call (555) 010-0100",
@@ -404,6 +430,10 @@ PLAIN: Final = (
     "Z\u00fcrich team",
     "\u0644\u0627 \u064a\u0648\u062c\u062f",
     "\u0661\u0660\u0660 \u062c\u0646\u064a\u0647",
+    "\u0662\u0660\u0662\u0666",
+    "\u0660\u0661\u0660\u0660",
+    "\u0627\u0644\u0631\u0635\u064a\u062f \u0660 \u062c\u0646\u064a\u0647",
+    "evil.com_login",
 )
 """Reasons and names that hold no link: versions, codes, dates, amounts, files."""
 PROSE: Final = (
@@ -465,12 +495,93 @@ READ_AS_LINKS: Final = (
     "the dot com era",
     "fine . me too",
     "the key (dot) is broken",
+    "report.final.docx",
+    "\u062a\u0645\u062a \u0625\u0636\u0627\u0641\u0629 \u0660 \u0645\u0648\u0642\u0639",
 )
 """Text that holds no link, read as one: a top-level domain after a dot, seven
 digits or more apart by spaces, dots or hyphens, or not grouped, an amount or a
 code beside a word that asks for a call (ADR 0180's false positives); ``com``
 after ``dot``, a top-level domain in lower case after a dot spaced on both
-sides, and one after ``(dot)`` (since 2.9)."""
+sides, and one after ``(dot)`` (since 2.9); a file named with a top-level
+domain before its extension, which a phone links, and an Arabic-Indic zero
+spaced out between two words, the second a top-level domain (since 2.10)."""
+DOTTED: Final = (
+    "Upgraded the service to version 2.10.1 today",
+    "Rolled back from v3.2.0-rc.1 to v3.1.4",
+    "Python 3.13.1 and Django 5.1.4 on the build host",
+    "Wait for v2.0-beta.3 before the change",
+    "Section 4.2.1 of the policy applies",
+    "Rule 7.3.2(b) applies here",
+    "node v20.11.1-alpine image",
+    "See report.pdf and notes.txt.bak attached",
+    "Attached: invoice_2026.11.pdf, summary.docx",
+    "archive.tar.gz restored from backup",
+    "data.2026-11-23.csv was imported",
+    "logo.v2.png and photo.2026.11.jpg",
+    "minutes.draft.docx circulated",
+    "backup.sql.gz from last night",
+    "statement.2026-11.pdf for the audit",
+    "contract-final.v3.pdf signed",
+    "payroll_nov.xlsx.enc sent",
+    "app.config.json was edited",
+    "index.min.js and styles.min.css",
+    "Approved, e.g. for travel, i.e. flights only",
+    "Acme Ltd. and Beta Inc. signed",
+    "Dr. Ahmed, Ph.D., M.D. approved",
+    "U.S.-based vendors only",
+    "St. Mary's ward, No. 4",
+    "a.k.a. the night shift",
+    "pp. 12-15 of vol. 2",
+    "approx. 2.5x faster",
+    "Accounts dept.-wide change",
+    "Sat. 23 Nov. at 10 a.m.",
+    "Co. Ltd. registration",
+    "Messrs. Khan & Co.",
+    "Meeting at 10.30 a.m. on 23.11.2026",
+    "Rate is 3.75% for 12.5 months",
+    "Totals: 1,234.56 and 7.5",
+    "the 1.5-2.0 range",
+    "Due 2026.11.30, paid 2026.12.01",
+    "Temperature 36.6-37.2",
+    "Done.Thanks",
+    "Checked.All good",
+    (
+        "\u062a\u0645 \u0627\u0644\u062a\u062d\u062f\u064a\u062b \u0625\u0644\u0649 "
+        "\u0627\u0644\u0625\u0635\u062f\u0627\u0631 2.10.1"
+    ),
+    "\u0627\u0644\u0645\u0644\u0641 report.pdf \u0645\u0631\u0641\u0642",
+    (
+        "\u0628\u062a\u0627\u0631\u064a\u062e "
+        "\u0662\u0663/\u0661\u0661/\u0662\u0660\u0662\u0666"
+    ),
+    (
+        "\u0627\u0644\u0645\u0628\u0644\u063a "
+        "\u0661\u0662\u0665\u0660\u066b\u0665\u0660 \u062c\u0646\u064a\u0647"
+    ),
+    "\u0634\u0631\u0643\u0629 \u0627\u0644\u0646\u0648\u0631 \u0630.\u0645.\u0645",
+    "\u062f. \u0623\u062d\u0645\u062f\u060c \u0645. \u0645\u062d\u0645\u062f",
+    "\u0627\u0644\u0633\u0627\u0639\u0629 \u0661\u0660:\u0663\u0660 \u0635",
+    "\u0627\u0644\u0646\u0633\u0628\u0629 \u0663\u066b\u0667\u0665\u066a",
+    (
+        "\u0627\u0644\u0628\u0646\u062f \u0664.\u0662.\u0661 \u0645\u0646 "
+        "\u0627\u0644\u0644\u0627\u0626\u062d\u0629"
+    ),
+    (
+        "\u062a\u0645\u062a \u0627\u0644\u0645\u0648\u0627\u0641\u0642\u0629. "
+        "\u0634\u0643\u0631\u0627\u064b"
+    ),
+    "\u0645\u0644\u0627\u062d\u0638\u0627\u062a.txt.bak",
+    (
+        "\u0639\u062f\u062f \u0627\u0644\u0645\u062d\u0627\u0648\u0644\u0627\u062a "
+        "\u0660 \u0627\u0644\u064a\u0648\u0645"
+    ),
+    "\u0627\u0644\u062e\u0635\u0645 \u0660 \u0631\u064a\u0627\u0644",
+    "\u0634.\u0645.\u0645 \u0627\u0644\u0642\u0627\u0647\u0631\u0629",
+    "\u062a\u0642\u0631\u064a\u0631.\u0646\u0647\u0627\u0626\u064a.pdf",
+)
+"""Notes in English and Arabic with dots inside words: versions, files,
+abbreviations, decimals, dates, a zero as a count. None holds a top-level
+domain inside a name (since 2.10)."""
 
 
 @pytest.mark.parametrize("text", LINKS + NUMBERS)
@@ -626,3 +737,287 @@ def test_a_name_shown_later_is_checked_as_a_screen_may_cut_it(
     check_typed("evil.corporate")
     with pytest.raises(LinkNotShown):
         check_typed("a team for the vendor evil.corporate")
+
+
+@pytest.mark.parametrize("text", DOTTED)
+def test_dots_inside_words_in_prose_hold_no_link(text: str) -> None:
+    """A top-level domain inside a name is read; prose's dots are not (user report A17).
+
+    Pins what passes since 2.10, when a top-level domain ends a name before
+    a dot or a hyphen too: a version, a file, an abbreviation, a decimal, a
+    date, in English and in Arabic, whole and on a screen's line.
+    """
+    assert not holds_link(text)
+    assert not shows_link(text)
+
+
+def test_a_top_level_domain_ends_a_name_where_a_linker_ends_a_word() -> None:
+    """Before a dot, a hyphen, or a middle dot, as at its end (user report A17).
+
+    A phone links ``evil.com`` in each. An underscore joins a word, as a
+    linker reads one; an IDN's A-label holds its hyphens, and no other
+    top-level domain holds one.
+    """
+    ended = ("evil.com.xy", "evil.com-login", "evil.com\u00b7xy", "evil.com-")
+    joined = ("evil.com_login", "evil.comx.xy", "evil.xcom-login", "evil-com.xy")
+    hyphened = {each for each in _top_level_domains() if "-" in each}
+
+    assert all(map(holds_link, ended))
+    assert not any(map(holds_link, joined))
+    assert holds_link("x.xn--p1ai")
+    assert hyphened
+    assert all(each.startswith("xn--") for each in hyphened)
+
+
+def test_a_label_too_long_for_a_domain_is_not_read_for_one() -> None:
+    """Past 63 characters (RFC 1035), in any script: read once, never as a domain."""
+    assert not holds_link("x." + "a" * 64)
+    assert not holds_link("x." + "\u0436" * 64)
+    assert holds_link("x." + "a" * 63 + ".com")
+
+
+def test_a_long_run_of_white_space_is_read_once() -> None:
+    """Once, not again from each of its spaces: 2.9 took 0.7 seconds on 10,000."""
+    text = "a" + " " * 9_998 + "b"
+    start = time.perf_counter()
+
+    assert not holds_link(text)
+    assert holds_link("evil" + " " * 9_980 + "[.] com")
+    assert time.perf_counter() - start < 0.5
+
+
+def test_a_screen_shows_a_link_as_laid_out_reads_typed_text(use_auth: UseAuth) -> None:
+    """Whole with the spaced readings, its line without them (user report A17).
+
+    A project reads stored text a screen shows so. Read with the spaced
+    readings, a cut makes prose a name: ``approved. commercial`` cut to
+    ``approved. com…`` holds one. ``shows_link`` says what ``laid_out``
+    refuses of a ``Typed`` text on a line, ``length`` its line's.
+    """
+    use_auth(AUTHORIZATIONS={"TYPED_LINKS": "refused"})
+    prose = [
+        f"Reviewed, {text}".rjust(63, "x") + f"{rest} terms apply"
+        for text, rest in (
+            ("approved. com", "mercial"),
+            ("i.e. com", "pany"),
+            ("Ltd. com", "pliance"),
+            ("doc .com", "pressed"),
+        )
+    ]
+    cut = "Approved; details at our partner evil.co".rjust(63, "x") + "rporate"
+
+    def refused(text: str) -> bool:
+        try:
+            laid_out({"Note": Typed(text)}, whole=False)
+        except LinkNotShown:
+            return True
+        return False
+
+    assert all(fitted(text).endswith("com…") for text in prose)
+    assert all(holds_link(fitted(text)) for text in prose)
+    assert not any(map(shows_link, prose))
+    assert shows_link(cut)
+    assert not holds_link(cut)
+    assert shows_link("visit evil . com")
+    assert shows_link("\n.com")
+    assert not holds_link("\n.com")
+    assert shows_link("Approved; see evil.corporate", 40) is False
+    assert shows_link("Approved; see our partner evil.corporate", 34)
+    for text in (*prose, cut, *LINKS, *NUMBERS[:10], *PROSE, *DOTTED):
+        assert shows_link(text) == refused(text), text
+
+
+def test_digits_are_a_number_to_call_only_where_asked_without_numbers() -> None:
+    """A licence's number is no number to call; a word that asks for one makes it one.
+
+    ``numbers=False`` reads digits as an amount or a code is read: a
+    number to call with a plus sign, a bracket, or beside a word that asks
+    for a call, as a person reads it (user report A17).
+    """
+    licences = ("No. 123 456 789", "File 2026/0045", "Licence 1234567")
+    calls = (
+        "Call 123 456 789",
+        "WhatsApp 1234567",
+        "\u0441all 1234567",
+        "\u260e 1234567",
+        "\u0627\u062a\u0635\u0644 1234567",
+        "+1 555 010 0100",
+        "(555) 010-0100",
+    )
+    links = ("evil.com", "ann@example.com", "203.0.113.7", "tel:+15550100")
+
+    assert all(map(holds_link, licences))
+    assert not any(holds_link(text, numbers=False) for text in licences)
+    assert not any(shows_link(text, numbers=False) for text in licences)
+    assert all(holds_link(text, numbers=False) for text in (*calls, *links))
+    coded = "Closed; ring 555 0100 123".rjust(63, "x") + "abc"
+    assert not holds_link(coded)
+    assert shows_link(coded)
+    assert not shows_link(coded, numbers=False)
+
+
+GROUP_ID: Final = UUID("12345678-1234-5678-1234-567812341234")
+"""A group's id whose item ends in four digits: ``(…1234)``."""
+
+
+def test_a_group_added_shows_its_stored_name_typed(use_auth: UseAuth) -> None:
+    """A name that holds a link is refused where it is granted (user report A17).
+
+    Whole, or as its item shows it cut (``evil.co…``); with
+    ``TYPED_LINKS`` shown, as in 2.9. The id and the counts beside it are
+    never read: a hundred permissions beside ``(…1234)`` would read as a
+    number to call. A rejection's screen drops the mark, as for any typed
+    text of a request.
+    """
+    use_auth()
+    linked = group_item("visit evil.example", GROUP_ID, 3)
+    many = group_item("readers", GROUP_ID, 100)
+    cut = next(
+        item
+        for width in range(40)
+        if (item := group_item("x" * width + " evil.corporate", GROUP_ID, 2, 1))
+        .rpartition(" (")[0]
+        .endswith(" evil.co…")
+    )
+    shown = laid_out({"Adds": [linked, many, cut]})
+    use_auth(AUTHORIZATIONS={"TYPED_LINKS": "refused"})
+
+    assert isinstance(linked, TypedName)
+    assert isinstance(cut, TypedName)
+    assert (linked, linked.name, linked.shown) == (
+        "visit evil.example (…1234) 3 perms",
+        "visit evil.example",
+        "visit evil.example",
+    )
+    assert shown[0] == ("Adds", f"{linked}, {many}")
+    assert not holds_link(cut.name)
+    for details in ({"Adds": [many, linked]}, {"Adds": [cut]}, {"Group": linked}):
+        with pytest.raises(LinkNotShown):
+            laid_out(details)
+    assert holds_link(many)
+    assert laid_out({"Adds": [many]}) == [("Adds", "readers (…1234) 100 perms")]
+    with pytest.raises(LinkNotShown):
+        laid_out({"Adds": [many, Typed("x")]})  # Read as shown, beside typed text.
+    assert details_of("auth.set_groups", [("Adds", [linked])], typed=False)
+
+
+def test_a_project_checks_a_stored_group_name_its_own_way(use_auth: UseAuth) -> None:
+    """``on_typed_text`` gets the name as stored, never the id or the counts."""
+    use_auth()
+    seen: list[str] = []
+    on_typed_text(seen.append, domain="auth")
+    long = "readers of the finance department, cairo office, second floor"
+    item = group_item(long, GROUP_ID, 2)
+
+    laid_out({"Adds": [item, group_item("clerks", 7, 0)]})
+
+    assert isinstance(item, TypedName)
+    assert seen == [long, "clerks"]
+    assert all(type(each) is str for each in seen)
+    assert item.shown.endswith("…")
+    assert item == f"{item.shown} (…1234) 2 perms"
+
+
+def test_a_group_item_copies_with_its_name() -> None:
+    """A copy, or a pickle, keeps the name and how it shows: the screen reads them."""
+    item = TypedName("readers (7) 1 perm", "readers", "readers")
+
+    for each in (copy.deepcopy(item), pickle.loads(pickle.dumps(item))):  # noqa: S301
+        assert (each, each.name, each.shown) == (item, item.name, item.shown)
+        assert isinstance(each, TypedName)
+
+
+INVISIBLE: Final = ("⁠", "­", "​", "‮", "⁦")
+"""A word joiner, a soft hyphen, a zero-width space, two bidirectional controls."""
+
+
+@pytest.mark.parametrize("mark", INVISIBLE)
+def test_a_short_name_is_checked_as_a_screen_prints_it(
+    use_auth: UseAuth, mark: str
+) -> None:
+    """A character it does not print shows escaped, and ends the name before it.
+
+    Read as a person reads it, ``evil.com`` and the mark make one word;
+    printed, a backslash and the mark's code follow ``evil.com``, which a
+    phone links. Shorter than a cut, it is read whole as printed (review
+    of user report A17).
+    """
+    use_auth(AUTHORIZATIONS={"TYPED_LINKS": "refused"})
+    name = f"evil.com{mark}login"
+    item = group_item(name, GROUP_ID, 1)
+
+    assert not holds_link(name)
+    with pytest.raises(LinkNotShown):
+        check_typed(name)
+    with pytest.raises(LinkNotShown):
+        laid_out({"Adds": [item]})
+    check_typed(f"readers{mark}team")
+
+
+def test_a_group_name_is_checked_as_a_line_may_cut_it(use_auth: UseAuth) -> None:
+    """Cut past its twentieth character by "and 2 more", as by the item itself.
+
+    An item that shows the name after the framework's words, as a
+    project's own words may, is cut inside the name where a line needs
+    room for the count: ``evil.co… and 2 more`` (review of user report
+    A17).
+    """
+    use_auth()
+    name = "x" * 34 + "evil.corporate-team"
+    late = TypedName(f"(7) 1 perm {name}", name, name)
+    details = {**{f"k{each}": "v" for each in range(5)}, "Adds": [late, "b", "c"]}
+    shown = dict(laid_out(details, whole=False))
+    use_auth(AUTHORIZATIONS={"TYPED_LINKS": "refused"})
+
+    assert shown["Adds"].endswith("evil.co… and 2 more")
+    assert not holds_link(name)
+    with pytest.raises(LinkNotShown):
+        laid_out(details, whole=False)
+
+
+def test_a_text_too_long_to_read_holds_a_link(use_auth: UseAuth) -> None:
+    """Past 10,000 characters, as given or as read, it holds one, unread.
+
+    Reading it takes bounded work, and no screen shows as much: a link
+    after the 10,000th character is refused, and so is a longer text that
+    holds none. One of 10,000 is read as ever (review of user report A17).
+    """
+    use_auth(AUTHORIZATIONS={"TYPED_LINKS": "refused"})
+    late = "x" * 9_999 + " evil.com"
+    honest = "a" * 10_001
+    spelled = "\ufdfa" * 600
+    dotted = "a1111111." * 116_000
+    start = time.perf_counter()
+
+    assert holds_link(dotted)
+    assert shows_link(dotted)
+    assert time.perf_counter() - start < 5
+    assert late.index("evil") == 10_000
+    assert all(map(holds_link, (late, honest, spelled)))
+    assert shows_link(honest)
+    assert holds_link(honest, numbers=False)
+    with pytest.raises(LinkNotShown):
+        laid_out({"Note": Typed(honest)}, whole=False)
+    with pytest.raises(LinkNotShown):
+        check_typed(honest)
+    assert not holds_link("a" * 10_000)
+    assert not shows_link("a" * 10_000)
+    assert holds_link("x" * 9_991 + " evil.com")
+    assert len("x" * 9_991 + " evil.com") == 10_000
+
+
+def test_a_long_name_is_checked_as_far_as_a_line_could_cut_it(
+    use_auth: UseAuth,
+) -> None:
+    """Each cut a line holds, from the twentieth character to the sixty-third.
+
+    No screen shows a longer cut; each cut read is a reading of the text
+    (review of user report A17).
+    """
+    use_auth(AUTHORIZATIONS={"TYPED_LINKS": "refused"})
+    start = time.perf_counter()
+
+    check_typed("readers " * 1_250)
+    assert time.perf_counter() - start < 5
+    with pytest.raises(LinkNotShown):
+        check_typed("Approved; details at our partner evil.co".rjust(63) + "rporate")

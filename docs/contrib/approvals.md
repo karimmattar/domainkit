@@ -674,7 +674,7 @@ APPROVALS = {
 
 | Action (constant) | Held when the admin API | The request's arguments | Policy |
 | --- | --- | --- | --- |
-| `auth.set_staff` (`SET_STAFF`) | makes a user staff: `PATCH /users/{id}` with `"is_staff": true`, for a user who is not; without `auth.reactivate`, also `"is_active": true` for a staff member who is inactive | `{"user_id"}`, and since 2.8 `"values"`: what else the call sets (`SetStaff`) | `auth.staff` |
+| `auth.set_staff` (`SET_STAFF`) | makes a user staff: `PATCH /users/{id}` with `"is_staff": true`, for a user who is not; without `auth.reactivate`, also `"is_active": true` for a staff member who is inactive | `{"user_id"}`; since 2.10 `"is_superuser", "groups", "permissions", "object_grants", "object_grants_digest"`: what they come back with; and since 2.8 `"values"`: what else the call sets (`SetStaff`) | `auth.staff` |
 | `auth.set_groups` (`SET_GROUPS`) | adds a user to a group: `PUT /users/{id}/groups` | `{"user_id", "added", "removed", "groups"}`: names, and each group added by id with its permissions (`SetGroups`, `HeldGroup`) | `auth.groups` |
 | `auth.set_permissions` (`SET_PERMISSIONS`) | grants a user a permission: `PUT /users/{id}/permissions` | `{"user_id", "added", "removed"}`, permission keys (`SetPermissions`) | `auth.permissions` |
 | `auth.set_password` (`SET_PASSWORD`) | sets a password, or makes it unusable: `POST /users/{id}/password` | `{"user_id"}` (`SetPassword`) | `auth.password` |
@@ -737,7 +737,7 @@ PATCH /admin/auth/users/6f1c... {"is_staff": true}                       200: th
   them: the call made again with another number submits a request of
   its own. Before, the request held the grant alone, and an approval of
   Bob's return was spent by a call that also gave Bob another address,
-  which no approver saw (user report A17). A request of 2.7, which holds
+  which no approver saw (user report A17). A return of 2.7, which holds
   none, is found and spent as before by a call that sets nothing else. A
   value the user holds already is not held: it changes nothing, so a
   form saved whole holds what it changes, and the approver sees only
@@ -773,6 +773,20 @@ PATCH /admin/auth/users/6f1c... {"is_staff": true}                       200: th
   staff and active again in two changes: each waits for its own
   approval."): one request for both would spend one hold's approvals on
   the other's change.
+- **A user made staff comes back with what they hold** (since 2.10,
+  [ADR 0172](../adr/0172-hold-admin-changes-by-what-they-grant-and-check-before-the-hold.md)).
+  The admin API and a project's back office ask for `is_staff`, and
+  taking staff away leaves a user's groups, permissions, and superuser
+  flag as they were: making them staff again gives all of it back. So
+  `auth.set_staff` holds what they come back with, as `auth.reactivate`
+  does: whether they are a superuser (as the change leaves them), each
+  group (as `SetGroups` holds one), their own permissions, and their
+  grants on objects (how many, and a digest). The approver reads it
+  (below), and the approval is spent only on it: anything granted to the
+  user since the request was made is another request, which waits for
+  its own approval (`403 approval_pending`). A request stored by 2.9
+  holds none of it: the call submits a new one, which is approved again
+  ([upgrading.md](../upgrading.md#29-to-210)).
 - **Granting a group permissions waits too** (`auth.set_group_permissions`,
   since 2.7): every member gains them. The members of the group, as
   stored when a decision is made, do not decide it (`interested_party`).
@@ -818,14 +832,21 @@ PATCH /admin/auth/users/6f1c... {"is_staff": true}                       200: th
   never refused; with `WHOLE`, what is refused is a grant too large to
   show, never a name. Since 2.8 `auth.set_staff` shows what else the
   call sets, by label, and `auth.reactivate` after what the user comes
-  back with.
+  back with. Since 2.10 `auth.set_staff` shows what the user comes back
+  with too, as `auth.reactivate` does: "Superuser" where they are one,
+  "Grants" (below), their "Groups", and "Also holds", then what else the
+  call sets. Since 2.10 the "Groups" a user comes back with are read as
+  typed, as a group added is: with auth's `TYPED_LINKS` refused, a group
+  whose stored name holds a link is refused there until it is renamed
+  ([Text a person typed](../auth/actions.md#text-a-person-typed)).
 - **A key that matters is named, not counted** (since 2.8). A count
   ("readers (…9abc) 3 perms", "Also holds: 3 permissions") does not say
   which keys; auth's `AUTHORIZATIONS.NAMED_PERMISSIONS` lists the keys
   a screen names wherever it would count them, by default
   `TENANCY.ALL_TENANTS_PERMISSION` where it is set. `auth.set_groups`
-  and `auth.reactivate` show those among what the groups, or the user,
-  grant on a line of their own, "Grants: companies.administer_company",
+  and `auth.reactivate`, and since 2.10 `auth.set_staff`, show those
+  among what the groups, or the user, grant on a line of their own,
+  "Grants: companies.administer_company",
   before the groups; `auth.set_group_permissions` and
   `auth.set_permissions` list them first among the keys added, so a list
   cut and counted keeps them. Keys are named where they are granted
@@ -923,6 +944,20 @@ invite = InviteStaff(email=email, groups=await held_groups(names))
 ...
 if await held_groups(group.name for group in invite.groups) != invite.groups:
     raise InvitationChanged()  # Ask for a new invitation.
+```
+
+A grant that makes a user staff gives back what they hold already.
+`named_keys_held(user)` (since 2.10) reads the keys
+`NAMED_PERMISSIONS` names that a user holds, directly or through a
+group, as `auth.set_staff` shows them ("Grants"), active or not; a
+superuser holds every key, so read `is_superuser` beside it, as the
+screens do. Refuse such a grant, or hold its approval to what it reads:
+
+```python
+from domainkit.contrib.approvals import named_keys_held
+
+if user.is_superuser or named_keys_held(user):
+    raise NamedGrantRefused()  # Your own refusal: grant it through approvals.
 ```
  A guard that a setting turns on
 must be registered whenever its service can be called: a service

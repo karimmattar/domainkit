@@ -12,7 +12,9 @@ commit. The admin API imports this module only while the setting is on.
 The act's arguments are the change (``AdminAct``): its kind, the user or
 group, and what it sets, adds, and takes away, sorted; never a password.
 Each group a change adds is bound by its id and what it grants, and each
-it takes away by its id (since 2.8, user report A17). What staff are
+it takes away by its id (since 2.8, user report A17); a change that makes
+a user staff, or active again, binds what they come back with (since
+2.10, user report A26). What staff are
 shown is built here, from the act and the stored user or group: which
 one, and what changes.
 """
@@ -30,6 +32,7 @@ from pydantic import (
     model_serializer,
 )
 
+from domainkit.ddd import fingerprint
 from domainkit.i18n import gettext, gettext_noop, pgettext
 from domainkit.utils.decimals import jsonable
 
@@ -118,7 +121,8 @@ REASON: Final = gettext_noop("Reason")
 ADDS: Final = gettext_noop("Adds")
 GRANTS: Final = gettext_noop("Grants")
 """The label of the keys ``NAMED_PERMISSIONS`` names among those the groups
-a change adds grant (since 2.8)."""
+a change adds grant (since 2.8), or that a user made staff or active again
+holds (since 2.10)."""
 TAKES_AWAY: Final = gettext_noop("Takes away")
 PASSWORD: Final = gettext_noop("Password")
 PASSWORD_STATES: Final = {True: "set", False: "none"}
@@ -156,6 +160,8 @@ class ActGroup(BaseModel):
 
 BOUND_GROUPS: Final = ("groups", "taken")
 """The fields an act of 2.7 did not have: left out of its arguments when empty."""
+BOUND_HOLDS: Final = "holds"
+"""The field an act of 2.9 did not have: left out of its arguments when None."""
 
 
 class AdminAct(BaseModel):
@@ -178,6 +184,14 @@ class AdminAct(BaseModel):
     staff member confirmed it is another act (user report A17). Both are
     left out of the act's arguments when empty, so the authorization of
     any other change asked for under 2.7 still binds it.
+
+    Since 2.10, a change that makes a user staff, or active again, binds
+    what they come back with (``holds``, ``comes_back_with``): their
+    flags as the change leaves them, each group with its keys, their own
+    permissions, and grants on objects, as a digest. Granted anything
+    since the staff member confirmed it, it is another act (user report
+    A26). Left out of the act's arguments when None, so only such a
+    change asked for under 2.9 is refused once.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -192,12 +206,13 @@ class AdminAct(BaseModel):
     password: bool | None = None
     groups: tuple[ActGroup, ...] = ()
     taken: tuple[UUID, ...] = ()
+    holds: str | None = None
 
     @model_serializer(mode="wrap")
     def _as_bound(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
-        """The act's arguments: ``groups`` and ``taken`` only where they hold some."""
+        """The act's arguments: ``groups``, ``taken``, ``holds`` only where set."""
         dumped: dict[str, Any] = handler(self)
-        for name in BOUND_GROUPS:
+        for name in (*BOUND_GROUPS, BOUND_HOLDS):
             if not dumped.get(name):
                 dumped.pop(name, None)
         return dumped
@@ -211,13 +226,16 @@ class AdminAct(BaseModel):
         name: str | None = None,
         password: bool | None = None,
         values: Mapping[str, object] | None = None,
+        holds: str | None = None,
     ) -> "AdminAct":
         """The act of ``change`` to ``user`` (None for one being created).
 
         ``values`` adds what the change sets that ``change.values`` leaves
         out: whether a user created is active. A change of groups binds
         each group it adds as the admin API read it (``change.groups``),
-        and the id of each of the user's groups it takes away.
+        and the id of each of the user's groups it takes away. ``holds``
+        is what the user comes back with (``comes_back_with``), for a
+        change that makes them staff or active again.
         """
         given = {**change.values, **(values or {})}
         removed = tuple(sorted(change.removed))
@@ -238,6 +256,7 @@ class AdminAct(BaseModel):
                 for group in sorted(change.groups, key=lambda group: group.name)
             ),
             taken=taken,
+            holds=holds,
         )
 
     @classmethod
@@ -288,7 +307,11 @@ async def show(act: AdminAct) -> Shown:  # noqa: C901
     shows as approvals shows it, in a few words: "readers (…9abc) 3 perms",
     and the keys ``AUTH.AUTHORIZATIONS.NAMED_PERMISSIONS`` names among
     what they grant show by name first ("Grants"); in a list of keys, those
-    it names come first (since 2.8). What staff typed is ``Typed`` (since
+    it names come first (since 2.8). A change that makes a user staff, or
+    active again, shows what they come back with (since 2.10, user reports
+    A26, A17): "Superuser" and "Staff" where they are so, set or not, and
+    the keys ``NAMED_PERMISSIONS`` names that they hold, directly or
+    through a group ("Grants"). What staff typed is ``Typed`` (since
     2.8): the reason, a group's new name, and each text a change sets on a
     user but the fields that identify them; such a text sent as it is
     stored (a form saved whole) changes nothing: it is not typed, and with
@@ -321,11 +344,13 @@ async def show(act: AdminAct) -> Shown:  # noqa: C901
         typed = Typed(act.name) if act.kind in NAMING_KINDS else act.name
         details.append((gettext(label), typed))
     values = dict(act.values)
+    held = [] if user is None or act.kind != "update" else _coming_back(user, values)
     details.extend(
         (gettext(label), _flag(values.pop(flag)))
         for flag, label in FLAGS.items()
         if flag in values
     )
+    details.extend(held)
     if act.kind == "impersonate":
         details.append((gettext(REASON), _typed(values.pop("reason", ""))))
     details.extend(_added(act))
@@ -390,6 +415,73 @@ def _added(act: AdminAct) -> list[tuple[str, Value]]:
     if act.kind == "groups":
         return [(gettext(ADDS), act.added)]
     return [(gettext(ADDS), named_first(act.added))]
+
+
+def _coming_back(
+    user: AbstractBaseUser, values: dict[str, JsonValue]
+) -> list[tuple[str, Value]]:
+    """What ``user`` comes back with, if setting ``values`` makes them staff or active.
+
+    Since 2.10 (user reports A26, A17), as approvals' holds of making staff
+    and of a return show it: each flag they come back as, set or not, is
+    put in ``values``, to show with the flags ("Superuser: yes"); the keys
+    ``NAMED_PERMISSIONS`` names that they hold, directly or through a
+    group, are returned ("Grants"). Nothing for any other change.
+    """
+    if not _returns(user, values):
+        return []
+    for flag in ("is_superuser", "is_staff"):
+        if flag not in values and getattr(user, flag, False) is True:
+            values[flag] = True
+    keys = {each.key for each in user.user_permissions}
+    keys.update(key for group in user.groups for key in group.permission_keys())
+    granted = sorted(keys & named_permissions())
+    return [(gettext(GRANTS), granted)] if granted else []
+
+
+def _returns(user: AbstractBaseUser, values: Mapping[str, object]) -> bool:
+    """Whether setting ``values`` makes ``user`` staff, or active again."""
+    staff = getattr(user, "is_staff", False) is True
+    making = values.get("is_staff") is True and not staff
+    return making or (values.get("is_active") is True and not user.is_active)
+
+
+async def comes_back_with(user: AbstractBaseUser, change: AdminChange) -> str | None:
+    """What ``user`` comes back with once ``change`` is made, as the act binds it.
+
+    For an ``update`` that makes them staff, or active again (since 2.10,
+    user report A26): the SHA-256 (``fingerprint``) of their superuser
+    and staff flags as the change leaves them, each group by id, name,
+    keys, and grants on objects, their own permissions, and their grants
+    on objects (every backend's ``object_grants``, ``grants_digest``), as
+    approvals' ``SetStaff`` and ``Reactivate`` hold them. None for any
+    other change: it binds nothing more.
+    """
+    if change.kind != "update" or not _returns(user, change.values):
+        return None
+    from .backends import object_grants
+
+    values = change.values
+    groups = [
+        [
+            str(group.id),
+            group.name,
+            sorted(group.permission_keys()),
+            *grants_digest(await object_grants(group)),
+        ]
+        for group in sorted(user.groups, key=lambda group: group.name)
+    ]
+    count, digest = grants_digest(await object_grants(user))
+    held = {
+        **{
+            flag: values.get(flag, getattr(user, flag, False)) is True
+            for flag in ("is_superuser", "is_staff")
+        },
+        "groups": groups,
+        "permissions": sorted(each.key for each in user.user_permissions),
+        "object_grants": [count, digest],
+    }
+    return fingerprint(PURPOSE, held)
 
 
 def _change_of(act: AdminAct) -> AdminChange:

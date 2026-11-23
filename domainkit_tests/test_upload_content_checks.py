@@ -475,7 +475,7 @@ PICTURE: Final = '<w:instrText>INCLUDEPICTURE "https://a.example/x.png"</w:instr
             ACTIONS,
         ),
         (field(BEGIN, "<w:instrText>PAGE</w:instrText>", SEPARATE, BEGIN), "ok"),
-        (field(BEGIN, "<w:instrText>PAGE</w:instrText>", SEPARATE, PICTURE), "ok"),
+        (field(BEGIN, "<w:instrText>PAGE</w:instrText>", SEPARATE, PICTURE), ACTIONS),
     ],
 )
 def test_a_field_never_ended_or_deleted_is_read_too(body: str, expected: str) -> None:
@@ -483,7 +483,8 @@ def test_a_field_never_ended_or_deleted_is_read_too(body: str, expected: str) ->
 
     A reader may run a field that never ends, and a tracked deletion of
     its instruction is undone by rejecting the change. Text in a field's
-    result is not its instruction.
+    result is not its instruction; instruction text there is refused
+    (since 2.10).
     """
     assert verdict(OfficeCheck("docx"), office(main=document(body))) == expected
 

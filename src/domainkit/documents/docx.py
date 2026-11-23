@@ -27,6 +27,12 @@ left to fill or fix.
 make none, as ``fill_docx`` reads them: the same parts, paragraphs, and
 grammar, within the same ``ArchiveLimits``.
 
+``afill_docx`` and ``aplaceholders`` are their async forms (New in 2.10):
+at most ``DOCUMENTS["DOCX_AT_ONCE"]`` calls of them run at once in the
+process, whichever event loop or thread made them, and the others wait
+for a place without holding a thread. The bounds below hold one call;
+calls at once add up.
+
 The archive is read within ``ArchiveLimits``, so a zip bomb costs no
 more than they allow: its files are stored or deflated, plain relative
 names, each inflated no further than the size the archive states. Each
@@ -46,7 +52,9 @@ written, so a value cannot add markup. Every other part of the archive
 is written back unchanged, in its order.
 """
 
+import asyncio
 import io
+import os
 import re
 import struct
 import threading
@@ -55,8 +63,10 @@ import zipfile
 import zlib
 from bisect import bisect_right
 from collections.abc import Callable, Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import cache, partial
 from itertools import accumulate
 from typing import Any, Final
 
@@ -185,8 +195,8 @@ def fill_docx(
     as they are written. The last two make a draft, for a preview: never
     send one (``placeholders`` lists what is left).
 
-    The work is CPU-bound: in async code, run it in a thread
-    (``await asyncio.to_thread(fill_docx, document, values)``).
+    The work is CPU-bound: in async code, await ``afill_docx``, which
+    holds the calls at once to ``DOCUMENTS["DOCX_AT_ONCE"]``.
 
     Raises:
         ImportError: ``domainkit[documents]`` is not installed.
@@ -225,7 +235,7 @@ def placeholders(
 
     Read as ``fill_docx`` reads them, within ``limits``: what it lists is
     what ``fill_docx`` asks a value for, or refuses. CPU-bound, as
-    ``fill_docx`` is.
+    ``fill_docx`` is: in async code, await ``aplaceholders``.
 
     Raises:
         ImportError: ``domainkit[documents]`` is not installed.
@@ -243,6 +253,86 @@ def placeholders(
         return Placeholders(names=tuple(found), malformed=tuple(malformed))
 
     return _alone(read)
+
+
+async def afill_docx(
+    document: bytes,
+    values: Mapping[str, str],
+    *,
+    allow_unused: bool = False,
+    allow_missing: bool = False,
+    allow_malformed: bool = False,
+    limits: ArchiveLimits | None = None,
+) -> bytes:
+    """``fill_docx``, once one of the process's places to read a document is free.
+
+    At most ``DOCUMENTS["DOCX_AT_ONCE"]`` calls of ``afill_docx`` and
+    ``aplaceholders`` run at once in the process, on every event loop and
+    thread together; the others wait their turn, holding no thread. A call
+    cancelled while it waits never runs; one cancelled while it runs keeps
+    its place until it ends. New in 2.10.
+
+    Raises:
+        ImportError: ``domainkit[documents]`` is not installed.
+        TypeError: A value is not text.
+        DocumentError: As ``fill_docx`` raises it.
+        PlaceholderError: As ``fill_docx`` raises it.
+    """
+    return await _at_once(
+        partial(
+            fill_docx,
+            document,
+            values,
+            allow_unused=allow_unused,
+            allow_missing=allow_missing,
+            allow_malformed=allow_malformed,
+            limits=limits,
+        )
+    )
+
+
+async def aplaceholders(
+    document: bytes, *, limits: ArchiveLimits | None = None
+) -> Placeholders:
+    """``placeholders``, once one of the process's places to read a document is free.
+
+    It shares ``DOCUMENTS["DOCX_AT_ONCE"]`` places with ``afill_docx``, and
+    waits as it does. New in 2.10.
+
+    Raises:
+        ImportError: ``domainkit[documents]`` is not installed.
+        DocumentError: As ``placeholders`` raises it.
+    """
+    return await _at_once(partial(placeholders, document, limits=limits))
+
+
+_readers_lock: Final = threading.Lock()
+"""Held to make the process's readers: loops on several threads ask at once."""
+
+
+@cache
+def _readers(at_once: int, process: int) -> ThreadPoolExecutor:
+    """The ``at_once`` threads of the process ``process`` that wait for readings.
+
+    Each waits for the thread of its own that ``_alone`` reads a document
+    in, so lxml's names go with that thread. A process forked from
+    ``process`` has none of its threads, and makes its own.
+    """
+    del process  # A key: the pool of the process that made it.
+    return ThreadPoolExecutor(max_workers=at_once, thread_name_prefix="domainkit-docx")
+
+
+async def _at_once[T](work: Callable[[], T]) -> T:
+    """``work()`` on one of the readers ``DOCUMENTS["DOCX_AT_ONCE"]`` sizes.
+
+    Until a reader is free it waits in the readers' queue: a caller
+    cancelled meanwhile takes it out, so it never runs.
+    """
+    from domainkit.conf import settings
+
+    with _readers_lock:  # So two loops never make two pools of one size.
+        readers = _readers(settings.DOCUMENTS.DOCX_AT_ONCE, os.getpid())
+    return await asyncio.get_running_loop().run_in_executor(readers, work)
 
 
 def _alone[T](work: Callable[[], T]) -> T:

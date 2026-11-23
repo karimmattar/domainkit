@@ -84,7 +84,7 @@ async def test_a_request_past_its_deadline_is_answered_503(
     assert response.status_code == 503
     assert response.headers["Retry-After"] == "1"
     body = response.json()
-    assert body == {
+    assert body == {  # No in_doubt: nothing was sent to commit.
         "detail": "The request took too long; try again shortly.",
         "code": "deadline_exceeded",
         "request_id": response.headers["X-Request-ID"],
@@ -665,13 +665,49 @@ async def test_a_commit_in_doubt_is_answered_without_retry_after(
     """A 503 for a change that may have been made does not invite a retry.
 
     Its answer was lost with the connection, or the deadline cut the
-    ``COMMIT`` off: no ``Retry-After``, and the detail says to check.
+    ``COMMIT`` off: no ``Retry-After``, the detail says to check, and the
+    body says so to a client that reads no header (``"in_doubt": true``,
+    since 2.10).
     """
     async with paying(database_url, REQUEST_TIMEOUT=0.5) as client:
         answer = await client.post(f"/pay-unanswered?lost={lost}", json={})
     assert answer.status_code == 503
     assert "Retry-After" not in answer.headers
-    assert (answer.json()["code"], answer.json()["detail"]) == (code, detail)
+    said = answer.json()
+    assert (said["code"], said["detail"], said["in_doubt"]) == (code, detail, True)
+
+
+@pytest.mark.parametrize(
+    ("lost", "code"),
+    [("true", "database_unavailable"), ("false", "deadline_exceeded")],
+    ids=["connection-lost", "deadline-in-commit"],
+)
+async def test_a_problem_in_doubt_says_so_by_its_members(
+    database_url: str, lost: str, code: str
+) -> None:
+    """RFC 9457's problem details carry ``in_doubt`` too, after their own members.
+
+    A client that keeps the problem document and drops the headers (a
+    log, a queue, a proxy that answers for the server) still tells a
+    commit in doubt from a request that kept nothing (user report S4).
+    """
+    async with paying(
+        database_url, REQUEST_TIMEOUT=0.5, ERROR_FORMAT="problem+json"
+    ) as client:
+        answer = await client.post(f"/pay-unanswered?lost={lost}", json={})
+    assert answer.headers["Content-Type"] == "application/problem+json"
+    said = answer.json()
+    assert list(said) == [
+        "type",
+        "title",
+        "status",
+        "detail",
+        "instance",
+        "code",
+        "request_id",
+        "in_doubt",
+    ]
+    assert (said["status"], said["code"], said["in_doubt"]) == (503, code, True)
 
 
 @pytest.mark.parametrize(
@@ -701,7 +737,11 @@ async def test_a_commit_cut_off_in_any_task_is_answered_without_retry_after(
     assert answer.status_code == 503
     assert "Retry-After" not in answer.headers
     said = answer.json()
-    assert (said["code"], said["detail"]) == ("deadline_exceeded", CUT)
+    assert (said["code"], said["detail"], said["in_doubt"]) == (
+        "deadline_exceeded",
+        CUT,
+        True,
+    )
 
 
 async def test_an_after_commit_hook_that_hangs_is_cut_off(

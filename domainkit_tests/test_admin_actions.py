@@ -593,6 +593,148 @@ def test_flags_are_never_hidden_and_a_list_shows_whole_over_lines(
     ]
 
 
+UNHELD: Final = Shape(
+    "admin_acts_unheld",
+    "approvals",
+    {
+        **ACTS.settings,
+        "APPROVALS": {**ACTS.settings["APPROVALS"], "ADMIN_APPROVALS": {}},
+    },
+)
+"""Every change of the admin API an act, and none held for approval."""
+REACH: Final = "auth.delete_group"
+"""The key ``TENANCY.ALL_TENANTS_PERMISSION`` names here."""
+REACHING: Final = {
+    "MEMBER_PERMISSIONS": "domainkit_tests.anywhere.members",
+    "MEMBER_TENANTS": "domainkit_tests.anywhere.tenants",
+    "ALL_TENANTS_PERMISSION": REACH,
+}
+"""``TENANCY`` with ``REACH`` reaching every tenant: the key a screen names."""
+
+
+@pytest.mark.parametrize("shape", [ACTS, UNHELD], ids=["held", "unheld"])
+def test_making_staff_or_active_again_shows_what_the_user_comes_back_with(
+    migrated: Migrated, frozen: FrozenClock, shape: Shape
+) -> None:
+    """The flags they come back with, and the keys named they hold ("Grants").
+
+    Made staff, a superuser shows as one; made non-staff, then staff
+    again, or made active again, a user who holds the key that reaches
+    every tenant, through a group, shows it by name. Before 2.10 the
+    screen said "Staff: yes" or "Active: yes" alone (user reports A26,
+    A17). With approvals' ``auth.set_staff`` held or not, the act shows
+    the same.
+    """
+    with (
+        migrated(shape),
+        TestClient(get_asgi_application()) as client,
+        override_settings(TENANCY=REACHING),
+    ):
+        root = Staff(client, frozen, "root", superuser=True)
+        make_group("officers", REACH)
+        ada = create_user("ada", is_staff=True)
+        boss = create_user("boss", is_superuser=True)
+        cleo = create_user("cleo", is_active=False)
+        dan = create_user("dan", is_active=False, is_staff=True, is_superuser=True)
+        join("ada", "officers")
+        join("cleo", "officers")
+        staff_body, back_body = {"is_staff": True}, {"is_active": True}
+        unmaking = {"is_staff": False}
+        unmade = root.call(
+            "PATCH",
+            f"/users/{ada}",
+            unmaking,
+            root.authorized(f"/users/{ada}/authorization/patch", unmaking),
+        )
+        twins = {
+            "ada": (ada, staff_body),
+            "boss": (boss, staff_body),
+            "cleo": (cleo, back_body),
+            "dan": (dan, back_body),
+        }
+        shown = {
+            name: root.ask(f"/users/{user_id}/authorization/patch", body)
+            for name, (user_id, body) in twins.items()
+        }
+        authorization = root.confirm(shown["cleo"].json()["id"])
+        back = root.call("PATCH", f"/users/{cleo}", back_body, authorization)
+        unnamed = root.ask(f"/users/{ada}/authorization/patch", {"is_active": False})
+
+    def pairs(asked: Any) -> list[tuple[str, str]]:  # noqa: ANN401 - a response.
+        assert asked.status_code == 201, asked.json()
+        details = asked.json()["shown"]["details"]
+        return [(each["label"], each["value"]) for each in details]
+
+    def who(name: str) -> tuple[str, str]:
+        return ("User", f"{name} ({end_of(twins[name][0])})")
+
+    assert unmade.status_code == 200, unmade.json()
+    assert pairs(shown["ada"]) == [who("ada"), ("Staff", "yes"), ("Grants", REACH)]
+    assert pairs(shown["boss"]) == [who("boss"), ("Superuser", "yes"), ("Staff", "yes")]
+    assert pairs(shown["cleo"]) == [who("cleo"), ("Active", "yes"), ("Grants", REACH)]
+    assert pairs(shown["dan"]) == [
+        who("dan"),
+        ("Superuser", "yes"),
+        ("Staff", "yes"),
+        ("Active", "yes"),
+    ]
+    assert back.status_code == 200, back.json()
+    assert pairs(unnamed) == [who("ada"), ("Active", "no")]
+
+
+@pytest.mark.parametrize("shape", [ACTS, UNHELD], ids=["held", "unheld"])
+def test_the_act_binds_what_the_user_made_staff_comes_back_with(
+    migrated: Migrated, frozen: FrozenClock, shape: Shape
+) -> None:
+    """Put in a group between the twin and the act: another act, refused and void.
+
+    The act binds what the user comes back with, as the screen shows it
+    (``AdminAct.holds``, since 2.10): the flags, each group with its keys,
+    their own permissions, and their grants on objects. Where approvals
+    hold nothing, it was made with a group no screen had named (review of
+    user report A26). Asked again, the screen names the key, and the act
+    is made, or held for approval.
+    """
+    with (
+        migrated(shape),
+        TestClient(get_asgi_application()) as client,
+        override_settings(TENANCY=REACHING),
+    ):
+        root = Staff(client, frozen, "root", superuser=True)
+        make_group("officers", REACH)
+        ada = create_user("ada")
+        path, body = f"/users/{ada}", {"is_staff": True}
+        authorization = root.authorized(f"{path}/authorization/patch", body)
+        join("ada", "officers")
+        refused = root.call("PATCH", path, body, authorization)
+        voided = row(authorization)["consumed_at"] is not None
+        held = held_requests()
+        asked = root.ask(f"{path}/authorization/patch", body)
+        made = root.call("PATCH", path, body, root.confirm(asked.json()["id"]))
+
+    problem(refused, 403, "action_not_authorized")
+    assert voided
+    assert held == 0
+    assert {"label": "Grants", "value": REACH} in asked.json()["shown"]["details"]
+    if shape is UNHELD:
+        assert made.status_code == 200, made.json()
+        assert made.json()["is_staff"] is True
+    else:
+        problem(made, 403, "approval_pending")
+
+
+def test_only_a_change_that_makes_staff_or_active_again_binds_holds() -> None:
+    """Left out of every other act, as ``groups`` and ``taken`` are: they hold."""
+    bob = UUID(int=7)
+    making = AdminAct(
+        kind="update", user_id=bob, values={"is_staff": True}, holds="0" * 64
+    )
+    other = AdminAct(kind="update", user_id=bob, values={"first_name": "Bob"})
+
+    assert making.model_dump(mode="json")["holds"] == "0" * 64
+    assert "holds" not in other.model_dump(mode="json")
+
+
 def test_with_whole_on_the_twin_refuses_what_its_screen_cannot_show_whole(
     client: TestClient, frozen: FrozenClock
 ) -> None:

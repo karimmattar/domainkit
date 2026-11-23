@@ -50,7 +50,7 @@ from domainkit.http.uploads import (
     receive_upload,
 )
 from domainkit.inspection import PdfCheck, run_checks
-from domainkit.resources import ResourceRouter, asking_authorization
+from domainkit.resources import BeforeRules, ResourceRouter, asking_authorization
 from domainkit.resources.routing import uploading
 from domainkit.storage import MemoryStorage
 from domainkit_tests.conftest import UseAuth
@@ -790,17 +790,176 @@ def test_a_rule_that_reads_the_body_is_refused_with_a_limit_decided(
 ) -> None:
     """It reads the body before the limit is decided: the limit never holds it.
 
-    A number still goes with it; ``DeviceSigned`` says it reads the body.
+    A number still goes with it, and a limit decided before the rules
+    (``BeforeRules``, since 2.10), which the refusal names;
+    ``DeviceSigned`` says it reads the body.
     """
     with pytest.raises(
-        ImproperlyConfigured, match="reads the body before it is decided"
+        ImproperlyConfigured,
+        match=r"reads the body before it is decided: give body_limit= a BeforeRules",
     ):
         limited(store, Limits(), rule=rule)
     limited(store, Limits(), rule=rule, body_limit=10_000)
+    limited(store, Limits(), rule=rule, body_limit=BeforeRules(lambda request: 1))
 
     assert DeviceSigned.reads_body
     assert DeviceSigned().reads_the_body()
     assert not Asks().reads_the_body()
+
+
+class Phones:
+    """A body limit decided from the request alone, as a project's setting is read.
+
+    Each decision is noted with the twin's ask marked ``?``; ``limit`` may
+    change between requests, as a setting does without a restart.
+    """
+
+    def __init__(self, limit: int) -> None:
+        """Decide ``limit`` until told otherwise."""
+        self.limit = limit
+        self.decided: list[str] = []
+
+    async def __call__(self, request: Request) -> int:
+        """The limit, noted in ``decided``."""
+        self.decided.append(f"limit{'?' if asking_authorization(request) else ''}")
+        return self.limit
+
+
+def test_a_body_limit_decided_before_the_rules_holds_a_rule_that_reads_the_body(
+    store: InMemoryGadgets, use_auth: UseAuth, counted: Counted
+) -> None:
+    """``BeforeRules``: decided first, it holds the rule's read too (user report U7).
+
+    A rule that reads the body, as ``DeviceSigned`` does, read it under the
+    resource's limit for commands, and the route could take no limit
+    decided per request. Decided before the rules, from the request
+    alone, the limit is held before a byte is read, the rule's read
+    included: over it, 413, the rule having read nothing. It may pass the
+    resource's limit, and it changes from one request to the next.
+    """
+    use_auth()
+    seen: list[str] = []
+    phones = Phones(3_000)
+    app = limited(
+        store,
+        Limits(),
+        types=[CHECKED_PDF],
+        rule=SaysItReads(seen),
+        body_limit=BeforeRules(phones),
+        body_limits={"command": 1_000},
+    )
+    found = ids(store)
+
+    def sent(body: bytes | Iterator[bytes]) -> tuple[int, str | None]:
+        answer = app.client.post(
+            f"{LOCATION}{found['a']}/manual", content=body, headers=as_("changer")
+        )
+        return answer.status_code, answer.json().get("code")
+
+    assert sent(padded(3_001)) == (413, "content_too_large")
+    assert sent(chunked(padded(3_001))) == (413, "content_too_large")
+    assert (seen, counted.files) == ([], [])
+    assert sent(padded(3_000))[0] == 200  # Past the resource's 1,000.
+    phones.limit = 2_000
+    assert sent(padded(3_000)) == (413, "content_too_large")
+    assert seen == ["rule 3000"]
+    assert phones.decided == ["limit"] * 4
+
+
+def test_a_body_limit_decided_before_the_rules_comes_first_on_the_twin_too(
+    store: InMemoryGadgets, use_auth: UseAuth
+) -> None:
+    """It runs before ``before_rules`` and the rules, on the act and on its twin.
+
+    The limit holds the rules' reads, and what the resource's own
+    dependencies read before it is held to it as a file: a body read
+    under the resource's limit for commands is refused past the decided
+    one (``file_too_large``).
+    """
+    use_auth()
+    order = Order()
+    phones = Phones(3_000)
+
+    async def read_first(request: Request) -> None:
+        if request.headers.get("X-Read-First"):
+            order.ran.append(f"read {len(await request.body())}")
+
+    resource = gadgets(
+        store,
+        body_limits={"command": 10_000},
+        dependencies=[Depends(read_first)],
+    )
+    resource.upload_route(
+        AttachManual,
+        service=Run().attach,
+        field="manual",
+        path="/manual",
+        types=[PDF],
+        max_size=1_000_000,
+        storage=MemoryStorage(),
+        rule=Asks() & ReadsBody(order.ran),
+        body_limit=BeforeRules(phones),
+        before_rules=[order.dependency("before")],
+    )
+    client = App(resource).client
+    act = f"{LOCATION}{ids(store)['a']}/manual"
+
+    asked = client.post(
+        f"{act}/authorization", content=padded(3_000), headers=as_("changer")
+    )
+    done = client.post(act, content=padded(3_000), headers=as_("changer", **AUTHORIZED))
+    refused = client.post(
+        f"{act}/authorization", content=padded(3_001), headers=as_("changer")
+    )
+    read = client.post(
+        f"{act}/authorization",
+        content=padded(5_000),
+        headers=as_("changer", **{"X-Read-First": "1"}),
+    )
+
+    assert (asked.status_code, done.status_code) == (201, 200)
+    assert (refused.status_code, refused.json()["code"]) == (413, "content_too_large")
+    assert (read.status_code, read.json()["code"]) == (413, "file_too_large")
+    assert phones.decided == ["limit?", "limit", "limit?", "limit?"]
+    assert order.ran == [
+        "before?",
+        "rule 3000",
+        "before",
+        "rule 3000",
+        "before?",  # Its rule's read refused: nothing read.
+        "read 5000",
+        "before?",
+        "rule 5000",
+    ]
+
+
+@pytest.mark.parametrize("decided", [0, True, 2.5, MAX_ROUTE_BODY_SIZE + 1, "10"])
+def test_a_body_limit_decided_before_the_rules_is_checked(
+    store: InMemoryGadgets, use_auth: UseAuth, decided: object
+) -> None:
+    """As one decided once the reach holds: a 500, the body unread by the rule."""
+    use_auth()
+    seen: list[str] = []
+    app = limited(
+        store,
+        Limits(),
+        rule=SaysItReads(seen),
+        body_limit=BeforeRules(lambda request: decided),  # type: ignore[arg-type,return-value]
+    )
+
+    with pytest.raises(ValueError, match="A body limit is 1 to"):
+        app.client.post(
+            f"{LOCATION}{ids(store)['a']}/manual",
+            content=PDF_FILE,
+            headers=as_("changer"),
+        )
+    assert seen == []
+
+
+def test_before_rules_decide_with_a_callable() -> None:
+    """``BeforeRules`` takes a callable of the request: anything else is refused."""
+    with pytest.raises(TypeError, match="takes a callable of the request"):
+        BeforeRules(10_000)  # type: ignore[arg-type]
 
 
 def test_a_probe_for_a_disconnect_fixes_no_limit(

@@ -276,15 +276,13 @@ def test_a_twin_refuses_an_if_match_longer_than_a_route_reads(
     assert rows() == []
 
 
-@pytest.mark.parametrize(
-    "sent", [None, "", "*", '"2"', 'W/"2-0123456789abcdef"', '"1", "2"']
-)
+@pytest.mark.parametrize("sent", [None, "", "*", '"2"', 'W/"2-0123456789abcdef"'])
 def test_an_act_without_the_if_match_its_twin_held_is_refused(
     alice: Reviewer, sent: str | None
 ) -> None:
-    """Asked with version 1, sent with none, any, another, or more: refused, voided.
+    """Asked with version 1, sent with none, any, or another: refused, voided.
 
-    The digest pins the versions exactly: ``"1", "2"`` is not ``"1"``.
+    The digest pins the version exactly: ``"2"`` is not ``"1"``.
     """
     lamp = stock("Lamp")
     url = f"/products/{lamp}/publish"
@@ -296,6 +294,124 @@ def test_an_act_without_the_if_match_its_twin_held_is_refused(
     assert ended(authorization)
     assert reasons() == ["changed"]
     assert shop.PUBLISHED == []
+
+
+@pytest.mark.parametrize(
+    ("sent", "answer"),
+    [
+        ('"1", "junk"', (422, "validation_error")),
+        ('"1", "2"', (422, "validation_error")),
+        ('"1",', (412, "precondition_failed")),
+        ('"junk"', (412, "precondition_failed")),
+    ],
+)
+def test_an_if_match_answers_the_same_at_the_twin_and_at_the_act(
+    alice: Reviewer, sent: str, answer: tuple[int, str]
+) -> None:
+    """Read as the twin reads it: a list is ``422``, a tag of no version ``412``.
+
+    The act took the versions it found in a list, dropping the tags that
+    named none: ``"1", "junk"`` was refused at the twin and made at the
+    act, and ``"1",`` refused at the twin as no version and ``403`` at
+    the act (user report A17). Now each answers the same at both. The act
+    still voids the authorization, and the trail hears of it: with no
+    version, its arguments cannot be compared (review of A17).
+    """
+    lamp = stock("Lamp")
+    url = f"/products/{lamp}/publish"
+    etag = alice.read(f"/products/{lamp}")
+
+    twin = alice.asking(url, sent, WEB)
+    authorization = alice.authorizing(url, etag, WEB)
+    act = alice.act(url, authorization, sent, WEB)
+
+    assert code_of(twin) == answer
+    assert code_of(act) == answer
+    assert ended(authorization)
+    assert reasons() == ["changed"]
+    assert shop.PUBLISHED == []
+
+
+OTHER: Final = {"channel": "shop"}
+"""Other arguments than the act's authorization holds: another channel."""
+
+
+@pytest.mark.parametrize(
+    ("sent", "answer"),
+    [
+        ('"junk"', (412, "precondition_failed")),
+        ('"1",', (412, "precondition_failed")),
+        ('"1", "2"', (422, "validation_error")),
+    ],
+)
+@pytest.mark.parametrize(
+    "asked_with", [True, False], ids=["asked-with", "asked-without"]
+)
+def test_another_act_with_an_if_match_of_no_version_or_several_is_voided(
+    alice: Reviewer, sent: str, answer: tuple[int, str], asked_with: bool
+) -> None:
+    """Other arguments, and a tag of no version or several: voided, and told.
+
+    Asked with ``If-Match`` or without (2.7's way), the act answers as the
+    twin answers that header, and voids the authorization as any other
+    act does, the trail told (``changed``): without a version its
+    arguments cannot be compared, so a client's slip and another act read
+    alike (review of user report A17).
+    """
+    lamp = stock("Lamp")
+    url = f"/products/{lamp}/publish"
+    etag = alice.read(f"/products/{lamp}")
+    authorization = alice.authorizing(url, etag if asked_with else None, WEB)
+
+    refused = alice.act(url, authorization, sent, OTHER)
+
+    assert code_of(refused) == answer
+    assert ended(authorization)
+    assert reasons() == ["changed"]
+    assert shop.PUBLISHED == []
+
+
+def test_an_act_reads_every_if_match_line_as_its_twin_does(alice: Reviewer) -> None:
+    """Two lines are one list (RFC 9110, 5.3): ``422`` at the act, not the first.
+
+    The act read the first line alone, so a second one passed unread
+    (user report A17).
+    """
+    lamp = stock("Lamp")
+    url = f"/products/{lamp}/publish"
+    etag = alice.read(f"/products/{lamp}")
+    authorization = alice.authorizing(url, etag, WEB)
+    headers = [
+        *alice.headers.items(),
+        ("Action-Authorization", authorization),
+        ("If-Match", etag),
+        ("If-Match", '"junk"'),
+    ]
+
+    refused = alice.client.post(url, json=WEB, headers=headers)
+
+    assert refused.status_code == 422, refused.json()
+    assert refused.json()["errors"][0]["loc"] == ["header", "if-match"]
+    assert ended(authorization)
+    assert shop.PUBLISHED == []
+
+
+def test_without_if_match_at_the_twin_an_act_may_send_a_list_as_in_2_7(
+    alice: Reviewer,
+) -> None:
+    """Asked without one, the same act's ``If-Match`` holds its write alone, as in 2.7.
+
+    A list there is the write's to read: any tag that matches lets it
+    through (RFC 9110, 13.1.1); the authorization is not asked about it.
+    """
+    lamp = stock("Lamp")
+    url = f"/products/{lamp}/publish"
+    authorization = alice.authorizing(url, None, WEB)
+
+    published = alice.act(url, authorization, '"1", "junk"', WEB)
+
+    assert published.status_code == 200, published.json()
+    assert ended(authorization)
 
 
 def test_an_act_with_the_version_its_twin_held_passes_however_it_is_written(

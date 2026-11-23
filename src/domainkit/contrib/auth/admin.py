@@ -273,11 +273,27 @@ def _user_act(
     name: str | None = None,
     password: bool | None = None,
     values: dict[str, object] | None = None,
+    holds: str | None = None,
 ) -> "AdminAct":
     """The act of ``change`` to ``user``, as its authorization binds it."""
     from .admin_actions import AdminAct
 
-    return AdminAct.of(user, change, name=name, password=password, values=values)
+    return AdminAct.of(
+        user, change, name=name, password=password, values=values, holds=holds
+    )
+
+
+async def _holds(user: AbstractBaseUser, change: AdminChange) -> str | None:
+    """What ``user`` comes back with, as the act binds it; None while none is asked.
+
+    Read only with ``AUTH.ADMIN_ACTION`` on (``comes_back_with``, since
+    2.10), and only for a change that makes the user staff or active again.
+    """
+    if not _asked():
+        return None
+    from .admin_actions import comes_back_with
+
+    return await comes_back_with(user, change)
 
 
 def _group_act(
@@ -779,7 +795,10 @@ async def update_user(
         await _not_taken(uow, _cleaned(user, fields), user)
         if _demoting(user, body):
             await _not_the_last_superuser(uow)  # Before the checks and a flush.
-        await _admin_change(actor, user, change, uow, lambda: _user_act(user, change))
+        holds = await _holds(user, change)
+        await _admin_change(
+            actor, user, change, uow, lambda: _user_act(user, change, holds=holds)
+        )
         was_active = user.is_active
         set_staff = getattr(user, "set_staff", None)
         if body.is_staff is not None and set_staff is not None:
@@ -822,7 +841,8 @@ async def ask_to_update_user(
         if _demoting(user, body):
             await _not_the_last_superuser(uow)
         await _asked_change(actor, user, change)
-    return await _ask(request, response, _user_act(user, change))
+        holds = await _holds(user, change)
+    return await _ask(request, response, _user_act(user, change, holds=holds))
 
 
 def _cleaned(user: AbstractBaseUser, fields: Mapping[str, object]) -> dict[str, object]:

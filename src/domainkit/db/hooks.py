@@ -18,6 +18,12 @@ called, typed on the SQL unit of work they join::
   connection and a database alias (``messaging.enqueue``).
 - ``on_migrated``: fill a database after ``migrate`` upgraded it, in one
   transaction on the schema owner's connection; check the alias first.
+- ``on_migrated_committed``: follow up once that transaction committed, on
+  the schema owner's connection outside a transaction, where each
+  statement commits as it runs: for what PostgreSQL runs only so, such as
+  ``CREATE INDEX CONCURRENTLY`` (since 2.10). A hook may return a line,
+  which ``migrate`` prints. One that raises fails ``migrate`` after the
+  ``on_migrated`` hooks committed: run it again, and both run again.
 
 0.13 removed the ``DomainConfig`` methods ``stage``, ``committed``,
 ``stage_transaction``, ``transaction_committed``, and ``migrated``:
@@ -38,6 +44,7 @@ if TYPE_CHECKING:
 __all__ = [
     "on_committed",
     "on_migrated",
+    "on_migrated_committed",
     "on_stage",
     "on_stage_transaction",
     "on_transaction_committed",
@@ -50,6 +57,7 @@ type StageHook = Callable[
 type CommittedHook = Callable[["SqlAlchemyUnitOfWork"], Awaitable[None]]
 type ConnectionHook = Callable[["AsyncConnection", str], Awaitable[None]]
 type DatabaseHook = Callable[[str], Awaitable[None]]
+type FollowUpHook = Callable[["AsyncConnection", str], Awaitable[str | None]]
 
 on_stage: HookPoint[StageHook] = HookPoint("stage", arguments=3, awaited=True)
 """Add rows to a committing SQL unit of work: ``(uow, events, tasks)``."""
@@ -69,3 +77,9 @@ on_migrated: HookPoint[ConnectionHook] = HookPoint(
     "migrated", arguments=2, awaited=True
 )
 """Fill a database ``migrate`` upgraded: ``(owner_connection, alias)``."""
+on_migrated_committed: HookPoint[FollowUpHook] = HookPoint(
+    "migrated_committed", arguments=2, awaited=True
+)
+"""Follow up once the ``on_migrated`` hooks committed: ``(owner_connection, alias)``.
+
+Outside a transaction; a line the hook returns, ``migrate`` prints."""

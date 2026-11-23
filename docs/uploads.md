@@ -614,7 +614,9 @@ A request of 2,200,179 bytes to this route gets 413
   `body_limit=` per route ([resources.md](resources.md)). `upload_route`
   holds its body to its `max_size` and 64 KiB for a form, unless it is
   given a `body_limit`, which it may decide per request (*new in 2.8*,
-  [Bounds decided per request](resources.md#bounds-decided-per-request)).
+  [Bounds decided per request](resources.md#bounds-decided-per-request)),
+  before its rules when a rule reads the body (*new in 2.10*,
+  [A body limit decided before the rules](resources.md#a-body-limit-decided-before-the-rules)).
   Before routing, a declared length is then checked against 1 GiB, the
   most a route may decide.
 - A small limit suits the routes that anonymous callers reach. A login or
@@ -728,13 +730,16 @@ A Word document with macros, sent as `contract.docx`:
 - **`DOCX`, `XLSX`, `PPTX`** (`OfficeCheck`) refuse a document whose main
   part is macro-enabled (a `.docm` named `.docx`), macros (`vbaProject.bin`,
   Excel 4.0 macro sheets), OLE objects, ActiveX controls, chunks imported
-  from another format (`altChunk`), pictures or objects linked rather
+  from another document (`w:altChunk`; *since 2.10*, wherever it is and
+  whatever its relationship's type), pictures or objects linked rather
   than held, a relationship to outside the package but a hyperlink to
   `http`, `https` or `mailto` (a remote template, a linked picture),
   whatever its `TargetMode` says, a Word field that pulls content in or
   runs a program (`INCLUDEPICTURE`, `INCLUDETEXT`, `INCLUDE`, `IMPORT`,
   `LINK`, `DATABASE`, `DDE`, `DDEAUTO`) or whose instruction starts with
-  another field (*since 2.7*, one never ended too, and one whose
+  another field (*since 2.10*, instruction text outside a field's
+  instruction too: after its `separate` mark, or in no field; *since 2.7*,
+  one never ended too, and one whose
   instruction, or part of it, is a tracked deletion, `w:delInstrText`:
   read with and without the deletion; *since 2.8*, its name read as Word
   and LibreOffice read it, in any case, past white space, invisible marks
@@ -764,15 +769,23 @@ A Word document with macros, sent as `contract.docx`:
   A part is XML by its name (`.xml`, `.rels`, `.vml`) or its content
   type (`+xml`), whatever its first bytes; white space before its markup
   is passed over, however long, and a part that is not XML after all is
-  `unreadable_file`. *Since 2.7*, a part a relationship names, of any
-  type, is XML too when its bytes start as XML does, whatever its name,
-  its content type, or its relationship's type: a reader follows a
+  `unreadable_file`. Any part is XML too when its bytes start as XML
+  does, whatever its name, its content type, or what names it (*since
+  2.10*; since 2.7, a part a relationship named): a reader follows a
   header's relationship to `word/header2.png`, typed an image, and parses
-  it as the header it is. A part is an SVG by its name (`.svg`, `.svgz`),
-  its type (`image/svg+xml`), or its bytes, as LibreOffice finds one:
-  `<svg` anywhere, or an element `svg` of a prefix; a gzip part a
-  relationship names, or an SVG's, is read as it inflates, within the
-  check's bytes (LibreOffice draws an SVG so compressed, whatever its
+  it as the header it is, and readers resolve a target each their own
+  way. *Since 2.10*, a part's name and a relationship's target inside the
+  package are those Office writes, or the document is `unreadable_file`:
+  ASCII letters, digits and `-._~!$&'()*+,;=@`, no empty segment, and in
+  a name no `.` or `..` segment; a target that is a fragment alone
+  (`#_Toc1`) passes, and so do the items of the trash Office leaves
+  (`[trash]/0000.dat`), which no target reaches and which are not read.
+  A part named with `%20`, which the Open Packaging Conventions allow
+  and no Office writes, is refused. A part is an SVG
+  by its name (`.svg`, `.svgz`), its type (`image/svg+xml`), or its
+  bytes, as LibreOffice finds one: `<svg` anywhere, or an element `svg`
+  of a prefix; a gzip part, or an SVG's, is read as it inflates, within
+  the check's bytes (LibreOffice draws an SVG so compressed, whatever its
   name). One lxml cannot read is passed over only if it
   is binary data (a font's, that starts with `<`): lxml, asked again
   with no limit of its own, stops within its first 64 characters, no

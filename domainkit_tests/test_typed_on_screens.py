@@ -12,7 +12,7 @@ too_much_to_show``), as an impersonation's reason is (ADR 0180).
 """
 
 from collections.abc import Iterator
-from typing import Any, Final
+from typing import Any, Final, cast
 from uuid import UUID
 
 import pytest
@@ -23,12 +23,23 @@ from domainkit.clock import FrozenClock
 from domainkit.conf import override_settings
 from domainkit.contrib.approvals import ApprovalsUnitOfWork, Policy, guard
 from domainkit.contrib.approvals.builtin import (
+    HeldGroup,
+    Reactivate,
+    SetGroups,
     SetStaff,
     show_about_user,
+    show_reactivation,
+    show_set_groups,
     show_set_staff,
 )
 from domainkit.contrib.auth.admin_actions import ADMIN_CHANGE, AdminAct
-from domainkit.contrib.auth.screens import Typed
+from domainkit.contrib.auth.screens import (
+    LinkNotShown,
+    Typed,
+    TypedName,
+    holds_link,
+    laid_out,
+)
 from domainkit.ddd import Command
 from domainkit.http import get_asgi_application
 from domainkit.management.base import run_async
@@ -46,14 +57,21 @@ from domainkit_tests.test_admin_actions import (
 )
 from domainkit_tests.test_admin_actions import frozen as frozen  # The fixture.
 from domainkit_tests.test_admin_acts_bind_groups import pending, stored_requests
-from domainkit_tests.test_approval_screens import SCREENS, fingerprint_of, pairs
+from domainkit_tests.test_approval_screens import (
+    SCREENS,
+    ask_to,
+    end4,
+    fingerprint_of,
+    held,
+    pairs,
+)
 from domainkit_tests.test_approvals_request_actions import (
     EVERY_STEP,
     PAYMENT,
     TREASURERS,
     Person,
 )
-from domainkit_tests.test_auth_admin import make_group
+from domainkit_tests.test_auth_admin import join, make_group
 
 REFUSED: Final = {**ACTS.settings["AUTH"], "AUTHORIZATIONS": {"TYPED_LINKS": "refused"}}
 """``AUTH`` with typed text that holds a link refused."""
@@ -164,6 +182,51 @@ def test_without_the_act_a_group_is_never_named_with_a_link(
     problem(renamed, 422, "link_not_shown")
     problem(cut, 422, "link_not_shown")  # Shown cut, as "...vendor evil.co…".
     assert named.status_code == 201, named.json()
+
+
+def test_a_group_whose_stored_name_holds_a_link_is_refused_where_it_is_granted(
+    client: TestClient, frozen: FrozenClock
+) -> None:
+    """Named before the setting: refused where it is granted until it is renamed.
+
+    The admin API's act and approvals' screens show a group added in a few
+    words (``group_item``): its name is text a person typed, read as the
+    item shows it; its id and counts are not. Rejecting a request held
+    before shows it, never refused for it; without the act, holding one is
+    refused (user report A17).
+    """
+    root = Staff(client, frozen, "root", superuser=True)
+    boss = Staff(client, frozen, "boss", superuser=True)
+    target, other = str(create_user("target")), str(create_user("other"))
+    linked = make_group("visit evil.example")
+    body = {"groups": ["visit evil.example"]}
+    waiting = held(root, target, ("visit evil.example",))
+    request_id = waiting.json()["approval_request_id"]
+    fingerprint = {"fingerprint": fingerprint_of(boss, request_id)}
+    renaming = f"/groups/{linked}"
+
+    with override_settings(AUTH=REFUSED):
+        asked = root.ask(f"/users/{target}/groups/authorization", body)
+        approving = ask_to(boss, request_id, "approve", fingerprint)
+        rejecting = ask_to(boss, request_id, "reject", {"reason": "No"})
+        with override_settings(AUTH={**REFUSED, "ADMIN_ACTION": False}):
+            submitted = root.call("PUT", f"/users/{other}/groups", body)
+        authorization = root.authorized(
+            f"{renaming}/authorization/patch", {"name": "auditors"}
+        )
+        renamed = root.call("PATCH", renaming, {"name": "auditors"}, authorization)
+        approvable = ask_to(boss, request_id, "approve", fingerprint)
+        granting = root.ask(
+            f"/users/{target}/groups/authorization", {"groups": ["auditors"]}
+        )
+
+    problem(asked, 422, "link_not_shown")
+    problem(approving, 422, "link_not_shown")
+    assert ("Adds", f"visit evil.example ({end4(linked)}) 0 perms") in pairs(rejecting)
+    problem(submitted, 422, "link_not_shown")
+    assert renamed.status_code == 200, renamed.json()
+    assert ("Adds", f"auditors ({end4(linked)}) 0 perms") in pairs(approvable)
+    assert ("Adds", f"auditors ({end4(linked)}) 0 perms") in pairs(granting)
 
 
 def test_a_held_impersonation_whose_reason_holds_a_link_is_never_submitted(
@@ -467,9 +530,138 @@ def test_a_held_grants_fields_are_checked_where_its_approver_sees_them(
     problem(refused, 422, "link_not_shown")
     request_id = pending(saved)
     held = {each["id"].hex: each["arguments"] for each in stored_requests()}
-    assert held[request_id.replace("-", "")] == {
-        "user_id": str(bob),
-        "values": {"last_name": "Jones"},
-    }
+    assert held[request_id.replace("-", "")]["values"] == {"last_name": "Jones"}
     assert ("Last name", "Jones") in pairs(asked)
     problem(approving, 422, "link_not_shown")
+
+
+def test_a_group_given_back_is_read_as_where_a_group_is_granted(
+    client: TestClient,
+) -> None:
+    """Making staff, or a return, shows the groups it gives back typed; taking one, not.
+
+    A group given back is granted again: its stored name is read whole and
+    as its line may cut it, as ``group_item`` reads a group added. A name
+    taken away is never refused (follow-up to user report A17).
+    """
+    linked = HeldGroup(id=make_group("visit evil.example"), name="x", permissions=())
+    long_name = "finance_reporting_readers_" * 4
+    cut = HeldGroup(id=make_group(long_name), name="y", permissions=())
+    user = create_user("target")
+    back = Reactivate(
+        user_id=user,
+        is_staff=True,
+        is_superuser=False,
+        groups=(linked, cut),
+        permissions=(),
+        object_grants=0,
+        object_grants_digest="",
+    )
+    staff = SetStaff(user_id=user, groups=(linked,))
+    taken = SetGroups(user_id=user, added=(), removed=("visit evil.example",))
+
+    shown: dict[str, list[TypedName]] = {
+        "return": cast("Any", dict(run_async(show_reactivation(back))))["Groups"],
+        "staff": cast("Any", dict(run_async(show_set_staff(staff))))["Groups"],
+    }
+    removed: list[str] = cast("Any", dict(run_async(show_set_groups(taken))))[
+        "Takes away"
+    ]
+
+    assert all(
+        isinstance(name, TypedName) for names in shown.values() for name in names
+    )
+    first, second = shown["return"]
+    assert (first.name, first) == ("visit evil.example", "visit evil.example")
+    assert second.name == long_name
+    assert second.shown == second
+    assert second.endswith("…")
+    assert not any(isinstance(name, Typed) for name in removed)
+    with override_settings(AUTH=REFUSED):
+        for names in shown.values():
+            with pytest.raises(LinkNotShown):
+                laid_out([("Groups", names)])
+        laid_out([("Takes away", removed)])
+
+
+def test_a_group_given_back_is_read_as_its_line_shows_it_cut_or_beside_another(
+    client: TestClient,
+) -> None:
+    """A name given back is read cut as its line shows it, and beside the next one.
+
+    ``evil.corporate`` holds no link, and shows none whole; cut at the end
+    of a long name (``evil.cor…``), a line may show ``evil.co…``.
+    Two names that each read as no number to call may read as one side by
+    side: names alone, with no id or count beside them, are read on their
+    line as any typed text (review of the follow-up to user report A17).
+    """
+    cut_name = "b" * 54 + " evil.corporate"
+    alone = ("call desk", "12 500 000 EUR")
+    user = create_user("target")
+    held = {
+        name: HeldGroup(id=make_group(name), name=name, permissions=())
+        for name in (cut_name, "evil.corporate", *alone, "readers", "clerks")
+    }
+
+    def given_back(*names: str) -> list[TypedName]:
+        back = Reactivate(
+            user_id=user,
+            is_staff=True,
+            is_superuser=False,
+            groups=tuple(held[name] for name in names),
+            permissions=(),
+            object_grants=0,
+            object_grants_digest="",
+        )
+        groups: list[TypedName] = cast("Any", dict(run_async(show_reactivation(back))))[
+            "Groups"
+        ]
+        return groups
+
+    def refused(*names: str) -> bool:
+        groups = given_back(*names)
+        with override_settings(AUTH=REFUSED):
+            try:
+                laid_out([("Groups", groups)])
+            except LinkNotShown:
+                return True
+        return False
+
+    (cut,) = given_back(cut_name)
+    assert not holds_link(cut_name)
+    assert cut.endswith(" evil.cor…")
+    assert refused(cut_name)
+    assert not refused("evil.corporate")
+    assert [refused(name) for name in alone] == [False, False]
+    assert refused(*alone)
+    assert not refused("readers", "clerks")
+
+
+def test_making_staff_of_a_member_of_a_linked_group_waits_for_its_rename(
+    steps: TestClient, frozen: FrozenClock
+) -> None:
+    """Held without the admin API's act, the group given back is read when held.
+
+    With ``TYPED_LINKS`` refused, making a member of a group whose stored
+    name holds a link staff is refused (``422 link_not_shown``) until the
+    group is renamed; then it waits for its approval, as ever (follow-up
+    to user report A17).
+    """
+    root = Staff(steps, frozen, "root", superuser=True)
+    bob = create_user("bob")
+    linked = make_group("visit evil.example")
+    join("bob", "visit evil.example")
+    making = {"is_staff": True}
+
+    with override_settings(AUTH={**REFUSED, "ADMIN_ACTION": False}):
+        refused = root.call("PATCH", f"/users/{bob}", making)
+        renamed = root.call("PATCH", f"/groups/{linked}", {"name": "auditors"})
+        held_after = root.call("PATCH", f"/users/{bob}", making)
+
+    problem(refused, 422, "link_not_shown")
+    assert renamed.status_code == 200, renamed.json()
+    request_id = pending(held_after)
+    held = {each["id"].hex: each["arguments"] for each in stored_requests()}
+    assert [g["name"] for g in held[request_id.replace("-", "")]["groups"]] == [
+        "auditors"
+    ]

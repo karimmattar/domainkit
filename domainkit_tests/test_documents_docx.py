@@ -5,6 +5,7 @@ placeholder spread over runs by a spelling mark, text boxes kept twice
 (``mc:Choice`` and ``mc:Fallback``), headers, footers, and footnotes.
 """
 
+import asyncio
 import concurrent.futures
 import contextlib
 import io
@@ -14,6 +15,7 @@ import string
 import struct
 import sys
 import threading
+import time
 import tracemalloc
 import unicodedata
 import warnings
@@ -25,17 +27,21 @@ from typing import Any, Final
 import pytest
 from lxml import etree
 
+from domainkit.conf import override_settings
 from domainkit.documents import (
     ArchiveLimits,
     DocumentError,
     PlaceholderError,
     Placeholders,
+    afill_docx,
+    aplaceholders,
     clean_html,
     fill_docx,
     overlay_pdf,
     placeholders,
 )
 from domainkit.documents import docx as docx_module
+from domainkit.exceptions import ImproperlyConfigured
 
 W: Final = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 NAMESPACES: Final = (
@@ -1294,3 +1300,126 @@ def test_calls_from_threads_at_once_read_and_fill_their_own() -> None:
     for number, (found, written) in enumerate(results):
         assert found.names == tuple(f"n{number}_{index}" for index in range(50))
         assert written == [f"v{number}"] * 50
+
+
+# Calls at once ------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_the_async_forms_read_and_refuse_as_the_sync_ones() -> None:
+    """``afill_docx`` and ``aplaceholders`` give back, and raise, what they would."""
+    template = docx(runs("{{ tenant }}") + runs("{{ rent"))
+
+    found = await aplaceholders(template)
+    filled = await afill_docx(template, {"tenant": "Salma"}, allow_malformed=True)
+
+    assert found == placeholders(template)
+    assert filled == fill_docx(template, {"tenant": "Salma"}, allow_malformed=True)
+    with pytest.raises(PlaceholderError) as refused:
+        await afill_docx(template, {})
+    with pytest.raises(DocumentError, match="more than 1 files"):
+        await aplaceholders(template, limits=ArchiveLimits(max_parts=1))
+    assert refused.value.missing == ("tenant",)
+
+
+@pytest.fixture
+def counted(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Count the documents read at once: the most, then how many in all."""
+    real = docx_module._filled
+    lock = threading.Lock()
+    running = [0]
+    seen = [0, 0]
+
+    def reading(*args: Any, **kwargs: Any) -> dict[str, bytes]:  # noqa: ANN401
+        with lock:
+            running[0] += 1
+            seen[0] = max(seen[0], running[0])
+            seen[1] += 1
+        try:
+            time.sleep(0.02)
+            return real(*args, **kwargs)
+        finally:
+            with lock:
+                running[0] -= 1
+
+    monkeypatch.setattr(docx_module, "_filled", reading)
+    return seen
+
+
+@pytest.mark.parametrize("at_once", [1, 2, 3])
+def test_documents_read_at_once_are_bounded_on_every_loop(
+    counted: list[int], at_once: int
+) -> None:
+    """Four threads, each its own event loop and three calls: ``at_once`` at most.
+
+    The bound is the process's, which every loop of it shares.
+    """
+    names = [f"n{index}" for index in range(5)]
+    template = docx("".join(runs(f"{{{{{name}}}}}") for name in names))
+    start = threading.Barrier(4)
+
+    async def calls() -> tuple[bytes, Placeholders, bytes]:
+        return await asyncio.gather(
+            afill_docx(template, dict.fromkeys(names, "v")),
+            aplaceholders(template),
+            afill_docx(template, dict.fromkeys(names, "w")),
+        )
+
+    def loop() -> tuple[bytes, Placeholders, bytes]:
+        start.wait(10)
+        return asyncio.run(calls())
+
+    with (
+        override_settings(DOCUMENTS={"DOCX_AT_ONCE": at_once}),
+        concurrent.futures.ThreadPoolExecutor(4) as threads,
+    ):
+        results = list(threads.map(lambda _: loop(), range(4)))
+
+    assert counted == [at_once, 12]
+    for filled, found, other in results:
+        assert paragraphs(filled) == ["v"] * 5
+        assert found == Placeholders(names=tuple(names), malformed=())
+        assert paragraphs(other) == ["w"] * 5
+
+
+@pytest.mark.anyio
+async def test_a_call_cancelled_while_it_waits_never_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """It leaves the queue; one that runs keeps its place until it ends."""
+    real = docx_module._filled
+    began = threading.Event()
+    release = threading.Event()
+    read: list[None] = []
+
+    def held(*args: Any, **kwargs: Any) -> dict[str, bytes]:  # noqa: ANN401
+        read.append(None)
+        began.set()
+        release.wait(10)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(docx_module, "_filled", held)
+    template = docx(runs("{{a}}"))
+    with override_settings(DOCUMENTS={"DOCX_AT_ONCE": 1}):
+        first = asyncio.create_task(aplaceholders(template))
+        await asyncio.to_thread(began.wait, 10)
+        waiting = asyncio.create_task(aplaceholders(template))
+        await asyncio.sleep(0.05)
+        waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+        release.set()
+        assert (await first).names == ("a",)
+        assert (await aplaceholders(template)).names == ("a",)
+
+    assert len(read) == 2
+
+
+@pytest.mark.parametrize("at_once", [0, 65])
+def test_documents_at_once_is_bounded(at_once: int) -> None:
+    """At least one, and at most 64."""
+    with (
+        pytest.raises(ImproperlyConfigured, match="DOCX_AT_ONCE"),
+        override_settings(DOCUMENTS={"DOCX_AT_ONCE": at_once}),
+    ):
+        pass  # pragma: no cover - refused as it is entered.

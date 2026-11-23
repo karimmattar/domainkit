@@ -1,6 +1,6 @@
 # 0003. Layer rules enforced by `check`
 
-- Status: Accepted; amended by [0037](0037-one-clock-frozen-per-context.md), [0166](0166-let-a-domain-layer-mark-its-texts-extract-the-projects-own-and-add-a-translation-alone.md), [0167](0167-check-an-upload-whole-and-let-a-resource-take-one.md), [0182](0182-let-a-gateway-raise-a-routes-problems-and-name-users-by-the-fields-a-project-chooses.md), [0188](0188-write-down-the-cores-layering-and-hold-the-boundaries-it-draws.md), [0195](0195-move-the-outgoing-client-below-the-adapters-and-hold-module-state-to-its-resets.md), and 2026-10-25, 2026-11-15, 2026-11-16, 2026-11-17 and 2026-11-18 (at the end)
+- Status: Accepted; amended by [0037](0037-one-clock-frozen-per-context.md), [0166](0166-let-a-domain-layer-mark-its-texts-extract-the-projects-own-and-add-a-translation-alone.md), [0167](0167-check-an-upload-whole-and-let-a-resource-take-one.md), [0182](0182-let-a-gateway-raise-a-routes-problems-and-name-users-by-the-fields-a-project-chooses.md), [0188](0188-write-down-the-cores-layering-and-hold-the-boundaries-it-draws.md), [0195](0195-move-the-outgoing-client-below-the-adapters-and-hold-module-state-to-its-resets.md), [0199](0199-let-a-projects-module-be-a-built-in-layer.md), and 2026-10-25, 2026-11-15, 2026-11-16, 2026-11-17 and 2026-11-18 (at the end)
 - Date: 2026-10-14
 
 ## Context

@@ -50,8 +50,10 @@ SERVERS: Final = ("uvicorn", "granian")
 """The servers a project's image can run; uvicorn is the template's own."""
 SERVER_TEMPLATES: Final = {"granian": TEMPLATE_DIR.parent / "servers" / "granian"}
 """Each other server's files, written over the project's and its profile's."""
-SERVER_EXTRAS: Final = {"uvicorn": (), "granian": ("granian", "uvloop")}
-"""The extras each server adds: Granian, and the loop its image runs."""
+SERVER_EXTRAS: Final = {"uvicorn": ("uvicorn",), "granian": ("granian", "uvloop")}
+"""The extras each server adds: uvicorn, which every 2.x install has already
+and 3.0 installs only through its extra; or Granian, and the loop its image
+runs."""
 DOCS: Final = "https://github.com/karimmattar/domainkit/blob/{ref}/docs"
 """Where a release's documentation is published: under its tag."""
 EXTRAS: Final = {

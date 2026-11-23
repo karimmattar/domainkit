@@ -437,9 +437,13 @@ API lists users by, then the id. They are named
 and `ix_<table>_<field>_id`. A column kept as anything but text gets no
 `lower()` index, an encrypted one none, and a unique one no order index:
 its own serves. `migrate` reads the table's indexes first and makes only
-those missing, so with none to make it takes no lock on the table.
-Revisions leave them alone, and SQLite gets none: it cannot reflect an
-index on `lower()` ([ADR 0185](../adr/0185-bound-keyset-pages-index-the-user-lookups-and-read-fewer-grants.md)).
+those missing, so with none to make it takes no lock on the table. It
+builds each `CONCURRENTLY`, once its hooks committed, so the table takes
+writes while it does, and it drops and builds again one that a failed
+concurrent build left invalid. While another session builds an index on
+the table, it builds none, and says so (*new in 2.10*). Revisions leave them
+alone, and SQLite gets none: it cannot reflect an index on `lower()`
+([ADR 0185](../adr/0185-bound-keyset-pages-index-the-user-lookups-and-read-fewer-grants.md)).
 
 Keep the model and the table in `models.py` (or `infrastructure/`). They
 build on `domainkit.contrib.auth`, which the domain layer may not import.

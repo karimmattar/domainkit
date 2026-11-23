@@ -221,8 +221,11 @@ group added, "readers (…9abc) 3 perms"; what a user made active again
 holds), the keys `AUTH["AUTHORIZATIONS"]["NAMED_PERMISSIONS"]` names
 show by name on a line of their own, "Grants", and first in a list of
 keys (since 2.8); by default, `TENANCY.ALL_TENANTS_PERMISSION` where it
-is set. Keys granted directly or through a group are named; a grant on a
-single object is counted, whatever its key. A change of the admin API that
+is set. Since 2.10 so do those a user made staff holds, and a change
+that makes a user staff or active again shows the flags they come back
+with ("Superuser: yes"). Keys granted directly or through a group are
+named; a grant on a single object is counted, whatever its key. A
+change of the admin API that
 approvals would hold is refused at its twin when the approver's screen,
 a line longer, could not show it whole, and a request that its approvers
 could not be shown whole is refused when it is submitted, rather than
@@ -268,10 +271,25 @@ AUTH = {"ADMIN_ACTION": True, "AUTHORIZATIONS": {"TYPED_LINKS": "refused"}}
   new name at the change too, with or without `ADMIN_ACTION`: approvers'
   screens show it later. A request whose approval would refuse what it
   typed is refused when it is submitted, with `APPROVE_ACTION` on.
+- **A group added** (since 2.10): the admin API's act and approvals'
+  `auth.set_groups` show each group a grant adds in a few words
+  (`group_item`, "readers (…9abc) 3 perms"), its stored name typed; the
+  "Groups" a return, or making a user staff, gives back are read as
+  typed too: names alone, whose line is read as any typed text's. A name
+  that holds a link, whole, as a screen prints it, or as a line may cut
+  it, is refused where the group is granted (`422 link_not_shown`),
+  until the group is renamed: one given before 2.8, while `TYPED_LINKS`
+  was `"shown"`, or with a top-level domain inside it, which 2.9's check
+  let through (`acme.finance.readers`). A request held before is still
+  rejected or cancelled. The `on_typed_text` checks get the name as
+  stored; the id and the counts beside it are not read. "Takes away"
+  shows names unmarked: taking a user out of a group is never refused
+  for the group's name.
 - **What it never marks**: what the act is on (`named`), which never
   locks its user or group. A group's name is checked where it is typed,
-  as a screen may show it cut; a user's username, address, or number is
-  an identifier, set as one, and never checked. A text field sent as it
+  as a screen may show it cut, and where a grant shows it; a user's
+  username, address, or number is an identifier, set as one, and never
+  checked. A text field sent as it
   is stored (a form saved whole) changes nothing: it is not checked, and
   with `TYPED_LINKS` refused it is left off the screen, so a stored link
   is never shown through it (`"shown"` keeps 2.7's screen). Rejecting and cancelling
@@ -296,14 +314,22 @@ AUTH = {"ADMIN_ACTION": True, "AUTHORIZATIONS": {"TYPED_LINKS": "refused"}}
   `Rejected . No receipt`), and before `com` alone, `example .com`,
   `example. com` and `example dot com`. Other words follow a full stop,
   a dot, or `dot` in prose, and many are top-level domains (`vs. net`,
-  `the .NET service`, `a dot net developer`, `Done. Info sent`). A cut of
+  `the .NET service`, `a dot net developer`, `Done. Info sent`). Since
+  2.10, `Com` after a spaced dot is read as `com` (`evil . Com`, `evil.
+  Com`), and an Arabic-Indic zero, which reads as a dot between two
+  letters, is one with white space on either side too (`evil ٠ com`),
+  but where it touches a digit (`٢٠٢٦`). A cut of
   the text, which the screen may show, is read without these: `i.e.
   company` cut to `i.e. com…` holds none. It
   finds a scheme (`https://`, `tel:`, `mailto:`), an at sign before a
-  letter or a digit, an IP address, a name ending in a top-level domain
+  letter or a digit, an IP address, a name with a top-level domain
   IANA lists or one kept for special use (`evil.example`, also with
   Cyrillic letters that read as Latin), `www.` anything, or seven digits
-  or more written as one number (`+1 (555) 010-0100`). When unsure, it
+  or more written as one number (`+1 (555) 010-0100`). Since 2.10, a
+  top-level domain ends a name where a phone's linker ends a word: at
+  its end, or before a dot, a middle dot, or a hyphen (`evil.com.xy`,
+  `evil.com-login`, `evil.com·xy` hold `evil.com`); an underscore joins
+  a word (`evil.com_login`). When unsure, it
   holds one. Not a date; nor an amount (with two digits of cents,
   `1.234.567,89`; in groups of three by commas, `1,250,000`, or beside a
   currency, `12 500 000 EUR`), nor a code (its letters touching its
@@ -324,22 +350,52 @@ AUTH = {"ADMIN_ACTION": True, "AUTHORIZATIONS": {"TYPED_LINKS": "refused"}}
   code with a run of seven digits (`JIRA-1234567`), an amount in a
   text that asks for a call, `com` after `dot` (`the dot com era`), a
   top-level domain in lower case after a dot spaced on both sides (`fine
-  . me too`), and one after `(dot)` (`the key (dot) is broken`).
+  . me too`), and one after `(dot)` (`the key (dot) is broken`). Since
+  2.10, a file named with a top-level domain before its extension
+  (`report.final.docx`, `libssl.so.3`), which a phone links too, with a
+  common word such as `final`, `new`, `dev`, `app`, `prod`, `team`,
+  `office` or `name` inside a dotted name (`budget.new.xlsx`,
+  `cairo.office.staff`, `user.name.first`), `v1` read as `vi`
+  (`schema.v1.json`), and an Arabic-Indic zero spaced out between two
+  words, the second a top-level domain (`الفروع ٠ قطر`, `الطلبات ٠
+  عمان`, `المستخدمون ٠ شبكة`, `تمت إضافة ٠ موقع`): write the zero as
+  `0`. Also since 2.10, a text longer than 10,000 characters, as given
+  or as read (full-width and compatibility forms spelled out), holds
+  one, unread (`READ_AT_MOST`): reading it takes bounded work, and no
+  screen shows as much. `shows_link` says such a text shows one.
 - **What it does not read** (it is a heuristic, not a parser): a name
   split by spaces alone (`evil com`); another top-level domain than
   `com` after `dot`, `(.)`, or a dot with white space on one side
-  (`evil dot io`, `evil. net`); a capital after a dot spaced on both
-  sides (`evil . Com`); a number in hexadecimal (`0xC0A80101`, which a
+  (`evil dot io`, `evil. net`): many are words that follow a full stop
+  or `dot` in prose (`a dot in the name`, `vs. net`, `Done. info sent`);
+  a number in hexadecimal (`0xC0A80101`, which a
   browser takes as an address, but which error codes are written as); an
   IPv6 address; and digits written as words. Where typed text must never
   carry a hint of a place to go, check it in `on_typed_text` your own
   way, or do not show it.
+- **`shows_link(text, length=LINE_LENGTH)`** (since 2.10) reads stored
+  text a screen shows as `laid_out` reads typed text on a line: whole,
+  with the spaced readings, and as the line shows it (`fitted(text,
+  length)`: escaped, cut to `length` characters and `…`), without them.
+  Reading the cut with them makes prose a name: `approved. commercial`
+  cut to `approved. com…`. A project hides or refuses a stored name, a
+  title, or a note that `shows_link` says a screen would show as a link.
+- **`numbers=False`** (since 2.10), on `holds_link` and `shows_link`, for
+  a field whose digits are a licence's or a file's number
+  (`No. 123 456 789`, `2026/0045`): seven digits or more are a number to
+  call only as an amount or a code is, with a plus sign, a bracket, or
+  beside a word that asks for a call. Links and addresses are read as
+  ever.
 - **`on_typed_text`** runs a project's own check on each typed text, as
   typed, whatever the setting: raise to refuse the act. One text may be
   checked more than once (at a twin's two screens, then at the act), so a
   check reads and has no side effect. `check_typed(text)` runs the checks
-  where text is typed and shown later, each cut past its twentieth
-  character included.
+  where text is typed and shown later, each cut a line may show
+  included: from the twentieth character (to the sixty-third, a line's
+  length, since 2.10). Since 2.10 it also reads the text whole as a
+  screen prints it: a character it does not print (a word joiner, a soft
+  hyphen, a zero-width space, a bidirectional control) shows escaped,
+  and ends a name before it (`evil.com` and a word joiner).
 
 ```python
 from domainkit.apps import DomainConfig
@@ -569,9 +625,16 @@ POST /documents/42/approve
   `*`, or an empty value, names no version, and counts as none.
 - **The digest covers it**, beside the arguments and what `binds` read.
   The act's `If-Match` must name the same version, however written
-  (`W/"4-…"` or `"4"`). Another, several, `*`, or none is `403
+  (`W/"4-…"` or `"4"`). Another, `*`, or none is `403
   action_not_authorized`, and voids the authorization, as other
   arguments do.
+- **The act reads `If-Match` as its twin does** (since 2.10, user
+  report A17): the same header answers the same at both. Several tags,
+  on one line or several, are `422`; a tag that names no version, or a
+  malformed value, is `412`. Either voids the authorization, as other
+  arguments do: without a version, the act's arguments cannot be
+  compared. The same act, with an authorization asked without
+  `If-Match`, holds it as in 2.7, whatever `If-Match` it sends.
 - **At the act**, `If-Match` holds the write as before (`412`), and
   `binds` reads the record again (`409 action_record_changed`). A
   `binds` that loads it at a version the authorization does not hold

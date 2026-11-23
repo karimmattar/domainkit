@@ -9,6 +9,9 @@ back as the cancellation leaves the block, on SQLite and PostgreSQL.
 
 import asyncio
 import gc
+import threading
+import time
+import warnings
 from collections.abc import AsyncIterator, Iterator
 from types import SimpleNamespace
 from typing import Any, Final
@@ -36,23 +39,64 @@ new sqlite3 handle unclosed: its own, not a pool connection, and not what
 these tests are about. The garbage collector may find it in a later case,
 so every case here allows it, and collects at its end (``collected``)."""
 
+LATE_WORKER: Final = (
+    r"Exception in thread [^\n]*\(_connection_worker_thread\)"
+    r"[\s\S]*RuntimeError. Event loop is closed"
+)
+"""The same cut can leave aiosqlite's worker thread finishing that connect
+after the case's event loop has closed: it then fails to hand the result to
+the loop, in its own thread. Only that failure is allowed; any other error
+in aiosqlite's thread still fails the case. (A filter splits at colons,
+so the pattern reads the one after ``RuntimeError`` as any character.)"""
+
 pytestmark = [
     pytest.mark.anyio,
     pytest.mark.filterwarnings(f"ignore:{UNCLOSED_SQLITE}:ResourceWarning"),
+    pytest.mark.filterwarnings(
+        f"ignore:{LATE_WORKER}:pytest.PytestUnhandledThreadExceptionWarning"
+    ),
 ]
+WORKERS_END_WITHIN: Final = 2.0
+"""Seconds a case waits, in all, for the aiosqlite workers it started to end:
+one still serving an open connection never ends, so the wait is bounded."""
 BOUNDED: Final = pytest.mark.timeout(30, method="signal")
 """Every case is bounded, so one that regresses fails rather than hangs."""
 
 
 @pytest.fixture(autouse=True)
 def collected() -> Iterator[None]:
-    """Collect aiosqlite's dropped handles as each case ends, under its filter.
+    """Let each case's aiosqlite workers end, and collect their dropped handles.
 
-    Collected later, in a case of another module, the handle would be that
-    case's unraisable warning.
+    A worker that finishes a cut connect after the case's loop closed fails
+    in its own thread; waited for here, briefly, its failure and its handle
+    are reported within the case, under the module's filters, not in a case
+    of another module.
     """
+    before = set(threading.enumerate())
     yield
+    deadline = time.monotonic() + WORKERS_END_WITHIN
+    for thread in set(threading.enumerate()) - before:
+        if thread.name.endswith("(_connection_worker_thread)"):
+            thread.join(max(0.0, deadline - time.monotonic()))
     gc.collect()
+
+
+def test_only_aiosqlite_handing_a_result_to_a_closed_loop_is_allowed() -> None:
+    """A late worker's failure is allowed here; another of its errors is not."""
+    head = "Exception in thread Thread-7 (_connection_worker_thread)\n\nTraceback:\n"
+    warnings.warn(
+        pytest.PytestUnhandledThreadExceptionWarning(
+            head + "RuntimeError: Event loop is closed\n"
+        ),
+        stacklevel=1,
+    )
+    with pytest.raises(pytest.PytestUnhandledThreadExceptionWarning):
+        warnings.warn(
+            pytest.PytestUnhandledThreadExceptionWarning(
+                head + "sqlite3.OperationalError: disk I/O error\n"
+            ),
+            stacklevel=1,
+        )
 
 
 @pytest.fixture

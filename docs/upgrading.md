@@ -36,6 +36,238 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.9 to 2.10
+
+2.10 follows up a project's notes on 2.9. Each item of this list says
+what a project that relied on 2.9's behaviour changes, and what to run.
+There is no migration to make. On PostgreSQL, `migrate` builds the user
+lookups' indexes concurrently, outside a transaction
+([below](#migrate-builds-the-user-lookups-indexes-concurrently)). With
+`AUTH.AUTHORIZATIONS.TYPED_LINKS` set to `"refused"`, read the stored
+group names before you deploy, and rename those that hold a link
+(below). Where approvals hold making a user staff, a request stored by
+2.9 is never spent: the call submits a new one (below).
+
+- **Name the `uvicorn` extra now.** 2.10 adds `domainkit[uvicorn]`. It
+  installs nothing new: every 2.x install has uvicorn already. 3.0 will
+  install it only through this extra, so a project that names it now
+  needs no change then. Add it where the project serves with uvicorn:
+  its image runs `serve` without Granian (the `Dockerfile` that `init`
+  writes does), `runserver` serves with it, or a test uses
+  `live_server`. `init` writes it for a project served by uvicorn
+  ([uvicorn becomes an extra in 3.0](#uvicorn-becomes-an-extra-in-30)):
+
+  ```toml
+  dependencies = ["domainkit[postgres,redis,sqlite,uvicorn]>=2.10.0,<3"]
+  ```
+- **A group's stored name is read where it is granted.** With
+  `AUTH.AUTHORIZATIONS.TYPED_LINKS` set to `"refused"`, the admin API's
+  act reads the name of each group a grant adds as typed text, whole and
+  as its item may show it cut, and so do approvals' screens where an
+  approver confirms on a phone (`APPROVE_ACTION`): of each group
+  `auth.set_groups` adds, and of each group `auth.set_staff` and
+  `auth.reactivate` give back ("Groups"). A group whose name holds a
+  link is refused where it is granted or given back (`422
+  link_not_shown`): one named before 2.8, or while the setting was
+  `"shown"`, and also one that 2.9's own check accepted under
+  `"refused"`, whose name holds a top-level domain inside it
+  (`acme.finance.readers`, `cairo.office.staff`, `finance.team.lead`).
+  Rename the group: the new name is checked as any is, and grants of it
+  are shown again. A request held before is still rejected or cancelled;
+  it holds the group's old name, so once the group is renamed it is
+  never spent: reject or cancel it, and make the call again. The
+  `on_typed_text` checks now get these names too. Before you deploy,
+  read every stored group's name as each line may cut it, and rename
+  those it finds:
+
+  ```python
+  from domainkit.contrib.auth.screens import shows_link
+
+  names = [...]  # Every stored group's name: GET /groups, each page.
+  refused = [name for name in names if any(shows_link(name, n) for n in range(21, 66))]
+  ```
+
+- **A name inside a name holds a link.** `holds_link` reads a top-level
+  domain before a dot, a middle dot, or a hyphen, as at a name's end:
+  `evil.com.xy` and `evil.com-login` hold one, and with `TYPED_LINKS`
+  refused are refused where 2.9 showed them. Many top-level domains are
+  common words: a name or a file with one inside it is refused too
+  (`report.final.docx`, `budget.new.xlsx`, `config.dev.json`,
+  `tsconfig.app.json`, `environment.prod.ts`, `fin.team.notes`,
+  `cairo.office.staff`, `user.name.first`), as is `v1` read as `vi`
+  (`schema.v1.json`). A phone links each: write them otherwise. An
+  Arabic-Indic zero spaced out between two letters reads as a dot (`evil
+  ٠ com`): a zero as a count before a word that is a top-level domain
+  (`الفروع ٠ قطر`, `الطلبات ٠ عمان`, `المستخدمون ٠ شبكة`, `تمت إضافة ٠
+  موقع`) is written `0`.
+- **A name is read as a screen prints it.** `check_typed` and a group's
+  item read a name whole as a screen prints it too: a character it does
+  not print (a word joiner, a soft hyphen, a zero-width space, a
+  bidirectional control) shows escaped, and ends a name before it, so
+  `evil.com` followed by one is refused. `check_typed` reads the cuts a
+  line can hold. A text longer than 10,000 characters holds a link,
+  unread: with `TYPED_LINKS` refused, it is refused where it is typed.
+  The framework's own typed text is shorter (a reason 500 characters, a
+  group's name 150); a field of a project's user model that holds more
+  is refused at the admin API's act while it does.
+- **A stored text read as a screen shows it.** A project that read
+  `holds_link(fitted(text))` reads `shows_link(text)` instead: the cut
+  is read without the spaced readings, so `approved. com…` holds none.
+  A field whose digits are never a number to call reads
+  `holds_link(text, numbers=False)`.
+- **Making staff holds what the user comes back with** (security,
+  [ADR 0172](adr/0172-hold-admin-changes-by-what-they-grant-and-check-before-the-hold.md)).
+  Where `APPROVALS.ADMIN_APPROVALS` holds `auth.set_staff`, its request
+  holds, as `auth.reactivate`'s does, whether the user is a superuser,
+  each of their groups, their own permissions, and their grants on
+  objects; its approver reads them ("Superuser", "Grants", "Groups",
+  "Also holds"). A request stored by 2.9, pending or approved and not
+  yet made, holds none of it, so its approval is never spent: the staff
+  member's call submits a new request (`403 approval_pending`), which
+  is approved again. With `AUTH.AUTHORIZATIONS.HELD_TTL` set, a call
+  whose confirmation was kept for such a request is refused (`403
+  action_not_authorized`): confirm the change again. Anything granted
+  to the user while a request waits makes another request, as for a
+  return. Code that reads the request's arguments finds the new keys.
+  With `AUTH.AUTHORIZATIONS.WHOLE` and `APPROVE_ACTION` on, a user in
+  many groups made staff may no longer fit the approver's screen, and
+  is refused at the twin (`422 too_much_to_show`): take some groups
+  away first, make them staff, then add the groups back, each step
+  held. A guard of your own that refused making staff a user who holds
+  a named key (`422`) can go, or read `named_keys_held(user)`.
+- **The admin API's act shows and binds what a user comes back with.**
+  With `AUTH.ADMIN_ACTION` on, the screen of a `PATCH /users/{id}` that
+  makes a user staff, or active again, shows "Superuser" and "Staff"
+  where they are so, set by the change or not, and "Grants", the keys
+  `NAMED_PERMISSIONS` names that they hold, directly or through a
+  group. The act binds their flags, groups, permissions, and grants on
+  objects (`AdminAct.holds`): a user granted anything between the twin
+  and the act makes another act, refused (`403 action_not_authorized`)
+  and its authorization voided; ask again. The digest of such an act
+  changes, so an authorization of making staff or active again asked
+  under 2.9 and not yet spent, one held for approval with `HELD_TTL`
+  included, is refused once: confirm the change again. Every other
+  act's digest is unchanged. Under `WHOLE`, a change that filled the
+  screen may no longer fit: make it in smaller steps. A client or a
+  test that matched the screen reads the new lines.
+- **A user in very many groups made staff** makes a request larger
+  than `APPROVALS.MAX_ARGUMENTS_BYTES` (64 KiB by default), each group
+  held by id, name, and keys: it is refused when submitted, as the
+  return of such a user already is. Take some groups away first, make
+  them staff, then add the groups back.
+- **An act reads `If-Match` as its twin does**
+  ([ADR 0178](adr/0178-bind-an-act-to-the-version-its-page-read.md)).
+  An act that sends several tags, on one line or several, answers
+  `422`, and one whose tag names no version `412`, as the twin answers,
+  unless it holds an authorization asked without `If-Match`; either
+  voids the authorization, as other arguments do, where several were
+  `403 action_not_authorized`. Send the one tag the twin held. The same
+  act, with an authorization asked without `If-Match`, holds it as
+  before, whatever `If-Match` it sends.
+- **`OfficeCheck` refuses more Office documents** (security). `DOCX`,
+  `XLSX` and `PPTX` refuse an imported chunk (`w:altChunk`) wherever it
+  is and whatever its relationship's type (`422 unsafe_file`, "Files
+  with embedded files or objects are not accepted."), and instruction
+  text (`w:instrText`, `w:delInstrText`) after a field's `separate` mark
+  or in no field (`422 unsafe_file`, "Files with actions that run by
+  themselves, ..."). A part named, or a target inside the package
+  written, otherwise than Office writes them is `422 unreadable_file`:
+  only ASCII letters, digits and `-._~!$&'()*+,;=@`, no empty segment,
+  and in a name no `.` or `..` segment (the trash Office leaves,
+  `[trash]/0000.dat`, passes). Every part whose bytes start as XML is
+  read as XML, whatever names it: such a part that 2.9 passed unread
+  because nothing named it is now checked, and refused if it is refused
+  when named. Word, LibreOffice and pandoc name parts so; a
+  package made by a tool that names a part with `%20` or letters outside
+  ASCII is refused, and is taken once repacked with plain names
+  ([Checking documents](uploads.md#checking-documents)). Reading every
+  such part costs more time on a document of many parts: one of some
+  2,000 parts that 2.9 checked in a fraction of a second takes some
+  5 seconds, within the check's own bounds (`UPLOAD_CHECKS`), which
+  refuse what runs past them.
+- **Await `afill_docx` and `aplaceholders` in async code.** They read at
+  most `DOCUMENTS["DOCX_AT_ONCE"]` Word documents at once in the process
+  (2 by default, 680 MiB at most at the default `ArchiveLimits`), where
+  `asyncio.to_thread(fill_docx, ...)` ran as many as the loop's executor
+  allowed. `fill_docx` and `placeholders` are unchanged; replace a limiter
+  of your own with the setting, sized for the worker's memory
+  ([Documents read at once](documents.md#documents-read-at-once)).
+- **A 503 for a commit in doubt carries `"in_doubt": true`.** A `503
+  deadline_exceeded` or `503 database_unavailable` whose change may have
+  been made has a member more in its body, after the others, in either
+  `ERROR_FORMAT`; its code, its detail and its missing `Retry-After` are
+  as in 2.9. A client that checks an error's body against a closed
+  schema must let the member through. A client may read it in place of
+  the header: `body.get("in_doubt") is True`
+  ([A commit in doubt](reference/problems.md#a-commit-in-doubt)).
+- **An upload route whose rule reads the body may decide its limit per
+  request.** A route with `DeviceSigned` that takes a fixed `body_limit`,
+  read from a setting when it is declared, may take
+  `body_limit=BeforeRules(lambda request: ...)` instead, which reads the
+  setting at each request
+  ([A body limit decided before the rules](resources.md#a-body-limit-decided-before-the-rules)).
+  The swap has a cost where requests send an `Idempotency-Key`:
+  `IdempotencyMiddleware` reads such a body before the route decides,
+  held to the command limit (the resource's `body_limits["command"]`, or
+  `MAX_REQUEST_BODY_SIZE`), not to the limit decided. A keyed upload
+  that the fixed number took, past the command limit, is then refused
+  `413 content_too_large`. On such a route, keep the command limit at or
+  above the largest limit it decides, or keep a fixed number.
+
+### `migrate` builds the user lookups' indexes concurrently
+
+2.9's `migrate` built the indexes of [2.8 to 2.9](#migrate-makes-the-user-lookups-indexes-on-postgresql)
+in its hooks' transaction, with `CREATE INDEX`, which holds the table's
+writes while it runs. `migrate` now builds each with `CREATE INDEX
+CONCURRENTLY`, under the same names, once its hooks committed, on a
+connection outside a transaction: signups, logins, and profile changes
+go on while it builds. Each build waits for the transactions that write
+to the table when it starts, and for every transaction in the database
+that holds an older snapshot before it ends, so a long transaction
+delays `migrate`, not the writes. No migration to make, and nothing to
+build by hand before you deploy: on a large table, the build now runs in
+the deploy's `migrate` step, which takes as long as it does.
+
+An index that a concurrent build left invalid (`pg_index.indisvalid` is
+false), by hand or by `migrate`, now counts as missing: `migrate` drops
+it (`DROP INDEX CONCURRENTLY`) and builds it again. 2.9 took it as made.
+A valid index of the name stays, one you built by hand included. While
+another session builds an index on the users table, its index is
+invalid too: `migrate` builds none of them then, leaves that build
+alone, and prints `Database 'default': skipped the user lookups'
+indexes: an index on public.domainkit_users is being built; run migrate
+again once it ends`. Run it again once that build ended. SQLite gets
+none, as before ([ADR 0185](adr/0185-bound-keyset-pages-index-the-user-lookups-and-read-fewer-grants.md)).
+
+A domain of the project's may build its own indexes so: `migrate` calls
+the new hook point `domainkit.db.hooks.on_migrated_committed`, once the
+`on_migrated` hooks committed, with the schema owner's connection, where
+each statement commits as it runs, and prints the line a hook returns.
+A hook that raises fails `migrate` after the `on_migrated` hooks
+committed: run `migrate` again, and both run again
+([Extension points](reference/extension-points.md)). `migrate --tenant`
+runs them in the tenant's schema, set for their connection's session.
+Through PgBouncer (`PGBOUNCER` without `MIGRATION_URL`), which keeps no
+session, it refuses while any is registered, auth's among them, and asks
+for `MIGRATION_URL`: a direct connection for the schema owner.
+
+### A module of the project's own can be a built-in layer
+
+`ARCHITECTURE["LAYER_MODULES"]` makes a module of each domain one of the
+built-in layers: `{"gateways": "infrastructure"}` holds `gateways.py` to
+the infrastructure layer's rules, as `models.py` is
+([Layer rules](reference/settings.md#layer-rules),
+[ADR 0199](adr/0199-let-a-projects-module-be-a-built-in-layer.md)). A
+project that made such a module a layer of its own moves it from
+`EXTRA_LAYERS` to `LAYER_MODULES`: the settings refuse a module in both.
+Its `FORBIDDEN_LIBRARIES` and `FORBIDDEN_LAYERS` entries name the layer
+it is from then on, `infrastructure`, not the module, or go where that
+layer's rules hold them already: the settings refuse a rule keyed by the
+module, and say which layer to name. Once named,
+`check` reports the module's imports as the layer's: a web library is
+`architecture.E001`, and a name outside `domainkit.http.uploads`'
+`__all__` is `architecture.W001`, which `check --deploy` refuses.
+
 ## 2.8 to 2.9
 
 2.9 follows up the audit of 2.8. Each item of this list says what a
@@ -391,10 +623,12 @@ index on `lower()` ([ADR 0185](adr/0185-bound-keyset-pages-index-the-user-lookup
 
 `migrate` reads the table's indexes from the catalog first, and makes
 only those missing: with none to make, it takes no lock on the table.
-Building one holds writes to the table while it runs. On a large users
-table, make them before you deploy, without holding writes, under the
-same names; `migrate` then finds them and builds none. For the default
-table, with addresses first in `AUTH.IDENTIFIERS`:
+On 2.9, building one holds writes to the table while it runs; 2.10
+builds them concurrently ([2.9 to 2.10](#migrate-builds-the-user-lookups-indexes-concurrently)).
+On 2.9, with a large users table, make them before you deploy, without
+holding writes, under the same names; `migrate` then finds them and
+builds none. For the default table, with addresses first in
+`AUTH.IDENTIFIERS`:
 
 ```sql
 CREATE INDEX CONCURRENTLY ix_domainkit_users_email_lower ON domainkit_users (lower(email));
@@ -403,7 +637,8 @@ CREATE INDEX CONCURRENTLY ix_domainkit_users_email_id ON domainkit_users (email,
 ```
 
 A concurrent build that fails leaves an invalid index of that name, which
-`migrate` takes as made: drop it, and build it again.
+2.9's `migrate` takes as made: drop it, and build it again. 2.10's
+`migrate` does that itself.
 
 ### A repository that overrides `count` counts every match in an export
 
@@ -1280,10 +1515,13 @@ delete its rows, and fail until it exists.
 Every install of 2.x brings uvicorn (`uvicorn[standard]`), even where
 Granian serves. In 3.0 it becomes an extra, `domainkit[uvicorn]`.
 `runserver` and the test plugin import it only when it serves, so
-`runserver --server granian` already runs without it. Nothing changes
-in 2.x, which has no such extra. On moving to 3.0, add it where the
-project uses uvicorn: its image runs it (the `Dockerfile` that `init`
-writes does), `runserver` serves with it, or a test uses `live_server`:
+`runserver --server granian` already runs without it. 2.x keeps it in
+every install. 2.10 adds the extra ahead of 3.0: in 2.x it installs
+nothing new, so a project can name it before it moves
+([2.9 to 2.10](#29-to-210)).
+Add it where the project uses uvicorn: its image runs it (the
+`Dockerfile` that `init` writes does), `runserver` serves with it, or a
+test uses `live_server`:
 
 ```toml
 dependencies = ["domainkit[postgres,redis,sqlite,uvicorn]>=3.0,<4"]

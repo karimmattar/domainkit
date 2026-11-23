@@ -711,7 +711,16 @@ PUT  /admin/auth/users/6f1c.../groups {"groups": ["auditors"]}
   keys `AUTH.AUTHORIZATIONS.NAMED_PERMISSIONS` names among the keys they
   grant show by name before them ("Grants:
   companies.administer_company"); in a list of keys, those come first.
-  A grant on a single object is counted, whatever its key.
+  A grant on a single object is counted, whatever its key. Since 2.10 a
+  change that makes a user staff, or active again, shows what they come
+  back with, as approvals' holds of it do: "Superuser" and "Staff" where
+  they are so, set by the change or not, and the keys
+  `NAMED_PERMISSIONS` names that they hold, directly or through a group
+  ("Grants"), so the screen names them whether or not approvals hold
+  the change (user reports A26, A17). The act binds what they come
+  back with (their flags, groups, permissions, and grants on objects):
+  granted anything since the staff member confirmed it, the user makes
+  another act (`403 action_not_authorized`, voided).
   A list
   goes over as many lines as it takes ("Adds", "Adds (2)"). Six lines at
   most: with `AUTH["AUTHORIZATIONS"]["WHOLE"]` on (since 2.7), a change
