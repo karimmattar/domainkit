@@ -53,8 +53,9 @@ class APIError(HTTPException, DomainkitError):
         code: str,
         headers: Mapping[str, str] | None = None,
         errors: Sequence[FieldError] | None = None,
+        extensions: Mapping[str, object] | None = None,
     ) -> None:
-        """Carry a machine-readable ``code``, and any field ``errors``."""
+        """Carry a machine-readable ``code``, field ``errors``, and ``extensions``."""
         super().__init__(
             status_code=status_code,
             detail=detail,  # type: ignore[arg-type]  # Kept lazy: see the class.
@@ -62,3 +63,12 @@ class APIError(HTTPException, DomainkitError):
         )
         self.code = code
         self.errors = list(errors) if errors else None
+        self._extensions = dict(extensions) if extensions else {}
+
+    def extensions(self) -> Mapping[str, object]:
+        """What the body adds to its members, by name, as a ``DomainError``'s.
+
+        The ``extensions`` given (since 2.10), JSON values; none by
+        default. A name the body has in either format is left out.
+        """
+        return self._extensions

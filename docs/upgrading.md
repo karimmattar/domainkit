@@ -36,6 +36,20 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.9 to 2.10
+
+2.10 closes a project's notes on 2.9. Each item of this list says what a
+project that relied on 2.9's behaviour notices, and what it may change.
+
+- **A 503 for a commit in doubt carries `"in_doubt": true`.** A `503
+  deadline_exceeded` or `503 database_unavailable` whose change may have
+  been made has a member more in its body, after the others, in either
+  `ERROR_FORMAT`; its code, its detail and its missing `Retry-After` are
+  as in 2.9. A client that checks an error's body against a closed
+  schema must let the member through. A client may read it in place of
+  the header: `body.get("in_doubt") is True`
+  ([A commit in doubt](reference/problems.md#a-commit-in-doubt)).
+
 ## 2.8 to 2.9
 
 2.9 follows up the audit of 2.8. Each item of this list says what a

@@ -8,7 +8,8 @@ database, outgoing calls). When it passes, that work is cancelled, the
 request is answered 503 ``deadline_exceeded`` with ``Retry-After``, and one
 warning is logged. A request cut off as it committed gets no
 ``Retry-After``: its change may have been made (``failed_in_doubt``, or
-``Deadline.in_doubt`` when a task the request started committed).
+``Deadline.in_doubt`` when a task the request started committed), and its
+body says so (``"in_doubt": true``, since 2.10).
 
 Once the response starts, the deadline is lifted: a streamed response (an
 export, Server-Sent Events) and background tasks that run after the
@@ -41,7 +42,7 @@ from domainkit import deadlines
 from domainkit.conf import settings
 from domainkit.context import logged_path
 from domainkit.ddd.uow import failed_in_doubt
-from domainkit.http.errors import error_response
+from domainkit.http.errors import IN_DOUBT, error_response
 
 try:
     from domainkit.http.metrics import observe_deadline_exceeded
@@ -128,7 +129,8 @@ async def _answer(
     """503 ``deadline_exceeded``, with ``Retry-After`` unless ``in_doubt``.
 
     A request cut off as it committed (``failed_in_doubt``) may have made
-    its change: it is not invited to try again.
+    its change: it is not invited to try again, and its body says so
+    (``"in_doubt": true``), for a client that reads the body alone.
     """
     if in_doubt:
         response = error_response(
@@ -136,6 +138,7 @@ async def _answer(
             "The request ran out of time as the change was committed, so it may "
             "have been made; check before you send it again.",
             code=DEADLINE_EXCEEDED,
+            extensions={IN_DOUBT: True},
         )
     else:
         response = error_response(

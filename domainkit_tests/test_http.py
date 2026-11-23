@@ -153,6 +153,7 @@ def test_a_database_out_of_reach_is_unavailable_and_said_once_a_while(
     assert answers[0].json()["detail"] == (
         "The database is unavailable; try again shortly."
     )
+    assert "in_doubt" not in answers[0].json()  # Nothing was sent to commit.
     assert reported == []
     lines = [r for r in caplog.records if r.name == "domainkit.http.middleware"]
     said = (

@@ -10,6 +10,18 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 
 ## [Unreleased]
 
+### Added
+
+- A `503 deadline_exceeded` or `503 database_unavailable` whose commit is
+  in doubt says so in its body, `"in_doubt": true`, in either
+  `ERROR_FORMAT`, besides its missing `Retry-After`: a client that reads
+  the problem document alone tells it from a request that kept nothing,
+  which carries no such member. The code stays the same; 3.0 may give it
+  one of its own, `commit_in_doubt`. `APIError` takes `extensions=`,
+  members of the error's own that its body adds, as a domain error's
+  `extensions()` does ([A commit in doubt](docs/reference/problems.md#a-commit-in-doubt),
+  ADR 0186) (user report S4).
+
 ## [2.9.0] - 2026-11-18
 
 2.9 follows up the audit of 2.8: with 2.8.1 and 2.8.2, it fixes 58 of

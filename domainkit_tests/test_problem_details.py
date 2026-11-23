@@ -93,6 +93,17 @@ async def pay_out() -> None:
     )
 
 
+@router.post("/holds")
+async def hold() -> None:
+    """Refuse with members of the route's own, and names a body has already."""
+    raise APIError(
+        409,
+        "Held.",
+        code="held",
+        extensions={"hold_id": 7, "request_id": "mine", "code": "taken"},
+    )
+
+
 PROBLEMS = {"ERROR_FORMAT": "problem+json"}
 
 
@@ -337,6 +348,26 @@ def test_an_errors_own_members_extend_the_body_and_replace_none_of_it(
     assert body["request_id"] == response.headers["X-Request-ID"]
     assert "errors" not in body
     assert body.get("title", "Conflict") == "Conflict"
+
+
+@pytest.mark.parametrize("problems", [False, True])
+def test_an_api_errors_own_members_extend_the_body_too(
+    make_client: MakeClient, problems: bool
+) -> None:
+    """``APIError(extensions=...)`` adds members as a domain error does (since 2.10).
+
+    The framework's 503 for a commit in doubt adds ``in_doubt`` so (user
+    report S4); a body's own names stay the body's.
+    """
+    settings = PROBLEMS if problems else {}
+    client = make_client(ROOT_ROUTER=ROUTES, **settings)
+
+    response = client.post("/holds")
+
+    body = response.json()
+    assert (response.status_code, body["code"], body["hold_id"]) == (409, "held", 7)
+    assert body["request_id"] == response.headers["X-Request-ID"]
+    assert APIError(409, "Held.", code="held").extensions() == {}
 
 
 @pytest.mark.parametrize("problems", [False, True])
