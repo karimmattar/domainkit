@@ -777,13 +777,13 @@ def test_a_label_too_long_for_a_domain_is_not_read_for_one() -> None:
 
 
 def test_a_long_run_of_white_space_is_read_once() -> None:
-    """Once, not again from each of its spaces: 2.9 took seconds on 50,000."""
-    text = "a" + " " * 50_000 + "b"
+    """Once, not again from each of its spaces: 2.9 took 0.7 seconds on 10,000."""
+    text = "a" + " " * 9_998 + "b"
     start = time.perf_counter()
 
     assert not holds_link(text)
-    assert holds_link("evil" + " " * 5_000 + "[.] com")
-    assert time.perf_counter() - start < 5
+    assert holds_link("evil" + " " * 9_980 + "[.] com")
+    assert time.perf_counter() - start < 0.5
 
 
 def test_a_screen_shows_a_link_as_laid_out_reads_typed_text(use_auth: UseAuth) -> None:
@@ -975,20 +975,35 @@ def test_a_group_name_is_checked_as_a_line_may_cut_it(use_auth: UseAuth) -> None
         laid_out(details, whole=False)
 
 
-def test_a_long_text_is_read_as_far_as_a_screen_could_show_it() -> None:
-    """Its first 10,000 characters: a text the size of a request body reads at once.
+def test_a_text_too_long_to_read_holds_a_link(use_auth: UseAuth) -> None:
+    """Past 10,000 characters, as given or as read, it holds one, unread.
 
-    No line of a screen shows more; past them, nothing is read for a link
-    (review of user report A17).
+    Reading it takes bounded work, and no screen shows as much: a link
+    after the 10,000th character is refused, and so is a longer text that
+    holds none. One of 10,000 is read as ever (review of user report A17).
     """
+    use_auth(AUTHORIZATIONS={"TYPED_LINKS": "refused"})
+    late = "x" * 9_999 + " evil.com"
+    honest = "a" * 10_001
+    spelled = "\ufdfa" * 600
     dotted = "a1111111." * 116_000
     start = time.perf_counter()
 
-    assert not holds_link(dotted)
-    assert not shows_link(dotted)
+    assert holds_link(dotted)
+    assert shows_link(dotted)
     assert time.perf_counter() - start < 5
-    assert holds_link("x" * 9_980 + " evil.com")
-    assert not holds_link("x" * 10_000 + " evil.com")
+    assert late.index("evil") == 10_000
+    assert all(map(holds_link, (late, honest, spelled)))
+    assert shows_link(honest)
+    assert holds_link(honest, numbers=False)
+    with pytest.raises(LinkNotShown):
+        laid_out({"Note": Typed(honest)}, whole=False)
+    with pytest.raises(LinkNotShown):
+        check_typed(honest)
+    assert not holds_link("a" * 10_000)
+    assert not shows_link("a" * 10_000)
+    assert holds_link("x" * 9_991 + " evil.com")
+    assert len("x" * 9_991 + " evil.com") == 10_000
 
 
 def test_a_long_name_is_checked_as_far_as_a_line_could_cut_it(
@@ -1002,7 +1017,7 @@ def test_a_long_name_is_checked_as_far_as_a_line_could_cut_it(
     use_auth(AUTHORIZATIONS={"TYPED_LINKS": "refused"})
     start = time.perf_counter()
 
-    check_typed("readers " * 2_500)
+    check_typed("readers " * 1_250)
     assert time.perf_counter() - start < 5
     with pytest.raises(LinkNotShown):
         check_typed("Approved; details at our partner evil.co".rjust(63) + "rporate")

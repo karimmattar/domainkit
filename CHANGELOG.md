@@ -63,10 +63,13 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   space, or a bidirectional control is refused, however short the name
   ([upgrading.md](docs/upgrading.md#29-to-210), ADR 0180) (found in
   review).
-- `holds_link` reads a text's first 10,000 characters, more than any
-  screen shows, in time that grows in step with their length, white
-  space included; `check_typed` reads the cuts a line can hold, to its
-  sixty-third character (ADR 0180) (found in review).
+- `holds_link` reads text in time that grows in step with its length,
+  white space included, and a text longer than 10,000 characters, as
+  given or as read, holds a link, unread: with `TYPED_LINKS = "refused"`
+  it is refused, and `shows_link` says it shows one. `check_typed` reads
+  the cuts a line can hold, to its sixty-third character
+  ([upgrading.md](docs/upgrading.md#29-to-210), ADR 0180) (found in
+  review).
 
 ## [2.9.0] - 2026-11-18
 

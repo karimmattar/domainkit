@@ -80,9 +80,12 @@ project that relied on 2.9's behaviour changes, and what to run.
   item read a name whole as a screen prints it too: a character it does
   not print (a word joiner, a soft hyphen, a zero-width space, a
   bidirectional control) shows escaped, and ends a name before it, so
-  `evil.com` followed by one is refused. `holds_link` reads the first
-  10,000 characters of a text, more than any screen shows, and
-  `check_typed` the cuts a line can hold.
+  `evil.com` followed by one is refused. `check_typed` reads the cuts a
+  line can hold. A text longer than 10,000 characters holds a link,
+  unread: with `TYPED_LINKS` refused, it is refused where it is typed.
+  The framework's own typed text is shorter (a reason 500 characters, a
+  group's name 150); a field of a project's user model that holds more
+  is refused at the admin API's act while it does.
 - **A stored text read as a screen shows it.** A project that read
   `holds_link(fitted(text))` reads `shows_link(text)` instead: the cut
   is read without the spaced readings, so `approved. com…` holds none.

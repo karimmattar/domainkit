@@ -355,7 +355,10 @@ AUTH = {"ADMIN_ACTION": True, "AUTHORIZATIONS": {"TYPED_LINKS": "refused"}}
   (`schema.v1.json`), and an Arabic-Indic zero spaced out between two
   words, the second a top-level domain (`الفروع ٠ قطر`, `الطلبات ٠
   عمان`, `المستخدمون ٠ شبكة`, `تمت إضافة ٠ موقع`): write the zero as
-  `0`.
+  `0`. Also since 2.10, a text longer than 10,000 characters, as given
+  or as read (full-width and compatibility forms spelled out), holds
+  one, unread (`READ_AT_MOST`): reading it takes bounded work, and no
+  screen shows as much. `shows_link` says such a text shows one.
 - **What it does not read** (it is a heuristic, not a parser): a name
   split by spaces alone (`evil com`); another top-level domain than
   `com` after `dot`, `(.)`, or a dot with white space on one side
@@ -388,9 +391,7 @@ AUTH = {"ADMIN_ACTION": True, "AUTHORIZATIONS": {"TYPED_LINKS": "refused"}}
   length, since 2.10). Since 2.10 it also reads the text whole as a
   screen prints it: a character it does not print (a word joiner, a soft
   hyphen, a zero-width space, a bidirectional control) shows escaped,
-  and ends a name before it (`evil.com` and a word joiner). `holds_link`
-  reads a text's first 10,000 characters, more than any screen shows
-  (since 2.10).
+  and ends a name before it (`evil.com` and a word joiner).
 
 ```python
 from domainkit.apps import DomainConfig

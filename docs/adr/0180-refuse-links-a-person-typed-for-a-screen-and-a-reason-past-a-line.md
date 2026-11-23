@@ -342,9 +342,10 @@ stop or `dot` (`a dot in the name`, `on the dot at nine`, `vs. net`), and
 - **Bounded work**: a run of white space is read as one space once the
   spaced readings have read it, so the bracketed readings read a long run
   once; a label past 63 characters (RFC 1035 [12]) is not read for a
-  top-level domain; `holds_link` reads a text's first 10,000 characters
-  (`READ_LENGTH`), more than any screen shows; `check_typed` reads the
-  cuts a line can hold, to its sixty-third character.
+  top-level domain; a text longer than 10,000 characters, as given or as
+  read (`READ_AT_MOST`), more than any screen shows, holds a link,
+  unread: the bound refuses, never lets a link through; `check_typed`
+  reads the cuts a line can hold, to its sixty-third character.
 
 ### Consequences
 
@@ -369,9 +370,11 @@ stop or `dot` (`a dot in the name`, `on the dot at nine`, `vs. net`), and
   the last; its time stays linear in the text's length. On 100,000
   characters, dotted labels that each read the 256 ways `READINGS`
   allows take about half a second (2.9: a tenth), and a run of white
-  space about 30 milliseconds (2.9: over a minute); past
-  `READ_LENGTH`, nothing more is read, so a text the size of a request
-  body reads as fast as its first 10,000 characters.
+  space about 30 milliseconds (2.9: over a minute). A text the size of a
+  request body holds a link at once, unread. The framework's own typed
+  text is shorter (a reason 500 characters, a group's name 150); a
+  project's user field that holds more is refused at the admin API's
+  act under `TYPED_LINKS` refused.
 - **Not covered**: "Takes away" shows a group's name unmarked
   (`list_item`): taking a user out of a group is never refused for the
   group's name. A project's own item that shows a name late in it,

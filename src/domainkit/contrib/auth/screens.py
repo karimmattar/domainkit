@@ -134,9 +134,10 @@ that ``DEFANGED`` reads a long run once, not again from each of its spaces."""
 LABEL_LENGTH: Final = 63
 """The most characters a name's label holds (RFC 1035): a longer one is no
 top-level domain, and is not read for one."""
-READ_LENGTH: Final = 10_000
-"""How many characters of a text ``holds_link`` reads (since 2.10): its first
-10,000, as given and as a person reads them. No screen shows more."""
+READ_AT_MOST: Final = 10_000
+"""The most characters of a text ``holds_link`` reads, as given and as a
+person reads it (since 2.10): a longer text holds a link, unread, so that
+reading one takes bounded work. No screen shows more."""
 DEFANGED: Final = (
     (re.compile(r"\s*[\[{<]\s*(?:\.|dot)\s*[\]}>]\s*"), "."),
     (re.compile(r"(?<=\w)\((?:\.|dot)\)(?=\w)|\s*\(\s*dot\s*\)\s*"), "."),
@@ -335,8 +336,9 @@ def holds_link(text: str, *, numbers: bool = True) -> bool:
     sign, a bracket, or beside a word that asks for a call (``call``,
     ``tel``, ``WhatsApp``, their Arabic words, a receiver's sign).
 
-    Since 2.10, only the first ``READ_LENGTH`` (10,000) characters are
-    read: a screen's line shows 64.
+    Since 2.10, a text longer than ``READ_AT_MOST`` (10,000) characters,
+    as given or as a person reads it, holds one, unread: reading it takes
+    bounded work, and no screen shows as much.
 
     It is a heuristic, and a reader still takes for a link some text it
     reads as none: a name split by spaces alone (``evil com``), ``dot``, or
@@ -358,7 +360,7 @@ def shows_link(text: str, length: int = LINE_LENGTH, *, numbers: bool = True) ->
     commercial`` cut to ``approved. com…`` holds none, ``evil.corporate``
     cut to ``evil.co…`` holds one. For stored text a screen shows, which
     no one typed for the act: a name, a title, a note. ``numbers`` as for
-    ``holds_link``.
+    ``holds_link``; a text longer than ``READ_AT_MOST`` shows one.
     """
     return holds_link(text, numbers=numbers) or _holds_link(
         fitted(text, length), spaced=False, numbers=numbers
@@ -372,7 +374,11 @@ def _holds_link(text: str, *, spaced: bool, numbers: bool = True) -> bool:
     company`` cut to ``i.e. com…`` is no name, and the whole text, which
     the screen shows too, is read with.
     """
-    seen = _as_read(text[:READ_LENGTH])[:READ_LENGTH]
+    if len(text) > READ_AT_MOST:
+        return True
+    seen = _as_read(text)
+    if len(seen) > READ_AT_MOST:
+        return True
     plain = seen
     for pattern, meant in SPACED if spaced else ():
         plain = pattern.sub(meant, plain)
