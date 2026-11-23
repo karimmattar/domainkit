@@ -486,10 +486,11 @@ async def show_reactivation(command: "Reactivate") -> list[tuple[str, object]]:
     The user by name and id; "Superuser" and "Staff" where they come back
     as such; since 2.8, the keys ``NAMED_PERMISSIONS`` names among those
     they hold, directly or through a group, by name ("Grants"); their
-    groups by name, read now ("Groups"); how many permissions of their own
-    and grants on objects they hold ("Also holds"); and each value the
-    change sets beside (``values``), by its label. A name too long for its
-    line is cut, never refused.
+    groups by name, read now and, since 2.10, marked typed ("Groups"); how
+    many permissions of their own and grants on objects they hold ("Also
+    holds"); and each value the change sets beside (``values``), by its
+    label. A name too long for its line is cut, never refused for its
+    length.
     """
     shown: list[tuple[str, object]] = [await _user_line(command.user_id)]
     yes = pgettext("flag", "yes")
@@ -507,8 +508,10 @@ async def _holding(command: "SetStaff | Reactivate") -> list[tuple[str, object]]
 
     The keys ``NAMED_PERMISSIONS`` names among those they hold, directly
     or through a group; their groups by name, read now (the name held, if
-    it is gone); how many permissions of their own and grants on objects
-    they hold ("Also holds").
+    it is gone), each marked typed (since 2.10): a group is given back, so
+    its stored name is read as where a group is granted; how many
+    permissions of their own and grants on objects they hold ("Also
+    holds").
     """
     from domainkit.contrib.auth.integration import list_item
 
@@ -518,7 +521,8 @@ async def _holding(command: "SetStaff | Reactivate") -> list[tuple[str, object]]
     if command.groups:
         names = await _group_names(group.id for group in command.groups)
         groups = [
-            list_item(names.get(group.id, group.name)) for group in command.groups
+            list_item(names.get(group.id, group.name), typed=True)
+            for group in command.groups
         ]
         shown.append((gettext(GROUPS), groups))
     counted = _counts(len(command.permissions), command.object_grants)

@@ -60,6 +60,61 @@ group names before you deploy, and rename those that hold a link
   ```toml
   dependencies = ["domainkit[postgres,redis,sqlite,uvicorn]>=2.10.0,<3"]
   ```
+- **A group's stored name is read where it is granted.** With
+  `AUTH.AUTHORIZATIONS.TYPED_LINKS` set to `"refused"`, the admin API's
+  act reads the name of each group a grant adds as typed text, whole and
+  as its item may show it cut, and so do approvals' screens where an
+  approver confirms on a phone (`APPROVE_ACTION`): of each group
+  `auth.set_groups` adds, and of each group `auth.set_staff` and
+  `auth.reactivate` give back ("Groups"). A group whose name holds a
+  link is refused where it is granted or given back (`422
+  link_not_shown`): one named before 2.8, or while the setting was
+  `"shown"`, and also one that 2.9's own check accepted under
+  `"refused"`, whose name holds a top-level domain inside it
+  (`acme.finance.readers`, `cairo.office.staff`, `finance.team.lead`).
+  Rename the group: the new name is checked as any is, and grants of it
+  are shown again. A request held before is still rejected or cancelled;
+  it holds the group's old name, so once the group is renamed it is
+  never spent: reject or cancel it, and make the call again. The
+  `on_typed_text` checks now get these names too. Before you deploy,
+  read every stored group's name as each line may cut it, and rename
+  those it finds:
+
+  ```python
+  from domainkit.contrib.auth.screens import shows_link
+
+  names = [...]  # Every stored group's name: GET /groups, each page.
+  refused = [name for name in names if any(shows_link(name, n) for n in range(21, 66))]
+  ```
+
+- **A name inside a name holds a link.** `holds_link` reads a top-level
+  domain before a dot, a middle dot, or a hyphen, as at a name's end:
+  `evil.com.xy` and `evil.com-login` hold one, and with `TYPED_LINKS`
+  refused are refused where 2.9 showed them. Many top-level domains are
+  common words: a name or a file with one inside it is refused too
+  (`report.final.docx`, `budget.new.xlsx`, `config.dev.json`,
+  `tsconfig.app.json`, `environment.prod.ts`, `fin.team.notes`,
+  `cairo.office.staff`, `user.name.first`), as is `v1` read as `vi`
+  (`schema.v1.json`). A phone links each: write them otherwise. An
+  Arabic-Indic zero spaced out between two letters reads as a dot (`evil
+  ٠ com`): a zero as a count before a word that is a top-level domain
+  (`الفروع ٠ قطر`, `الطلبات ٠ عمان`, `المستخدمون ٠ شبكة`, `تمت إضافة ٠
+  موقع`) is written `0`.
+- **A name is read as a screen prints it.** `check_typed` and a group's
+  item read a name whole as a screen prints it too: a character it does
+  not print (a word joiner, a soft hyphen, a zero-width space, a
+  bidirectional control) shows escaped, and ends a name before it, so
+  `evil.com` followed by one is refused. `check_typed` reads the cuts a
+  line can hold. A text longer than 10,000 characters holds a link,
+  unread: with `TYPED_LINKS` refused, it is refused where it is typed.
+  The framework's own typed text is shorter (a reason 500 characters, a
+  group's name 150); a field of a project's user model that holds more
+  is refused at the admin API's act while it does.
+- **A stored text read as a screen shows it.** A project that read
+  `holds_link(fitted(text))` reads `shows_link(text)` instead: the cut
+  is read without the spaced readings, so `approved. com…` holds none.
+  A field whose digits are never a number to call reads
+  `holds_link(text, numbers=False)`.
 - **Making staff holds what the user comes back with** (security,
   [ADR 0172](adr/0172-hold-admin-changes-by-what-they-grant-and-check-before-the-hold.md)).
   Where `APPROVALS.ADMIN_APPROVALS` holds `auth.set_staff`, its request

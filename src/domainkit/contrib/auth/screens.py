@@ -29,6 +29,8 @@ the phone, is marked ``Typed`` (since 2.8, ADR 0180): ``laid_out`` runs the
 ``on_typed_text`` checks on it, and with ``AUTH.AUTHORIZATIONS.TYPED_LINKS``
 set to ``"refused"``, refuses one that holds a link, an email address, or a
 number to call (``holds_link``; ``LinkNotShown``, ``422 link_not_shown``).
+Stored text a screen shows is read as it shows it with ``shows_link``
+(since 2.10).
 """
 
 import functools
@@ -38,7 +40,7 @@ import re
 import unicodedata
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from pathlib import Path
-from typing import Final
+from typing import Final, Self
 
 from domainkit.apps.hooks import HookPoint
 from domainkit.ddd import BusinessRuleViolation
@@ -60,6 +62,7 @@ __all__ = [
     "laid_out",
     "named",
     "on_typed_text",
+    "shows_link",
 ]
 
 LINE_LENGTH: Final = DETAIL_MAX_LENGTH
@@ -104,21 +107,37 @@ DOTS: Final = str.maketrans(
 )
 """Characters read as a full stop, once in NFKC: UTS #46's label separators,
 the dots UTS #39 says look like one, and the middle dots, a bullet among them."""
-ZERO_DOT: Final = re.compile("(?<=[^\\W\\d_])[\u0660\u06f0](?=[^\\W\\d_])")
-"""An Arabic-Indic zero, which looks like a dot, between two letters."""
+ZERO_DOT: Final = re.compile("(?<=[^\\W\\d_])(\\s*)[\u0660\u06f0](?=\\s*[^\\W\\d_])")
+"""An Arabic-Indic zero, which looks like a dot, between two letters; since
+2.10, with white space on either side too (``evil \u0660 com``), so that
+``SPACED`` reads it. A zero beside a digit (``\u0662\u0660\u0662\u0666``) is a zero."""
 SPACED: Final = (
-    (re.compile(r"(?<=\w)\s+\.\s+(?=\w)(?![A-Z][a-z])"), "."),
+    (
+        re.compile(r"(?<=\w)\s+\.\s+(?=\w)(?:(?![A-Z][a-z])|(?=Com(?![^\W\d_])))"),
+        ".",
+    ),
     (re.compile(r"(?<=\w)\s+\.(?=(?i:com)(?![^\W\d_]))"), "."),
-    (re.compile(r"(?<=\w)\.\s+(?=(?:com|COM)(?![^\W\d_]))"), "."),
+    (re.compile(r"(?<=\w)\.\s+(?=(?:com|Com|COM)(?![^\W\d_]))"), "."),
     (re.compile(r"(?<=\w)\s+dot\s+(?=com(?![^\W\d_]))", re.IGNORECASE), "."),
 )
 """A name spaced out so that it is not a link and still reads as one (since
 2.8.1), in the text as typed, never in a cut of it: ``evil . com``, white
 space, new lines too, on both sides of the dot, but before a capital (a
-sentence: ``Rejected . No receipt``); and before ``com`` alone, ``evil
-.com``, ``evil. com`` (in lower or upper case) and ``evil dot com``. Other
-words follow a full stop, a dot, or ``dot`` in prose (``vs. net``, the
-``.NET`` service, a ``dot net`` developer, ``Done. Info sent``)."""
+sentence: ``Rejected . No receipt``) other than ``Com`` (since 2.10); and
+before ``com`` alone, ``evil .com``, ``evil. com`` (in lower, upper, or
+since 2.10 title case) and ``evil dot com``. Other words follow a full
+stop, a dot, or ``dot`` in prose (``vs. net``, the ``.NET`` service, a
+``dot net`` developer, ``Done. Info sent``)."""
+WHITE_SPACE: Final = re.compile(r"\s+")
+"""A run of white space, read as one space once ``SPACED`` has read it: so
+that ``DEFANGED`` reads a long run once, not again from each of its spaces."""
+LABEL_LENGTH: Final = 63
+"""The most characters a name's label holds (RFC 1035): a longer one is no
+top-level domain, and is not read for one."""
+READ_AT_MOST: Final = 10_000
+"""The most characters of a text ``holds_link`` reads, as given and as a
+person reads it (since 2.10): a longer text holds a link, unread, so that
+reading one takes bounded work. No screen shows more."""
 DEFANGED: Final = (
     (re.compile(r"\s*[\[{<]\s*(?:\.|dot)\s*[\]}>]\s*"), "."),
     (re.compile(r"(?<=\w)\((?:\.|dot)\)(?=\w)|\s*\(\s*dot\s*\)\s*"), "."),
@@ -230,10 +249,42 @@ class Typed(str):
     wrote: a reason, a name given, a note. Not what the act is on
     (``named``), which never locks what it names: a group's name is
     checked where it is typed (``check_typed``), and a user's username or
-    address is an identifier, set as one.
+    address is an identifier, set as one. A group added, in a few words
+    (``group_item``), shows its stored name typed (since 2.10), as does a
+    name alone that a grant gives back (``list_item(name, typed=True)``).
     """
 
     __slots__ = ()
+
+
+class TypedName(Typed):
+    """A text that shows a name a person typed, among words the framework wrote.
+
+    What ``group_item`` gives (since 2.10): "readers (…9abc) 3 perms", the
+    group's stored name, cut to fit (``shown``), beside the end of its id
+    and what it grants; and ``list_item(name, typed=True)``: the name
+    alone, cut to fit, its text what it shows. ``laid_out`` checks the
+    name: the ``on_typed_text`` checks get it as stored, and with
+    ``TYPED_LINKS`` refused it is refused where it holds a link, whole or
+    as the text shows it. The id and the counts, which no person typed,
+    are not read: a line of ``group_item``'s alone is not read again. A
+    line of names alone is, as any typed text's.
+    """
+
+    name: str
+    """The name as stored: what the ``on_typed_text`` checks get."""
+    shown: str
+    """The name as the text shows it: whole, or cut and ended with ``…``."""
+
+    def __new__(cls, text: str, name: str, shown: str) -> Self:
+        """``text``, which shows ``name`` as ``shown``."""
+        made = super().__new__(cls, text)
+        made.name, made.shown = name, shown
+        return made
+
+    def __getnewargs__(self) -> tuple[str, str, str]:  # type: ignore[override]
+        """What a copy is made with: the text, the name, and how it shows."""
+        return str(self), self.name, self.shown
 
 
 type TypedCheck = Callable[[str], None]
@@ -257,19 +308,20 @@ change): a check reads, and has no side effect.
 """
 
 
-def holds_link(text: str) -> bool:
+def holds_link(text: str, *, numbers: bool = True) -> bool:
     """Whether ``text`` holds a link, an email address, or a number to call.
 
     Read as a person reads it: in NFKC (full-width forms), without the
     characters a screen draws as nothing (zero-width spaces), with the
     dots that look like one (UTS #46's label separators, ideographic and
-    full-width; a one dot leader; a middle dot) and names written not to
-    be links (``example[.]com``, ``ann[at]example.com``, ``example (dot)
-    com``) or spaced out (``example . com``, and before ``com``, ``example
-    .com``, ``example. com`` and ``example dot com``: ``SPACED``; since
-    2.8.1) read as the link they spell. It holds one where it holds a scheme
+    full-width; a one dot leader; a middle dot; an Arabic-Indic zero
+    between two letters) and names written not to be links
+    (``example[.]com``, ``ann[at]example.com``, ``example (dot) com``) or
+    spaced out (``example . com``, and before ``com``, ``example .com``,
+    ``example. com`` and ``example dot com``: ``SPACED``; since 2.8.1) read
+    as the link they spell. It holds one where it holds a scheme
     (``https://``, ``tel:``, ``mailto:``), an at sign before a letter or a
-    digit, four numbers joined by dots, a name ending in a top-level domain IANA
+    digit, four numbers joined by dots, a name with a top-level domain IANA
     lists (``evil.example.com``, ``www.anything``, the same with Cyrillic
     letters that read as Latin ones), or seven digits or more written as
     one number (``+1 555 010 0100``), but a date, an amount (with its
@@ -277,31 +329,64 @@ def holds_link(text: str) -> bool:
     ``12 500 000 EUR``), or a code (``INC0012345``, ``CVE-2024-12345``):
     when unsure, it holds one, and never an amount or a code with a plus
     sign, a bracket, or beside a word that asks for a call. ``v1.2``,
-    ``Q3 report``, and ``readers`` hold none.
+    ``Q3 report``, and ``readers`` hold none. Since 2.10, a top-level
+    domain ends a name where a linker ends a word, before a dot or a
+    hyphen, as at the name's end: ``evil.com.xy`` and ``evil.com-login``
+    hold ``evil.com``.
+
+    ``numbers=False`` (since 2.10), for text whose digits are a licence's
+    or a file's number (``No. 123 456 789``): seven digits or more are
+    read as a number to call only as an amount or a code is, with a plus
+    sign, a bracket, or beside a word that asks for a call (``call``,
+    ``tel``, ``WhatsApp``, their Arabic words, a receiver's sign).
+
+    Since 2.10, a text longer than ``READ_AT_MOST`` (10,000) characters,
+    as given or as a person reads it, holds one, unread: reading it takes
+    bounded work, and no screen shows as much.
 
     It is a heuristic, and a reader still takes for a link some text it
     reads as none: a name split by spaces alone (``evil com``), ``dot``, or
     a dot with white space on one side, before another top-level domain
-    than ``com`` (``evil dot io``, ``evil. net``), a dot spaced on both
-    sides before a capital (``evil . Com``), a number in hexadecimal
+    than ``com`` (``evil dot io``, ``evil. net``), a number in hexadecimal
     (``0xC0A80101``, written as error codes are), an IPv6 address, or
     digits written as words.
     """
-    return _holds_link(text, spaced=True)
+    return _holds_link(text, spaced=True, numbers=numbers)
 
 
-def _holds_link(text: str, *, spaced: bool) -> bool:
+def shows_link(text: str, length: int = LINE_LENGTH, *, numbers: bool = True) -> bool:
+    """Whether a screen that shows ``text`` on a line shows a link (since 2.10).
+
+    Read as ``laid_out`` reads a ``Typed`` text: whole, as typed
+    (``holds_link``), and as the line shows it (``fitted(text, length)``:
+    escaped, and cut to ``length`` characters and ``…``), without the
+    spaced readings, which a cut would make of prose: ``approved.
+    commercial`` cut to ``approved. com…`` holds none, ``evil.corporate``
+    cut to ``evil.co…`` holds one. For stored text a screen shows, which
+    no one typed for the act: a name, a title, a note. ``numbers`` as for
+    ``holds_link``; a text longer than ``READ_AT_MOST`` shows one.
+    """
+    return holds_link(text, numbers=numbers) or _holds_link(
+        fitted(text, length), spaced=False, numbers=numbers
+    )
+
+
+def _holds_link(text: str, *, spaced: bool, numbers: bool = True) -> bool:
     """``holds_link``; ``spaced=False`` reads no name spaced out (``SPACED``).
 
     A cut of a text, or a line as shown, is read without: ``i.e.
     company`` cut to ``i.e. com…`` is no name, and the whole text, which
     the screen shows too, is read with.
     """
+    if len(text) > READ_AT_MOST:
+        return True
     seen = _as_read(text)
+    if len(seen) > READ_AT_MOST:
+        return True
     plain = seen
     for pattern, meant in SPACED if spaced else ():
         plain = pattern.sub(meant, plain)
-    plain = plain.casefold()
+    plain = WHITE_SPACE.sub(" ", plain.casefold())
     for pattern, meant in DEFANGED:
         plain = pattern.sub(meant, plain)
     return bool(
@@ -309,7 +394,7 @@ def _holds_link(text: str, *, spaced: bool) -> bool:
         or ADDRESS.search(plain)
         or any(_is_ipv4(found[1]) for found in IPV4.finditer(plain))
         or any(_is_domain(labels) for labels in _names(plain))
-        or _calls(seen)
+        or _calls(seen, numbers=numbers)
     )
 
 
@@ -321,24 +406,38 @@ def check_typed(text: str) -> None:
     grant of it is approved): refused where it is typed, as ``laid_out``
     refuses it as ``Typed``. A screen may show it cut, ended with ``…``,
     past its ``SHORTEST_CUT``-th character: each such cut is checked too
-    (``evil.corporate`` cut to ``evil.co…``).
+    (``evil.corporate`` cut to ``evil.co…``), since 2.10 each a line holds
+    alone. Since 2.10 it is also checked whole as a screen prints it: a
+    character it does not print shows as a backslash and its code, which
+    ends a name (a word joiner after ``evil.com``).
 
     Raises:
         LinkNotShown: ``TYPED_LINKS`` is ``"refused"``, and it or a cut of
             it holds a link.
         Exception: What an ``on_typed_text`` check raises.
     """
-    shown = _printable(text)
-    cuts = (shown[:end] + CUT for end in range(SHORTEST_CUT, len(shown)))
-    if _links_refused() and (
-        holds_link(text) or any(_holds_link(cut, spaced=False) for cut in cuts)
-    ):
+    if _links_refused() and (holds_link(text) or _cut_holds_link(_printable(text))):
         raise LinkNotShown
     _check_by_hooks(text)
 
 
+def _cut_holds_link(shown: str) -> bool:
+    """Whether ``shown``, a text as a screen prints it, holds a link as shown.
+
+    Whole, or cut and ended with ``…`` past its ``SHORTEST_CUT``-th
+    character, as a line may cut it, no longer than it shows
+    (``LINE_LENGTH``); without the spaced readings.
+    """
+    ends = range(SHORTEST_CUT, min(len(shown), LINE_LENGTH))
+    cuts = (shown[:end] + CUT for end in ends)
+    return any(_holds_link(each, spaced=False) for each in (shown, *cuts))
+
+
 def _check_typed(values: Iterable[object]) -> None:
     """Each ``Typed`` value of ``values``, or item of one, checked as typed.
+
+    A ``TypedName``'s name alone: whole, as stored, and as its text shows
+    it, whole or as a line may cut it (``_cut_holds_link``).
 
     Raises:
         LinkNotShown: ``TYPED_LINKS`` is ``"refused"`` and one holds a link.
@@ -348,6 +447,12 @@ def _check_typed(values: Iterable[object]) -> None:
     for value in values:
         for text in _typed_in(value):
             refused = _links_refused() if refused is None else refused
+            if isinstance(text, TypedName):
+                shown = _printable(text.shown)
+                if refused and (holds_link(text.name) or _cut_holds_link(shown)):
+                    raise LinkNotShown
+                _check_by_hooks(text.name)
+                continue
             if refused and holds_link(text):
                 raise LinkNotShown
             _check_by_hooks(text)
@@ -357,13 +462,25 @@ def _check_shown(values: list[object], lines: list[tuple[str, str, int]]) -> Non
     """Refuse a line that shows typed text and holds a link, as it is shown.
 
     Cut, escaped, or joined, a line may read as a link its text did not
-    (``evil.corporate`` cut to ``evil.co…``).
+    (``evil.corporate`` cut to ``evil.co…``). A ``TypedName``'s name is
+    read where it is checked, as its text shows it: a line of them alone
+    is not read again, with the ids and counts beside them. A
+    ``TypedName`` that is its name alone (``list_item(name, typed=True)``)
+    has no id or count beside it, and its line is read as any typed
+    text's: two names joined may hold what neither does.
 
     Raises:
         LinkNotShown: ``TYPED_LINKS`` is ``"refused"`` and such a line
             holds a link.
     """
-    typed = {index for index, value in enumerate(values) if any(_typed_in(value))}
+    typed = {
+        index
+        for index, value in enumerate(values)
+        if any(
+            not isinstance(text, TypedName) or text == text.shown
+            for text in _typed_in(value)
+        )
+    }
     shown = (text for _, text, index in lines if index in typed)
     if (
         typed
@@ -398,7 +515,7 @@ def _check_by_hooks(text: str) -> None:
 def _as_read(text: str) -> str:
     """``text`` as a person reads it, for ``holds_link``: see there; case kept."""
     plain = IGNORED.sub("", unicodedata.normalize("NFKC", text))
-    return ZERO_DOT.sub(".", plain.translate(DOTS))
+    return ZERO_DOT.sub(r"\1.", plain.translate(DOTS))
 
 
 def _is_ipv4(text: str) -> bool:
@@ -425,9 +542,27 @@ def _names(text: str) -> Iterator[list[str]]:
 
 
 def _is_domain(labels: list[str]) -> bool:
-    """Whether ``labels`` name a host: ``www`` first, or a top-level domain last."""
+    """Whether ``labels`` name a host: ``www`` first, or a top-level domain after it.
+
+    A top-level domain ends a name where a linker ends a word: at the
+    name's end, or before a dot or a hyphen (since 2.10). ``evil.com.xy``
+    and ``evil.com-login`` name ``evil.com``, as a phone links them; an
+    underscore joins a word (``evil.com_login``).
+    """
     named = [each for each in (label.strip("-_") for label in labels) if each]
-    return len(named) > 1 and ("www" in _latin(named[0]) or _is_top_level(named[-1]))
+    return len(named) > 1 and (
+        "www" in _latin(named[0]) or any(_ends_a_name(label) for label in named[1:])
+    )
+
+
+def _ends_a_name(label: str) -> bool:
+    """Whether ``label`` is a top-level domain, or starts with one before a hyphen.
+
+    ``com-login`` does; so does an IDN's A-label, whole (``xn--p1ai``): no
+    other top-level domain holds a hyphen.
+    """
+    head = label.partition("-")[0]
+    return _is_top_level(head) or ("--" in label and _is_top_level(label))
 
 
 def _is_top_level(label: str) -> bool:
@@ -435,7 +570,7 @@ def _is_top_level(label: str) -> bool:
     domains = _top_level_domains()
     if any(each in domains for each in _latin(label)):
         return True
-    if label.isascii():
+    if label.isascii() or len(label) > LABEL_LENGTH:
         return False
     try:
         return "xn--" + label.encode("punycode").decode("ascii") in domains
@@ -449,7 +584,8 @@ def _latin(label: str) -> Iterator[str]:
     Its combining marks dropped. A digit reads as itself, and as the
     letter it looks like (``0`` as ``o``) in a label that holds a letter.
     None where a character reads as no Latin letter. Each choice past the
-    eighth character, and past ``READINGS`` texts, is left out.
+    eighth character, and past ``READINGS`` texts, is left out. None for a
+    label longer than ``LABEL_LENGTH``, which names no domain.
     """
     letters = _confusable_letters()
     digits = {} if label.isdigit() else LOOKALIKE_DIGITS
@@ -458,6 +594,8 @@ def _latin(label: str) -> Iterator[str]:
         for each in unicodedata.normalize("NFD", label)
         if not unicodedata.category(each).startswith("M")
     )
+    if len(bare) > LABEL_LENGTH:
+        return
     choices: list[tuple[str, ...]] = []
     for char in bare:
         read = digits.get(char) or ((char,) if char.isascii() else letters.get(char))
@@ -468,12 +606,13 @@ def _latin(label: str) -> Iterator[str]:
         yield "".join(each)
 
 
-def _calls(text: str) -> bool:
+def _calls(text: str, *, numbers: bool = True) -> bool:
     """Whether ``text`` holds seven digits or more written as one number.
 
     When unsure, it does. Not a date; nor an amount or a code, but where
     the number holds a plus sign or a bracket, or the text a word that
-    asks for a call (``DIALING``): see ``_amount`` and ``_code``.
+    asks for a call (``DIALING``): see ``_amount`` and ``_code``. Without
+    ``numbers``, no number but such a one.
     """
     dialing = _dialing(text)
     text = DATE.sub(_date_or_digits, text)
@@ -483,7 +622,7 @@ def _calls(text: str) -> bool:
             continue
         if dialing or any(each in number for each in "+()"):
             return True
-        if not (
+        if numbers and not (
             _amount(number, text, found.start(), found.end())
             or _code(number, text, found.start(), found.end())
         ):
