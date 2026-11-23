@@ -35,11 +35,13 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   `auth.set_groups`, the admin API's act of a change of groups, and a
   project's own screens: the `on_typed_text` checks get the name, and
   with `AUTH.AUTHORIZATIONS.TYPED_LINKS` set to `"refused"`, a group
-  whose name holds a link, whole or as the item shows it cut, is refused
-  where it is granted (`422 link_not_shown`) until it is renamed. Its id
-  and counts are not read. A request held before is still rejected or
-  cancelled ([upgrading.md](docs/upgrading.md#29-to-210), ADR 0180)
-  (user report A17).
+  whose name holds a link, whole, as a screen prints it, or as a line
+  may cut it, is refused where it is granted (`422 link_not_shown`)
+  until it is renamed, a name 2.9's check accepted with a top-level
+  domain inside it too (`acme.finance.readers`). Its id and counts are
+  not read. A request held before is still rejected or cancelled
+  ([upgrading.md](docs/upgrading.md#29-to-210), ADR 0180) (user report
+  A17).
 - `holds_link` reads a top-level domain where a phone's linker ends a
   word: at a name's end, or before a dot, a middle dot, or a hyphen.
   `evil.com.xy`, `evil.com-login`, `evil.com·xy` and `foo.bar.baz` hold
@@ -55,8 +57,16 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 - `holds_link` reads `Com` after a dot spaced on both sides, or after a
   dot and white space, as `com`: `evil . Com` and `evil. Com` hold a link
   (ADR 0180) (user report A17).
-- `holds_link` reads text in time that grows in step with its length,
-  white space included (ADR 0180) (found in review).
+- `check_typed` reads a name whole as a screen prints it too: a
+  character it does not print shows escaped and ends a name before it,
+  so `evil.com` followed by a word joiner, a soft hyphen, a zero-width
+  space, or a bidirectional control is refused, however short the name
+  ([upgrading.md](docs/upgrading.md#29-to-210), ADR 0180) (found in
+  review).
+- `holds_link` reads a text's first 10,000 characters, more than any
+  screen shows, in time that grows in step with their length, white
+  space included; `check_typed` reads the cuts a line can hold, to its
+  sixty-third character (ADR 0180) (found in review).
 
 ## [2.9.0] - 2026-11-18
 

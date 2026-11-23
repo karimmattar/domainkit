@@ -270,13 +270,17 @@ AUTH = {"ADMIN_ACTION": True, "AUTHORIZATIONS": {"TYPED_LINKS": "refused"}}
   typed is refused when it is submitted, with `APPROVE_ACTION` on.
 - **A group added** (since 2.10): the admin API's act and approvals'
   `auth.set_groups` show each group a grant adds in a few words
-  (`group_item`, "readers (…9abc) 3 perms"), its stored name typed. A
-  name given before 2.8, or while `TYPED_LINKS` was `"shown"`, that
-  holds a link, whole or as the item shows it cut, is refused where the
-  group is granted (`422 link_not_shown`), until the group is renamed;
-  a request held before is still rejected or cancelled. The
-  `on_typed_text` checks get the name as stored; the id and the counts
-  beside it are not read.
+  (`group_item`, "readers (…9abc) 3 perms"), its stored name typed; a
+  return's "Groups", which it gives back, are read as typed too. A name
+  that holds a link, whole, as a screen prints it, or as a line may cut
+  it, is refused where the group is granted (`422 link_not_shown`), until
+  the group is renamed: one given before 2.8, while `TYPED_LINKS` was
+  `"shown"`, or with a top-level domain inside it, which 2.9's check let
+  through (`acme.finance.readers`). A request held before is still
+  rejected or cancelled. The `on_typed_text` checks get the name as
+  stored; the id and the counts beside it are not read. "Takes away"
+  shows names unmarked: taking a user out of a group is never refused
+  for the group's name.
 - **What it never marks**: what the act is on (`named`), which never
   locks its user or group. A group's name is checked where it is typed,
   as a screen may show it cut, and where a grant shows it; a user's
@@ -344,9 +348,14 @@ AUTH = {"ADMIN_ACTION": True, "AUTHORIZATIONS": {"TYPED_LINKS": "refused"}}
   top-level domain in lower case after a dot spaced on both sides (`fine
   . me too`), and one after `(dot)` (`the key (dot) is broken`). Since
   2.10, a file named with a top-level domain before its extension
-  (`report.final.docx`, `libssl.so.3`), which a phone links too, and an
-  Arabic-Indic zero spaced out between two words, the second a top-level
-  domain (`تمت إضافة ٠ موقع`): write the zero as `0`.
+  (`report.final.docx`, `libssl.so.3`), which a phone links too, with a
+  common word such as `final`, `new`, `dev`, `app`, `prod`, `team`,
+  `office` or `name` inside a dotted name (`budget.new.xlsx`,
+  `cairo.office.staff`, `user.name.first`), `v1` read as `vi`
+  (`schema.v1.json`), and an Arabic-Indic zero spaced out between two
+  words, the second a top-level domain (`الفروع ٠ قطر`, `الطلبات ٠
+  عمان`, `المستخدمون ٠ شبكة`, `تمت إضافة ٠ موقع`): write the zero as
+  `0`.
 - **What it does not read** (it is a heuristic, not a parser): a name
   split by spaces alone (`evil com`); another top-level domain than
   `com` after `dot`, `(.)`, or a dot with white space on one side
@@ -374,8 +383,14 @@ AUTH = {"ADMIN_ACTION": True, "AUTHORIZATIONS": {"TYPED_LINKS": "refused"}}
   typed, whatever the setting: raise to refuse the act. One text may be
   checked more than once (at a twin's two screens, then at the act), so a
   check reads and has no side effect. `check_typed(text)` runs the checks
-  where text is typed and shown later, each cut past its twentieth
-  character included.
+  where text is typed and shown later, each cut a line may show
+  included: from the twentieth character (to the sixty-third, a line's
+  length, since 2.10). Since 2.10 it also reads the text whole as a
+  screen prints it: a character it does not print (a word joiner, a soft
+  hyphen, a zero-width space, a bidirectional control) shows escaped,
+  and ends a name before it (`evil.com` and a word joiner). `holds_link`
+  reads a text's first 10,000 characters, more than any screen shows
+  (since 2.10).
 
 ```python
 from domainkit.apps import DomainConfig

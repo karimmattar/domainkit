@@ -314,10 +314,12 @@ stop or `dot` (`a dot in the name`, `on the dot at nine`, `vs. net`), and
 - **`group_item` marks the group's name** (`TypedName`, a `Typed` that
   holds the name and how the item shows it). `laid_out` runs the
   `on_typed_text` checks on the name as stored, and with `TYPED_LINKS`
-  refused refuses it where it holds a link, whole as typed or as the
-  item shows it (escaped, cut and `…`), without the spaced readings for
-  the latter. The id and the counts are not read. Rejecting and
-  cancelling drop the mark, as for any of a request's typed text.
+  refused refuses it where it holds a link, whole as typed, or as the
+  item shows it (escaped, cut and `…`) and as a line may cut that
+  further, as `check_typed` reads a name, without the spaced readings
+  for these. The id and the counts are not read. Rejecting and
+  cancelling drop the mark, as for any of a request's typed text. A
+  return's "Groups", which it gives back, are read as typed too.
 - **A top-level domain ends a name where a linker ends a word**: at the
   name's end, or before a dot (a middle dot is one) or a hyphen. A
   label that starts with one before a hyphen counts (`com-login`); an
@@ -332,31 +334,49 @@ stop or `dot` (`a dot in the name`, `on the dot at nine`, `vs. net`), and
 - **An Arabic-Indic zero** is a dot between two letters with white space
   on either side too, when it touches no digit; the spaced readings then
   meet it.
+- **`check_typed` reads a name as a screen prints it** too, whole: a
+  character it does not print shows escaped, a backslash and its code,
+  which ends a name before it (a word joiner, a soft hyphen, a zero-width
+  space, a bidirectional control after `evil.com`), however short the
+  name (the lead review).
 - **Bounded work**: a run of white space is read as one space once the
   spaced readings have read it, so the bracketed readings read a long run
   once; a label past 63 characters (RFC 1035 [12]) is not read for a
-  top-level domain.
+  top-level domain; `holds_link` reads a text's first 10,000 characters
+  (`READ_LENGTH`), more than any screen shows; `check_typed` reads the
+  cuts a line can hold, to its sixty-third character.
 
 ### Consequences
 
 - **Behaviour changes, under `TYPED_LINKS` refused**: a group whose
   stored name holds a link is refused where a screen grants it, until it
-  is renamed; the rename is checked as any new name is. Text that holds a
+  is renamed; the rename is checked as any new name is. That includes
+  names 2.9's own check accepted under `"refused"`, with a top-level
+  domain inside them (`acme.finance.readers`, `cairo.office.staff`): a
+  project reads its stored names before it deploys. Text that holds a
   name inside a name is refused where 2.9 showed it.
 - **False positives** grow by a file named with a top-level domain before
   its extension (`report.final.docx`, `libssl.so.3`), which a phone links
-  too, and an Arabic-Indic zero spaced out between two words, the second
-  a top-level domain (`تمت إضافة ٠ موقع`): the zero is written `0`. A
-  corpus of notes in English and Arabic (versions, files, abbreviations,
-  decimals, dates) pins what still passes.
+  too; by a dotted name with a common word that is a top-level domain
+  inside it (`final`, `new`, `dev`, `app`, `prod`, `team`, `office`,
+  `name`), and `v1` read as `vi` (`schema.v1.json`); and by an
+  Arabic-Indic zero spaced out between two words, the second a top-level
+  domain (`الفروع ٠ قطر`, `الطلبات ٠ عمان`, `المستخدمون ٠ شبكة`): the
+  zero is written `0`. A corpus of notes in English and Arabic
+  (versions, files, abbreviations, decimals, dates) pins what still
+  passes.
 - **Speed**: `holds_link` reads each label of a dotted run where it read
   the last; its time stays linear in the text's length. On 100,000
   characters, dotted labels that each read the 256 ways `READINGS`
   allows take about half a second (2.9: a tenth), and a run of white
-  space about 30 milliseconds (2.9: over a minute).
-- **Not covered**: a group's name that `list_item` shows, as approvals'
-  "Takes away" and a return's "Groups" do, is not marked: taking a user
-  out of a group is never refused for the group's name.
+  space about 30 milliseconds (2.9: over a minute); past
+  `READ_LENGTH`, nothing more is read, so a text the size of a request
+  body reads as fast as its first 10,000 characters.
+- **Not covered**: "Takes away" shows a group's name unmarked
+  (`list_item`): taking a user out of a group is never refused for the
+  group's name. A project's own item that shows a name late in it,
+  after its own words, may be cut by a line before the name's twentieth
+  character: that cut is not read.
 - **New names**: `shows_link`, and `numbers` on `holds_link`.
 
 ### References
