@@ -12,6 +12,8 @@ email address, or a number to call is refused (``LinkNotShown``, 422),
 read as a person reads it (user report A17, ADR 0180).
 """
 
+import copy
+import pickle
 import time
 from decimal import Decimal
 from typing import Final
@@ -19,12 +21,15 @@ from uuid import UUID
 
 import pytest
 
+from domainkit.contrib.approvals.authorizing import details_of
 from domainkit.contrib.auth.actions import Shown
+from domainkit.contrib.auth.integration import group_item
 from domainkit.contrib.auth.screens import (
     Details,
     LinkNotShown,
     TooMuchToShow,
     Typed,
+    TypedName,
     _top_level_domains,
     check_typed,
     fitted,
@@ -849,3 +854,74 @@ def test_digits_are_a_number_to_call_only_where_asked_without_numbers() -> None:
     assert not holds_link(coded)
     assert shows_link(coded)
     assert not shows_link(coded, numbers=False)
+
+
+GROUP_ID: Final = UUID("12345678-1234-5678-1234-567812341234")
+"""A group's id whose item ends in four digits: ``(…1234)``."""
+
+
+def test_a_group_added_shows_its_stored_name_typed(use_auth: UseAuth) -> None:
+    """A name that holds a link is refused where it is granted (user report A17).
+
+    Whole, or as its item shows it cut (``evil.co…``); with
+    ``TYPED_LINKS`` shown, as in 2.9. The id and the counts beside it are
+    never read: a hundred permissions beside ``(…1234)`` would read as a
+    number to call. A rejection's screen drops the mark, as for any typed
+    text of a request.
+    """
+    use_auth()
+    linked = group_item("visit evil.example", GROUP_ID, 3)
+    many = group_item("readers", GROUP_ID, 100)
+    cut = next(
+        item
+        for width in range(40)
+        if (item := group_item("x" * width + " evil.corporate", GROUP_ID, 2, 1))
+        .rpartition(" (")[0]
+        .endswith(" evil.co…")
+    )
+    shown = laid_out({"Adds": [linked, many, cut]})
+    use_auth(AUTHORIZATIONS={"TYPED_LINKS": "refused"})
+
+    assert isinstance(linked, TypedName)
+    assert isinstance(cut, TypedName)
+    assert (linked, linked.name, linked.shown) == (
+        "visit evil.example (…1234) 3 perms",
+        "visit evil.example",
+        "visit evil.example",
+    )
+    assert shown[0] == ("Adds", f"{linked}, {many}")
+    assert not holds_link(cut.name)
+    for details in ({"Adds": [many, linked]}, {"Adds": [cut]}, {"Group": linked}):
+        with pytest.raises(LinkNotShown):
+            laid_out(details)
+    assert holds_link(many)
+    assert laid_out({"Adds": [many]}) == [("Adds", "readers (…1234) 100 perms")]
+    with pytest.raises(LinkNotShown):
+        laid_out({"Adds": [many, Typed("x")]})  # Read as shown, beside typed text.
+    assert details_of("auth.set_groups", [("Adds", [linked])], typed=False)
+
+
+def test_a_project_checks_a_stored_group_name_its_own_way(use_auth: UseAuth) -> None:
+    """``on_typed_text`` gets the name as stored, never the id or the counts."""
+    use_auth()
+    seen: list[str] = []
+    on_typed_text(seen.append, domain="auth")
+    long = "readers of the finance department, cairo office, second floor"
+    item = group_item(long, GROUP_ID, 2)
+
+    laid_out({"Adds": [item, group_item("clerks", 7, 0)]})
+
+    assert isinstance(item, TypedName)
+    assert seen == [long, "clerks"]
+    assert all(type(each) is str for each in seen)
+    assert item.shown.endswith("…")
+    assert item == f"{item.shown} (…1234) 2 perms"
+
+
+def test_a_group_item_copies_with_its_name() -> None:
+    """A copy, or a pickle, keeps the name and how it shows: the screen reads them."""
+    item = TypedName("readers (7) 1 perm", "readers", "readers")
+
+    for each in (copy.deepcopy(item), pickle.loads(pickle.dumps(item))):  # noqa: S301
+        assert (each, each.name, each.shown) == (item, item.name, item.shown)
+        assert isinstance(each, TypedName)

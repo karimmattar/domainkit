@@ -46,7 +46,14 @@ from domainkit_tests.test_admin_actions import (
 )
 from domainkit_tests.test_admin_actions import frozen as frozen  # The fixture.
 from domainkit_tests.test_admin_acts_bind_groups import pending, stored_requests
-from domainkit_tests.test_approval_screens import SCREENS, fingerprint_of, pairs
+from domainkit_tests.test_approval_screens import (
+    SCREENS,
+    ask_to,
+    end4,
+    fingerprint_of,
+    held,
+    pairs,
+)
 from domainkit_tests.test_approvals_request_actions import (
     EVERY_STEP,
     PAYMENT,
@@ -164,6 +171,51 @@ def test_without_the_act_a_group_is_never_named_with_a_link(
     problem(renamed, 422, "link_not_shown")
     problem(cut, 422, "link_not_shown")  # Shown cut, as "...vendor evil.co…".
     assert named.status_code == 201, named.json()
+
+
+def test_a_group_whose_stored_name_holds_a_link_is_refused_where_it_is_granted(
+    client: TestClient, frozen: FrozenClock
+) -> None:
+    """Named before the setting: refused where it is granted until it is renamed.
+
+    The admin API's act and approvals' screens show a group added in a few
+    words (``group_item``): its name is text a person typed, read as the
+    item shows it; its id and counts are not. Rejecting a request held
+    before shows it, never refused for it; without the act, holding one is
+    refused (user report A17).
+    """
+    root = Staff(client, frozen, "root", superuser=True)
+    boss = Staff(client, frozen, "boss", superuser=True)
+    target, other = str(create_user("target")), str(create_user("other"))
+    linked = make_group("visit evil.example")
+    body = {"groups": ["visit evil.example"]}
+    waiting = held(root, target, ("visit evil.example",))
+    request_id = waiting.json()["approval_request_id"]
+    fingerprint = {"fingerprint": fingerprint_of(boss, request_id)}
+    renaming = f"/groups/{linked}"
+
+    with override_settings(AUTH=REFUSED):
+        asked = root.ask(f"/users/{target}/groups/authorization", body)
+        approving = ask_to(boss, request_id, "approve", fingerprint)
+        rejecting = ask_to(boss, request_id, "reject", {"reason": "No"})
+        with override_settings(AUTH={**REFUSED, "ADMIN_ACTION": False}):
+            submitted = root.call("PUT", f"/users/{other}/groups", body)
+        authorization = root.authorized(
+            f"{renaming}/authorization/patch", {"name": "auditors"}
+        )
+        renamed = root.call("PATCH", renaming, {"name": "auditors"}, authorization)
+        approvable = ask_to(boss, request_id, "approve", fingerprint)
+        granting = root.ask(
+            f"/users/{target}/groups/authorization", {"groups": ["auditors"]}
+        )
+
+    problem(asked, 422, "link_not_shown")
+    problem(approving, 422, "link_not_shown")
+    assert ("Adds", f"visit evil.example ({end4(linked)}) 0 perms") in pairs(rejecting)
+    problem(submitted, 422, "link_not_shown")
+    assert renamed.status_code == 200, renamed.json()
+    assert ("Adds", f"auditors ({end4(linked)}) 0 perms") in pairs(approvable)
+    assert ("Adds", f"auditors ({end4(linked)}) 0 perms") in pairs(granting)
 
 
 def test_a_held_impersonation_whose_reason_holds_a_link_is_never_submitted(

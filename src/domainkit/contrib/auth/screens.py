@@ -40,7 +40,7 @@ import re
 import unicodedata
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from pathlib import Path
-from typing import Final
+from typing import Final, Self
 
 from domainkit.apps.hooks import HookPoint
 from domainkit.ddd import BusinessRuleViolation
@@ -245,10 +245,38 @@ class Typed(str):
     wrote: a reason, a name given, a note. Not what the act is on
     (``named``), which never locks what it names: a group's name is
     checked where it is typed (``check_typed``), and a user's username or
-    address is an identifier, set as one.
+    address is an identifier, set as one. A group added, in a few words
+    (``group_item``), shows its stored name typed (since 2.10).
     """
 
     __slots__ = ()
+
+
+class TypedName(Typed):
+    """A text that shows a name a person typed, among words the framework wrote.
+
+    What ``group_item`` gives (since 2.10): "readers (…9abc) 3 perms", the
+    group's stored name, cut to fit (``shown``), beside the end of its id
+    and what it grants. ``laid_out`` checks the name alone: the
+    ``on_typed_text`` checks get it as stored, and with ``TYPED_LINKS``
+    refused it is refused where it holds a link, whole or as the text
+    shows it. The id and the counts, which no person typed, are not read.
+    """
+
+    name: str
+    """The name as stored: what the ``on_typed_text`` checks get."""
+    shown: str
+    """The name as the text shows it: whole, or cut and ended with ``…``."""
+
+    def __new__(cls, text: str, name: str, shown: str) -> Self:
+        """``text``, which shows ``name`` as ``shown``."""
+        made = super().__new__(cls, text)
+        made.name, made.shown = name, shown
+        return made
+
+    def __getnewargs__(self) -> tuple[str, str, str]:  # type: ignore[override]
+        """What a copy is made with: the text, the name, and how it shows."""
+        return str(self), self.name, self.shown
 
 
 type TypedCheck = Callable[[str], None]
@@ -381,6 +409,8 @@ def check_typed(text: str) -> None:
 def _check_typed(values: Iterable[object]) -> None:
     """Each ``Typed`` value of ``values``, or item of one, checked as typed.
 
+    A ``TypedName``'s name alone: whole, as stored, and as its text shows it.
+
     Raises:
         LinkNotShown: ``TYPED_LINKS`` is ``"refused"`` and one holds a link.
         Exception: What an ``on_typed_text`` check raises.
@@ -389,6 +419,14 @@ def _check_typed(values: Iterable[object]) -> None:
     for value in values:
         for text in _typed_in(value):
             refused = _links_refused() if refused is None else refused
+            if isinstance(text, TypedName):
+                shown = _printable(text.shown)
+                if refused and (
+                    holds_link(text.name) or _holds_link(shown, spaced=False)
+                ):
+                    raise LinkNotShown
+                _check_by_hooks(text.name)
+                continue
             if refused and holds_link(text):
                 raise LinkNotShown
             _check_by_hooks(text)
@@ -398,13 +436,19 @@ def _check_shown(values: list[object], lines: list[tuple[str, str, int]]) -> Non
     """Refuse a line that shows typed text and holds a link, as it is shown.
 
     Cut, escaped, or joined, a line may read as a link its text did not
-    (``evil.corporate`` cut to ``evil.co…``).
+    (``evil.corporate`` cut to ``evil.co…``). A ``TypedName``'s name is
+    read where it is checked, as its text shows it: a line of them alone
+    is not read again, with the ids and counts beside them.
 
     Raises:
         LinkNotShown: ``TYPED_LINKS`` is ``"refused"`` and such a line
             holds a link.
     """
-    typed = {index for index, value in enumerate(values) if any(_typed_in(value))}
+    typed = {
+        index
+        for index, value in enumerate(values)
+        if any(not isinstance(text, TypedName) for text in _typed_in(value))
+    }
     shown = (text for _, text, index in lines if index in typed)
     if (
         typed
