@@ -4745,7 +4745,6 @@ files = [
     {file = "redis-8.1.0-py3-none-any.whl", hash = "sha256:a4fe1aac3d3b3cc791d4b3d5931c5a956045dc951ee74d1c913ee3ac4d2ee9fb"},
     {file = "redis-8.1.0.tar.gz", hash = "sha256:6e1a19beef9225c83efd689c7e6b7da2d5215b1f42cd13b7fc3714d0a09c7b25"},
 ]
-markers = {main = "extra == \"redis\""}
 
 [package.extras]
 circuit-breaker = ["pybreaker (>=1.4.0)"]
@@ -5895,10 +5894,11 @@ testing = ["anyio", "httpx2", "pytest"]
 tracing = ["opentelemetry-api"]
 tzdata = ["tzdata"]
 uploads = ["python-multipart"]
+uvicorn = ["uvicorn"]
 uvloop = ["uvloop"]
 webhooks = ["cryptography", "httpx2"]
 
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13,<4"
-content-hash = "38989514e0bb1865ab99cb465e9bec0ac123640dff3b955e40b99ef769794b93"
+content-hash = "ec1785e543c7474d23d5c3e9324836148ba5aa23abbd9b71c81f167340482da5"

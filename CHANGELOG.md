@@ -12,6 +12,11 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 
 ### Added
 
+- The `uvicorn` extra, `domainkit[uvicorn]`. It installs nothing new in
+  2.x, where every install has uvicorn already; 3.0 brings uvicorn only
+  through it. `init` writes it for a project served by uvicorn, so the
+  move to 3.0 needs no change there
+  ([upgrading.md](docs/upgrading.md#29-to-210)) (user report S3).
 - `named_keys_held(user)` (`domainkit.contrib.approvals`): the keys
   `AUTH.AUTHORIZATIONS.NAMED_PERMISSIONS` names that a user holds,
   directly or through a group, active or not, as approvals' screens of
