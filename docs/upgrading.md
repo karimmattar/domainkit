@@ -36,6 +36,30 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.9 to 2.10
+
+2.10 closes a project's notes on 2.9. Each item of this list says what a
+project that relied on 2.9's behaviour changes, and what to run. The
+uploads' Office check refuses more (below).
+
+- **`OfficeCheck` refuses more Office documents** (security). `DOCX`,
+  `XLSX` and `PPTX` refuse an imported chunk (`w:altChunk`) wherever it
+  is and whatever its relationship's type (`422 unsafe_file`, "Files
+  with embedded files or objects are not accepted."), and instruction
+  text (`w:instrText`, `w:delInstrText`) after a field's `separate` mark
+  or in no field (`422 unsafe_file`, "Files with actions that run by
+  themselves, ..."). A part named, or a target inside the package
+  written, otherwise than Office writes them is `422 unreadable_file`:
+  only ASCII letters, digits and `-._~!$&'()*+,;=@`, no empty segment,
+  and in a name no `.` or `..` segment (the trash Office leaves,
+  `[trash]/0000.dat`, passes). Every part whose bytes start as XML is
+  read as XML, whatever names it: such a part that 2.9 passed unread
+  because nothing named it is now checked, and refused if it is refused
+  when named. Word, LibreOffice and pandoc name parts so; a
+  package made by a tool that names a part with `%20` or letters outside
+  ASCII is refused, and is taken once repacked with plain names
+  ([Checking documents](uploads.md#checking-documents)).
+
 ## 2.8 to 2.9
 
 2.9 follows up the audit of 2.8. Each item of this list says what a
