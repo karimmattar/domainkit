@@ -440,7 +440,8 @@ its own serves. `migrate` reads the table's indexes first and makes only
 those missing, so with none to make it takes no lock on the table. It
 builds each `CONCURRENTLY`, once its hooks committed, so the table takes
 writes while it does, and it drops and builds again one that a failed
-concurrent build left invalid (*new in 2.10*). Revisions leave them
+concurrent build left invalid. While another session builds an index on
+the table, it builds none, and says so (*new in 2.10*). Revisions leave them
 alone, and SQLite gets none: it cannot reflect an index on `lower()`
 ([ADR 0185](../adr/0185-bound-keyset-pages-index-the-user-lookups-and-read-fewer-grants.md)).
 

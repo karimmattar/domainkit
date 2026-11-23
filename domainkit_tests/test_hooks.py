@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domainkit import setup
@@ -113,6 +114,7 @@ class FollowedConfig(DomainConfig):
         await connection.exec_driver_sql("SELECT count(*) FROM followed_rows")
         mode = connection.sync_connection.get_execution_options()["isolation_level"]
         CALLS.append(("followed", "built", database, mode, await path(connection)))
+        return "followed_rows read"
 """
 BREAKING = """
 from domainkit.apps import DomainConfig
@@ -125,6 +127,22 @@ class BreakingConfig(DomainConfig):
 
     async def fail(self, connection, database):
         raise RuntimeError("the hook failed")
+"""
+UNFINISHED = """
+from domainkit.apps import DomainConfig
+from domainkit.db.hooks import on_migrated, on_migrated_committed
+
+
+class UnfinishedConfig(DomainConfig):
+    def ready(self):
+        on_migrated(self.filled)
+        on_migrated_committed(self.fail)
+
+    async def filled(self, connection, database):
+        await connection.exec_driver_sql("CREATE TABLE kept_rows (x INTEGER)")
+
+    async def fail(self, connection, database):
+        raise RuntimeError("the follow-up failed")
 """
 
 
@@ -167,6 +185,7 @@ def calls(make_package: MakePackage) -> list[tuple[str, ...]]:
     make_package("failing", {"apps.py": FAILING})
     make_package("followed", {"apps.py": FOLLOWED})
     make_package("breaking", {"apps.py": BREAKING})
+    make_package("unfinished", {"apps.py": UNFINISHED})
     import hooklog  # type: ignore[import-not-found]
 
     return hooklog.CALLS  # type: ignore[no-any-return]
@@ -246,7 +265,7 @@ def test_migrated_follow_ups_run_once_the_hooks_committed(
     ):
         setup()
         domains = [hook.domain for hook in on_migrated_committed]
-        run_migrated_hooks("default")
+        notes = run_migrated_hooks("default")
         ran = list(calls)
     calls.clear()
     registry.clear()
@@ -260,10 +279,61 @@ def test_migrated_follow_ups_run_once_the_hooks_committed(
     asyncio.run(connections.close_all())
 
     assert domains == ["followed"]
+    assert notes == ["followed_rows read"]  # For migrate to print.
     assert ran == [
         ("followed", "migrated", "default", None),
         ("followed", "built", "default", "AUTOCOMMIT", None),
     ]
+    assert calls == []
+
+
+@pytest.mark.usefixtures("database_access")
+def test_a_failed_follow_up_fails_after_the_hooks_committed(
+    calls: list[tuple[str, ...]], tmp_path: Path
+) -> None:
+    """The error reaches ``migrate`` as it is; what ``on_migrated`` made stays.
+
+    ``on_migrated`` hooks fail so too. Run ``migrate`` again: both run again.
+    """
+    url = f"sqlite+aiosqlite:///{tmp_path / 'hooks.sqlite3'}"
+    with override_settings(
+        INSTALLED_DOMAINS=[ALPHA, "unfinished"], DATABASES={"default": {"URL": url}}
+    ):
+        setup()
+        with pytest.raises(RuntimeError, match="the follow-up failed"):
+            run_migrated_hooks("default")
+
+        async def tables() -> list[str]:
+            async with connections.engine().connect() as connection:
+                return await connection.run_sync(
+                    lambda sync: inspect(sync).get_table_names()
+                )
+
+        kept = asyncio.run(tables())
+    asyncio.run(connections.close_all())
+
+    assert kept == ["kept_rows"]
+
+
+def test_tenant_follow_ups_are_refused_through_pgbouncer(
+    calls: list[tuple[str, ...]],
+) -> None:
+    """Its transaction pooling keeps no ``search_path``: no hook runs at all.
+
+    The follow-ups run outside a transaction, in the tenant's schema set for
+    the session; PgBouncer would hand it to another client, or lose it. The
+    schema owner connects directly with ``MIGRATION_URL``.
+    """
+    url = "postgresql+asyncpg://owner@pgbouncer.invalid:6432/app"
+    with override_settings(
+        INSTALLED_DOMAINS=[ALPHA, "followed"],
+        DATABASES={"default": {"URL": url, "PGBOUNCER": True}},
+        TENANCY={"SCHEMA_DATABASES": ["default"]},
+    ):
+        setup()
+        with pytest.raises(ImproperlyConfigured, match="set MIGRATION_URL"):
+            run_migrated_hooks("default", tenant="acme")
+
     assert calls == []
 
 

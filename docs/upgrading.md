@@ -53,23 +53,35 @@ in its hooks' transaction, with `CREATE INDEX`, which holds the table's
 writes while it runs. `migrate` now builds each with `CREATE INDEX
 CONCURRENTLY`, under the same names, once its hooks committed, on a
 connection outside a transaction: signups, logins, and profile changes
-go on while it builds. It waits for the transactions open on the table
-to end, so a long transaction delays it, not the writes. No migration to
-make, and nothing to build by hand before you deploy.
+go on while it builds. Each build waits for the transactions that write
+to the table when it starts, and for every transaction in the database
+that holds an older snapshot before it ends, so a long transaction
+delays `migrate`, not the writes. No migration to make, and nothing to
+build by hand before you deploy: on a large table, the build now runs in
+the deploy's `migrate` step, which takes as long as it does.
 
 An index that a concurrent build left invalid (`pg_index.indisvalid` is
 false), by hand or by `migrate`, now counts as missing: `migrate` drops
 it (`DROP INDEX CONCURRENTLY`) and builds it again. 2.9 took it as made.
-A valid index of the name stays, one you built by hand included. A build
-still running is invalid too, and one of the two would fail: let a build
-you started by hand finish before `migrate` runs. SQLite gets none, as
-before ([ADR 0185](adr/0185-bound-keyset-pages-index-the-user-lookups-and-read-fewer-grants.md)).
+A valid index of the name stays, one you built by hand included. While
+another session builds an index on the users table, its index is
+invalid too: `migrate` builds none of them then, leaves that build
+alone, and prints `Database 'default': skipped the user lookups'
+indexes: an index on public.domainkit_users is being built; run migrate
+again once it ends`. Run it again once that build ended. SQLite gets
+none, as before ([ADR 0185](adr/0185-bound-keyset-pages-index-the-user-lookups-and-read-fewer-grants.md)).
 
 A domain of the project's may build its own indexes so: `migrate` calls
 the new hook point `domainkit.db.hooks.on_migrated_committed`, once the
 `on_migrated` hooks committed, with the schema owner's connection, where
-each statement commits as it runs
-([Extension points](reference/extension-points.md)).
+each statement commits as it runs, and prints the line a hook returns.
+A hook that raises fails `migrate` after the `on_migrated` hooks
+committed: run `migrate` again, and both run again
+([Extension points](reference/extension-points.md)). `migrate --tenant`
+runs them in the tenant's schema, set for their connection's session.
+Through PgBouncer (`PGBOUNCER` without `MIGRATION_URL`), which keeps no
+session, it refuses while any is registered, auth's among them, and asks
+for `MIGRATION_URL`: a direct connection for the schema owner.
 
 ### A module of the project's own can be a built-in layer
 

@@ -412,6 +412,11 @@ def test_migrate_makes_the_lookup_indexes_in_the_user_tables_own_schema(
     assert all(valid for _, valid in states.values())
 
 
+WAITING: Final = (
+    "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()"
+    " AND query LIKE 'CREATE INDEX%' AND wait_event_type = 'Lock'"
+)
+"""Whether a build of an index waits for a lock, as one waits for a write."""
 TOUCH: Final = "UPDATE domainkit_users SET email = email"
 """A write that holds the default user table until its transaction ends."""
 INVALIDATE: Final = (
@@ -446,7 +451,7 @@ def asyncpg_dsn(database_url: str) -> str:
 
 
 @contextmanager
-def built() -> Iterator[list[str]]:
+def built_statements() -> Iterator[list[str]]:
     """Each statement of the block, of any engine, that makes or drops an index."""
     seen: list[str] = []
 
@@ -499,10 +504,10 @@ def test_migrate_builds_again_an_index_a_failed_build_left_invalid(
 
     run_async(fail_a_build())
     before = run_async(index_states(migrated))
-    with built() as rebuilt:
+    with built_statements() as rebuilt:
         call_command("migrate", stdout=io.StringIO())
     after = run_async(index_states(migrated))
-    with built() as again:
+    with built_statements() as again:
         call_command("migrate", stdout=io.StringIO())
 
     assert before[folded][1] is False
@@ -524,6 +529,76 @@ def test_migrate_builds_again_an_index_a_failed_build_left_invalid(
 
 @pytest.mark.skipif(not ON_POSTGRES, reason=f"set {POSTGRES_VARIABLE}: SQLite has none")
 @pytest.mark.parametrize("migrated", ["default"], indirect=True)
+def test_migrate_leaves_alone_an_index_whose_build_still_runs(
+    migrated: str, database_url: str
+) -> None:
+    """While another session builds an index on the table, nothing is built.
+
+    That build's index is invalid until it ends. Dropped, or built beside,
+    one of the two builds was cancelled, or ``migrate`` failed on a
+    deadlock (review). ``migrate`` says so instead, and the build goes on;
+    once it ends, ``migrate`` finds the index and builds nothing.
+    """
+    folded = "ix_domainkit_users_email_lower"
+    building, finish, built = threading.Event(), threading.Event(), []
+
+    def build() -> None:
+        async def run() -> None:
+            writer = await asyncpg.connect(asyncpg_dsn(database_url))
+            builder = await asyncpg.connect(asyncpg_dsn(database_url))
+            try:
+                await builder.execute(f"DROP INDEX {folded}")
+                async with writer.transaction():
+                    await writer.execute(TOUCH)  # The build waits for it.
+                    made = asyncio.create_task(
+                        builder.execute(
+                            f"CREATE INDEX CONCURRENTLY {folded} ON {migrated} "
+                            "(lower(email))"
+                        )
+                    )
+                    for _ in range(200):
+                        if await writer.fetchval(WAITING):
+                            break
+                        await asyncio.sleep(0.05)
+                    building.set()
+                    await asyncio.to_thread(finish.wait, 30)
+                await made
+                built.append("built")
+            finally:
+                await writer.close()
+                await builder.close()
+
+        asyncio.run(run())
+
+    builder = threading.Thread(target=build)
+    builder.start()
+    try:
+        assert building.wait(10)
+        during = run_async(index_states(migrated))
+        output = io.StringIO()
+        with built_statements() as statements:
+            call_command("migrate", stdout=output)
+    finally:
+        finish.set()
+        builder.join(30)
+    after = run_async(index_states(migrated))
+    again = io.StringIO()
+    call_command("migrate", stdout=again)
+
+    assert during[folded][1] is False
+    assert statements == []
+    assert (
+        "Database 'default': skipped the user lookups' indexes: an index on "
+        f"public.{migrated} is being built; run migrate again once it ends"
+    ) in output.getvalue().splitlines()
+    assert built == ["built"]
+    assert after[folded] == (during[folded][0], True)  # The same index, built.
+    assert "skipped" not in again.getvalue()
+    assert run_async(index_states(migrated)) == after
+
+
+@pytest.mark.skipif(not ON_POSTGRES, reason=f"set {POSTGRES_VARIABLE}: SQLite has none")
+@pytest.mark.parametrize("migrated", ["default"], indirect=True)
 def test_migrate_builds_the_lookup_indexes_while_the_table_takes_writes(
     migrated: str, database_url: str
 ) -> None:
@@ -537,10 +612,6 @@ def test_migrate_builds_the_lookup_indexes_while_the_table_takes_writes(
     for name in lookup_indexes(get_user_model(), get_user_table(), "email"):
         on_server(database_url, f"DROP INDEX {name}")
     held, wrote = threading.Event(), []
-    waiting = (
-        "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()"
-        " AND query LIKE 'CREATE INDEX%' AND wait_event_type = 'Lock'"
-    )
 
     def write() -> None:
         async def hold() -> None:
@@ -551,7 +622,7 @@ def test_migrate_builds_the_lookup_indexes_while_the_table_takes_writes(
                     await first.execute(TOUCH)
                     held.set()
                     for _ in range(200):
-                        if await second.fetchval(waiting):
+                        if await second.fetchval(WAITING):
                             break
                         await asyncio.sleep(0.05)
                     await second.execute("SET lock_timeout = '2s'")
@@ -593,7 +664,7 @@ def test_migrate_builds_no_lookup_index_on_sqlite(tmp_path: Path) -> None:
         setup()
         call_command("makemigrations", "-m", "auth", stdout=io.StringIO())
         call_command("migrate", stdout=io.StringIO())
-        with built() as seen:
+        with built_statements() as seen:
             call_command("migrate", stdout=io.StringIO())
         present = run_async(sqlite_indexes())
     registry.clear()

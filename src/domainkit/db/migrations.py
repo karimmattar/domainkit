@@ -471,27 +471,44 @@ def create_partitions(database: str = DEFAULT_DB_ALIAS) -> list[str]:
 
 def run_migrated_hooks(
     database: str = DEFAULT_DB_ALIAS, *, tenant: str | None = None
-) -> None:
+) -> list[str]:
     """Run the ``on_migrated`` hooks (``domainkit.db.hooks``) for alias ``database``.
 
     With ``tenant``, in that tenant's schema (``search_path``), so what they
     make (the audit trail's triggers, its indexes) is the schema's own. Once
     they committed, the ``on_migrated_committed`` hooks, in the same schema.
+    Returns the lines those hooks return, for ``migrate`` to print.
+
+    Raises:
+        ImproperlyConfigured: With ``tenant``, the schema owner's connection
+            goes through PgBouncer (``PGBOUNCER`` without ``MIGRATION_URL``),
+            and a follow-up hook would need the schema kept for its session.
     """
     alias = _single_alias(database)
     schema = None if tenant is None else _tenant_schema(alias, tenant)
-    _run(_migrated(connections.config(alias), alias, schema))
+    return _run(_migrated(connections.config(alias), alias, schema))
 
 
-async def _migrated(database: DatabaseConfig, alias: str, schema: str | None) -> None:
+async def _migrated(
+    database: DatabaseConfig, alias: str, schema: str | None
+) -> list[str]:
     """Run the hooks in one transaction, as the schema owner, in ``schema``.
 
     Then the follow-ups, once that transaction committed, on a connection
     of their own outside a transaction (``AUTOCOMMIT``): ``CREATE INDEX
     CONCURRENTLY`` runs only so, and would wait for the hooks' transaction
-    while it is open. The unpooled connection is closed after them, its
-    ``search_path`` with it.
+    while it is open. There ``schema`` is the session's ``search_path``,
+    which PgBouncer's transaction pooling would not keep, or would hand to
+    another client: refused there, before any hook runs. The unpooled
+    connection is closed after them, its ``search_path`` with it.
     """
+    follow_ups = on_migrated_committed.hooks()
+    if schema is not None and follow_ups and _through_pgbouncer(database):
+        raise ImproperlyConfigured(
+            "migrate --tenant runs hooks outside a transaction in the tenant's "
+            "schema, which PgBouncer's transaction pooling does not keep: set "
+            "MIGRATION_URL to a direct connection to PostgreSQL."
+        )
     engine = create_owner_engine(database)
     try:
         async with _connected(engine, begin=True) as connection:
@@ -499,16 +516,22 @@ async def _migrated(database: DatabaseConfig, alias: str, schema: str | None) ->
                 await connection.exec_driver_sql(f'SET LOCAL search_path TO "{schema}"')
             for hook in on_migrated:
                 await hook.call(connection, alias)
-        if not (follow_ups := on_migrated_committed.hooks()):
-            return
+        if not follow_ups:
+            return []
         async with _connected(engine) as connection:
             outside = await connection.execution_options(isolation_level="AUTOCOMMIT")
             if schema is not None:
                 await outside.exec_driver_sql(f'SET search_path TO "{schema}"')
-            for hook in follow_ups:
-                await hook.call(outside, alias)
+            return [  # In order: each hook once the one before it returned.
+                note for hook in follow_ups if (note := await hook.call(outside, alias))
+            ]
     finally:
         await engine.dispose()
+
+
+def _through_pgbouncer(database: DatabaseConfig) -> bool:
+    """Whether the schema owner connects through PgBouncer (``create_owner_engine``)."""
+    return database.PGBOUNCER and database.MIGRATION_URL is None
 
 
 def upgrade(

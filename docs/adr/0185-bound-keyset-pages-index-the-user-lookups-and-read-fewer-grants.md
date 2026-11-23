@@ -237,7 +237,6 @@ ones descending), and no one range holds both.
 - Still read: the ties of the first field up to the position, as the
   decision says; the missing values are one such group.
 
-
 ## Amendment (2026-11-23): build the lookup indexes concurrently, and an invalid one again
 
 `migrate` built the user lookups' indexes with `CREATE INDEX`, in the
@@ -252,7 +251,16 @@ read the whole table again (user report D2).
   committed, `migrate` calls the `on_migrated_committed` hooks, on a
   connection of the schema owner of their own, in `AUTOCOMMIT`, in the
   tenant's schema where it migrates one. `index_lookups` moves there.
-  `flush` runs them too.
+  `flush` runs them too. A hook may return a line, which `migrate`
+  prints. One that raises fails `migrate` as an `on_migrated` hook does,
+  after their transaction committed: a second `migrate` runs both again.
+- **No tenant's follow-ups through PgBouncer.** The tenant's schema is
+  the follow-up connection's `search_path`, set for its session, which
+  PgBouncer's transaction pooling does not keep and may hand to another
+  client. With `PGBOUNCER` and no `MIGRATION_URL`, `migrate --tenant`
+  refuses before any hook runs, while follow-ups are registered, and
+  asks for `MIGRATION_URL`. Qualifying each name with the schema instead
+  would hold for auth's statements only, not for a project's hooks.
 - **Built concurrently, under the same names.** Each missing index is
   built with `CREATE INDEX CONCURRENTLY IF NOT EXISTS`: the table takes
   writes while it is built ([PostgreSQL: building indexes
@@ -266,6 +274,19 @@ read the whole table again (user report D2).
   `DROP INDEX CONCURRENTLY IF EXISTS` in the table's schema, and built
   again, the recovery PostgreSQL's documentation gives first. A
   `migrate` with nothing to build still takes no lock on the table.
+- **A build still running is left alone.** Its index is invalid too.
+  Dropped, the drop waited for the build and then one of the two failed
+  on a deadlock, or, past the deadlock check, the build was cancelled
+  and `migrate` started it over; built beside, the two builds could
+  deadlock the same way (review). So before it builds, `index_lookups` asks
+  whether another session builds an index on the table: a row of
+  `pg_stat_progress_create_index` whose `pid` holds the table's
+  `SHARE UPDATE EXCLUSIVE` lock, which every concurrent build holds
+  while it runs. Every role sees those two; the view's `relid` only the
+  build's own role sees. If one does, it builds none of the indexes, and
+  returns "skipped the user lookups' indexes: an index on <table> is
+  being built; run migrate again once it ends", which `migrate` prints.
+  A build that starts between that check and the drop is not seen.
 
 Options weighed:
 
@@ -291,15 +312,18 @@ Options weighed:
 
 Consequences:
 
-- `migrate` waits, without holding writes, for the transactions open on
-  the table when a build starts, and for those that hold an older
-  snapshot before it ends: a long transaction delays the deploy, not the
-  writes.
+- `migrate` waits, without holding writes, for the transactions that
+  write to the table when a build starts, and for every transaction in
+  the database that holds an older snapshot before it ends: a long
+  transaction delays the deploy, not the writes. On a large table, the
+  build runs in the deploy's `migrate` step, which takes as long.
 - A build that fails fails `migrate`, and leaves an invalid index, which
   the next `migrate` builds again.
-- An index whose concurrent build still runs is invalid too. `migrate`
-  waits for that build, and then one of the two fails: let a build
-  started by hand finish first. Two `migrate`s at once, which
-  operations.md advises against, can fail so too.
+- While another session builds an index on the users table, by hand or
+  by a `migrate` killed in its step whose server session builds on,
+  `migrate` builds none and says so; it builds them once run again after
+  that build ended. Two `migrate`s at once, which operations.md advises
+  against, end so too: the second skips, unless it checks in the moment
+  before the first starts to build.
 - From 2.10 a project no longer builds them by hand before it deploys:
   "To watch" above holds for 2.9 only.

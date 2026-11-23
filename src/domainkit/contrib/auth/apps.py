@@ -586,7 +586,9 @@ class AuthConfig(DomainConfig):
         if database == self.database and await has_tables(connection, permissions):
             await sync_permissions(connection)
 
-    async def index_lookups(self, connection: AsyncConnection, database: str) -> None:
+    async def index_lookups(
+        self, connection: AsyncConnection, database: str
+    ) -> str | None:
         """Build the user lookups' indexes after ``migrate``, on PostgreSQL.
 
         ``lower()`` of the address and the username, and the admin's order
@@ -595,27 +597,42 @@ class AuthConfig(DomainConfig):
         (``on_migrated_committed``), so each is built ``CONCURRENTLY``: the
         table takes writes while it is built. An invalid index, which a
         concurrent build that failed leaves, here or by hand, is dropped and
-        built again; a valid one of the name stays. The table's indexes are
-        read first, from the catalog, so a ``migrate`` with nothing to build
-        takes no lock on the table. Not on SQLite, which cannot reflect an
-        index on ``lower()``: such an index would warn at every
-        ``makemigrations`` and snapshot, so they are not declared on the
-        table either, and revisions leave them alone (A28-PERF-02, user
-        report D2).
+        built again; a valid one of the name stays. While another session
+        builds an index on the table, nothing is built: a build still
+        running is invalid too, and dropping it, or building beside it,
+        would cancel one of the two. It says so, for ``migrate`` to print.
+        The table's indexes are read first, from the catalog, so a
+        ``migrate`` with nothing to build takes no lock on the table. Not on
+        SQLite, which cannot reflect an index on ``lower()``: such an index
+        would warn at every ``makemigrations`` and snapshot, so they are not
+        declared on the table either, and revisions leave them alone
+        (A28-PERF-02, user report D2).
         """
         if database != self.database or connection.dialect.name != "postgresql":
-            return
+            return None
         found = await connection.run_sync(_index_validity, self.user_table)
         if found is None:
-            return
+            return None
         schema, valid = found
         preparer = connection.dialect.identifier_preparer
+        wanted = {
+            name: indexed
+            for name, indexed in self._lookup_indexes(preparer.quote).items()
+            if not valid.get(name)
+        }
+        if not wanted:
+            return None
+        where = {"schema": schema, "table": self.user_table.name}
+        if await connection.scalar(_BUILDING, where):
+            return (
+                "skipped the user lookups' indexes: an index on "
+                f"{schema}.{self.user_table.name} is being built; run migrate "
+                "again once it ends"
+            )
         within = f"{preparer.quote_schema(schema)}."
         table = within + preparer.quote(self.user_table.name)
-        for name, indexed in self._lookup_indexes(preparer.quote).items():
-            if valid.get(name):
-                continue
-            if name in valid:  # Invalid: a concurrent build failed, or runs.
+        for name, indexed in wanted.items():
+            if name in valid:  # Invalid: a concurrent build failed.
                 await connection.exec_driver_sql(
                     f"DROP INDEX CONCURRENTLY IF EXISTS {within}{preparer.quote(name)}"
                 )
@@ -623,6 +640,7 @@ class AuthConfig(DomainConfig):
                 f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {preparer.quote(name)} "
                 f"ON {table} ({indexed})"
             )
+        return None
 
     def _lookup_indexes(self, quote: Callable[[str], str] = str) -> dict[str, str]:
         """The user lookups' indexes, by name (``lookup_indexes``)."""
@@ -1181,6 +1199,23 @@ _INDEXES: Final = text(
     " WHERE n.nspname = :schema AND t.relname = :table"
 )
 """Each index of a table, by name, and whether it is valid (``pg_index``)."""
+_BUILDING: Final = text(
+    "SELECT EXISTS (SELECT FROM pg_stat_progress_create_index p"
+    " JOIN pg_locks l ON l.pid = p.pid"
+    " JOIN pg_database d ON d.oid = l.database"
+    " JOIN pg_class t ON t.oid = l.relation"
+    " JOIN pg_namespace n ON n.oid = t.relnamespace"
+    " WHERE l.locktype = 'relation' AND l.mode = 'ShareUpdateExclusiveLock'"
+    " AND l.granted AND d.datname = current_database()"
+    " AND n.nspname = :schema AND t.relname = :table"
+    " AND p.pid <> pg_backend_pid())"
+)
+"""Whether another session builds an index on a table, ``CONCURRENTLY``.
+
+Its build holds the table's ``SHARE UPDATE EXCLUSIVE`` lock while it runs.
+Every role sees each build's ``pid``, and every lock, but only its own
+builds' table (``relid``): the lock names the table.
+"""
 
 
 def _index_validity(
