@@ -94,6 +94,7 @@ The SQL commit and migration hooks a domain registers (`domainkit.apps.hooks`).
 
 - `on_committed`: Follow up after a SQL unit of work committed: `(uow)`.
 - `on_migrated`: Fill a database `migrate` upgraded: `(owner_connection, alias)`.
+- `on_migrated_committed`: Follow up once the `on_migrated` hooks committed: `(owner_connection, alias)`.
 - `on_stage`: Add rows to a committing SQL unit of work: `(uow, events, tasks)`.
 - `on_stage_transaction`: Join a transaction committed outside a unit of work: `(connection, alias)`.
 - `on_transaction_committed`: Follow up after such a transaction committed: `(alias)`.
@@ -326,8 +327,9 @@ REST resources over aggregates: routes, schemas, conditional writes, policies.
 - `UNSET`: A field left out of a partial change (`PatchModel`, `UpdateX` commands).
 - `Actions`: Rules that depend on a route's action (`view`, `add`, ...).
 - `BatchAnswer`: One result per item, in order, and how many failed.
-- `BatchError`: Why one item failed, as a request of its own would have been told.
+- `BatchError`: Why one item failed: the code and detail a request of its own would get.
 - `BatchResult`: What became of one item.
+- `BeforeRules`: An upload route's body limit, decided from the request alone, before its rules.
 - `DomainSchema`: A read schema `schema_for` made; `from_domain` fills it from an object.
 - `ExportTooLarge`: `422`: an export would hold more rows than the resource allows.
 - `FieldNotEditable`: A partial change sets a field the caller may not change.

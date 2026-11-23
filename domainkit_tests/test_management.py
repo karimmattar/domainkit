@@ -1004,6 +1004,36 @@ def test_tenant_downgrades_need_consent_in_deployments() -> None:
         run("migrate", "base", "--downgrade", "--tenant", "acme")
 
 
+def test_migrate_prints_what_its_follow_up_hooks_say(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A line an ``on_migrated_committed`` hook returns, after the database's own.
+
+    For a tenant's schema too (user report D2).
+    """
+    monkeypatch.setattr(migrations_module, "upgrade", lambda *args, **kw: None)
+    monkeypatch.setattr(migrations_module, "create_partitions", lambda alias: [])
+    monkeypatch.setattr(migrations_module, "migration_targets", lambda: ("default",))
+    monkeypatch.setattr(
+        migrations_module,
+        "run_migrated_hooks",
+        lambda alias, tenant=None: [f"built nothing for {tenant or alias}"],
+    )
+
+    plain = run("migrate")
+    with override_settings(TENANCY={"SCHEMA_DATABASES": ["default"]}):
+        tenant = run("migrate", "--tenant", "acme")
+
+    assert plain == (
+        "Database 'default' is at head.\n"
+        "Database 'default': built nothing for default\n"
+    )
+    assert tenant == (
+        "Tenant 'acme' on 'default': built nothing for acme\n"
+        "Tenant 'acme' on 'default' is at head.\n"
+    )
+
+
 @pytest.mark.anyio
 async def test_migrations_run_from_async_code(migration_project: Path) -> None:
     """Called inside an event loop, migrations run on a separate thread."""

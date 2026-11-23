@@ -614,7 +614,9 @@ A request of 2,200,179 bytes to this route gets 413
   `body_limit=` per route ([resources.md](resources.md)). `upload_route`
   holds its body to its `max_size` and 64 KiB for a form, unless it is
   given a `body_limit`, which it may decide per request (*new in 2.8*,
-  [Bounds decided per request](resources.md#bounds-decided-per-request)).
+  [Bounds decided per request](resources.md#bounds-decided-per-request)),
+  before its rules when a rule reads the body (*new in 2.10*,
+  [A body limit decided before the rules](resources.md#a-body-limit-decided-before-the-rules)).
   Before routing, a declared length is then checked against 1 GiB, the
   most a route may decide.
 - A small limit suits the routes that anonymous callers reach. A login or

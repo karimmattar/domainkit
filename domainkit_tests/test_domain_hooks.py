@@ -515,7 +515,12 @@ def test_seed_runs_every_hook_and_names_each_domain_once(
     assert twice_calls == [*started, "seed", "seed again", "close", *started, "close"]
 
 
-NEW_POINTS: Final = frozenset({"domainkit.apps.hooks.on_retain_subject"})
+NEW_POINTS: Final = frozenset(
+    {
+        "domainkit.apps.hooks.on_retain_subject",
+        "domainkit.db.hooks.on_migrated_committed",  # User report D2.
+    }
+)
 """Points that replaced no method of ``DomainConfig`` (FIN-94)."""
 RENAMED_POINTS: Final = {"check": "on_ready"}
 """Methods whose point 1.0 renamed (DSGN-23): ``on_check`` read as ``check``'s."""

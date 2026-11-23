@@ -8,6 +8,7 @@ its HTTP status, and the class or module that answers it.
 On this page you find:
 
 - what a code promises, and what may change;
+- how a 503 says that its change may have been made;
 - how your own errors get their codes;
 - every code of the framework and its apps, from A to Z.
 
@@ -34,6 +35,37 @@ too). `Retry-After` says when to try again.
 
 How each status is reached, and which fields a body holds, is in
 [responses.md](responses.md#errors).
+
+## A commit in doubt
+
+*New in 2.10.* A request whose `COMMIT` was cut off by its deadline, or
+lost with its connection, may have made its change. It answers `503
+deadline_exceeded` or `503 database_unavailable`, as a request that kept
+nothing does, and its body says so with a member of its own, `in_doubt`:
+
+```json
+{"type": "about:blank", "title": "Service Unavailable", "status": 503, "detail": "The request ran out of time as the change was committed, so it may have been made; check before you send it again.", "instance": "/payments", "code": "deadline_exceeded", "request_id": "6f1c7e6a7d4b4c559f0e1f2a3b4c5d6e", "in_doubt": true}
+```
+
+- `"in_doubt": true`: the change may have been made. Look it up before
+  you send it again; a request sent with an `Idempotency-Key` may be
+  sent again with the same key. The answer has no `Retry-After`, as in
+  2.9.
+- No `in_doubt`: nothing was sent to commit, and the answer has
+  `Retry-After`. The member is never `false`: a client reads it as
+  `body.get("in_doubt") is True`, and a server before 2.10, which sends
+  none, is read by its missing `Retry-After`.
+- The member is in both formats, after the body's own
+  ([responses.md](responses.md#the-fields-of-an-error)). A client that
+  keeps the body and drops the headers (a log, a queue) still tells the
+  two apart.
+- A batch item whose commit is in doubt (`batch_route` without
+  `atomic`) carries no `in_doubt`: its result (`BatchError`) holds its
+  code and its detail alone, which says to check before sending it
+  again.
+- The code stays the same, so a client that switches on it keeps
+  working. 3.0 may give a commit in doubt a code of its own,
+  `commit_in_doubt`.
 
 ## Codes of your own
 
@@ -109,8 +141,8 @@ unique constraint may name its own code
 | `currency_mismatch` | 422 | `CurrencyMismatch` (money): Amounts of two currencies were added, subtracted, or compared. |
 | `currency_not_limited` | 422 | `CurrencyNotLimited` (contrib.limits.exceptions): A movement in a currency none of its subject's limits names (FIN-89). |
 | `database_busy` | 503 | http.errors: The database is busy; try again shortly. |
-| `database_unavailable` | 503 | http.errors: The database is unavailable; try again shortly. It cannot be reached, or cannot serve now (a restart, a failover), with `Retry-After: 5`. Told from asyncpg's errors and SQLAlchemy's; through psycopg, a connection that cannot be opened may still answer 500. A connection lost as a change was committed gets no `Retry-After`: the change may have been made ([runbook](../runbook.md#the-database-is-unavailable)). *New in 2.9* |
-| `deadline_exceeded` | 503 | http.deadlines: The request took too long; try again shortly. With `Retry-After: 1`, unless the deadline passed as a change was committed: that change may have been made (since 2.9). |
+| `database_unavailable` | 503 | http.errors: The database is unavailable; try again shortly. It cannot be reached, or cannot serve now (a restart, a failover), with `Retry-After: 5`. Told from asyncpg's errors and SQLAlchemy's; through psycopg, a connection that cannot be opened may still answer 500. A connection lost as a change was committed gets no `Retry-After`, and `"in_doubt": true` (since 2.10): the change may have been made ([a commit in doubt](#a-commit-in-doubt), [runbook](../runbook.md#the-database-is-unavailable)). *New in 2.9* |
+| `deadline_exceeded` | 503 | http.deadlines: The request took too long; try again shortly. With `Retry-After: 1`, unless the deadline passed as a change was committed: that change may have been made (since 2.9), and the body says `"in_doubt": true` (since 2.10, [a commit in doubt](#a-commit-in-doubt)). |
 | `device_already_bound` | 409 | `DeviceAlreadyBound` (contrib.devices.exceptions): The user has a bound device: approve the new one from it. |
 | `device_login_off` | 404 | `DeviceLoginOff` (contrib.devices.exceptions): `DEVICES.DEVICE_LOGIN` is off: devices do not log in here. |
 | `device_logins_not_asked` | 422 | contrib.auth.api: This server decides what this change does to your devices' logins: leave keep_device_logins out. |

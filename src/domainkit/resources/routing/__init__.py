@@ -109,6 +109,7 @@ from .context import MERGE_PATCH as MERGE_PATCH
 from .context import PROVIDED as PROVIDED
 from .context import RESERVED as RESERVED
 from .context import Aggregate as Aggregate
+from .context import BeforeRules as BeforeRules
 from .context import Handler as Handler
 from .context import Operation as Operation
 from .context import RepositoryOf as RepositoryOf
@@ -806,7 +807,7 @@ class ResourceRouter(APIRouter):
         name: str | None = None,
         summary: str | None = None,
         provide: Mapping[str, Callable[..., object]] | None = None,
-        body_limit: "int | Decided[int] | None" = None,
+        body_limit: "int | Decided[int] | BeforeRules | None" = None,
         retry: Retry | None = None,
         dependencies: Sequence[params.Depends] = (),
         before_rules: Sequence[params.Depends] = (),
@@ -836,7 +837,10 @@ class ResourceRouter(APIRouter):
         decided holds the body from then on, and the file to it; what reads
         the body before (a rule such as ``DeviceSigned``, ``before_rules``,
         ``IdempotencyMiddleware``) is held as on a command route without
-        ``body_limit``.
+        ``body_limit``. A route whose rule reads the body decides it before
+        the rules instead (New in 2.10): ``BeforeRules(decide)``, given the
+        request alone, runs first among ``before_rules``, and holds every
+        read of the body after it, the rule's included.
 
         The rest is ``command_route``'s: the path's ids, ``provide``, the
         aggregate within the caller's reach, ``If-Match``, ``returns``,

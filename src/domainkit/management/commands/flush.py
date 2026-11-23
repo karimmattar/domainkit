@@ -84,8 +84,10 @@ class Command(BaseCommand):
             include_guarded=include_guarded,
         ):
             await fixtures.flush(database, include_guarded=include_guarded)
-            migrations.run_migrated_hooks(database)
+            notes = migrations.run_migrated_hooks(database)
         self.write(f"Deleted {_rows(rows)} from {database!r}.")
+        for note in notes:
+            self.write(f"Database {database!r}: {note}")
 
 
 def _rows(count: int) -> str:
