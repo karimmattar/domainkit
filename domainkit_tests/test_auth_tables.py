@@ -362,7 +362,7 @@ def test_migrate_waits_for_no_writer_once_the_indexes_are_made(
     writer = threading.Thread(target=write)
     writer.start()
     try:
-        assert held.wait(10)
+        assert held.wait(SET_UP)
         on_server(
             database_url, f"ALTER DATABASE \"{url.database}\" SET lock_timeout = '2s'"
         )
@@ -423,6 +423,10 @@ INVALIDATE: Final = (
     "UPDATE pg_index SET indisvalid = false WHERE indexrelid = $1::regclass"
 )
 """Mark an index invalid, as a concurrent build that failed leaves it."""
+SET_UP: Final = 60
+"""Seconds the main thread waits for a helper thread to connect and set its
+case up: more than the 10 s the helper may poll for a build to wait, so a
+slow runner only slows a case."""
 
 
 STATES: Final = text(
@@ -573,7 +577,7 @@ def test_migrate_leaves_alone_an_index_whose_build_still_runs(
     builder = threading.Thread(target=build)
     builder.start()
     try:
-        assert building.wait(10)
+        assert building.wait(SET_UP)
         during = run_async(index_states(migrated))
         output = io.StringIO()
         with built_statements() as statements:
@@ -640,7 +644,7 @@ def test_migrate_builds_the_lookup_indexes_while_the_table_takes_writes(
     writer = threading.Thread(target=write)
     writer.start()
     try:
-        assert held.wait(10)
+        assert held.wait(SET_UP)
         call_command("migrate", stdout=io.StringIO())
     finally:
         writer.join(30)
