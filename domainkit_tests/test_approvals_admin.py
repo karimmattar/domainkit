@@ -32,7 +32,9 @@ from domainkit.contrib.approvals import (
     SET_GROUP_PERMISSIONS,
     SET_GROUPS,
     SET_STAFF,
+    ApprovalRequest,
     ApprovalsSettings,
+    ApprovalsUnitOfWork,
     HeldGroup,
     Reactivate,
     SetGroupPermissions,
@@ -193,7 +195,14 @@ def test_making_staff_waits_then_the_same_call_makes_it_once(
         "auth.staff",
         "pending",
     )
-    assert request["arguments"] == {"user_id": str(bob)}
+    assert request["arguments"] == {
+        "user_id": str(bob),
+        "is_superuser": False,
+        "groups": [],
+        "permissions": [],
+        "object_grants": 0,
+        "object_grants_digest": "",
+    }
     assert request["maker"] == str(user_of_name("ann"))
     assert approved.json()["status"] == "approved", approved.json()
     assert still is False
@@ -629,7 +638,7 @@ def test_a_request_no_longer_approved_is_not_spent(client: TestClient) -> None:
     approve(client, held, root)
     registered = guards()[SET_STAFF]
 
-    arguments = {"user_id": str(bob)}
+    arguments = read(client, held, root)["arguments"]
     first = run_async(_spend(registered, UUID(held), arguments))
     second = run_async(_spend(registered, UUID(held), arguments))
 
@@ -1000,6 +1009,191 @@ def test_a_superuser_comes_back_as_one_is_made(migrated: Migrated) -> None:
     assert demoted.status_code == 200, demoted.json()
     assert back.status_code == 200, back.json()
     assert (back.json()["is_active"], back.json()["is_superuser"]) == (True, False)
+
+
+REACH: Final = "auth.delete_group"
+"""The key ``TENANCY.ALL_TENANTS_PERMISSION`` names in the tests of making staff."""
+REACHING: Final = {
+    "MEMBER_PERMISSIONS": "domainkit_tests.anywhere.members",
+    "MEMBER_TENANTS": "domainkit_tests.anywhere.tenants",
+    "ALL_TENANTS_PERMISSION": REACH,
+}
+"""``TENANCY`` with ``REACH`` reaching every tenant: the key a screen names."""
+
+
+def test_making_staff_again_holds_and_shows_what_the_user_comes_back_with(
+    client: TestClient,
+) -> None:
+    """Made non-staff, a staff member keeps her groups: made staff again, they show.
+
+    The request holds what she comes back with, as ``auth.reactivate``
+    holds a return: the superuser flag, each group (``HeldGroup``), her own
+    permissions, and her grants on objects. The approver reads the key
+    that reaches every tenant by name ("Grants") and the group that gives
+    it ("Groups"), and a grant made since the request makes another one,
+    which waits for its own approval (user report A26).
+    """
+    root = staff("root", superuser=True)
+    other = staff("other", superuser=True)
+    officers = make_group("officers", REACH)
+    ada = create_user("ada", is_staff=True)
+    join("ada", "officers")
+    path = f"{ADMIN}/users/{ada}"
+    making = {"is_staff": True}
+
+    with override_settings(TENANCY=REACHING):
+        unmade = client.patch(path, json={"is_staff": False}, headers=root)
+        held = pending(client.patch(path, json=making, headers=root))
+        arguments = read(client, held, root)["arguments"]
+        screen = screen_of(SET_STAFF, guards()[SET_STAFF].load(arguments), whole=True)
+        approve(client, held, other)
+        grant_directly(ada, "accounting.add_entry")
+        wider = pending(client.patch(path, json=making, headers=root))
+        revoke_directly(ada, "accounting.add_entry")
+        made = client.patch(path, json=making, headers=root)
+
+    assert unmade.status_code == 200, unmade.json()
+    assert arguments == {
+        "user_id": str(ada),
+        "is_superuser": False,
+        "groups": [bound_group("officers", officers, REACH)],
+        "permissions": [],
+        "object_grants": 0,
+        "object_grants_digest": "",
+    }
+    assert screen == [
+        ("Action", SET_STAFF),
+        ("User", f"ada ({end_of(ada)})"),
+        ("Grants", REACH),
+        ("Groups", "officers"),
+    ]
+    assert wider != held
+    assert read(client, wider, root)["arguments"]["permissions"] == [
+        "accounting.add_entry"
+    ]
+    assert made.status_code == 200, made.json()
+    assert made.json()["is_staff"] is True
+    assert read(client, held, root)["status"] == "executed"
+
+
+def test_a_superuser_made_staff_is_shown_as_one(client: TestClient) -> None:
+    """A superuser who is not staff, made staff: the approver reads "Superuser: yes".
+
+    Before 2.10 the screen said "User: boss" alone, as for anyone made
+    staff (user report A26). A flag the call sets beside is the flag
+    held, shown once.
+    """
+    root = staff("root", superuser=True)
+    boss = create_user("boss", is_superuser=True)
+    plain = create_user("plain")
+    path = f"{ADMIN}/users/{{}}"
+
+    held = pending(
+        client.patch(path.format(boss), json={"is_staff": True}, headers=root)
+    )
+    both = pending(
+        client.patch(
+            path.format(plain),
+            json={"is_staff": True, "is_superuser": True},
+            headers=root,
+        )
+    )
+    screens = [
+        screen_of(
+            SET_STAFF,
+            guards()[SET_STAFF].load(read(client, each, root)["arguments"]),
+            whole=True,
+        )
+        for each in (held, both)
+    ]
+
+    assert screens[0] == [
+        ("Action", SET_STAFF),
+        ("User", f"boss ({end_of(boss)})"),
+        ("Superuser", "yes"),
+    ]
+    assert screens[1] == [
+        ("Action", SET_STAFF),
+        ("User", f"plain ({end_of(plain)})"),
+        ("Superuser", "yes"),
+    ]
+    assert read(client, both, root)["arguments"]["is_superuser"] is True
+    assert "values" not in read(client, both, root)["arguments"]
+
+
+def test_making_staff_shows_what_the_user_holds_in_words(client: TestClient) -> None:
+    """Their groups by name, how many permissions and grants on objects, then values.
+
+    As a return shows them (``show_reactivation``), in the same order:
+    "Superuser", "Grants", "Groups", "Also holds", then what else the
+    call sets (user report A26).
+    """
+    bob = create_user("bob")
+    readers = make_group("readers", "auth.view_user")
+    making = SetStaff(
+        user_id=bob,
+        is_superuser=True,
+        groups=(HeldGroup(readers, "readers", ("auth.view_user",)),),
+        permissions=("auth.add_user", "auth.change_user"),
+        object_grants=1,
+        object_grants_digest="0" * 64,
+        values={"is_active": False},
+    )
+
+    screen = screen_of(SET_STAFF, making, whole=True)
+
+    assert screen == [
+        ("Action", SET_STAFF),
+        ("User", f"bob ({end_of(bob)})"),
+        ("Superuser", "yes"),
+        ("Groups", "readers"),
+        ("Also holds", "2 permissions; 1 object grant"),
+        ("Active", "no"),
+    ]
+
+
+async def stored_as_in_2_9(user_id: UUID, maker: UUID) -> str:
+    """A request to make ``user_id`` staff, as 2.9 stored it: the user alone."""
+    request = ApprovalRequest.submit(
+        SET_STAFF,
+        {"user_id": str(user_id)},
+        maker=str(maker),
+        policy="auth.staff",
+        required=1,
+        permission=None,
+        group=None,
+        expires_at=clock.now() + timedelta(days=1),
+    )
+    async with ApprovalsUnitOfWork() as uow:
+        await uow.requests.add(request)
+        await uow.commit()
+    return str(request.id)
+
+
+def test_a_request_of_2_9_to_make_staff_is_never_spent(client: TestClient) -> None:
+    """Approved before the upgrade, it held the user alone: the call asks again.
+
+    A request stored by 2.9 holds none of what the user comes back with,
+    so its approver read none of it. The same call finds no request that
+    holds what the user holds, and submits one (``403
+    approval_pending``), which is approved again; the old one is never
+    spent (user report A26).
+    """
+    root = staff("root", superuser=True)
+    other = staff("other", superuser=True)
+    bob = create_user("bob")
+    old = run_async(stored_as_in_2_9(bob, user_of_name("root")))
+    loaded = guards()[SET_STAFF].load(read(client, old, root)["arguments"])
+    approve(client, old, other)
+
+    fresh = pending(
+        client.patch(f"{ADMIN}/users/{bob}", json={"is_staff": True}, headers=root)
+    )
+
+    assert loaded == SetStaff(user_id=bob)
+    assert fresh != old
+    assert read(client, old, root)["status"] == "approved"
+    assert user_of(bob).is_staff is False
 
 
 def test_granting_a_group_permissions_waits_and_its_members_do_not_decide(

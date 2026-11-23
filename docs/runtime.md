@@ -891,7 +891,8 @@ for plain Python work, never across an `await`:
 
 - the in-memory rate limiter (`MemoryBackend`) and its callers;
 - `AuthenticationMiddleware`'s refused-credential holds;
-- the password hashing pool's count of pending calls;
+- the password hashing pool's count of pending calls, and the making of
+  the threads that read Word documents (`DOCUMENTS["DOCX_AT_ONCE"]`);
 - the logging and reporting queues, and memory caches (`cache/memory.py`);
 - the registries that keep each loop's background tasks
   (`domainkit.tasks`), commit publishers, and brokers, which a new loop
@@ -1335,7 +1336,11 @@ starts:
   answer 503 for a change that was made.
 - A request cut off as its `COMMIT` was sent may have made its change: it
   is answered 503 `deadline_exceeded` without `Retry-After`, with a
-  detail that says to check before sending it again.
+  detail that says to check before sending it again, and
+  `"in_doubt": true` in its body (*new in 2.10*), for a client that
+  reads the body alone. A request that kept nothing has no `in_doubt`
+  ([A commit in doubt](reference/problems.md#a-commit-in-doubt)). 3.0
+  may give it a code of its own, `commit_in_doubt`.
 - Code can lift the deadline of the work it is doing with
   `domainkit.deadlines.current_deadline().clear()`.
 - Tasks a request starts share its deadline while the request runs, and
@@ -1408,7 +1413,7 @@ The deadline itself is a `deadlines.Deadline`:
 - `deadline.in_doubt` says whether a commit of the work failed and may
   have been applied (the deadline passed, or the connection was lost, as
   it committed), in whichever task shares the deadline: a request cut
-  off then is answered without `Retry-After`
+  off then is answered without `Retry-After`, and with `"in_doubt": true`
   ([The request flow](request-flow.md#8-commit)).
 - `deadlines.enforced()` says whether a timer cuts the running task off
   when the deadline passes: true in the task that entered a `timeout`

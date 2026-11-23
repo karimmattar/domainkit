@@ -55,6 +55,12 @@ their approver sees it and approves it; the keys
 ``AUTH.AUTHORIZATIONS.NAMED_PERMISSIONS`` names show by name wherever a
 hold would count them ("Grants"); and ``held_groups`` holds the groups a
 project's own grant names as ``auth.set_groups`` holds them.
+
+Since 2.10 (user report A26), making staff holds and shows what the user
+comes back with, as a return does: the superuser flag, each group, their
+own permissions, and their grants on objects; ``named_keys_held`` reads
+the keys ``NAMED_PERMISSIONS`` names that a user holds, for a project's
+own grants.
 """
 
 import dataclasses
@@ -146,12 +152,12 @@ cancellation's own "Reason" shows beside it."""
 GROUP: Final = gettext_noop("Group")
 """The label of the group a grant to a group is on, shown by name and id."""
 GROUPS: Final = gettext_noop("Groups")
-"""The label of the groups a user made active again comes back in."""
+"""The label of the groups a user made active again, or staff, comes back in."""
 SUPERUSER: Final = gettext_noop("Superuser")
 STAFF: Final = gettext_noop("Staff")
 ALSO_HOLDS: Final = gettext_noop("Also holds")
 """The label of how many permissions of their own, and grants on objects, a
-user made active again comes back with."""
+user made active again, or staff, comes back with."""
 ACTIVE: Final = gettext_noop("Active")
 GRANTS: Final = gettext_noop("Grants")
 """The label of the keys ``NAMED_PERMISSIONS`` names among what a hold grants
@@ -457,13 +463,21 @@ async def show_set_groups(command: "SetGroups") -> list[tuple[str, object]]:
 
 
 async def show_set_staff(command: "SetStaff") -> list[tuple[str, object]]:
-    """What making staff shows: the user, then what else the change sets.
+    """What making staff shows: the user, what they come back with, what else is set.
 
-    The user by name and id; then, since 2.8, each value the change sets
-    beside making staff (``values``), by its label: "Active: yes",
-    "Email: ann@example.com".
+    The user by name and id; since 2.10 (user report A26), what they hold
+    as ``show_reactivation`` shows it: "Superuser" where they are one, the
+    keys ``NAMED_PERMISSIONS`` names among those they hold ("Grants"),
+    their "Groups", and "Also holds"; then, since 2.8, each value the
+    change sets beside making staff (``values``), by its label: "Active:
+    yes", "Email: ann@example.com".
     """
-    return [await _user_line(command.user_id), *_values(command.values)]
+    shown: list[tuple[str, object]] = [await _user_line(command.user_id)]
+    if command.is_superuser:
+        shown.append((gettext(SUPERUSER), pgettext("flag", "yes")))
+    shown.extend(await _holding(command))
+    shown.extend(_values(command.values))
+    return shown
 
 
 async def show_reactivation(command: "Reactivate") -> list[tuple[str, object]]:
@@ -477,14 +491,28 @@ async def show_reactivation(command: "Reactivate") -> list[tuple[str, object]]:
     change sets beside (``values``), by its label. A name too long for its
     line is cut, never refused.
     """
-    from domainkit.contrib.auth.integration import list_item
-
     shown: list[tuple[str, object]] = [await _user_line(command.user_id)]
     yes = pgettext("flag", "yes")
     if command.is_superuser:
         shown.append((gettext(SUPERUSER), yes))
     if command.is_staff:
         shown.append((gettext(STAFF), yes))
+    shown.extend(await _holding(command))
+    shown.extend(_values(command.values))
+    return shown
+
+
+async def _holding(command: "SetStaff | Reactivate") -> list[tuple[str, object]]:
+    """What a user comes back with, as ``command`` holds it: "Grants", "Groups", counts.
+
+    The keys ``NAMED_PERMISSIONS`` names among those they hold, directly
+    or through a group; their groups by name, read now (the name held, if
+    it is gone); how many permissions of their own and grants on objects
+    they hold ("Also holds").
+    """
+    from domainkit.contrib.auth.integration import list_item
+
+    shown: list[tuple[str, object]] = []
     held = [*command.permissions, *(k for g in command.groups for k in g.permissions)]
     shown.extend(_granted(held))
     if command.groups:
@@ -496,7 +524,6 @@ async def show_reactivation(command: "Reactivate") -> list[tuple[str, object]]:
     counted = _counts(len(command.permissions), command.object_grants)
     if counted:
         shown.append((gettext(ALSO_HOLDS), counted))
-    shown.extend(_values(command.values))
     return shown
 
 
@@ -677,24 +704,6 @@ def _held_values(
     return dumped
 
 
-class SetStaff(Command):
-    """Make a user staff, in the admin API (``PATCH /users/{id}``).
-
-    Where ``auth.reactivate`` is not held, it is also making a staff member
-    active again: their return gives staff back (since 2.7).
-
-    ``values`` holds what else the change sets, as JSON, by field: the
-    user's fields (an address, a name) and the flags but the grant, so its
-    approver sees them and the approval binds them (since 2.8, user report
-    A17). Left out of the arguments when empty.
-    """
-
-    user_id: UUID
-    values: dict[str, JsonValue] = dataclasses.field(default_factory=dict)
-
-    _as_held = model_serializer(mode="wrap")(_held_values)
-
-
 class HeldGroup(ValueObject):
     """A group a ``SetGroups`` adds, as it was when the change was asked.
 
@@ -708,6 +717,37 @@ class HeldGroup(ValueObject):
     permissions: tuple[str, ...]
     object_grants: int = 0
     object_grants_digest: str = ""
+
+
+class SetStaff(Command):
+    """Make a user staff, in the admin API (``PATCH /users/{id}``).
+
+    Where ``auth.reactivate`` is not held, it is also making a staff member
+    active again: their return gives staff back (since 2.7).
+
+    ``values`` holds what else the change sets, as JSON, by field: the
+    user's fields (an address, a name) and the flags but the grant, so its
+    approver sees them and the approval binds them (since 2.8, user report
+    A17). Left out of the arguments when empty.
+
+    Since 2.10 (user report A26) it holds what the user comes back with,
+    as ``Reactivate`` does and as the change leaves it: whether they are a
+    superuser, each group (``HeldGroup``), their own permissions, sorted,
+    and their grants on single objects (how many, and their digest).
+    Anything granted since makes another command, which waits for its own
+    approval. A request of 2.9, which held none of it, reads with none:
+    the call made again submits another.
+    """
+
+    user_id: UUID
+    values: dict[str, JsonValue] = dataclasses.field(default_factory=dict)
+    is_superuser: bool = False
+    groups: tuple[HeldGroup, ...] = ()
+    permissions: tuple[str, ...] = ()
+    object_grants: int = 0
+    object_grants_digest: str = ""
+
+    _as_held = model_serializer(mode="wrap")(_held_values)
 
 
 class SetGroups(Command):
@@ -1134,7 +1174,10 @@ async def _updated(
     access; else, where only making staff is held, ``SET_STAFF`` covers a
     staff member made active again, as it covers making staff (user report
     A21). Either holds what else the change sets (``values``, since 2.8):
-    an address set with a grant is approved with it, or not at all.
+    an address set with a grant is approved with it, or not at all; and
+    what the user comes back with (since 2.10 for ``SET_STAFF``, user
+    report A26): their superuser flag, groups, permissions, and grants on
+    objects, so an approval is spent only on what its approver read.
 
     Raises:
         ApprovalRequired: The change makes the user staff and active again
@@ -1158,8 +1201,14 @@ async def _updated(
         granted = [
             name for name in ("is_staff", "is_active") if values.get(name) is True
         ]
-        held_values = _beside(target, values, granted)
-        return SET_STAFF, SetStaff(user_id=target.id, values=held_values)
+        superuser = values.get("is_superuser", target.is_superuser) is True
+        held_values = _beside(target, values, (*granted, "is_superuser"))
+        return SET_STAFF, SetStaff(
+            user_id=target.id,
+            values=held_values,
+            is_superuser=superuser,
+            **await _holds(target),
+        )
     return None
 
 
@@ -1193,13 +1242,32 @@ async def _returning(
     ``object_grants``). What a backend grants only an active user, such as
     a member's keys in a tenant, is not known here: guard it yourself.
     """
-    from domainkit.contrib.auth.backends import object_grants
-
     values = change.values
     flags = {
         flag: values.get(flag, getattr(target, flag, False)) is True
         for flag in ("is_staff", "is_superuser")
     }
+    holds = await _holds(target)
+    if not (any(flags.values()) or any(holds.values())):
+        return None
+    return Reactivate(
+        user_id=target.id,
+        is_staff=flags["is_staff"],
+        is_superuser=flags["is_superuser"],
+        **holds,
+        values=_beside(target, values, ("is_active", *flags)),
+    )
+
+
+async def _holds(target: "AbstractBaseUser") -> dict[str, Any]:
+    """What ``target`` holds but its flags, as a command holds it (since 2.10).
+
+    Each group (``HeldGroup``), sorted by name; their own permissions,
+    sorted; and their grants on single objects, every backend's
+    ``object_grants``: how many, and their digest ("" for none).
+    """
+    from domainkit.contrib.auth.backends import object_grants
+
     groups = tuple(
         [
             await _held(group)
@@ -1208,17 +1276,12 @@ async def _returning(
     )
     permissions = tuple(sorted(each.key for each in target.user_permissions))
     count, digest = _grants_digest(await object_grants(target))
-    if not (any(flags.values()) or groups or permissions or count):
-        return None
-    return Reactivate(
-        user_id=target.id,
-        **flags,
-        groups=groups,
-        permissions=permissions,
-        object_grants=count,
-        object_grants_digest=digest,
-        values=_beside(target, values, ("is_active", *flags)),
-    )
+    return {
+        "groups": groups,
+        "permissions": permissions,
+        "object_grants": count,
+        "object_grants_digest": digest,
+    }
 
 
 async def _held(group: "Group") -> HeldGroup:
@@ -1257,6 +1320,26 @@ async def held_groups(
     async with AuthUnitOfWork() as own:
         found = await own.groups.get_many_by_name(wanted)
         return tuple([await _held(group) for group in found])
+
+
+def named_keys_held(user: "AbstractBaseUser") -> tuple[str, ...]:
+    """The keys ``NAMED_PERMISSIONS`` names that ``user`` holds, directly or by group.
+
+    As the holds of making staff and of a return read them ("Grants"),
+    for a grant of the project's own, such as an invitation that makes
+    staff: refuse it, or hold its approval to what this returns. Sorted;
+    what the user holds, active or not (an inactive user's keys come back
+    with them). A grant on a single object is not read here, nor is a
+    superuser's flag, which holds every key: read ``is_superuser`` apart,
+    as the screens show it ("Superuser"). Empty while
+    ``AUTH.AUTHORIZATIONS.NAMED_PERMISSIONS`` names none (since 2.10, user
+    report A26).
+    """
+    from domainkit.contrib.auth.integration import named_permissions
+
+    keys = {each.key for each in user.user_permissions}
+    keys.update(key for group in user.groups for key in group.permission_keys())
+    return tuple(sorted(keys & named_permissions()))
 
 
 def _grants_digest(grants: "Iterable[ObjectGrant]") -> tuple[int, str]:

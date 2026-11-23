@@ -19,6 +19,8 @@ Documents: HTML and Office documents to PDF, Word placeholders, PDF overlays.
 - `RendererNotConfigured`: No renderer is set: `DOCUMENTS["RENDERER"]` is None.
 - `RendererUnavailable`: The renderer could not render now: unreachable, failing, or refusing the login.
 - `RenderingRefused`: The renderer refused what it was sent: the document cannot be rendered.
+- `afill_docx`: `fill_docx`, once one of the process's places to read a document is free.
+- `aplaceholders`: `placeholders`, once one of the process's places to read a document is free.
 - `clean_html`: `html`, a fragment of rich text, kept to the module's allowlist, or less.
 - `fill_docx`: `document` (a .docx) with each `{{ name }}` replaced by `values[name]`.
 - `overlay_pdf`: `document` with overlays drawn over its pages.

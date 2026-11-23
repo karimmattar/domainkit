@@ -178,7 +178,8 @@ class Command(BaseCommand):
                 migrations.downgrade(target, alias, tenant=tenant)
             else:
                 migrations.upgrade(target, alias, tenant=tenant)
-                migrations.run_migrated_hooks(alias, tenant=tenant)
+                for note in migrations.run_migrated_hooks(alias, tenant=tenant):
+                    self.write(f"Tenant {tenant!r} on {alias!r}: {note}")
         except migrations.DatabaseUnreachable as exc:
             raise unreachable(alias, exc) from None
         except (AlembicError, ImproperlyConfigured, ValueError) as exc:
@@ -208,7 +209,8 @@ class Command(BaseCommand):
             return
         if created := migrations.create_partitions(alias):
             self.write(f"Created {len(created)} partition(s) in {alias!r}.")
-        migrations.run_migrated_hooks(alias)
+        for note in migrations.run_migrated_hooks(alias):
+            self.write(f"Database {alias!r}: {note}")
 
     def _record_downgrade(
         self,

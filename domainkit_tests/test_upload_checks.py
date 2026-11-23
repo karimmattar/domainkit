@@ -594,7 +594,7 @@ async def test_a_checked_pdf_is_stored_and_a_refused_one_never() -> None:
                 parts={"word/media/a.png": b"   <!DOCTYPE x>"},
                 defaults={"png": "image/png"},
             ),
-            "ok",
+            DTD,  # Since 2.10, every part that starts as XML is read as XML.
         ),
         (office(main=document(OLE_OBJECT)), EMBEDDED),
         (

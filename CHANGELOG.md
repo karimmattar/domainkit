@@ -17,6 +17,127 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   through it. `init` writes it for a project served by uvicorn, so the
   move to 3.0 needs no change there
   ([upgrading.md](docs/upgrading.md#29-to-210)) (user report S3).
+- A `503 deadline_exceeded` or `503 database_unavailable` whose commit is
+  in doubt says so in its body, `"in_doubt": true`, in either
+  `ERROR_FORMAT`, besides its missing `Retry-After`: a client that reads
+  the problem document alone tells it from a request that kept nothing,
+  which carries no such member. The code stays the same; 3.0 may give it
+  one of its own, `commit_in_doubt`. `APIError` takes `extensions=`,
+  members of the error's own that its body adds, as a domain error's
+  `extensions()` does ([A commit in doubt](docs/reference/problems.md#a-commit-in-doubt),
+  ADR 0186) (user report S4).
+- `upload_route(body_limit=BeforeRules(decide))`
+  (`domainkit.resources`): a body limit decided per request from the
+  request alone, before the rules, first among `before_rules`, on the act
+  and on its twin. It holds every read of the body after it, a rule's
+  included, so a route whose rule reads the body (`DeviceSigned`) takes a
+  limit read from a setting at each request. A limit decided once the
+  reach holds is still refused on such a route, and the refusal names
+  `BeforeRules` ([A body limit decided before the rules](docs/resources.md#a-body-limit-decided-before-the-rules),
+  ADR 0181) (user report U7).
+- `ARCHITECTURE["LAYER_MODULES"]` names a module of the project's own as
+  a built-in layer. With `{"gateways": "infrastructure"}`, a domain's
+  `gateways.py` is held, as `models.py` is, to that layer's libraries and
+  their exceptions (the client, the uploads' checks, the problems), to the
+  warning of the names 3.0 refuses (`architecture.W001`), and to the
+  layers that may not import it. A built-in layer or module, or a module
+  also in `EXTRA_LAYERS`, is refused. ADR 0199
+  ([Layer rules](docs/reference/settings.md#layer-rules)) (user report D2).
+- `domainkit.db.hooks.on_migrated_committed`: hooks that `migrate` and
+  `flush` call once the `on_migrated` hooks committed, with the schema
+  owner's connection outside a transaction, for what PostgreSQL runs only
+  so, such as `CREATE INDEX CONCURRENTLY`. `migrate` prints the line a
+  hook returns. `migrate --tenant` refuses to run them through PgBouncer
+  without `MIGRATION_URL`, which would not keep the tenant's schema
+  ([Extension points](docs/reference/extension-points.md)) (user report D2).
+
+### Changed
+
+- On PostgreSQL, `migrate` builds the user lookups' indexes with
+  `CREATE INDEX CONCURRENTLY`, under the same names, once its hooks
+  committed: the users table takes writes while they are built, where 2.9
+  held them. While another session builds an index on the table, it
+  builds none of them, leaves that build to end, and says so. ADR 0185's
+  amendment of 2026-11-23
+  ([upgrading.md](docs/upgrading.md#migrate-builds-the-user-lookups-indexes-concurrently))
+  (user report D2).
+
+### Fixed
+
+- `migrate` builds again a user lookup index that a failed concurrent
+  build left invalid (`pg_index.indisvalid`), by hand or by `migrate`: it
+  drops the index, and builds it. 2.9 took it as made, and the lookups it
+  serves read the whole table (user report D2).
+- `afill_docx` and `aplaceholders`, the async forms of `fill_docx` and
+  `placeholders`, read at most `DOCUMENTS["DOCX_AT_ONCE"]` Word documents
+  at once in a process (2 by default), every event loop's and thread's
+  calls together; the others wait their turn, holding no thread, and one
+  cancelled while it waits never runs. The sync functions are unchanged
+  ([Documents read at once](docs/documents.md#documents-read-at-once),
+  ADR 0201) (user report U7).
+- An act reads `If-Match` as its twin does (`asked_versions`), its lines
+  one list, so the same header answers the same at both: several tags
+  are `422`, and a tag that names no version, or a malformed value,
+  `412`. Either voids the authorization, and the trail hears of it, as
+  for other arguments. The same act, with an authorization asked
+  without `If-Match`, holds it as in 2.7, whatever `If-Match` it sends
+  ([The version the page read](docs/auth/actions.md#the-version-the-page-read),
+  [upgrading.md](docs/upgrading.md#29-to-210), ADR 0178) (user report
+  A17).
+
+### Security
+
+- `DOCX` (`OfficeCheck`) refuses an imported chunk (`w:altChunk`)
+  wherever it is, in any part read as XML, transitional or strict, and
+  whatever its relationship's type, as files with embedded files or
+  objects ([Checking documents](docs/uploads.md#checking-documents),
+  ADR 0175) (user report U9).
+- `DOCX`, `XLSX` and `PPTX` (`OfficeCheck`) refuse, as `unreadable_file`,
+  a part named, or a relationship's target inside the package written,
+  otherwise than Office writes them: ASCII letters, digits and
+  `-._~!$&'()*+,;=@`, no empty segment, and in a name no `.` or `..`
+  segment; a target that is a fragment alone passes, and so does the
+  trash Office leaves (`[trash]/0000.dat`), unread. Targets and the
+  content types' part names are matched to the archive's names as
+  written, nothing decoded. Every part is read as XML when its bytes
+  start as XML does, whatever its name, its type, or what names it
+  ([Checking documents](docs/uploads.md#checking-documents), ADR 0175)
+  (user report U9).
+- `DOCX` (`OfficeCheck`) refuses instruction text (`w:instrText`,
+  `w:delInstrText`) outside a field's instruction, after its `separate`
+  mark or in no field, as a field that hides its name; fields begun in a
+  result, as a table of contents' are, pass
+  ([Checking documents](docs/uploads.md#checking-documents), ADR 0175)
+  (user report U9).
+- `named_keys_held(user)` (`domainkit.contrib.approvals`): the keys
+  `AUTH.AUTHORIZATIONS.NAMED_PERMISSIONS` names that a user holds,
+  directly or through a group, active or not, as approvals' screens of
+  making staff and of a return name them, for a grant of the project's
+  own ([Grants made elsewhere](docs/contrib/approvals.md#grants-made-elsewhere))
+  (user report A26).
+- `auth.set_staff` holds what the user comes back with, as
+  `auth.reactivate` does: whether they are a superuser, each group (as
+  `HeldGroup`), their own permissions, and their grants on objects. Its
+  approver reads "Superuser", the keys `NAMED_PERMISSIONS` names that
+  they hold, directly or through a group ("Grants"), their "Groups",
+  and "Also holds", and the approval is spent only on what it held:
+  anything granted to the user since the request was made submits
+  another request (`403 approval_pending`). A request stored by 2.9
+  holds none of it: the call submits a new one, which is approved again
+  ([Changes of the admin API](docs/contrib/approvals.md#changes-of-the-admin-api),
+  [upgrading.md](docs/upgrading.md#29-to-210), ADR 0172) (user report
+  A26).
+- The admin API's act of a change that makes a user staff, or active
+  again, shows and binds what they come back with: it shows "Superuser"
+  and "Staff" where they are so, set by the change or not, and the keys
+  `NAMED_PERMISSIONS` names that they hold, directly or through a group
+  ("Grants"), whether or not approvals hold the change; it binds their
+  flags, groups, permissions, and grants on objects (`AdminAct.holds`),
+  so a user granted anything since the twin makes another act (`403
+  action_not_authorized`, voided)
+  ([Each change, authorized as one act](docs/auth/routes.md#each-change-authorized-as-one-act),
+  [upgrading.md](docs/upgrading.md#29-to-210), ADR 0172) (user reports
+  A26, A17).
 - `shows_link(text, length=LINE_LENGTH)`, in
   `domainkit.contrib.auth.screens`, says whether a screen that shows
   stored text on a line shows a link, as `laid_out` reads typed text:
@@ -33,9 +154,6 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   (`No. 123 456 789`); links and addresses are read as ever
   ([Text a person typed](docs/auth/actions.md#text-a-person-typed), ADR
   0180) (user report A17).
-
-### Security
-
 - `group_item` marks a group's stored name typed, on approvals'
   `auth.set_groups`, the admin API's act of a change of groups, and a
   project's own screens: the `on_typed_text` checks get the name, and

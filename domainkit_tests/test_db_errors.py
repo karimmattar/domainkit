@@ -43,6 +43,7 @@ from domainkit.db import connections, create_engine
 from domainkit.db.errors import duplicate_value
 from domainkit.db.orm import NAMING_CONVENTION
 from domainkit.ddd import ConcurrentUpdate, DuplicateValue
+from domainkit.ddd.uow import mark_in_doubt
 from domainkit.deadlines import DeadlineExceeded
 from domainkit.http.errors import database_refusal, status_code_for
 from domainkit_tests.test_db import Note, NoteId, NotesUnitOfWork, test_metadata
@@ -304,6 +305,15 @@ def test_a_database_that_cannot_serve_is_unavailable() -> None:
     for state in ("08006", "08001", "57P01", "57P02", "57P03", "53300"):
         assert refusal(SimpleNamespace(sqlstate=state)) == unavailable, state
     assert refusal(SimpleNamespace(), invalidated=True) == unavailable
+    # Lost as it committed: no Retry-After, and the body says it is in doubt.
+    lost = DBAPIError("COMMIT", {}, SimpleNamespace(), connection_invalidated=True)  # type: ignore[arg-type]
+    kept_nothing = database_refusal(lost)
+    mark_in_doubt(lost)
+    in_doubt = database_refusal(lost)
+    assert kept_nothing is not None
+    assert in_doubt is not None
+    assert (in_doubt.headers, in_doubt.extensions()) == (None, {"in_doubt": True})
+    assert kept_nothing.extensions() == {}
     # Not raised while a connection was opened: a socket's error is not the database's.
     assert database_refusal(ConnectionRefusedError("elsewhere")) is None
     assert database_refusal(DeadlineExceeded("The deadline passed.")) is None

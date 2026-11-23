@@ -206,6 +206,7 @@ Maker-checker: commands that run only once other people approve them.
 - `guard`: Register the guard of a use case decorated `requires_approval(action)`.
 - `guards`: Every registered guard, by action.
 - `held_groups`: The groups `names` names, as a command holds them: by id, with their grants.
+- `named_keys_held`: The keys `NAMED_PERMISSIONS` names that `user` holds, directly or by group.
 - `record_approval`: Approve a request, asking for no authorization: for the project's own code.
 - `record_cancellation`: Withdraw a request, asking for no authorization: for the project's own code.
 - `record_rejection`: Reject a request, asking for no authorization: for the project's own code.

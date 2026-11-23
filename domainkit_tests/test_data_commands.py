@@ -488,6 +488,21 @@ def test_flush_empties_all_but_the_audit_trail(project: str) -> None:
     assert first_id == 1  # Sequences start again.
 
 
+def test_flush_prints_what_the_follow_up_hooks_say(
+    project: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A line an ``on_migrated_committed`` hook returns follows the count (D2)."""
+    from domainkit.db import migrations
+
+    monkeypatch.setattr(
+        migrations, "run_migrated_hooks", lambda database: ["built nothing"]
+    )
+
+    output = run("flush")
+
+    assert output.endswith(" from 'default'.\nDatabase 'default': built nothing\n")
+
+
 def operator_rows() -> list[dict[str, Any]]:
     """The audit rows of operator actions, oldest first."""
 

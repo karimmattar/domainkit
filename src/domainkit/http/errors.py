@@ -113,6 +113,9 @@ DATABASE_UNAVAILABLE: Final = "database_unavailable"
 UNAVAILABLE_RETRY_AFTER: Final = "5"
 """Seconds a client should wait while the database cannot be reached: longer
 than ``database_busy``'s, as a restart or a failover takes seconds."""
+IN_DOUBT: Final = "in_doubt"
+"""The member a 503 carries, true, when its commit may have been made (since
+2.10): ``deadline_exceeded`` and ``database_unavailable`` without ``Retry-After``."""
 RETRIED_STATUSES: Final = frozenset({408, 429})
 """The 4xx answers worth trying again after: a timeout, too many requests."""
 _CAUSES: Final = 16
@@ -379,6 +382,7 @@ async def http_error_handler(request: Request, exc: HTTPException) -> Response:
         detail or code.replace("_", " ").capitalize(),
         code=code,
         errors=exc.errors if isinstance(exc, APIError) else None,
+        extensions=_members(exc) if isinstance(exc, APIError) else None,
     )
     if exc.headers:
         response.headers.update(exc.headers)
@@ -386,6 +390,16 @@ async def http_error_handler(request: Request, exc: HTTPException) -> Response:
         # Starlette lists only the first matching route's methods.
         response.headers["Allow"] = ", ".join(allowed_methods(request))
     return response
+
+
+def _members(error: APIError) -> Mapping[str, object]:
+    """``error.extensions()``; none where a subclass's attribute hides the method.
+
+    A subclass of 2.9's that set ``self.extensions`` to a value of its own
+    answered no members with it then: it answers none now, never a 500.
+    """
+    found: object = error.extensions
+    return found() if callable(found) else {}
 
 
 def _lazy_text(detail: object) -> str | None:
@@ -440,7 +454,8 @@ def database_refusal(exc: BaseException) -> APIError | None:
     shortly. A database that cannot be reached, or cannot serve now, is
     503 ``database_unavailable`` (``unreachable``), with ``Retry-After``
     unless the connection was lost as a commit was sent: that change may
-    have been made (``failed_in_doubt``). A value the database
+    have been made (``failed_in_doubt``), and the body says so
+    (``"in_doubt": true``, since 2.10). A value the database
     cannot store (a NUL character, a number or text too long for its
     column) is 422 ``invalid_value``. Integrity errors are answered as
     ``integrity_refusal`` says.
@@ -456,6 +471,7 @@ def database_refusal(exc: BaseException) -> APIError | None:
                 "The database was lost as the change was committed, so it may "
                 "have been made; check before you send it again.",
                 code=DATABASE_UNAVAILABLE,
+                extensions={IN_DOUBT: True},
             )
         return APIError(
             status.HTTP_503_SERVICE_UNAVAILABLE,

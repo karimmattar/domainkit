@@ -12,7 +12,8 @@ On this page you learn how to:
 
 - configure the renderer, a Gotenberg server, and harden it;
 - turn HTML and Word documents into PDFs;
-- list and fill the placeholders of a Word document, or fill a draft;
+- list and fill the placeholders of a Word document, or fill a draft,
+  and bound the documents read at once;
 - lay rendered text over the pages of a PDF;
 - clean rich text that a person wrote before it is rendered, or keep
   less of it;
@@ -34,7 +35,8 @@ imports lxml, which turns the GIL back on for the rest of the process
 The decisions are in
 [ADR 0168](adr/0168-render-documents-through-a-port-with-gotenberg-and-fill-them-locally.md),
 [ADR 0176](adr/0176-bound-what-a-pdf-decodes-list-placeholders-fill-drafts-and-clean-less.md),
-and [ADR 0181](adr/0181-decide-a-body-limit-per-request-count-before-the-rules-hand-over-the-file-received-and-bound-the-xml-parsed.md).
+[ADR 0181](adr/0181-decide-a-body-limit-per-request-count-before-the-rules-hand-over-the-file-received-and-bound-the-xml-parsed.md),
+and [ADR 0201](adr/0201-hold-the-word-documents-read-at-once-to-one-bound-per-process.md).
 
 ## A first example
 
@@ -53,15 +55,11 @@ DOCUMENTS = {
 A use case fills a lease from a Word template, and converts it to PDF:
 
 ```python
-import asyncio
-
-from domainkit.documents import fill_docx, renderer
+from domainkit.documents import afill_docx, renderer
 
 
 async def lease_pdf(template: bytes, tenant: str, rent: str) -> bytes:
-    filled = await asyncio.to_thread(
-        fill_docx, template, {"tenant": tenant, "monthly_rent": rent}
-    )
+    filled = await afill_docx(template, {"tenant": tenant, "monthly_rent": rent})
     return await renderer().office_to_pdf(filled, filename="lease.docx")
 ```
 
@@ -310,30 +308,6 @@ keeps every name a thread parses, for as long as the thread lives, so a
 thread of a pool that read documents of 250,000 names each grew by 700
 MiB over 80 of them. The thread costs about 0.4 ms a call.
 
-The bounds hold one call. Calls at once add up: `asyncio.to_thread`
-runs up to `min(32, os.cpu_count() + 4)` of them in a worker, some 11
-GiB at the bounds. domainkit adds no limiter of its own: bound how many
-run at once with one the calls share, sized for the worker's memory:
-
-```python
-from functools import partial
-
-import anyio
-from anyio import to_thread
-
-from domainkit.documents import fill_docx
-
-DOCUMENTS = anyio.CapacityLimiter(2)  # two calls at once: 680 MiB at most
-
-
-async def filled(template: bytes, values: dict[str, str]) -> bytes:
-    work = partial(fill_docx, template, values)
-    return await to_thread.run_sync(work, limiter=DOCUMENTS)
-```
-
-A limiter serves one event loop: a server that runs several in a
-process (Granian's runtime threads) holds one for each.
-
 To refuse at upload a template that `fill_docx` would refuse, read its
 placeholders in the upload's check, in a process of its own
 ([Checks of your own](uploads.md#checks-of-your-own)):
@@ -359,8 +333,36 @@ def template_check(file: IO[bytes]) -> None:
 TEMPLATE = FileType(DOCX.content_type, ".docx", DOCX.matches, template_check)
 ```
 
-`fill_docx` works on the CPU: in a request, run it in a thread with
-`asyncio.to_thread`, as the first example does.
+`fill_docx` works on the CPU: in a request, await `afill_docx`, as the
+first example does.
+
+### Documents read at once
+
+*New in 2.10.* The bounds hold one call. Calls at once add up:
+`asyncio.to_thread` runs up to `min(32, os.cpu_count() + 4)` of them in a
+worker, some 11 GiB at the bounds. So `afill_docx` and `aplaceholders`,
+the async forms of `fill_docx` and `placeholders`, hold the calls at
+once to `DOCUMENTS["DOCX_AT_ONCE"]` (2 by default: 680 MiB at most at the
+default bounds) in the process, whichever event loop or thread made them:
+a process that runs a loop per thread shares the one bound. The others
+wait their turn, holding no thread:
+
+```python
+from domainkit.documents import afill_docx, aplaceholders
+
+found = await aplaceholders(template)
+filled = await afill_docx(template, {"tenant": "Salma"})
+```
+
+A call cancelled while it waits (its request gone, its deadline past)
+never runs. One cancelled while it runs keeps its place until it ends,
+as a thread cannot be stopped. Eight fills at once of a document of 3.4
+MB of XML that LibreOffice wrote took 344 MiB of memory with
+`asyncio.to_thread`, and 126 MiB with `afill_docx` at the default.
+Size `DOCX_AT_ONCE` for the worker's memory: each call takes up to 340
+MiB at the default `ArchiveLimits`, more with larger bounds. The sync
+functions are unchanged, and hold no bound of their own: a call in a
+thread of yours counts against none.
 
 ### Drafts
 
@@ -371,9 +373,7 @@ braces that make no placeholder as they are written, `{{ tenant name }}`.
 Each allows its own kind only: what the other refuses is still refused.
 
 ```python
-draft = await asyncio.to_thread(
-    fill_docx, template, known, allow_missing=True, allow_malformed=True
-)
+draft = await afill_docx(template, known, allow_missing=True, allow_malformed=True)
 preview = await renderer().office_to_pdf(draft, filename="draft.docx")
 ```
 
@@ -386,9 +386,9 @@ fill the document that goes out with the defaults, which refuse both.
 before anything is filled, so a form can show its fields:
 
 ```python
-from domainkit.documents import placeholders
+from domainkit.documents import aplaceholders
 
-found = await asyncio.to_thread(placeholders, template)
+found = await aplaceholders(template)
 found.names  # ("tenant", "monthly_rent", "tenant.address")
 found.malformed  # ("{{ tenant name }}",)
 ```
@@ -712,7 +712,9 @@ small documents built in the test.
 - **Making an overlay for the page unrotated.** Use `page_sizes`: it
   gives the size as shown.
 - **Calling `fill_docx` on the event loop.** A large document holds every
-  request meanwhile; use `asyncio.to_thread`.
+  request meanwhile; await `afill_docx`.
+- **Many `asyncio.to_thread(fill_docx, ...)` at once.** Each holds its
+  own memory; `afill_docx` holds them to `DOCUMENTS["DOCX_AT_ONCE"]`.
 - **Raising `max_decoded` for every document.** Raise it where a kind of
   document needs it, not for files people upload.
 

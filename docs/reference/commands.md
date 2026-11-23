@@ -668,8 +668,9 @@ Database 'default':
 
 `migrate` applies revisions (or reverts down to one) on every database of
 every target. After an upgrade it creates the partitions of partitioned
-tables, and runs the `on_migrated` hooks. It connects with
-`MIGRATION_URL` when it is set.
+tables, and runs the `on_migrated` hooks, then, once they committed, the
+`on_migrated_committed` hooks, outside a transaction (*new in 2.10*). It
+connects with `MIGRATION_URL` when it is set.
 
 | Option | What it does |
 | --- | --- |
