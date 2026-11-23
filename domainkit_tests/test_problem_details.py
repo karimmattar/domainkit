@@ -104,6 +104,21 @@ async def hold() -> None:
     )
 
 
+class Shadowed(APIError):
+    """A subclass of 2.9's: an attribute of its own named as the method."""
+
+    def __init__(self) -> None:
+        """Keep something of its own under ``extensions``."""
+        super().__init__(409, "Held.", code="held")
+        self.extensions = {"kept": "for itself"}  # type: ignore[assignment,method-assign]
+
+
+@router.post("/shadowed")
+async def shadowed() -> None:
+    """Refuse with a subclass whose attribute hides ``extensions()``."""
+    raise Shadowed
+
+
 PROBLEMS = {"ERROR_FORMAT": "problem+json"}
 
 
@@ -368,6 +383,37 @@ def test_an_api_errors_own_members_extend_the_body_too(
     assert (response.status_code, body["code"], body["hold_id"]) == (409, "held", 7)
     assert body["request_id"] == response.headers["X-Request-ID"]
     assert APIError(409, "Held.", code="held").extensions() == {}
+
+
+def test_an_api_errors_members_cannot_be_changed_through_it() -> None:
+    """``extensions()`` reads them; the mapping given is copied when it is made."""
+    given: dict[str, object] = {"hold_id": 7}
+    error = APIError(409, "Held.", code="held", extensions=given)
+    given["hold_id"] = 8
+    read: Any = error.extensions()
+    none: Any = APIError(409, "Held.", code="held").extensions()
+
+    with pytest.raises(TypeError):
+        read["hold_id"] = 9
+    with pytest.raises(TypeError):
+        none["hold_id"] = 9
+    assert error.extensions() == {"hold_id": 7}
+    assert APIError(409, "Held.", code="held").extensions() == {}
+
+
+@pytest.mark.parametrize("problems", [False, True])
+def test_a_subclass_whose_attribute_hides_extensions_answers_no_members(
+    make_client: MakeClient, problems: bool
+) -> None:
+    """A subclass of 2.9's that sets ``self.extensions`` answers as in 2.9: no 500."""
+    settings = PROBLEMS if problems else {}
+    client = make_client(ROOT_ROUTER=ROUTES, **settings)
+
+    response = client.post("/shadowed")
+
+    body = response.json()
+    assert (response.status_code, body["code"]) == (409, "held")
+    assert "kept" not in body
 
 
 @pytest.mark.parametrize("problems", [False, True])

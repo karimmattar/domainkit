@@ -59,6 +59,10 @@ nothing does, and its body says so with a member of its own, `in_doubt`:
   ([responses.md](responses.md#the-fields-of-an-error)). A client that
   keeps the body and drops the headers (a log, a queue) still tells the
   two apart.
+- A batch item whose commit is in doubt (`batch_route` without
+  `atomic`) carries no `in_doubt`: its result (`BatchError`) holds its
+  code and its detail alone, which says to check before sending it
+  again.
 - The code stays the same, so a client that switches on it keeps
   working. 3.0 may give a commit in doubt a code of its own,
   `commit_in_doubt`.

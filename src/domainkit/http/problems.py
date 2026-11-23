@@ -15,7 +15,8 @@ which the HTTP layer maps.
 """
 
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Final
 
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException
@@ -26,6 +27,8 @@ if TYPE_CHECKING:
     from domainkit.i18n.lazy import LazyString
 
 __all__ = ["APIError", "FieldError"]
+
+_NONE: Final[Mapping[str, object]] = MappingProxyType({})
 
 
 class FieldError(BaseModel):
@@ -63,12 +66,12 @@ class APIError(HTTPException, DomainkitError):
         )
         self.code = code
         self.errors = list(errors) if errors else None
-        self._extensions = dict(extensions) if extensions else {}
+        self._extensions = MappingProxyType(dict(extensions)) if extensions else _NONE
 
     def extensions(self) -> Mapping[str, object]:
         """What the body adds to its members, by name, as a ``DomainError``'s.
 
-        The ``extensions`` given (since 2.10), JSON values; none by
-        default. A name the body has in either format is left out.
+        The ``extensions`` given (since 2.10), JSON values, read only; none
+        by default. A name the body has in either format is left out.
         """
         return self._extensions

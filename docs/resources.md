@@ -874,9 +874,13 @@ phones.upload_route(
   what the request says (its path, its headers), not from who sends it.
   It runs for every request, those the rules refuse included, as
   `before_rules` do.
-- What reads the body before it, `IdempotencyMiddleware` or a dependency
-  of the resource's own, reads it within the limit of a command route
-  without `body_limit`; the file is still held to the limit decided.
+- What reads the body before it reads it within the limit of a command
+  route without `body_limit`: `IdempotencyMiddleware`, for a request with
+  an `Idempotency-Key`; a dependency of the resource's own; and a FastAPI
+  body parameter (`Body`, `Form`, `File`) declared in any of the route's
+  dependencies, which FastAPI reads before any dependency runs. The file
+  is still held to the limit decided. Where that read matters, keep the
+  command limit at or above the largest limit decided.
 - A limit decided once the reach holds, on a route whose rule reads the
   body, is still refused when the route is declared
   (`ImproperlyConfigured`), and the refusal names `BeforeRules`.

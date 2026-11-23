@@ -382,7 +382,7 @@ async def http_error_handler(request: Request, exc: HTTPException) -> Response:
         detail or code.replace("_", " ").capitalize(),
         code=code,
         errors=exc.errors if isinstance(exc, APIError) else None,
-        extensions=exc.extensions() if isinstance(exc, APIError) else None,
+        extensions=_members(exc) if isinstance(exc, APIError) else None,
     )
     if exc.headers:
         response.headers.update(exc.headers)
@@ -390,6 +390,16 @@ async def http_error_handler(request: Request, exc: HTTPException) -> Response:
         # Starlette lists only the first matching route's methods.
         response.headers["Allow"] = ", ".join(allowed_methods(request))
     return response
+
+
+def _members(error: APIError) -> Mapping[str, object]:
+    """``error.extensions()``; none where a subclass's attribute hides the method.
+
+    A subclass of 2.9's that set ``self.extensions`` to a value of its own
+    answered no members with it then: it answers none now, never a 500.
+    """
+    found: object = error.extensions
+    return found() if callable(found) else {}
 
 
 def _lazy_text(detail: object) -> str | None:

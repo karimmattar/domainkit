@@ -55,6 +55,13 @@ project that relied on 2.9's behaviour notices, and what it may change.
   `body_limit=BeforeRules(lambda request: ...)` instead, which reads the
   setting at each request
   ([A body limit decided before the rules](resources.md#a-body-limit-decided-before-the-rules)).
+  The swap has a cost where requests send an `Idempotency-Key`:
+  `IdempotencyMiddleware` reads such a body before the route decides,
+  held to the command limit (the resource's `body_limits["command"]`, or
+  `MAX_REQUEST_BODY_SIZE`), not to the limit decided. A keyed upload
+  that the fixed number took, past the command limit, is then refused
+  `413 content_too_large`. On such a route, keep the command limit at or
+  above the largest limit it decides, or keep a fixed number.
 
 ## 2.8 to 2.9
 

@@ -326,7 +326,7 @@ REST resources over aggregates: routes, schemas, conditional writes, policies.
 - `UNSET`: A field left out of a partial change (`PatchModel`, `UpdateX` commands).
 - `Actions`: Rules that depend on a route's action (`view`, `add`, ...).
 - `BatchAnswer`: One result per item, in order, and how many failed.
-- `BatchError`: Why one item failed, as a request of its own would have been told.
+- `BatchError`: Why one item failed: the code and detail a request of its own would get.
 - `BatchResult`: What became of one item.
 - `BeforeRules`: An upload route's body limit, decided from the request alone, before its rules.
 - `DomainSchema`: A read schema `schema_for` made; `from_domain` fills it from an object.
