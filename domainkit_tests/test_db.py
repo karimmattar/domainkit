@@ -6,7 +6,7 @@ import os
 import re
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import NewType
+from typing import Final, NewType
 from uuid import UUID, uuid4
 
 import pytest
@@ -49,6 +49,11 @@ from domainkit.ddd import AggregateRoot, ConcurrentUpdate, DomainEvent, EventBus
 from domainkit.exceptions import ImproperlyConfigured
 from domainkit.management import CommandError, call_command
 from domainkit_tests.conftest import POSTGRES_VARIABLE
+
+READY_WITHIN: Final = 10.0
+"""Seconds a readiness check of a database that answers gets: room on a loaded
+runner. A check cut short leaves aiosqlite's connection open, for a later
+test's ``gc.collect()`` to report; one that fails, fails at once."""
 
 pytestmark = pytest.mark.anyio
 
@@ -142,7 +147,7 @@ async def test_connections_are_per_event_loop(database: str) -> None:
     engine = connections.engine()
     assert connections.engine() is engine
     await connections.check()
-    assert await connections.check_all(1.0) == []
+    assert await connections.check_all(READY_WITHIN) == []
 
     async def other_loop_engine() -> object:
         return connections.engine()
@@ -166,7 +171,7 @@ async def test_each_database_is_checked_on_its_own(tmp_path: Path) -> None:
         }
     ):
         try:
-            assert await connections.check_all(1.0) == ["database:other"]
+            assert await connections.check_all(READY_WITHIN) == ["database:other"]
         finally:
             await connections.close_all()
 
