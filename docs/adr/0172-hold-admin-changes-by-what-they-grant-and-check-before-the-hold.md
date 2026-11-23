@@ -1,6 +1,6 @@
 # 0172. Hold admin changes by what they grant, and check before the hold
 
-- Status: Accepted; amended by [0179](0179-bind-the-admin-acts-groups-by-id-and-keep-a-held-confirmation-to-its-request.md)
+- Status: Accepted; amended by [0179](0179-bind-the-admin-acts-groups-by-id-and-keep-a-held-confirmation-to-its-request.md); amended 2026-11-23 (at the end)
 - Date: 2026-11-17
 - Amends: [0154](0154-hold-admin-changes-for-approval-and-show-requests-to-those-they-concern.md),
   [0163](0163-authorize-admin-changes-and-requests-steps-as-acts.md)
@@ -306,3 +306,81 @@ could not see whole, as `on_admin_screen` does for a user's change.
 6. OWASP Cheat Sheet Series, *Authentication Cheat Sheet*, "Protect
    Against Automated Attacks":
    <https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html#protect-against-automated-attacks>
+
+## Amendment (2026-11-23): making staff holds what the user comes back with
+
+A project's notes on 2.9 (user report A26, and row 2 of A17) found that
+this record gave a return its holds and left making staff without them.
+
+- **Making staff gives back what the user holds.** The admin API and a
+  project's back office ask for `is_staff`, as Django's admin site does
+  [7]. Taking staff away waits for no one and leaves the user's groups,
+  permissions, and superuser flag as they were. `SetStaff` held the user
+  and the values set beside, and its screen showed those; `Reactivate`
+  holds and shows what the user comes back with.
+- **The act's screen named the flag the change sets.** The admin API's
+  act of making staff showed "Staff: yes", and of a return "Active:
+  yes". Where approvals hold nothing, the staff member's phone is the
+  only screen of the change.
+
+What others do: OWASP's Transaction Authorization Cheat Sheet [1] asks
+that the user see the significant data ("What You See Is What You
+Sign"), and that it not change between authorization and execution;
+NIST SP 800-53 AC-2 [2] asks that enabling and modifying an account
+follow approval.
+
+| Option | What it costs |
+| --- | --- |
+| Refuse making staff a user who holds a named key or is a superuser (the project's `422 granted_by_name`) | Policy, not display: a project that makes such users staff may not. Grants on objects and other keys still pass unseen. |
+| Show what the user holds, read when the screen is built, and hold nothing more | The approval binds the user alone: what they hold when the call comes back is not what the approver read. |
+| Take groups and permissions away with staff | Changes what unmaking staff does, in a minor release; a user may keep groups for what is not staff's. |
+| **`SetStaff` holds what the user comes back with, as `Reactivate` does (the superuser flag as the change leaves it, each group as `HeldGroup`, their own permissions, their grants on objects: count and digest), and shows it as `show_reactivation` does** | The arguments change: a request stored by 2.9 is approved again (below). Under `WHOLE`, a user in many groups made staff no longer fits one screen, and is made staff in steps, as a return is. |
+
+How a change is refused is this record's: the maker's call builds the
+command from what the user holds now, and finds no approved request
+with its fingerprint when anything changed; it submits a request of its
+own (`403 approval_pending`), and the approved one is never spent. With
+`HELD_TTL`, a confirmation kept for the first request refuses the call
+(`403 action_not_authorized`, ADR 0179).
+
+**Requests stored by 2.9.** They hold the user and the values alone.
+
+| Option | What it costs |
+| --- | --- |
+| Leave the new fields out of the arguments when empty, as 2.8 left `values` | A 2.9 request of a user who holds nothing is still spent; one of a user who holds anything is not. Safe, but the shape of a request then depends on what the user holds, and an approver of 2.9 approved it on a screen that said nothing of what they held. |
+| A migration that rewrites stored requests | It would write what no approver read, under a seal made again. |
+| **Always hold the new fields: no request of 2.9 is ever found, and the call submits a new one, which is approved again** | One more approval for each request in flight at the upgrade. As 2.7 did for `SetGroups` of 2.6. |
+
+The fields have defaults, so a request of 2.9 still loads: it shows,
+and is rejected, cancelled, or expires as before; approved, it is never
+spent.
+
+**The act's screen.** A change of the admin API that makes a user staff,
+or active again, shows the flags they come back with ("Superuser",
+"Staff", set by the change or not) and the keys `NAMED_PERMISSIONS`
+names that they hold, directly or through a group ("Grants"), read from
+the stored user when the twin is asked. The act binds the change, not
+what the user holds: its digest is unchanged, so no authorization asked
+under 2.9 is refused. Binding the holds too would refuse those, for a
+window of one authorization's life; where approvals hold the change,
+`SetStaff` and `Reactivate` bind them.
+
+**A reading for a project's own grants.** `named_keys_held(user)`
+(`domainkit.contrib.approvals`, beside `held_groups`): the keys
+`NAMED_PERMISSIONS` names that a user holds, directly or through a
+group, active or not, sorted. A superuser's flag is read apart, as the
+screens show it apart. The act's screen reads the same in auth: auth
+imports nothing of approvals (ADR 0140).
+
+Consequences: **security, a change of behaviour in a minor release**: a
+request to make staff stored by 2.9 is approved again; approvers and
+staff read more lines; the project removes its `granted_by_name` hook.
+New names: `SetStaff.is_superuser`, `.groups`, `.permissions`,
+`.object_grants`, `.object_grants_digest`; `named_keys_held`. No table
+changes.
+
+Reference added:
+
+7. Django, *django.contrib.auth*, "is_staff: Allows this user to access
+   the admin site":
+   <https://docs.djangoproject.com/en/5.2/ref/contrib/auth/#django.contrib.auth.models.User.is_staff>

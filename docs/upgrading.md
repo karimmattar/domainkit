@@ -36,6 +36,40 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.9 to 2.10
+
+2.10 closes a project's notes on 2.9. Each item of this list says what a
+project that relied on 2.9's behaviour changes, and what to run.
+
+- **Making staff holds what the user comes back with** (security,
+  [ADR 0172](adr/0172-hold-admin-changes-by-what-they-grant-and-check-before-the-hold.md)).
+  Where `APPROVALS.ADMIN_APPROVALS` holds `auth.set_staff`, its request
+  holds, as `auth.reactivate`'s does, whether the user is a superuser,
+  each of their groups, their own permissions, and their grants on
+  objects; its approver reads them ("Superuser", "Grants", "Groups",
+  "Also holds"). A request stored by 2.9, pending or approved and not
+  yet made, holds none of it, so its approval is never spent: the staff
+  member's call submits a new request (`403 approval_pending`), which
+  is approved again. With `AUTH.AUTHORIZATIONS.HELD_TTL` set, a call
+  whose confirmation was kept for such a request is refused (`403
+  action_not_authorized`): confirm the change again. Anything granted
+  to the user while a request waits makes another request, as for a
+  return. Code that reads the request's arguments finds the new keys.
+  With `AUTH.AUTHORIZATIONS.WHOLE` and `APPROVE_ACTION` on, a user in
+  many groups made staff may no longer fit the approver's screen, and
+  is refused at the twin (`422 too_much_to_show`): take some groups
+  away first, make them staff, then add the groups back, each step
+  held. A guard of your own that refused making staff a user who holds
+  a named key (`422`) can go, or read `named_keys_held(user)`.
+- **The admin API's act shows what a user comes back with.** With
+  `AUTH.ADMIN_ACTION` on, the screen of a `PATCH /users/{id}` that
+  makes a user staff, or active again, shows "Superuser" and "Staff"
+  where they are so, set by the change or not, and "Grants", the keys
+  `NAMED_PERMISSIONS` names that they hold, directly or through a
+  group. The act's digest is unchanged; under `WHOLE`, a change that
+  filled the screen may no longer fit: make it in smaller steps. A
+  client or a test that matched the screen reads the new lines.
+
 ## 2.8 to 2.9
 
 2.9 follows up the audit of 2.8. Each item of this list says what a

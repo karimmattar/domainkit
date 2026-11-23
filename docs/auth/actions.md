@@ -221,8 +221,11 @@ group added, "readers (…9abc) 3 perms"; what a user made active again
 holds), the keys `AUTH["AUTHORIZATIONS"]["NAMED_PERMISSIONS"]` names
 show by name on a line of their own, "Grants", and first in a list of
 keys (since 2.8); by default, `TENANCY.ALL_TENANTS_PERMISSION` where it
-is set. Keys granted directly or through a group are named; a grant on a
-single object is counted, whatever its key. A change of the admin API that
+is set. Since 2.10 so do those a user made staff holds, and a change
+that makes a user staff or active again shows the flags they come back
+with ("Superuser: yes"). Keys granted directly or through a group are
+named; a grant on a single object is counted, whatever its key. A
+change of the admin API that
 approvals would hold is refused at its twin when the approver's screen,
 a line longer, could not show it whole, and a request that its approvers
 could not be shown whole is refused when it is submitted, rather than

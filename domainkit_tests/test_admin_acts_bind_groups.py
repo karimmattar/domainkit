@@ -42,6 +42,7 @@ from domainkit.contrib.approvals import (
     SetPermissions,
     SetStaff,
     held_groups,
+    named_keys_held,
 )
 from domainkit.contrib.approvals.tables import requests
 from domainkit.contrib.auth import AuthUnitOfWork, UnknownGroup, User
@@ -613,6 +614,36 @@ def test_held_groups_holds_a_projects_own_grant_as_set_groups_holds(
         run_async(held_groups(["nobody"]))
 
 
+def test_named_keys_held_reads_the_keys_a_screen_names_that_a_user_holds(
+    client: TestClient,
+) -> None:
+    """``named_keys_held(user)``: the keys a screen names, held directly or by group.
+
+    For a grant of the project's own, as the holds read them: inactive or
+    not, sorted; a superuser's flag is apart, as the screens show it
+    ("Superuser"). None while the setting names none (user report A26).
+    """
+    make_group("admins", *WRITES)
+    bob = deactivated("bob")
+    join("bob", "admins")
+    carol = create_user("carol")
+    boss = create_user("boss", is_superuser=True)
+
+    async def grant_directly() -> None:
+        async with AuthUnitOfWork() as uow:
+            user = await uow.users.get(carol)  # type: ignore[arg-type]
+            user.grant(*await uow.permissions.get_many([NAMED, "auth.add_user"]))
+            await uow.commit()
+
+    run_async(grant_directly())
+    with override_settings(AUTH=named_auth()):
+        held = [named_keys_held(user_of(each)) for each in (bob, carol, boss)]
+    unnamed = named_keys_held(user_of(bob))
+
+    assert held == [(NAMED,), (NAMED,), ()]
+    assert unnamed == ()
+
+
 # Row (5): the fields sent with a grant are held; values taken refused first --------
 
 
@@ -640,7 +671,15 @@ def test_making_staff_holds_the_fields_sent_with_it(
     swapped = ann.call("PATCH", path, other, second)
     made = ann.call("PATCH", path, shown, first)
 
-    assert arguments == {"user_id": str(bob), "values": {"mobile_number": NUMBER}}
+    assert arguments == {
+        "user_id": str(bob),
+        "values": {"mobile_number": NUMBER},
+        "is_superuser": False,
+        "groups": [],
+        "permissions": [],
+        "object_grants": 0,
+        "object_grants_digest": "",
+    }
     assert pending(swapped) != request_id
     assert made.status_code == 200, made.json()
     assert made.json()["fields"]["mobile_number"] == NUMBER
@@ -681,15 +720,24 @@ def test_what_2_7_held_and_bound_reads_as_it_did() -> None:
     """Left out when empty: a request or an authorization of 2.7 still holds.
 
     ``values`` of making staff or a return, and an act's ``groups`` and
-    ``taken``: a pending request of 2.7 is found by its fingerprint and
+    ``taken``: a pending return of 2.7 is found by its fingerprint and
     spent, and an authorization of any change but a group's still binds.
+    Making staff holds what the user comes back with since 2.10, so a
+    request of 2.9 or before is submitted again (user report A26).
     """
     bob = UUID(int=7)
     staff = TypeAdapter(SetStaff).dump_python(SetStaff(user_id=bob), mode="json")
     returning = TypeAdapter(Reactivate).dump_python(comes_back(bob), mode="json")
     act = AdminAct(kind="update", user_id=bob, values={"is_staff": True})
 
-    assert staff == {"user_id": str(bob)}
+    assert staff == {
+        "user_id": str(bob),
+        "is_superuser": False,
+        "groups": [],
+        "permissions": [],
+        "object_grants": 0,
+        "object_grants_digest": "",
+    }
     assert "values" not in returning
     assert act.model_dump(mode="json") == {
         "kind": "update",

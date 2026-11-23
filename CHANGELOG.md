@@ -10,6 +10,37 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 
 ## [Unreleased]
 
+### Added
+
+- `named_keys_held(user)` (`domainkit.contrib.approvals`): the keys
+  `AUTH.AUTHORIZATIONS.NAMED_PERMISSIONS` names that a user holds,
+  directly or through a group, active or not, as approvals' screens of
+  making staff and of a return name them, for a grant of the project's
+  own ([Grants made elsewhere](docs/contrib/approvals.md#grants-made-elsewhere))
+  (user report A26).
+
+### Security
+
+- `auth.set_staff` holds what the user comes back with, as
+  `auth.reactivate` does: whether they are a superuser, each group (as
+  `HeldGroup`), their own permissions, and their grants on objects. Its
+  approver reads "Superuser", the keys `NAMED_PERMISSIONS` names that
+  they hold, directly or through a group ("Grants"), their "Groups",
+  and "Also holds", and the approval is spent only on what it held:
+  anything granted to the user since the request was made submits
+  another request (`403 approval_pending`). A request stored by 2.9
+  holds none of it: the call submits a new one, which is approved again
+  ([Changes of the admin API](docs/contrib/approvals.md#changes-of-the-admin-api),
+  [upgrading.md](docs/upgrading.md#29-to-210), ADR 0172) (user report
+  A26).
+- The admin API's act of a change that makes a user staff, or active
+  again, shows what they come back with: "Superuser" and "Staff" where
+  they are so, set by the change or not, and the keys
+  `NAMED_PERMISSIONS` names that they hold, directly or through a group
+  ("Grants"), whether or not approvals hold the change
+  ([Each change, authorized as one act](docs/auth/routes.md#each-change-authorized-as-one-act),
+  ADR 0172) (user reports A26, A17).
+
 ## [2.9.0] - 2026-11-18
 
 2.9 follows up the audit of 2.8: with 2.8.1 and 2.8.2, it fixes 58 of

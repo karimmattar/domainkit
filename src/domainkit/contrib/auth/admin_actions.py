@@ -118,7 +118,8 @@ REASON: Final = gettext_noop("Reason")
 ADDS: Final = gettext_noop("Adds")
 GRANTS: Final = gettext_noop("Grants")
 """The label of the keys ``NAMED_PERMISSIONS`` names among those the groups
-a change adds grant (since 2.8)."""
+a change adds grant (since 2.8), or that a user made staff or active again
+holds (since 2.10)."""
 TAKES_AWAY: Final = gettext_noop("Takes away")
 PASSWORD: Final = gettext_noop("Password")
 PASSWORD_STATES: Final = {True: "set", False: "none"}
@@ -288,7 +289,11 @@ async def show(act: AdminAct) -> Shown:  # noqa: C901
     shows as approvals shows it, in a few words: "readers (…9abc) 3 perms",
     and the keys ``AUTH.AUTHORIZATIONS.NAMED_PERMISSIONS`` names among
     what they grant show by name first ("Grants"); in a list of keys, those
-    it names come first (since 2.8). What staff typed is ``Typed`` (since
+    it names come first (since 2.8). A change that makes a user staff, or
+    active again, shows what they come back with (since 2.10, user reports
+    A26, A17): "Superuser" and "Staff" where they are so, set or not, and
+    the keys ``NAMED_PERMISSIONS`` names that they hold, directly or
+    through a group ("Grants"). What staff typed is ``Typed`` (since
     2.8): the reason, a group's new name, and each text a change sets on a
     user but the fields that identify them; such a text sent as it is
     stored (a form saved whole) changes nothing: it is not typed, and with
@@ -321,11 +326,13 @@ async def show(act: AdminAct) -> Shown:  # noqa: C901
         typed = Typed(act.name) if act.kind in NAMING_KINDS else act.name
         details.append((gettext(label), typed))
     values = dict(act.values)
+    held = [] if user is None or act.kind != "update" else _coming_back(user, values)
     details.extend(
         (gettext(label), _flag(values.pop(flag)))
         for flag, label in FLAGS.items()
         if flag in values
     )
+    details.extend(held)
     if act.kind == "impersonate":
         details.append((gettext(REASON), _typed(values.pop("reason", ""))))
     details.extend(_added(act))
@@ -390,6 +397,30 @@ def _added(act: AdminAct) -> list[tuple[str, Value]]:
     if act.kind == "groups":
         return [(gettext(ADDS), act.added)]
     return [(gettext(ADDS), named_first(act.added))]
+
+
+def _coming_back(
+    user: AbstractBaseUser, values: dict[str, JsonValue]
+) -> list[tuple[str, Value]]:
+    """What ``user`` comes back with, if setting ``values`` makes them staff or active.
+
+    Since 2.10 (user reports A26, A17), as approvals' holds of making staff
+    and of a return show it: each flag they come back as, set or not, is
+    put in ``values``, to show with the flags ("Superuser: yes"); the keys
+    ``NAMED_PERMISSIONS`` names that they hold, directly or through a
+    group, are returned ("Grants"). Nothing for any other change.
+    """
+    staff = getattr(user, "is_staff", False) is True
+    making = values.get("is_staff") is True and not staff
+    if not (making or (values.get("is_active") is True and not user.is_active)):
+        return []
+    for flag in ("is_superuser", "is_staff"):
+        if flag not in values and getattr(user, flag, False) is True:
+            values[flag] = True
+    keys = {each.key for each in user.user_permissions}
+    keys.update(key for group in user.groups for key in group.permission_keys())
+    granted = sorted(keys & named_permissions())
+    return [(gettext(GRANTS), granted)] if granted else []
 
 
 def _change_of(act: AdminAct) -> AdminChange:

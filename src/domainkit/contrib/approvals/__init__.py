@@ -60,6 +60,7 @@ from .builtin import (
     SetPermissions,
     SetStaff,
     held_groups,
+    named_keys_held,
     refuse_if_guarded,
 )
 from .exceptions import (
@@ -196,6 +197,7 @@ __all__ = [
     "guard",
     "guards",
     "held_groups",
+    "named_keys_held",
     "record_approval",
     "record_cancellation",
     "record_rejection",
