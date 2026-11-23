@@ -265,16 +265,18 @@ TENANCY = {
 
 ## Documents
 
-The Gotenberg server that turns HTML and Office documents into PDFs;
-see [documents.md](../documents.md). *New in 2.5.*
+The Gotenberg server that turns HTML and Office documents into PDFs,
+and the Word documents read at once; see [documents.md](../documents.md).
+*New in 2.5.*
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `DOCUMENTS` | see below | How `domainkit.documents` renders documents: the server `renderer()` calls. |
+| `DOCUMENTS` | see below | How `domainkit.documents` renders and reads documents: the server `renderer()` calls, and the Word documents read at once. |
 
 | `DOCUMENTS` key | Default | Meaning |
 | --- | --- | --- |
 | `RENDERER` | `None` | The Gotenberg server (below). `None`: no renderer, and `renderer()` refuses. |
+| `DOCX_AT_ONCE` | `2` | Word documents `afill_docx` and `aplaceholders` read at once in a process, every event loop's and thread's calls together; the others wait their turn, holding no thread. At least 1, at most 64. A call takes up to 340 MiB at the default `ArchiveLimits` ([Documents read at once](../documents.md#documents-read-at-once)). *New in 2.10.* |
 
 | `DOCUMENTS["RENDERER"]` key | Default | Meaning |
 | --- | --- | --- |

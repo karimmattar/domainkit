@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 
 from fastapi import FastAPI, Response
 from fastapi.dependencies.models import Dependant
-from sqlalchemy import Connection, Table, inspect
+from sqlalchemy import Connection, Table, inspect, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from domainkit.apps import DomainConfig, registry
@@ -23,7 +23,12 @@ from domainkit.conf import DEPLOYED_ENVIRONMENTS, settings
 from domainkit.conf.global_settings import REDIS_SCHEMES
 from domainkit.contrib.contenttypes.sync import has_tables
 from domainkit.db import SqlAlchemyUnitOfWork, metadata
-from domainkit.db.hooks import on_committed, on_migrated, on_stage
+from domainkit.db.hooks import (
+    on_committed,
+    on_migrated,
+    on_migrated_committed,
+    on_stage,
+)
 from domainkit.db.routing import router
 from domainkit.ddd import DomainEvent, event_bus
 from domainkit.ddd.fields import fields_of
@@ -134,7 +139,7 @@ class AuthConfig(DomainConfig):
         on_committed(self.after_commit)
         on_migrated(self.create_permissions)
         self._leave_lookup_indexes()
-        on_migrated(self.index_lookups)
+        on_migrated_committed(self.index_lookups)
         invalidate_all()  # Settings, models, or databases may have changed.
         declared_permissions()
         if registry.is_installed(MESSAGING):
@@ -581,32 +586,61 @@ class AuthConfig(DomainConfig):
         if database == self.database and await has_tables(connection, permissions):
             await sync_permissions(connection)
 
-    async def index_lookups(self, connection: AsyncConnection, database: str) -> None:
-        """Make the user lookups' indexes after ``migrate``, on PostgreSQL.
+    async def index_lookups(
+        self, connection: AsyncConnection, database: str
+    ) -> str | None:
+        """Build the user lookups' indexes after ``migrate``, on PostgreSQL.
 
         ``lower()`` of the address and the username, and the admin's order
-        (``lookup_indexes``), each where missing. The table's indexes are
-        read first, from the catalog, and only a missing one is made: a
-        ``CREATE INDEX`` locks the table against writes even when the index
-        exists, so a ``migrate`` with nothing to make waits for no writer.
-        Not on SQLite, which cannot reflect an index on ``lower()``: such an
-        index would warn at every ``makemigrations`` and snapshot, so they
-        are not declared on the table either, and revisions leave them alone
-        (A28-PERF-02).
+        (``lookup_indexes``), each where missing or invalid. ``migrate``
+        calls it once its hooks committed, outside a transaction
+        (``on_migrated_committed``), so each is built ``CONCURRENTLY``: the
+        table takes writes while it is built. An invalid index, which a
+        concurrent build that failed leaves, here or by hand, is dropped and
+        built again; a valid one of the name stays. While another session
+        builds an index on the table, nothing is built: a build still
+        running is invalid too, and dropping it, or building beside it,
+        would cancel one of the two. It says so, for ``migrate`` to print.
+        The table's indexes are read first, from the catalog, so a
+        ``migrate`` with nothing to build takes no lock on the table. Not on
+        SQLite, which cannot reflect an index on ``lower()``: such an index
+        would warn at every ``makemigrations`` and snapshot, so they are not
+        declared on the table either, and revisions leave them alone
+        (A28-PERF-02, user report D2).
         """
         if database != self.database or connection.dialect.name != "postgresql":
-            return
-        present = await connection.run_sync(_index_names, self.user_table)
-        if present is None:
-            return
+            return None
+        found = await connection.run_sync(_index_validity, self.user_table)
+        if found is None:
+            return None
+        schema, valid = found
         preparer = connection.dialect.identifier_preparer
-        table = preparer.format_table(self.user_table)
-        for name, indexed in self._lookup_indexes(preparer.quote).items():
-            if name not in present:  # IF NOT EXISTS: another migrate made it.
+        wanted = {
+            name: indexed
+            for name, indexed in self._lookup_indexes(preparer.quote).items()
+            if not valid.get(name)
+        }
+        if not wanted:
+            return None
+        where = {"schema": schema, "table": self.user_table.name}
+        if await connection.scalar(_BUILDING, where):
+            return (
+                "skipped the user lookups' indexes: an index on "
+                f"{schema}.{self.user_table.name} is being built; run migrate "
+                "again once it ends"
+            )
+        within = f"{preparer.quote_schema(schema)}."
+        table = within + preparer.quote(self.user_table.name)
+        for name, indexed in wanted.items():
+            if name in valid:  # Invalid: a concurrent build failed.
                 await connection.exec_driver_sql(
-                    f"CREATE INDEX IF NOT EXISTS {preparer.quote(name)} "
-                    f"ON {table} ({indexed})"
+                    f"DROP INDEX CONCURRENTLY IF EXISTS {within}{preparer.quote(name)}"
                 )
+            await connection.exec_driver_sql(  # IF NOT EXISTS: another migrate.
+                f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {preparer.quote(name)} "
+                f"ON {table} ({indexed})"
+            )
+        return None
 
     def _lookup_indexes(self, quote: Callable[[str], str] = str) -> dict[str, str]:
         """The user lookups' indexes, by name (``lookup_indexes``)."""
@@ -1157,21 +1191,48 @@ async def _export_logins(subject: str) -> Mapping[str, object]:
     return await export_logins(subject)
 
 
-def _index_names(connection: Connection, table: Table) -> set[str] | None:
-    """The names of ``table``'s indexes, in its schema, else the connection's.
+_INDEXES: Final = text(
+    "SELECT i.relname, x.indisvalid FROM pg_index x"
+    " JOIN pg_class i ON i.oid = x.indexrelid"
+    " JOIN pg_class t ON t.oid = x.indrelid"
+    " JOIN pg_namespace n ON n.oid = t.relnamespace"
+    " WHERE n.nspname = :schema AND t.relname = :table"
+)
+"""Each index of a table, by name, and whether it is valid (``pg_index``)."""
+_BUILDING: Final = text(
+    "SELECT EXISTS (SELECT FROM pg_stat_progress_create_index p"
+    " JOIN pg_locks l ON l.pid = p.pid"
+    " JOIN pg_database d ON d.oid = l.database"
+    " JOIN pg_class t ON t.oid = l.relation"
+    " JOIN pg_namespace n ON n.oid = t.relnamespace"
+    " WHERE l.locktype = 'relation' AND l.mode = 'ShareUpdateExclusiveLock'"
+    " AND l.granted AND d.datname = current_database()"
+    " AND n.nspname = :schema AND t.relname = :table"
+    " AND p.pid <> pg_backend_pid())"
+)
+"""Whether another session builds an index on a table, ``CONCURRENTLY``.
 
-    A table that names its schema (``Table(..., schema="identity")``) is
-    there, whatever schema the connection works in. None where it has no
-    such table yet. Read from the catalog, which takes no lock on the table.
+Its build holds the table's ``SHARE UPDATE EXCLUSIVE`` lock while it runs.
+Every role sees each build's ``pid``, and every lock, but only its own
+builds' table (``relid``): the lock names the table.
+"""
+
+
+def _index_validity(
+    connection: Connection, table: Table
+) -> tuple[str, dict[str, bool]] | None:
+    """``table``'s schema, and whether each of its indexes is valid, by name.
+
+    In the schema ``table`` names (``Table(..., schema="identity")``),
+    whatever schema the connection works in, else the connection's. None
+    where it has no such table yet. An index whose concurrent build failed,
+    or still runs, is invalid (``indisvalid``). Read from the catalog,
+    which takes no lock on the table.
     """
-    inspector = inspect(connection)
     schema = table.schema
     if schema is None:
         schema = connection.exec_driver_sql("SELECT current_schema()").scalar()
-    if not inspector.has_table(table.name, schema=schema):
+    if not inspect(connection).has_table(table.name, schema=schema):
         return None
-    return {
-        str(index["name"])
-        for index in inspector.get_indexes(table.name, schema=schema)
-        if index["name"] is not None
-    }
+    rows = connection.execute(_INDEXES, {"schema": schema, "table": table.name})
+    return str(schema), {str(name): bool(valid) for name, valid in rows}

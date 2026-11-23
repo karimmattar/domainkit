@@ -246,6 +246,7 @@ CACHED: Final = frozenset(
         "domainkit.contrib.auth.validators.breach_validators",
         "domainkit.contrib.identity.providers._client",
         "domainkit.db.drivers._ssl_context",
+        "domainkit.documents.docx._readers",  # 2.10: the documents' thread pool.
         "domainkit.i18n.translation._catalog",
         "domainkit.outbound.client.tls_context",
         "domainkit.outbound.guard.tls_context",

@@ -143,7 +143,8 @@ def test_loading_the_settings_loads_no_layer_checker() -> None:
 
     They check ``ARCHITECTURE.EXTRA_LAYERS`` against those layers, the
     default ``ARCHITECTURE`` too, so in 2.8 every process that loaded its
-    settings imported the checker (audit A28-ARCH-04).
+    settings imported the checker (audit A28-ARCH-04). So do the simple
+    layout's modules, which ``LAYER_MODULES`` may not name (user report D2).
     """
     script = textwrap.dedent(
         """\
@@ -153,15 +154,16 @@ def test_loading_the_settings_loads_no_layer_checker() -> None:
 
         Settings()
         extra = {"EXTRA_LAYERS": ("ports",), "FORBIDDEN_LAYERS": {"ports": ("api",)}}
-        ArchitectureConfig(**extra)
+        ArchitectureConfig(**extra, LAYER_MODULES={"gateways": "infrastructure"})
         print("domainkit.architecture" in sys.modules)
         from domainkit import architecture
         from domainkit.conf import global_settings
 
         print(architecture.LAYERS is global_settings.LAYERS)
+        print(architecture.LAYER_MODULES is global_settings.LAYER_MODULES)
         """
     )
-    assert run(script) == ["False", "True"]
+    assert run(script) == ["False", "True", "True"]
 
 
 @pytest.mark.reads_own_source

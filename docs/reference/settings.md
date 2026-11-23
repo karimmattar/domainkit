@@ -20,7 +20,7 @@ On this page you find:
 | --- | --- |
 | Core settings, layer rules, languages and time zones, the debug toolbar | this page |
 | Databases, ledgers, shards, caches, storages, search, tenancy, brokers | [backends.md](backends.md) |
-| `DOCUMENTS`: the Gotenberg server that renders documents (new in 2.5) | [backends.md](backends.md#documents) |
+| `DOCUMENTS`: the Gotenberg server that renders documents (new in 2.5), and `DOCUMENTS["DOCX_AT_ONCE"]`, the Word documents read at once in a process (new in 2.10) | [backends.md](backends.md#documents) |
 | HTTP, security headers, CORS, outgoing calls, live connections, middleware | [http.md](http.md) |
 | `PROBE_PATHS`: the paths of the probes and the metrics scrape, which every list of exempt paths adds to (new in 2.9) | [http.md](http.md#probe-paths) |
 | Each optional app's settings (`AUTH`, `MESSAGING`, `AUDIT`, ...) | the app's own page ([contrib.md](../contrib.md)) |
@@ -207,7 +207,7 @@ domains' own models keep those keys as secrets.
 | `SECRET_KEY` | `None` | Signs what the service hands out: cookies, MFA challenges, the keys of codes ([Signing](signing.md)). Required in staging and production, with 50 random characters or more. Never empty: leave it `None` instead. Shown as `**********`. |
 | `SECRET_KEY_FALLBACKS` | `()` | Earlier keys. What they signed still verifies while `SECRET_KEY` signs, so you can replace a key without logging anyone out. Held to the same rules. |
 | `INSTALLED_DOMAINS` | `()` | Domain packages (Django's `INSTALLED_APPS`), started in order and stopped in reverse order. |
-| `ARCHITECTURE` | none added | What the project adds to the layer rules that `check` enforces: packages its domain layers may import, libraries and layers a layer must not use, and layers of its own ([Layer rules](#layer-rules)). |
+| `ARCHITECTURE` | none added | What the project adds to the layer rules that `check` enforces: packages its domain layers may import, libraries and layers a layer must not use, layers of its own, and modules of its own that are a built-in layer ([Layer rules](#layer-rules)). |
 | `MIDDLEWARE` | see [Middleware](http.md#middleware) | ASGI middleware by dotted path, outermost first. |
 | `ROOT_ROUTER` | `None` | The dotted path of the `APIRouter` that mounts every route (Django's `ROOT_URLCONF`). |
 | `FLATTEN_ROUTERS` | `True` | Serves the routes of the routers that `ROOT_ROUTER` includes from the top of the application, each matched once ([Included routers](responses.md#included-routers)). `False` keeps FastAPI's nesting, which matches a request again at each level. |
@@ -252,6 +252,18 @@ domains' own models keep those keys as secrets.
 - another domain is reached only through its `application` or
   `domain.events`.
 
+In the simple layout, `domain.py`, `controllers.py`, `models.py`, and
+`routes.py` are the four layers. `ARCHITECTURE["LAYER_MODULES"]` names
+more (*new in 2.10*): with `{"gateways": "infrastructure"}`, a domain's
+`gateways.py`, or `gateways/`, is the infrastructure layer, as
+`models.py` is. It is held to that layer's libraries and their
+exceptions: it calls a provider through `domainkit.outbound`, takes
+uploads through `domainkit.http.uploads`, and refuses a file with
+`domainkit.http.problems`, while the rest of `domainkit.http` stays out.
+It is warned of the names 3.0 refuses (`architecture.W001`, below), and
+a project's rule on the infrastructure layer holds it too. The inner
+layers may not import it, and it may not import the api layer.
+
 `ARCHITECTURE` adds to these rules, and only adds: a rule the framework
 states always holds. A broken rule is `architecture.E001`.
 
@@ -268,12 +280,14 @@ another name they hold, such as Starlette's `UploadFile` or
 | `FORBIDDEN_LIBRARIES` | `{}` | More libraries a layer must not import, by layer: `{"application": ("httpx",)}`. Not the domain layer, which is an allowlist: use `DOMAIN_ALLOWED`. Up to 12 layers, each with up to 64 names. A name of 2.8's paths, `domainkit.http.client` or `domainkit.http.guard`, or `domainkit.http`, which held them, covers their home in `domainkit.outbound` too, wherever it covered the old path, unless the defaults hold the entry already (*new in 2.9*). |
 | `EXTRA_LAYERS` | `()` | Layer packages of the project's own, such as `ports`, so the two tables here can name them. Up to 8, none a built-in layer. |
 | `FORBIDDEN_LAYERS` | `{}` | More layers of the same domain a layer must not import: `{"ports": ("infrastructure", "api")}`. Every layer named must be built in or in `EXTRA_LAYERS`, and none may forbid itself. Up to 12 layers, each forbidding up to 12. |
-| `PUBLIC_SURFACE` | `()` | More parts of a domain that other domains may import, each starting with a layer: `("domain.values",)`. |
+| `PUBLIC_SURFACE` | `()` | More parts of a domain that other domains may import, each starting with a layer, or a module of `LAYER_MODULES`: `("domain.values",)`. |
+| `LAYER_MODULES` | `{}` | Modules of the project's own that are a built-in layer, by name: `{"gateways": "infrastructure"}`. Each is held to that layer's rules, its exceptions, and the warning of what 3.0 refuses, as the layer's own module is. Each names `domain`, `application`, `infrastructure`, or `api`, and is neither a built-in layer or module (`models`) nor in `EXTRA_LAYERS`: a module is one layer. Other domains import one only where `PUBLIC_SURFACE` names it. Up to 64 (*new in 2.10*). |
 
 ```python
 ARCHITECTURE = {
     "DOMAIN_ALLOWED": ("myproject.kernel",),
     "FORBIDDEN_LIBRARIES": {"application": ("httpx",)},
+    "LAYER_MODULES": {"gateways": "infrastructure"},
 }
 ```
 
