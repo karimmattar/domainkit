@@ -75,6 +75,15 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   cancelled while it waits never runs. The sync functions are unchanged
   ([Documents read at once](docs/documents.md#documents-read-at-once),
   ADR 0201) (user report U7).
+- An act reads `If-Match` as its twin does (`asked_versions`), its lines
+  one list, so the same header answers the same at both: several tags
+  are `422`, and a tag that names no version, or a malformed value,
+  `412`. Either voids the authorization, and the trail hears of it, as
+  for other arguments. The same act, with an authorization asked
+  without `If-Match`, holds it as in 2.7, whatever `If-Match` it sends
+  ([The version the page read](docs/auth/actions.md#the-version-the-page-read),
+  [upgrading.md](docs/upgrading.md#29-to-210), ADR 0178) (user report
+  A17).
 
 ### Security
 
@@ -100,6 +109,35 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   result, as a table of contents' are, pass
   ([Checking documents](docs/uploads.md#checking-documents), ADR 0175)
   (user report U9).
+- `named_keys_held(user)` (`domainkit.contrib.approvals`): the keys
+  `AUTH.AUTHORIZATIONS.NAMED_PERMISSIONS` names that a user holds,
+  directly or through a group, active or not, as approvals' screens of
+  making staff and of a return name them, for a grant of the project's
+  own ([Grants made elsewhere](docs/contrib/approvals.md#grants-made-elsewhere))
+  (user report A26).
+- `auth.set_staff` holds what the user comes back with, as
+  `auth.reactivate` does: whether they are a superuser, each group (as
+  `HeldGroup`), their own permissions, and their grants on objects. Its
+  approver reads "Superuser", the keys `NAMED_PERMISSIONS` names that
+  they hold, directly or through a group ("Grants"), their "Groups",
+  and "Also holds", and the approval is spent only on what it held:
+  anything granted to the user since the request was made submits
+  another request (`403 approval_pending`). A request stored by 2.9
+  holds none of it: the call submits a new one, which is approved again
+  ([Changes of the admin API](docs/contrib/approvals.md#changes-of-the-admin-api),
+  [upgrading.md](docs/upgrading.md#29-to-210), ADR 0172) (user report
+  A26).
+- The admin API's act of a change that makes a user staff, or active
+  again, shows and binds what they come back with: it shows "Superuser"
+  and "Staff" where they are so, set by the change or not, and the keys
+  `NAMED_PERMISSIONS` names that they hold, directly or through a group
+  ("Grants"), whether or not approvals hold the change; it binds their
+  flags, groups, permissions, and grants on objects (`AdminAct.holds`),
+  so a user granted anything since the twin makes another act (`403
+  action_not_authorized`, voided)
+  ([Each change, authorized as one act](docs/auth/routes.md#each-change-authorized-as-one-act),
+  [upgrading.md](docs/upgrading.md#29-to-210), ADR 0172) (user reports
+  A26, A17).
 
 ## [2.9.0] - 2026-11-18
 

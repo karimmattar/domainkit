@@ -1,6 +1,6 @@
 # 0178. Bind an act to the version its page read
 
-- Status: Accepted
+- Status: Accepted; amended 2026-11-23 (at the end)
 - Date: 2026-11-17
 - Amends: [0174](0174-bind-an-act-to-the-record-it-decides-on-and-keep-a-held-acts-authorization.md)
 
@@ -199,3 +199,39 @@ Where `If-Match` is required:
    <https://google.aip.dev/163>
 5. OWASP Cheat Sheet Series, *Transaction Authorization Cheat Sheet*:
    <https://cheatsheetseries.owasp.org/cheatsheets/Transaction_Authorization_Cheat_Sheet.html>
+
+## Amendment (2026-11-23): the act reads `If-Match` as its twin does
+
+A project's notes on 2.9 (user report A17, row 4) found the act reading
+`If-Match` otherwise than its twin. The twin took one tag
+(`asked_versions`), its lines joined; the act took the versions
+`expected_versions` found on the request's first line, so a list the
+twin refuses (`422`) was made at the act, and a tag cut short (`"3",`)
+was `412` at the twin and `403`, voided, at the act. Nothing bound
+less: the act's versions had to be the twin's. But the same header
+answered otherwise at each.
+
+RFC 9110 [1] reads several field lines of one name as one list (5.3),
+and `If-Match` as true when any tag of the list matches (13.1.1): a
+resource's write keeps reading it so.
+
+| Option | What it costs |
+| --- | --- |
+| Keep the act's reading | One header, two answers, as the notes found. |
+| `asked_versions` at the act, several tags `403` and voided, as this record first decided | The twin answers `422`: one header, two answers still. |
+| `asked_versions` at the act, `422` and `412` as at the twin, voiding nothing (the first form of this amendment) | Answered before the act's arguments are compared: another act sent with a bad tag, even one asked without `If-Match`, left its authorization live and the trail untold, where 2.9 voided it (found in review). |
+| **`asked_versions` at the act, its lines joined: several tags `422`, a tag that names no version `412`, each as at the twin; the authorization is voided first, and the trail told (`changed`)** | A client's slip costs a confirmation, as any other argument does. Without a version the act's arguments cannot be compared, so a slip and another act read alike. |
+
+An authorization asked without `If-Match` is compared first, unless
+the action requires `If-Match`: the same act holds it as in 2.7,
+whatever `If-Match` it sends, and a list there is the resource's write
+to read, as before. Only an authorization that does not hold so has the
+act's `If-Match` read as the twin's. Another version, `*`, an empty
+one, or none is still other arguments: `403 action_not_authorized`,
+voided.
+
+Consequences: clients that send the twin's one tag see nothing new; an
+act that sends several tags, or a tag of no version, is refused with
+the twin's `422` or `412`, and voids its authorization, as any other
+act does. At most two HMACs at the act, as before. No
+new names, no table changes.

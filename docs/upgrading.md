@@ -53,6 +53,55 @@ what a project that relied on 2.9's behaviour changes, and what to run.
   ```toml
   dependencies = ["domainkit[postgres,redis,sqlite,uvicorn]>=2.10.0,<3"]
   ```
+- **Making staff holds what the user comes back with** (security,
+  [ADR 0172](adr/0172-hold-admin-changes-by-what-they-grant-and-check-before-the-hold.md)).
+  Where `APPROVALS.ADMIN_APPROVALS` holds `auth.set_staff`, its request
+  holds, as `auth.reactivate`'s does, whether the user is a superuser,
+  each of their groups, their own permissions, and their grants on
+  objects; its approver reads them ("Superuser", "Grants", "Groups",
+  "Also holds"). A request stored by 2.9, pending or approved and not
+  yet made, holds none of it, so its approval is never spent: the staff
+  member's call submits a new request (`403 approval_pending`), which
+  is approved again. With `AUTH.AUTHORIZATIONS.HELD_TTL` set, a call
+  whose confirmation was kept for such a request is refused (`403
+  action_not_authorized`): confirm the change again. Anything granted
+  to the user while a request waits makes another request, as for a
+  return. Code that reads the request's arguments finds the new keys.
+  With `AUTH.AUTHORIZATIONS.WHOLE` and `APPROVE_ACTION` on, a user in
+  many groups made staff may no longer fit the approver's screen, and
+  is refused at the twin (`422 too_much_to_show`): take some groups
+  away first, make them staff, then add the groups back, each step
+  held. A guard of your own that refused making staff a user who holds
+  a named key (`422`) can go, or read `named_keys_held(user)`.
+- **The admin API's act shows and binds what a user comes back with.**
+  With `AUTH.ADMIN_ACTION` on, the screen of a `PATCH /users/{id}` that
+  makes a user staff, or active again, shows "Superuser" and "Staff"
+  where they are so, set by the change or not, and "Grants", the keys
+  `NAMED_PERMISSIONS` names that they hold, directly or through a
+  group. The act binds their flags, groups, permissions, and grants on
+  objects (`AdminAct.holds`): a user granted anything between the twin
+  and the act makes another act, refused (`403 action_not_authorized`)
+  and its authorization voided; ask again. The digest of such an act
+  changes, so an authorization of making staff or active again asked
+  under 2.9 and not yet spent, one held for approval with `HELD_TTL`
+  included, is refused once: confirm the change again. Every other
+  act's digest is unchanged. Under `WHOLE`, a change that filled the
+  screen may no longer fit: make it in smaller steps. A client or a
+  test that matched the screen reads the new lines.
+- **A user in very many groups made staff** makes a request larger
+  than `APPROVALS.MAX_ARGUMENTS_BYTES` (64 KiB by default), each group
+  held by id, name, and keys: it is refused when submitted, as the
+  return of such a user already is. Take some groups away first, make
+  them staff, then add the groups back.
+- **An act reads `If-Match` as its twin does**
+  ([ADR 0178](adr/0178-bind-an-act-to-the-version-its-page-read.md)).
+  An act that sends several tags, on one line or several, answers
+  `422`, and one whose tag names no version `412`, as the twin answers,
+  unless it holds an authorization asked without `If-Match`; either
+  voids the authorization, as other arguments do, where several were
+  `403 action_not_authorized`. Send the one tag the twin held. The same
+  act, with an authorization asked without `If-Match`, holds it as
+  before, whatever `If-Match` it sends.
 - **`OfficeCheck` refuses more Office documents** (security). `DOCX`,
   `XLSX` and `PPTX` refuse an imported chunk (`w:altChunk`) wherever it
   is and whatever its relationship's type (`422 unsafe_file`, "Files

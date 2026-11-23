@@ -143,7 +143,6 @@ ALLOWED_CORE: Final = frozenset(
         "domainkit.resources.access.rules_for",
         "domainkit.resources.conditional.PreconditionRequired",
         "domainkit.resources.conditional.asked_versions",
-        "domainkit.resources.conditional.expected_versions",
         "domainkit.resources.renderers.CSV",
         "domainkit.resources.renderers.JSON",
         "domainkit.resources.renderers.csv_rows",
