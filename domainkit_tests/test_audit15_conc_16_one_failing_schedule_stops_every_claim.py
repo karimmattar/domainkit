@@ -20,11 +20,13 @@ from datetime import timedelta
 
 import pytest
 
+from domainkit.conf import override_settings
 from domainkit.contrib.messaging import Worker, enqueue, periodic
 from domainkit.contrib.messaging import registry as tasks
 from domainkit_tests.conftest import POSTGRES_VARIABLE
 from domainkit_tests.support.waiting import until
 from domainkit_tests.test_messaging import (  # noqa: F401
+    FAST,
     messaging,
     ran,
     remember,
@@ -56,7 +58,11 @@ async def test_a_schedule_that_cannot_be_written_does_not_stop_other_messages() 
     value = uuid.uuid4()
     await enqueue(remember, value=value)
     stop = asyncio.Event()
-    worker = Worker()
+    # A lease longer than a loaded runner's round: with the tests' 1 s, the
+    # message could be claimed again before its run was released, and run
+    # twice, as at-least-once delivery allows; this case is about scheduling.
+    with override_settings(MESSAGING={**FAST, "VISIBILITY_TIMEOUT": 30}):
+        worker = Worker()
     try:
         running = asyncio.create_task(worker.run(stop))
         await until(lambda: bool(ran), "The due task never ran.")
