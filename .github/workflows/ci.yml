@@ -532,7 +532,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: "3.13.16"
+          python-version: "3.13.18"
       - run: pipx install "poetry==${POETRY_VERSION}"
       # Every extra, as make install: the modules each rung loads depend on
       # what is installed (prometheus_client, opentelemetry), and are gated.
@@ -814,7 +814,7 @@ jobs:
     timeout-minutes: 15
     env:
       # renovate: datasource=pypi depName=semgrep
-      SEMGREP_VERSION: "1.180.0"
+      SEMGREP_VERSION: "1.184.0"
       # renovate: datasource=pypi depName=zizmor
       ZIZMOR_VERSION: "1.31.1"
     steps:
