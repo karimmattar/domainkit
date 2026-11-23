@@ -100,7 +100,8 @@ def list_item(name: str, *, typed: bool = False) -> str:
 
     With ``typed`` (since 2.10), the name is marked typed, as
     ``group_item`` marks a group's: a ``TypedName``, which ``laid_out``
-    reads whole and as the line shows it.
+    reads whole and as the line shows it; with no id or count beside it,
+    its line is read again too, as any typed text's.
     """
     shown = _fitting(lambda text: text, name)
     return TypedName(shown, name, shown) if typed else shown

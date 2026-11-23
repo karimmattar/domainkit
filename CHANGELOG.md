@@ -158,13 +158,14 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   `auth.set_groups`, the admin API's act of a change of groups, and a
   project's own screens; approvals' `auth.set_staff` and
   `auth.reactivate` mark each group they give back ("Groups") typed too
-  (`list_item(name, typed=True)`): the `on_typed_text` checks get the
-  name, and with `AUTH.AUTHORIZATIONS.TYPED_LINKS` set to `"refused"`, a
-  group whose name holds a link, whole, as a screen prints it, or as a
-  line may cut it, is refused where it is granted (`422 link_not_shown`)
-  until it is renamed, a name 2.9's check accepted with a top-level
-  domain inside it too (`acme.finance.readers`). Its id and counts are
-  not read. A request held before is still rejected or cancelled
+  (`list_item(name, typed=True)`), names alone whose line is read as any
+  typed text's: the `on_typed_text` checks get the name, and with
+  `AUTH.AUTHORIZATIONS.TYPED_LINKS` set to `"refused"`, a group whose
+  name holds a link, whole, as a screen prints it, or as a line may cut
+  it, is refused where it is granted (`422 link_not_shown`) until it is
+  renamed, a name 2.9's check accepted with a top-level domain inside it
+  too (`acme.finance.readers`). Its id and counts are not read. A
+  request held before is still rejected or cancelled
   ([upgrading.md](docs/upgrading.md#29-to-210), ADR 0180) (user report
   A17).
 - `holds_link` reads a top-level domain where a phone's linker ends a

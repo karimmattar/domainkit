@@ -273,13 +273,14 @@ AUTH = {"ADMIN_ACTION": True, "AUTHORIZATIONS": {"TYPED_LINKS": "refused"}}
   typed is refused when it is submitted, with `APPROVE_ACTION` on.
 - **A group added** (since 2.10): the admin API's act and approvals'
   `auth.set_groups` show each group a grant adds in a few words
-  (`group_item`, "readers (…9abc) 3 perms"), its stored name typed; a
-  return's "Groups", which it gives back, are read as typed too. A name
+  (`group_item`, "readers (…9abc) 3 perms"), its stored name typed; the
+  "Groups" a return, or making a user staff, gives back are read as
+  typed too: names alone, whose line is read as any typed text's. A name
   that holds a link, whole, as a screen prints it, or as a line may cut
-  it, is refused where the group is granted (`422 link_not_shown`), until
-  the group is renamed: one given before 2.8, while `TYPED_LINKS` was
-  `"shown"`, or with a top-level domain inside it, which 2.9's check let
-  through (`acme.finance.readers`). A request held before is still
+  it, is refused where the group is granted (`422 link_not_shown`),
+  until the group is renamed: one given before 2.8, while `TYPED_LINKS`
+  was `"shown"`, or with a top-level domain inside it, which 2.9's check
+  let through (`acme.finance.readers`). A request held before is still
   rejected or cancelled. The `on_typed_text` checks get the name as
   stored; the id and the counts beside it are not read. "Takes away"
   shows names unmarked: taking a user out of a group is never refused

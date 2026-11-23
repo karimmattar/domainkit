@@ -33,7 +33,13 @@ from domainkit.contrib.approvals.builtin import (
     show_set_staff,
 )
 from domainkit.contrib.auth.admin_actions import ADMIN_CHANGE, AdminAct
-from domainkit.contrib.auth.screens import LinkNotShown, Typed, TypedName, laid_out
+from domainkit.contrib.auth.screens import (
+    LinkNotShown,
+    Typed,
+    TypedName,
+    holds_link,
+    laid_out,
+)
 from domainkit.ddd import Command
 from domainkit.http import get_asgi_application
 from domainkit.management.base import run_async
@@ -576,6 +582,59 @@ def test_a_group_given_back_is_read_as_where_a_group_is_granted(
             with pytest.raises(LinkNotShown):
                 laid_out([("Groups", names)])
         laid_out([("Takes away", removed)])
+
+
+def test_a_group_given_back_is_read_as_its_line_shows_it_cut_or_beside_another(
+    client: TestClient,
+) -> None:
+    """A name given back is read cut as its line shows it, and beside the next one.
+
+    ``evil.corporate`` holds no link, and shows none whole; cut at the end
+    of a long name (``evil.cor…``), a line may show ``evil.co…``.
+    Two names that each read as no number to call may read as one side by
+    side: names alone, with no id or count beside them, are read on their
+    line as any typed text (review of the follow-up to user report A17).
+    """
+    cut_name = "b" * 54 + " evil.corporate"
+    alone = ("call desk", "12 500 000 EUR")
+    user = create_user("target")
+    held = {
+        name: HeldGroup(id=make_group(name), name=name, permissions=())
+        for name in (cut_name, "evil.corporate", *alone, "readers", "clerks")
+    }
+
+    def given_back(*names: str) -> list[TypedName]:
+        back = Reactivate(
+            user_id=user,
+            is_staff=True,
+            is_superuser=False,
+            groups=tuple(held[name] for name in names),
+            permissions=(),
+            object_grants=0,
+            object_grants_digest="",
+        )
+        groups: list[TypedName] = cast("Any", dict(run_async(show_reactivation(back))))[
+            "Groups"
+        ]
+        return groups
+
+    def refused(*names: str) -> bool:
+        groups = given_back(*names)
+        with override_settings(AUTH=REFUSED):
+            try:
+                laid_out([("Groups", groups)])
+            except LinkNotShown:
+                return True
+        return False
+
+    (cut,) = given_back(cut_name)
+    assert not holds_link(cut_name)
+    assert cut.endswith(" evil.cor…")
+    assert refused(cut_name)
+    assert not refused("evil.corporate")
+    assert [refused(name) for name in alone] == [False, False]
+    assert refused(*alone)
+    assert not refused("readers", "clerks")
 
 
 def test_making_staff_of_a_member_of_a_linked_group_waits_for_its_rename(

@@ -318,8 +318,10 @@ stop or `dot` (`a dot in the name`, `on the dot at nine`, `vs. net`), and
   item shows it (escaped, cut and `…`) and as a line may cut that
   further, as `check_typed` reads a name, without the spaced readings
   for these. The id and the counts are not read. Rejecting and
-  cancelling drop the mark, as for any of a request's typed text. A
-  return's "Groups", which it gives back, are read as typed too.
+  cancelling drop the mark, as for any of a request's typed text. The
+  "Groups" a return, or making a user staff, gives back are read as
+  typed too (`list_item(name, typed=True)`): names alone, with no id or
+  count beside them, so their line is read again as any typed text's.
 - **A top-level domain ends a name where a linker ends a word**: at the
   name's end, or before a dot (a middle dot is one) or a hyphen. A
   label that starts with one before a hyphen counts (`com-login`); an

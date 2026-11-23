@@ -250,7 +250,8 @@ class Typed(str):
     (``named``), which never locks what it names: a group's name is
     checked where it is typed (``check_typed``), and a user's username or
     address is an identifier, set as one. A group added, in a few words
-    (``group_item``), shows its stored name typed (since 2.10).
+    (``group_item``), shows its stored name typed (since 2.10), as does a
+    name alone that a grant gives back (``list_item(name, typed=True)``).
     """
 
     __slots__ = ()
@@ -261,10 +262,13 @@ class TypedName(Typed):
 
     What ``group_item`` gives (since 2.10): "readers (…9abc) 3 perms", the
     group's stored name, cut to fit (``shown``), beside the end of its id
-    and what it grants. ``laid_out`` checks the name alone: the
-    ``on_typed_text`` checks get it as stored, and with ``TYPED_LINKS``
-    refused it is refused where it holds a link, whole or as the text
-    shows it. The id and the counts, which no person typed, are not read.
+    and what it grants; and ``list_item(name, typed=True)``: the name
+    alone, cut to fit, its text what it shows. ``laid_out`` checks the
+    name: the ``on_typed_text`` checks get it as stored, and with
+    ``TYPED_LINKS`` refused it is refused where it holds a link, whole or
+    as the text shows it. The id and the counts, which no person typed,
+    are not read: a line of ``group_item``'s alone is not read again. A
+    line of names alone is, as any typed text's.
     """
 
     name: str
@@ -460,7 +464,10 @@ def _check_shown(values: list[object], lines: list[tuple[str, str, int]]) -> Non
     Cut, escaped, or joined, a line may read as a link its text did not
     (``evil.corporate`` cut to ``evil.co…``). A ``TypedName``'s name is
     read where it is checked, as its text shows it: a line of them alone
-    is not read again, with the ids and counts beside them.
+    is not read again, with the ids and counts beside them. A
+    ``TypedName`` that is its name alone (``list_item(name, typed=True)``)
+    has no id or count beside it, and its line is read as any typed
+    text's: two names joined may hold what neither does.
 
     Raises:
         LinkNotShown: ``TYPED_LINKS`` is ``"refused"`` and such a line
@@ -469,7 +476,10 @@ def _check_shown(values: list[object], lines: list[tuple[str, str, int]]) -> Non
     typed = {
         index
         for index, value in enumerate(values)
-        if any(not isinstance(text, TypedName) for text in _typed_in(value))
+        if any(
+            not isinstance(text, TypedName) or text == text.shown
+            for text in _typed_in(value)
+        )
     }
     shown = (text for _, text, index in lines if index in typed)
     if (
