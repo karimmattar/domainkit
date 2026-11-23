@@ -12,6 +12,11 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 
 ### Added
 
+- The `uvicorn` extra, `domainkit[uvicorn]`. It installs nothing new in
+  2.x, where every install has uvicorn already; 3.0 brings uvicorn only
+  through it. `init` writes it for a project served by uvicorn, so the
+  move to 3.0 needs no change there
+  ([upgrading.md](docs/upgrading.md#29-to-210)) (user report S3).
 - `afill_docx` and `aplaceholders`, the async forms of `fill_docx` and
   `placeholders`, read at most `DOCUMENTS["DOCX_AT_ONCE"]` Word documents
   at once in a process (2 by default), every event loop's and thread's
