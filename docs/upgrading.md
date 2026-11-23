@@ -1299,8 +1299,9 @@ Every install of 2.x brings uvicorn (`uvicorn[standard]`), even where
 Granian serves. In 3.0 it becomes an extra, `domainkit[uvicorn]`.
 `runserver` and the test plugin import it only when it serves, so
 `runserver --server granian` already runs without it. 2.x keeps it in
-every install; 2.10 adds the extra ahead of 3.0, which installs nothing
-new, so a project can name it before it moves ([2.9 to 2.10](#29-to-210)).
+every install. 2.10 adds the extra ahead of 3.0: in 2.x it installs
+nothing new, so a project can name it before it moves
+([2.9 to 2.10](#29-to-210)).
 Add it where the project uses uvicorn: its image runs it (the
 `Dockerfile` that `init` writes does), `runserver` serves with it, or a
 test uses `live_server`:
