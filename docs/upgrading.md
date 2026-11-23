@@ -78,9 +78,12 @@ built-in layers: `{"gateways": "infrastructure"}` holds `gateways.py` to
 the infrastructure layer's rules, as `models.py` is
 ([Layer rules](reference/settings.md#layer-rules),
 [ADR 0199](adr/0199-let-a-projects-module-be-a-built-in-layer.md)). A
-project that made such a module a layer of its own (`EXTRA_LAYERS`)
-moves it, with its `FORBIDDEN_LAYERS` and `FORBIDDEN_LIBRARIES` entries,
-to `LAYER_MODULES`: the settings refuse a module in both. Once named,
+project that made such a module a layer of its own moves it from
+`EXTRA_LAYERS` to `LAYER_MODULES`: the settings refuse a module in both.
+Its `FORBIDDEN_LIBRARIES` and `FORBIDDEN_LAYERS` entries name the layer
+it is from then on, `infrastructure`, not the module, or go where that
+layer's rules hold them already: the settings refuse a rule keyed by the
+module, and say which layer to name. Once named,
 `check` reports the module's imports as the layer's: a web library is
 `architecture.E001`, and a name outside `domainkit.http.uploads`'
 `__all__` is `architecture.W001`, which `check --deploy` refuses.

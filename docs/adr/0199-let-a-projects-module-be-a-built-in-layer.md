@@ -84,9 +84,11 @@ Options weighed:
 - A project's `gateways.py` is held as `models.py` is, and `check`
   reports it so: errors for a forbidden library, `architecture.W001` for
   Starlette's `UploadFile` from `domainkit.http.uploads`. A project that
-  made it an extra layer moves it from `EXTRA_LAYERS`, and its
-  `FORBIDDEN_LAYERS` and `FORBIDDEN_LIBRARIES` entries, to
-  `LAYER_MODULES`; the two together are refused.
+  made it an extra layer moves it from `EXTRA_LAYERS` to
+  `LAYER_MODULES`; the two together are refused. Its `FORBIDDEN_LAYERS`
+  and `FORBIDDEN_LIBRARIES` entries name the module's layer from then
+  on: a rule keyed by the module is refused, and the message names the
+  layer to key it by.
 - A module inside a layer package (`infrastructure/gateways.py`) is that
   package's layer already; `LAYER_MODULES` names only a domain's top.
 - To watch: a module named as a layer in one domain is that layer in

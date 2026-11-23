@@ -391,6 +391,28 @@ def test_extending_keeps_every_default_and_adds_each_entry_once() -> None:
             {"LAYER_MODULES": {"gateways": "infrastructure"}, "PUBLIC_SURFACE": ["x"]},
             "PUBLIC_SURFACE names parts outside the layers: \\['x'\\]",
         ),
+        (
+            {
+                "LAYER_MODULES": {"gateways": "infrastructure"},
+                "FORBIDDEN_LIBRARIES": {"gateways": ["httpx"]},
+            },
+            (
+                "FORBIDDEN_LIBRARIES names layers that are not in the layer rules: "
+                "\\['gateways'\\]; name the layer of each module of LAYER_MODULES "
+                "\\(gateways is infrastructure\\) \\[type"
+            ),
+        ),
+        (
+            {
+                "LAYER_MODULES": {"gateways": "infrastructure"},
+                "FORBIDDEN_LAYERS": {"api": ["gateways", "ports"]},
+            },
+            (
+                "\\['gateways', 'ports'\\]; name the layer of each module of "
+                "LAYER_MODULES \\(gateways is infrastructure\\); add the others to "
+                "EXTRA_LAYERS"
+            ),
+        ),
     ],
 )
 def test_architecture_settings_are_validated(

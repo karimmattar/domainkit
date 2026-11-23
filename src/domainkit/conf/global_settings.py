@@ -1120,7 +1120,7 @@ class ArchitectureConfig(BaseModel):
             if unknown := sorted(set(table) - layers):
                 raise ValueError(
                     f"{name} names layers that are not in the layer rules: "
-                    f"{unknown}; add them to EXTRA_LAYERS"
+                    f"{unknown}; {self._unknown_hint(unknown)}"
                 )
             if "domain" in table:
                 raise ValueError(
@@ -1131,7 +1131,7 @@ class ArchitectureConfig(BaseModel):
             if unknown := sorted(set(forbidden) - layers):
                 raise ValueError(
                     f"FORBIDDEN_LAYERS[{layer!r}] names layers that are not in "
-                    f"the layer rules: {unknown}; add them to EXTRA_LAYERS"
+                    f"the layer rules: {unknown}; {self._unknown_hint(unknown)}"
                 )
             if layer in forbidden:
                 raise ValueError(
@@ -1146,6 +1146,19 @@ class ArchitectureConfig(BaseModel):
                 "start each with a layer, as domain.values"
             )
         return self
+
+    def _unknown_hint(self, unknown: list[str]) -> str:
+        """What to do with ``unknown`` layers: add them, or name a module's layer.
+
+        A module of ``LAYER_MODULES`` is its layer, which its rules name;
+        ``EXTRA_LAYERS``, which would refuse it, is for the others.
+        """
+        named = [name for name in unknown if name in self.LAYER_MODULES]
+        if not named:
+            return "add them to EXTRA_LAYERS"
+        layers = ", ".join(f"{name} is {self.LAYER_MODULES[name]}" for name in named)
+        rest = "; add the others to EXTRA_LAYERS" if len(named) < len(unknown) else ""
+        return f"name the layer of each module of LAYER_MODULES ({layers}){rest}"
 
     def _check_layer_modules(self) -> None:
         """Each module names a built-in layer, and is no layer or module already.
