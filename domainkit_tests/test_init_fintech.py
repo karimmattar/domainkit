@@ -181,7 +181,7 @@ def test_fintech_writes_the_controls_over_the_project(tmp_path: Path) -> None:
     assert output.splitlines()[3:] == [
         (
             '  pip install "domainkit[audit,immudb,keys,mfa,postgres,redis,'
-            'sqlite,testing]"   # or: uv sync, for both'
+            'sqlite,uvicorn,testing]"   # or: uv sync, for both'
         ),
         "  pip install --group dev   # ruff formats what the generators write",
         "  python manage.py check",
@@ -197,7 +197,7 @@ def test_fintech_writes_the_controls_over_the_project(tmp_path: Path) -> None:
     ]
     pyproject = tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))
     assert pyproject["project"]["dependencies"] == [
-        requirement(domainkit.__version__, EXTRAS["fintech"])
+        requirement(domainkit.__version__, (*EXTRAS["fintech"], "uvicorn"))
     ]
     assert pyproject["tool"]["mypy"]["strict"] is True
     production = (project / "src/config/settings/production.py").read_text(

@@ -10,6 +10,14 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 
 ## [Unreleased]
 
+### Added
+
+- The `uvicorn` extra, `domainkit[uvicorn]`. It installs nothing new in
+  2.x, where every install has uvicorn already; 3.0 brings uvicorn only
+  through it. `init` writes it for a project served by uvicorn, so the
+  move to 3.0 needs no change there
+  ([upgrading.md](docs/upgrading.md#29-to-210)) (user report S3).
+
 ## [2.9.0] - 2026-11-18
 
 2.9 follows up the audit of 2.8: with 2.8.1 and 2.8.2, it fixes 58 of

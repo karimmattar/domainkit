@@ -5895,10 +5895,11 @@ testing = ["anyio", "httpx2", "pytest"]
 tracing = ["opentelemetry-api"]
 tzdata = ["tzdata"]
 uploads = ["python-multipart"]
+uvicorn = ["uvicorn"]
 uvloop = ["uvloop"]
 webhooks = ["cryptography", "httpx2"]
 
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13,<4"
-content-hash = "38989514e0bb1865ab99cb465e9bec0ac123640dff3b955e40b99ef769794b93"
+content-hash = "ec1785e543c7474d23d5c3e9324836148ba5aa23abbd9b71c81f167340482da5"

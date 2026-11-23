@@ -153,6 +153,9 @@ tzdata = ["tzdata (>=2025.2)"]
 uvloop = ["uvloop (>=0.23.0,<1.0.0); sys_platform != 'win32'"]
 # Granian, an ASGI server in Rust: "runserver --server granian", or production.
 granian = ["granian (>=2.8.4,<3.0.0)"]
+# uvicorn, the default server, for runserver, serve, and live_server. Every
+# 2.x install has it already; 3.0 brings it only through this extra.
+uvicorn = ["uvicorn[standard] (>=0.54.0,<1.0.0)"]
 
 # Runs commands before a project exists: "domainkit init billingAPI".
 [project.scripts]
