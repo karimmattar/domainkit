@@ -204,6 +204,7 @@ statuses, and the amendments they name.
 | [0192](0192-start-a-contrib-routers-route-names-with-its-app.md) | Start a contrib router's route names with its app | Accepted |
 | [0195](0195-move-the-outgoing-client-below-the-adapters-and-hold-module-state-to-its-resets.md) | Move the outgoing client below the adapters, and hold module state to its resets | Accepted |
 | [0196](0196-ask-rules-on-a-call-of-their-own-and-load-backend-settings-one-way.md) | Ask rules on a call of their own, and load backend settings one way | Accepted |
+| [0201](0201-hold-the-word-documents-read-at-once-to-one-bound-per-process.md) | Hold the Word documents read at once to one bound per process | Accepted |
 
 ### Decisions still without a record
 

@@ -10,6 +10,16 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 
 ## [Unreleased]
 
+### Added
+
+- `afill_docx` and `aplaceholders`, the async forms of `fill_docx` and
+  `placeholders`, read at most `DOCUMENTS["DOCX_AT_ONCE"]` Word documents
+  at once in a process (2 by default), every event loop's and thread's
+  calls together; the others wait their turn, holding no thread, and one
+  cancelled while it waits never runs. The sync functions are unchanged
+  ([Documents read at once](docs/documents.md#documents-read-at-once),
+  ADR 0201) (user report U7).
+
 ### Security
 
 - `DOCX` (`OfficeCheck`) refuses an imported chunk (`w:altChunk`)

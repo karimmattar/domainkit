@@ -869,12 +869,17 @@ def is_loopback(host: str) -> bool:
 
 
 class DocumentsConfig(BaseModel):
-    """``DOCUMENTS``: how ``domainkit.documents`` renders documents."""
+    """``DOCUMENTS``: how ``domainkit.documents`` renders and reads documents."""
 
     model_config = ConfigDict(frozen=True, extra="forbid", allow_inf_nan=False)
 
     RENDERER: RendererConfig | None = None
     """The Gotenberg server ``renderer()`` calls; None: no renderer."""
+    DOCX_AT_ONCE: int = Field(default=2, ge=1, le=64)
+    """Word documents ``afill_docx`` and ``aplaceholders`` read at once in a
+    process, every event loop's calls together; the others wait their turn
+    (New in 2.10). A call takes up to 340 MiB at the default
+    ``ArchiveLimits``."""
 
 
 MIB: Final = 1024 * 1024

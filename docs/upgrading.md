@@ -39,8 +39,9 @@ never published), with each section below.
 ## 2.9 to 2.10
 
 2.10 closes a project's notes on 2.9. Each item of this list says what a
-project that relied on 2.9's behaviour changes, and what to run. The
-uploads' Office check refuses more (below).
+project that relied on 2.9's behaviour changes, and what to run. One
+setting is new, `DOCUMENTS["DOCX_AT_ONCE"]`, and the uploads' Office
+check refuses more (below).
 
 - **`OfficeCheck` refuses more Office documents** (security). `DOCX`,
   `XLSX` and `PPTX` refuse an imported chunk (`w:altChunk`) wherever it
@@ -59,6 +60,13 @@ uploads' Office check refuses more (below).
   package made by a tool that names a part with `%20` or letters outside
   ASCII is refused, and is taken once repacked with plain names
   ([Checking documents](uploads.md#checking-documents)).
+- **Await `afill_docx` and `aplaceholders` in async code.** They read at
+  most `DOCUMENTS["DOCX_AT_ONCE"]` Word documents at once in the process
+  (2 by default, 680 MiB at most at the default `ArchiveLimits`), where
+  `asyncio.to_thread(fill_docx, ...)` ran as many as the loop's executor
+  allowed. `fill_docx` and `placeholders` are unchanged; replace a limiter
+  of your own with the setting, sized for the worker's memory
+  ([Documents read at once](documents.md#documents-read-at-once)).
 
 ## 2.8 to 2.9
 
