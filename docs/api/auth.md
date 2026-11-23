@@ -309,6 +309,7 @@ What an act shows, laid out on a phone's screen: whole, or refused (ADR 0173).
 - `laid_out`: `details` on a screen's lines: six labelled lines of 64 characters at most.
 - `named`: What an act is on, on one line: its name, cut to fit if need be, and its id.
 - `on_typed_text`: Register a check of text a person typed for an act (since 2.8).
+- `shows_link`: Whether a screen that shows `text` on a line shows a link (since 2.10).
 
 ## `domainkit.contrib.auth.signup`
 
