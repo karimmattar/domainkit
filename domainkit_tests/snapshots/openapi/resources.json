@@ -25,7 +25,7 @@
     "type": "object"
    },
    "BatchError": {
-    "description": "Why one item failed, as a request of its own would have been told.",
+    "description": "Why one item failed: the code and detail a request of its own would get.\n\nNo other member of that request's body: not an error's ``extensions()``,\nnor ``in_doubt`` for an item whose commit may have been made.",
     "properties": {
      "code": {
       "title": "Code",
