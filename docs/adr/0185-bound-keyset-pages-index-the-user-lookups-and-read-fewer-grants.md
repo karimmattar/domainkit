@@ -1,6 +1,6 @@
 # 0185. Bound keyset pages, index the user lookups, and read fewer grants
 
-- Status: Accepted; amended 2026-11-18 (at the end)
+- Status: Accepted; amended 2026-11-18 and 2026-11-23 (at the end)
 - Date: 2026-11-18
 
 ## Context
@@ -237,3 +237,69 @@ ones descending), and no one range holds both.
 - Still read: the ties of the first field up to the position, as the
   decision says; the missing values are one such group.
 
+
+## Amendment (2026-11-23): build the lookup indexes concurrently, and an invalid one again
+
+`migrate` built the user lookups' indexes with `CREATE INDEX`, in the
+transaction of the `on_migrated` hooks. The users table's writes
+(signups, logins, profile changes) waited while each was built, at the
+deploy that made them, and "To watch" above asked a project with a large
+table to build them by hand first. A concurrent build that fails leaves
+an invalid index of its name, which `migrate` took as made: lookups then
+read the whole table again (user report D2).
+
+- **A hook point outside the transaction.** Once the `on_migrated` hooks
+  committed, `migrate` calls the `on_migrated_committed` hooks, on a
+  connection of the schema owner of their own, in `AUTOCOMMIT`, in the
+  tenant's schema where it migrates one. `index_lookups` moves there.
+  `flush` runs them too.
+- **Built concurrently, under the same names.** Each missing index is
+  built with `CREATE INDEX CONCURRENTLY IF NOT EXISTS`: the table takes
+  writes while it is built ([PostgreSQL: building indexes
+  concurrently](https://www.postgresql.org/docs/16/sql-createindex.html#SQL-CREATEINDEX-CONCURRENTLY)).
+- **An invalid index counts as missing.** The catalog read gives each
+  index's `pg_index.indisvalid`: "false means the index is possibly
+  incomplete" ([PostgreSQL:
+  pg_index](https://www.postgresql.org/docs/16/catalog-pg-index.html)).
+  A valid index of the name stays, one a project built by hand included,
+  whatever it indexes. An invalid one is dropped,
+  `DROP INDEX CONCURRENTLY IF EXISTS` in the table's schema, and built
+  again, the recovery PostgreSQL's documentation gives first. A
+  `migrate` with nothing to build still takes no lock on the table.
+
+Options weighed:
+
+- A second connection opened by the hook, with the hooks' transaction
+  still open. A concurrent build waits for the transactions that
+  modified the table, and, for an index on an expression, for every
+  transaction that holds an older snapshot. Once the hooks read the
+  catalog, their own transaction was one: tried, the build waited for
+  the transaction that waited for it, a wait PostgreSQL cannot see as a
+  deadlock, until a lock timeout ended it.
+- Committing the hooks' transaction from the hook, as Alembic's
+  `autocommit_block` commits a migration's
+  ([Alembic: autocommit_block](https://alembic.sqlalchemy.org/en/latest/api/runtime.html#alembic.runtime.migration.MigrationContext.autocommit_block)).
+  The hooks before it would commit apart from those after, from a
+  transaction `migrate` holds. Django runs `AddIndexConcurrently` only
+  in a migration that is not atomic ([Django: concurrent index
+  operations](https://docs.djangoproject.com/en/5.2/ref/contrib/postgres/operations/#concurrent-index-operations)):
+  the framework says where the transaction ends, as the new hook point
+  does.
+- `REINDEX INDEX CONCURRENTLY` of the invalid index. It builds a second
+  index beside the first, under another name, which a failure leaves
+  behind too.
+
+Consequences:
+
+- `migrate` waits, without holding writes, for the transactions open on
+  the table when a build starts, and for those that hold an older
+  snapshot before it ends: a long transaction delays the deploy, not the
+  writes.
+- A build that fails fails `migrate`, and leaves an invalid index, which
+  the next `migrate` builds again.
+- An index whose concurrent build still runs is invalid too. `migrate`
+  waits for that build, and then one of the two fails: let a build
+  started by hand finish first. Two `migrate`s at once, which
+  operations.md advises against, can fail so too.
+- From 2.10 a project no longer builds them by hand before it deploys:
+  "To watch" above holds for 2.9 only.

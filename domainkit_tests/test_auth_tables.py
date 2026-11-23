@@ -12,8 +12,18 @@ from typing import Any, Final
 
 import asyncpg  # type: ignore[import-untyped]
 import pytest
-from sqlalchemy import Column, MetaData, String, Table, event, inspect, make_url
+from sqlalchemy import (
+    Column,
+    MetaData,
+    String,
+    Table,
+    event,
+    inspect,
+    make_url,
+    text,
+)
 from sqlalchemy.dialects import sqlite
+from sqlalchemy.engine import Engine
 from sqlalchemy.schema import CreateTable
 
 from domainkit import setup
@@ -370,32 +380,236 @@ def test_migrate_makes_the_lookup_indexes_in_the_user_tables_own_schema(
     """A user table that names its schema gets them there, once.
 
     They were looked for in the schema the connection works in, which has
-    no such table, so none was made (found in review).
+    no such table, so none was made (found in review). An invalid one is
+    dropped there, and built again (user report D2).
     """
     people = Table("people", MetaData(), *abstract_user_columns(), schema="identity")
     config = registry.get_domain_config("auth")
     assert isinstance(config, AuthConfig)
     monkeypatch.setattr(config, "user_table", people)
 
-    async def made() -> set[str]:
+    async def made() -> dict[str, tuple[int, bool]]:
         async with connections.engine().begin() as connection:
             await connection.exec_driver_sql("CREATE SCHEMA identity")
             await connection.run_sync(people.create)
-            await config.index_lookups(connection, "default")
-            await config.index_lookups(connection, "default")  # Finds them.
-            return await connection.run_sync(
-                lambda sync: {
-                    str(index["name"])
-                    for index in inspect(sync).get_indexes("people", schema="identity")
-                    if str(index["name"]).startswith("ix_")  # Not unique ones.
-                }
+        async with connections.engine().connect() as connection:
+            outside = await connection.execution_options(isolation_level="AUTOCOMMIT")
+            await config.index_lookups(outside, "default")
+            await config.index_lookups(outside, "default")  # Finds them.
+            await outside.exec_driver_sql(
+                INVALIDATE, ("identity.ix_people_email_lower",)
             )
+            await config.index_lookups(outside, "default")
+        return await index_states("people", "identity")
 
-    assert run_async(made()) == {
+    states = run_async(made())
+
+    assert set(states) == {
         "ix_people_email_lower",
         "ix_people_username_lower",
         "ix_people_email_id",
     }
+    assert all(valid for _, valid in states.values())
+
+
+TOUCH: Final = "UPDATE domainkit_users SET email = email"
+"""A write that holds the default user table until its transaction ends."""
+INVALIDATE: Final = (
+    "UPDATE pg_index SET indisvalid = false WHERE indexrelid = $1::regclass"
+)
+"""Mark an index invalid, as a concurrent build that failed leaves it."""
+
+
+STATES: Final = text(
+    "SELECT i.relname, i.oid, x.indisvalid FROM pg_index x"
+    " JOIN pg_class i ON i.oid = x.indexrelid"
+    " JOIN pg_class t ON t.oid = x.indrelid"
+    " JOIN pg_namespace n ON n.oid = t.relnamespace"
+    " WHERE t.relname = :table AND n.nspname = :schema AND i.relname LIKE 'ix\\_%'"
+)
+"""Each ``ix_`` index of a table: its name, oid, and validity."""
+
+
+async def index_states(
+    table: str, schema: str = "public"
+) -> dict[str, tuple[int, bool]]:
+    """Each of the lookup indexes of ``table``: its oid, and whether it is valid."""
+    async with connections.engine().connect() as connection:
+        rows = await connection.execute(STATES, {"table": table, "schema": schema})
+        return {str(name): (int(oid), bool(valid)) for name, oid, valid in rows}
+
+
+def asyncpg_dsn(database_url: str) -> str:
+    """``database_url`` as asyncpg takes it."""
+    url = make_url(database_url).set(drivername="postgresql")
+    return url.render_as_string(hide_password=False)
+
+
+@contextmanager
+def built() -> Iterator[list[str]]:
+    """Each statement of the block, of any engine, that makes or drops an index."""
+    seen: list[str] = []
+
+    def keep(*args: Any) -> None:  # noqa: ANN401 - SQLAlchemy's event arguments.
+        if " INDEX " in args[2]:
+            seen.append(args[2])
+
+    event.listen(Engine, "before_cursor_execute", keep)
+    try:
+        yield seen
+    finally:
+        event.remove(Engine, "before_cursor_execute", keep)
+
+
+@pytest.mark.skipif(not ON_POSTGRES, reason=f"set {POSTGRES_VARIABLE}: SQLite has none")
+@pytest.mark.parametrize("migrated", ["default"], indirect=True)
+def test_migrate_builds_again_an_index_a_failed_build_left_invalid(
+    migrated: str, database_url: str
+) -> None:
+    """An invalid index counts as missing: dropped, and built again.
+
+    A concurrent build that fails, here one cancelled while it waits for a
+    write, leaves an invalid index of its name, which 2.9's ``migrate``
+    took as made (user report D2). A valid one stays, one built by hand
+    under the name too, and a second ``migrate`` builds and drops nothing.
+    """
+    folded = "ix_domainkit_users_email_lower"
+    by_hand = "ix_domainkit_users_username_lower"
+
+    async def fail_a_build() -> None:
+        writer = await asyncpg.connect(asyncpg_dsn(database_url))
+        builder = await asyncpg.connect(asyncpg_dsn(database_url))
+        try:
+            await builder.execute(f"DROP INDEX {folded}")
+            await builder.execute(f"DROP INDEX {by_hand}")
+            await builder.execute(
+                f"CREATE INDEX CONCURRENTLY {by_hand} ON {migrated} (lower(username))"
+            )
+            async with writer.transaction():
+                await writer.execute(TOUCH)
+                await builder.execute("SET statement_timeout = '200ms'")
+                with pytest.raises(asyncpg.QueryCanceledError):
+                    await builder.execute(
+                        f"CREATE INDEX CONCURRENTLY {folded} ON {migrated} "
+                        "(lower(email))"
+                    )
+        finally:
+            await writer.close()
+            await builder.close()
+
+    run_async(fail_a_build())
+    before = run_async(index_states(migrated))
+    with built() as rebuilt:
+        call_command("migrate", stdout=io.StringIO())
+    after = run_async(index_states(migrated))
+    with built() as again:
+        call_command("migrate", stdout=io.StringIO())
+
+    assert before[folded][1] is False
+    assert after[folded][1] is True
+    assert after[folded][0] != before[folded][0]  # Dropped, then built.
+    assert {name: after[name] for name in after if name != folded} == {
+        name: before[name] for name in before if name != folded
+    }
+    assert rebuilt == [
+        f"DROP INDEX CONCURRENTLY IF EXISTS public.{folded}",
+        (
+            f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {folded} "
+            f"ON public.{migrated} (lower(email))"
+        ),
+    ]
+    assert again == []
+    assert run_async(index_states(migrated)) == after
+
+
+@pytest.mark.skipif(not ON_POSTGRES, reason=f"set {POSTGRES_VARIABLE}: SQLite has none")
+@pytest.mark.parametrize("migrated", ["default"], indirect=True)
+def test_migrate_builds_the_lookup_indexes_while_the_table_takes_writes(
+    migrated: str, database_url: str
+) -> None:
+    """Each is built ``CONCURRENTLY``, once the hooks' transaction committed.
+
+    2.9 built them in that transaction, with ``CREATE INDEX``: the build
+    waited behind an open write, and every write after it waited behind
+    the build (user report D2). A write now goes through while the build
+    waits, and the build ends once the open write does.
+    """
+    for name in lookup_indexes(get_user_model(), get_user_table(), "email"):
+        on_server(database_url, f"DROP INDEX {name}")
+    held, wrote = threading.Event(), []
+    waiting = (
+        "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()"
+        " AND query LIKE 'CREATE INDEX%' AND wait_event_type = 'Lock'"
+    )
+
+    def write() -> None:
+        async def hold() -> None:
+            first = await asyncpg.connect(asyncpg_dsn(database_url))
+            second = await asyncpg.connect(asyncpg_dsn(database_url))
+            try:
+                async with first.transaction():
+                    await first.execute(TOUCH)
+                    held.set()
+                    for _ in range(200):
+                        if await second.fetchval(waiting):
+                            break
+                        await asyncio.sleep(0.05)
+                    await second.execute("SET lock_timeout = '2s'")
+                    try:
+                        await second.execute(TOUCH)
+                        wrote.append("written")
+                    except asyncpg.LockNotAvailableError:
+                        wrote.append("held")
+            finally:
+                await first.close()
+                await second.close()
+
+        asyncio.run(hold())
+
+    writer = threading.Thread(target=write)
+    writer.start()
+    try:
+        assert held.wait(10)
+        call_command("migrate", stdout=io.StringIO())
+    finally:
+        writer.join(30)
+
+    assert wrote == ["written"]
+    states = run_async(index_states(migrated))
+    assert len(states) == 3
+    assert all(valid for _, valid in states.values())
+
+
+@pytest.mark.usefixtures("database_access")
+def test_migrate_builds_no_lookup_index_on_sqlite(tmp_path: Path) -> None:
+    """SQLite keeps none: the follow-up runs no statement there."""
+    registry.clear()
+    with override_settings(
+        INSTALLED_DOMAINS=[CONTENTTYPES, AUTH, ALPHA],
+        DATABASES={"default": {"URL": f"sqlite+aiosqlite:///{tmp_path / 'u.sqlite3'}"}},
+        MIGRATIONS_DIR=tmp_path / "migrations",
+        AUTH={"PASSWORD_HASHERS": [FAST_HASHER]},
+    ):
+        setup()
+        call_command("makemigrations", "-m", "auth", stdout=io.StringIO())
+        call_command("migrate", stdout=io.StringIO())
+        with built() as seen:
+            call_command("migrate", stdout=io.StringIO())
+        present = run_async(sqlite_indexes())
+    registry.clear()
+
+    assert seen == []
+    assert not any(name.endswith(("_lower", "_email_id")) for name in present)
+
+
+async def sqlite_indexes() -> set[str]:
+    """The names of the default user table's indexes."""
+    async with connections.engine().connect() as connection:
+        return await connection.run_sync(
+            lambda sync: {
+                str(index["name"]) for index in inspect(sync).get_indexes(users.name)
+            }
+        )
 
 
 def test_migrate_before_any_revision_makes_no_index(

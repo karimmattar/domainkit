@@ -18,13 +18,15 @@ from domainkit.db import uow as uow_module
 from domainkit.db.hooks import (
     on_committed,
     on_migrated,
+    on_migrated_committed,
     on_stage,
     on_stage_transaction,
     on_transaction_committed,
 )
 from domainkit.db.migrations import run_migrated_hooks
 from domainkit.exceptions import ImproperlyConfigured
-from domainkit_tests.conftest import ALPHA, MakePackage
+from domainkit.tenancy import tenant_schema
+from domainkit_tests.conftest import ALPHA, MakePackage, on_server
 
 TYPED = """
 from domainkit.apps import DomainConfig
@@ -85,6 +87,46 @@ class FailingConfig(DomainConfig):
         raise RuntimeError("the follow-up failed")
 """
 
+FOLLOWED = """
+from domainkit.apps import DomainConfig
+from domainkit.db.hooks import on_migrated, on_migrated_committed
+from hooklog import CALLS
+
+
+async def path(connection):
+    if connection.dialect.name != "postgresql":
+        return None
+    found = await connection.exec_driver_sql("SELECT current_setting('search_path')")
+    return found.scalar()
+
+
+class FollowedConfig(DomainConfig):
+    def ready(self):
+        on_migrated_committed(self.built)
+        on_migrated(self.filled)
+
+    async def filled(self, connection, database):
+        await connection.exec_driver_sql("CREATE TABLE followed_rows (x INTEGER)")
+        CALLS.append(("followed", "migrated", database, await path(connection)))
+
+    async def built(self, connection, database):
+        await connection.exec_driver_sql("SELECT count(*) FROM followed_rows")
+        mode = connection.sync_connection.get_execution_options()["isolation_level"]
+        CALLS.append(("followed", "built", database, mode, await path(connection)))
+"""
+BREAKING = """
+from domainkit.apps import DomainConfig
+from domainkit.db.hooks import on_migrated
+
+
+class BreakingConfig(DomainConfig):
+    def ready(self):
+        on_migrated(self.fail)
+
+    async def fail(self, connection, database):
+        raise RuntimeError("the hook failed")
+"""
+
 
 FULL_CONTRIB = [
     f"domainkit.contrib.{app}"
@@ -123,6 +165,8 @@ def calls(make_package: MakePackage) -> list[tuple[str, ...]]:
     make_package("early", {"apps.py": EARLY})
     make_package("quiet", {})
     make_package("failing", {"apps.py": FAILING})
+    make_package("followed", {"apps.py": FOLLOWED})
+    make_package("breaking", {"apps.py": BREAKING})
     import hooklog  # type: ignore[import-not-found]
 
     return hooklog.CALLS  # type: ignore[no-any-return]
@@ -182,6 +226,68 @@ def test_migrated_hooks_run_on_the_migrated_database(
     run_migrated_hooks("default")
 
     assert calls == [("typed", "migrated", "default")]
+
+
+@pytest.mark.usefixtures("database_access")
+def test_migrated_follow_ups_run_once_the_hooks_committed(
+    calls: list[tuple[str, ...]], tmp_path: Path
+) -> None:
+    """``on_migrated_committed`` hooks run after that transaction, outside one.
+
+    Each of their statements commits as it runs, so they may build an
+    index ``CONCURRENTLY``, and they read what the transaction made,
+    whichever was registered first (user report D2). When an
+    ``on_migrated`` hook fails, its transaction is rolled back and no
+    follow-up runs.
+    """
+    url = f"sqlite+aiosqlite:///{tmp_path / 'hooks.sqlite3'}"
+    with override_settings(
+        INSTALLED_DOMAINS=[ALPHA, "followed"], DATABASES={"default": {"URL": url}}
+    ):
+        setup()
+        domains = [hook.domain for hook in on_migrated_committed]
+        run_migrated_hooks("default")
+        ran = list(calls)
+    calls.clear()
+    registry.clear()
+    with override_settings(
+        INSTALLED_DOMAINS=[ALPHA, "breaking", "followed"],
+        DATABASES={"default": {"URL": f"sqlite+aiosqlite:///{tmp_path / 'b.sqlite3'}"}},
+    ):
+        setup()
+        with pytest.raises(RuntimeError, match="the hook failed"):
+            run_migrated_hooks("default")
+    asyncio.run(connections.close_all())
+
+    assert domains == ["followed"]
+    assert ran == [
+        ("followed", "migrated", "default", None),
+        ("followed", "built", "default", "AUTOCOMMIT", None),
+    ]
+    assert calls == []
+
+
+def test_migrated_follow_ups_run_in_the_tenants_schema(
+    calls: list[tuple[str, ...]], database_url: str
+) -> None:
+    """After ``migrate --tenant``, a follow-up works where the hooks did."""
+    if not database_url.startswith("postgresql"):
+        pytest.skip("schemas per tenant need PostgreSQL")
+    schema = tenant_schema("acme")
+    on_server(database_url, f'CREATE SCHEMA "{schema}"')
+    with override_settings(
+        INSTALLED_DOMAINS=[ALPHA, "followed"],
+        DATABASES={"default": {"URL": database_url}},
+        TENANCY={"SCHEMA_DATABASES": ["default"]},
+    ):
+        setup()
+        run_migrated_hooks("default", tenant="acme")
+    asyncio.run(connections.close_all())
+
+    assert calls == [
+        ("followed", "migrated", "default", schema),
+        ("followed", "built", "default", "AUTOCOMMIT", schema),
+    ]
 
 
 def test_hooks_are_the_installed_domains_and_forgotten_with_them(
@@ -378,13 +484,15 @@ def test_contrib_apps_register_only_the_hooks_they_have() -> None:
         staged = [hook.domain for hook in on_stage_transaction]
         followed = [hook.domain for hook in on_transaction_committed]
         migrated = [hook.domain for hook in on_migrated]
+        built = [hook.domain for hook in on_migrated_committed]
         installed = len(registry)
 
     assert installed == 13
     assert stage == ["auth", "audit", "messaging", "idempotency"]
     assert committed == ["auth", "messaging", "idempotency"]
     assert staged == followed == ["idempotency"]
-    assert migrated == ["contenttypes", "auth", "auth", "audit", "audit"]
+    assert migrated == ["contenttypes", "auth", "audit", "audit"]
+    assert built == ["auth"]  # The user lookups' indexes, concurrently.
 
 
 def test_hooks_worked_out_while_the_domains_change_are_not_kept(

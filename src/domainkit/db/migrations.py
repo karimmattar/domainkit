@@ -53,7 +53,7 @@ from domainkit import setup
 from domainkit.conf import DEFAULT_DB_ALIAS, DatabaseConfig, settings
 from domainkit.db.connections import connections, create_owner_engine
 from domainkit.db.derive import DECLARED_CHECK
-from domainkit.db.hooks import on_migrated
+from domainkit.db.hooks import on_migrated, on_migrated_committed
 from domainkit.db.money import CHECK
 from domainkit.db.orm import metadata
 from domainkit.db.partitioning import existing_partitions, maintain
@@ -475,7 +475,8 @@ def run_migrated_hooks(
     """Run the ``on_migrated`` hooks (``domainkit.db.hooks``) for alias ``database``.
 
     With ``tenant``, in that tenant's schema (``search_path``), so what they
-    make (the audit trail's triggers, its indexes) is the schema's own.
+    make (the audit trail's triggers, its indexes) is the schema's own. Once
+    they committed, the ``on_migrated_committed`` hooks, in the same schema.
     """
     alias = _single_alias(database)
     schema = None if tenant is None else _tenant_schema(alias, tenant)
@@ -483,7 +484,14 @@ def run_migrated_hooks(
 
 
 async def _migrated(database: DatabaseConfig, alias: str, schema: str | None) -> None:
-    """Run the hooks in one transaction, as the schema owner, in ``schema``."""
+    """Run the hooks in one transaction, as the schema owner, in ``schema``.
+
+    Then the follow-ups, once that transaction committed, on a connection
+    of their own outside a transaction (``AUTOCOMMIT``): ``CREATE INDEX
+    CONCURRENTLY`` runs only so, and would wait for the hooks' transaction
+    while it is open. The unpooled connection is closed after them, its
+    ``search_path`` with it.
+    """
     engine = create_owner_engine(database)
     try:
         async with _connected(engine, begin=True) as connection:
@@ -491,6 +499,14 @@ async def _migrated(database: DatabaseConfig, alias: str, schema: str | None) ->
                 await connection.exec_driver_sql(f'SET LOCAL search_path TO "{schema}"')
             for hook in on_migrated:
                 await hook.call(connection, alias)
+        if not (follow_ups := on_migrated_committed.hooks()):
+            return
+        async with _connected(engine) as connection:
+            outside = await connection.execution_options(isolation_level="AUTOCOMMIT")
+            if schema is not None:
+                await outside.exec_driver_sql(f'SET search_path TO "{schema}"')
+            for hook in follow_ups:
+                await hook.call(outside, alias)
     finally:
         await engine.dispose()
 

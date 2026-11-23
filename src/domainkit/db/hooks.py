@@ -18,6 +18,10 @@ called, typed on the SQL unit of work they join::
   connection and a database alias (``messaging.enqueue``).
 - ``on_migrated``: fill a database after ``migrate`` upgraded it, in one
   transaction on the schema owner's connection; check the alias first.
+- ``on_migrated_committed``: follow up once that transaction committed, on
+  the schema owner's connection outside a transaction, where each
+  statement commits as it runs: for what PostgreSQL runs only so, such as
+  ``CREATE INDEX CONCURRENTLY`` (since 2.10).
 
 0.13 removed the ``DomainConfig`` methods ``stage``, ``committed``,
 ``stage_transaction``, ``transaction_committed``, and ``migrated``:
@@ -38,6 +42,7 @@ if TYPE_CHECKING:
 __all__ = [
     "on_committed",
     "on_migrated",
+    "on_migrated_committed",
     "on_stage",
     "on_stage_transaction",
     "on_transaction_committed",
@@ -69,3 +74,7 @@ on_migrated: HookPoint[ConnectionHook] = HookPoint(
     "migrated", arguments=2, awaited=True
 )
 """Fill a database ``migrate`` upgraded: ``(owner_connection, alias)``."""
+on_migrated_committed: HookPoint[ConnectionHook] = HookPoint(
+    "migrated_committed", arguments=2, awaited=True
+)
+"""Follow up once the ``on_migrated`` hooks committed, outside a transaction."""

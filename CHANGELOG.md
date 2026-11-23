@@ -20,6 +20,27 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   layers that may not import it. A built-in layer or module, or a module
   also in `EXTRA_LAYERS`, is refused. ADR 0199
   ([Layer rules](docs/reference/settings.md#layer-rules)) (user report D2).
+- `domainkit.db.hooks.on_migrated_committed`: hooks that `migrate` and
+  `flush` call once the `on_migrated` hooks committed, with the schema
+  owner's connection outside a transaction, for what PostgreSQL runs only
+  so, such as `CREATE INDEX CONCURRENTLY`
+  ([Extension points](docs/reference/extension-points.md)) (user report D2).
+
+### Changed
+
+- On PostgreSQL, `migrate` builds the user lookups' indexes with
+  `CREATE INDEX CONCURRENTLY`, under the same names, once its hooks
+  committed: the users table takes writes while they are built, where 2.9
+  held them. ADR 0185's amendment of 2026-11-23
+  ([upgrading.md](docs/upgrading.md#migrate-builds-the-user-lookups-indexes-concurrently))
+  (user report D2).
+
+### Fixed
+
+- `migrate` builds again a user lookup index that a failed concurrent
+  build left invalid (`pg_index.indisvalid`), by hand or by `migrate`: it
+  drops the index, and builds it. 2.9 took it as made, and the lookups it
+  serves read the whole table (user report D2).
 
 ## [2.9.0] - 2026-11-18
 
