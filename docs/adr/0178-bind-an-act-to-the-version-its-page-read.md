@@ -218,16 +218,20 @@ resource's write keeps reading it so.
 | Option | What it costs |
 | --- | --- |
 | Keep the act's reading | One header, two answers, as the notes found. |
-| `asked_versions` at the act, several tags `403` and voided, as this record first decided | A list the twin answers `422` burns a confirmation at the act; a client's malformed header costs the person a new confirmation. |
-| **`asked_versions` at the act, its lines joined: several tags `422`, a tag that names no version `412`, each as at the twin, and neither voids the authorization** | A `412` and a `422` the act answers before the authorization is compared. Nothing is made in either case; the authorization still serves the act sent with the tag its twin held. |
+| `asked_versions` at the act, several tags `403` and voided, as this record first decided | The twin answers `422`: one header, two answers still. |
+| `asked_versions` at the act, `422` and `412` as at the twin, voiding nothing (the first form of this amendment) | Answered before the act's arguments are compared: another act sent with a bad tag, even one asked without `If-Match`, left its authorization live and the trail untold, where 2.9 voided it (found in review). |
+| **`asked_versions` at the act, its lines joined: several tags `422`, a tag that names no version `412`, each as at the twin; the authorization is voided first, and the trail told (`changed`)** | A client's slip costs a confirmation, as any other argument does. Without a version the act's arguments cannot be compared, so a slip and another act read alike. |
 
 An authorization asked without `If-Match` is compared first, unless
-the action requires `If-Match`: it holds as in 2.7, whatever the act
-sends, and a list there is the resource's write to read, as before.
-Only an authorization that does not hold so has the act's `If-Match`
-read as the twin's. Another version, `*`, an empty one, or none is
-still other arguments: `403 action_not_authorized`, voided.
+the action requires `If-Match`: the same act holds it as in 2.7,
+whatever `If-Match` it sends, and a list there is the resource's write
+to read, as before. Only an authorization that does not hold so has the
+act's `If-Match` read as the twin's. Another version, `*`, an empty
+one, or none is still other arguments: `403 action_not_authorized`,
+voided.
 
 Consequences: clients that send the twin's one tag see nothing new; an
-act that sends several is refused with `422` where it was voided. At
-most two HMACs at the act, as before. No new names, no table changes.
+act that sends several tags, or a tag of no version, is refused with
+the twin's `422` or `412`, and voids its authorization, as any other
+act does. At most two HMACs at the act, as before. No
+new names, no table changes.

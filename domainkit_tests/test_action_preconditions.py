@@ -312,9 +312,10 @@ def test_an_if_match_answers_the_same_at_the_twin_and_at_the_act(
 
     The act took the versions it found in a list, dropping the tags that
     named none: ``"1", "junk"`` was refused at the twin and made at the
-    act, and ``"1",`` refused at the twin as no version and voided at the
-    act (user report A17). Now each answers the same at both, voids
-    nothing, and the act sent with the tag the twin held is made.
+    act, and ``"1",`` refused at the twin as no version and ``403`` at
+    the act (user report A17). Now each answers the same at both. The act
+    still voids the authorization, and the trail hears of it: with no
+    version, its arguments cannot be compared (review of A17).
     """
     lamp = stock("Lamp")
     url = f"/products/{lamp}/publish"
@@ -323,14 +324,51 @@ def test_an_if_match_answers_the_same_at_the_twin_and_at_the_act(
     twin = alice.asking(url, sent, WEB)
     authorization = alice.authorizing(url, etag, WEB)
     act = alice.act(url, authorization, sent, WEB)
-    kept = not ended(authorization)
-    published = alice.act(url, authorization, etag, WEB)
 
     assert code_of(twin) == answer
     assert code_of(act) == answer
-    assert kept
-    assert published.status_code == 200, published.json()
-    assert list(shop.PUBLISHED) == [(lamp, "Lamp")]
+    assert ended(authorization)
+    assert reasons() == ["changed"]
+    assert shop.PUBLISHED == []
+
+
+OTHER: Final = {"channel": "shop"}
+"""Other arguments than the act's authorization holds: another channel."""
+
+
+@pytest.mark.parametrize(
+    ("sent", "answer"),
+    [
+        ('"junk"', (412, "precondition_failed")),
+        ('"1",', (412, "precondition_failed")),
+        ('"1", "2"', (422, "validation_error")),
+    ],
+)
+@pytest.mark.parametrize(
+    "asked_with", [True, False], ids=["asked-with", "asked-without"]
+)
+def test_another_act_with_an_if_match_of_no_version_or_several_is_voided(
+    alice: Reviewer, sent: str, answer: tuple[int, str], asked_with: bool
+) -> None:
+    """Other arguments, and a tag of no version or several: voided, and told.
+
+    Asked with ``If-Match`` or without (2.7's way), the act answers as the
+    twin answers that header, and voids the authorization as any other
+    act does, the trail told (``changed``): without a version its
+    arguments cannot be compared, so a client's slip and another act read
+    alike (review of user report A17).
+    """
+    lamp = stock("Lamp")
+    url = f"/products/{lamp}/publish"
+    etag = alice.read(f"/products/{lamp}")
+    authorization = alice.authorizing(url, etag if asked_with else None, WEB)
+
+    refused = alice.act(url, authorization, sent, OTHER)
+
+    assert code_of(refused) == answer
+    assert ended(authorization)
+    assert reasons() == ["changed"]
+    assert shop.PUBLISHED == []
 
 
 def test_an_act_reads_every_if_match_line_as_its_twin_does(alice: Reviewer) -> None:
@@ -354,14 +392,14 @@ def test_an_act_reads_every_if_match_line_as_its_twin_does(alice: Reviewer) -> N
 
     assert refused.status_code == 422, refused.json()
     assert refused.json()["errors"][0]["loc"] == ["header", "if-match"]
-    assert not ended(authorization)
+    assert ended(authorization)
     assert shop.PUBLISHED == []
 
 
 def test_without_if_match_at_the_twin_an_act_may_send_a_list_as_in_2_7(
     alice: Reviewer,
 ) -> None:
-    """Asked without one, the act's ``If-Match`` holds its write alone, as in 2.7.
+    """Asked without one, the same act's ``If-Match`` holds its write alone, as in 2.7.
 
     A list there is the write's to read: any tag that matches lets it
     through (RFC 9110, 13.1.1); the authorization is not asked about it.

@@ -578,9 +578,10 @@ POST /documents/42/approve
 - **The act reads `If-Match` as its twin does** (since 2.10, user
   report A17): the same header answers the same at both. Several tags,
   on one line or several, are `422`; a tag that names no version, or a
-  malformed value, is `412`. Neither voids the authorization: sent
-  again with the tag the twin held, the act is made. An authorization
-  asked without `If-Match` holds as in 2.7, whatever the act sends.
+  malformed value, is `412`. Either voids the authorization, as other
+  arguments do: without a version, the act's arguments cannot be
+  compared. The same act, with an authorization asked without
+  `If-Match`, holds it as in 2.7, whatever `If-Match` it sends.
 - **At the act**, `If-Match` holds the write as before (`412`), and
   `binds` reads the record again (`409 action_record_changed`). A
   `binds` that loads it at a version the authorization does not hold

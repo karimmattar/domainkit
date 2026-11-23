@@ -24,9 +24,9 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 - An act reads `If-Match` as its twin does (`asked_versions`), its lines
   one list, so the same header answers the same at both: several tags
   are `422`, and a tag that names no version, or a malformed value,
-  `412`; neither voids the authorization, and the act sent again with
-  the tag its twin held is made. An authorization asked without
-  `If-Match` holds as in 2.7, whatever the act sends
+  `412`. Either voids the authorization, and the trail hears of it, as
+  for other arguments. The same act, with an authorization asked
+  without `If-Match`, holds it as in 2.7, whatever `If-Match` it sends
   ([The version the page read](docs/auth/actions.md#the-version-the-page-read),
   [upgrading.md](docs/upgrading.md#29-to-210), ADR 0178) (user report
   A17).

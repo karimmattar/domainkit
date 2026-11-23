@@ -71,12 +71,13 @@ project that relied on 2.9's behaviour changes, and what to run.
   client or a test that matched the screen reads the new lines.
 - **An act reads `If-Match` as its twin does**
   ([ADR 0178](adr/0178-bind-an-act-to-the-version-its-page-read.md)).
-  For an authorization asked with `If-Match`, an act that sends several
-  tags, on one line or several, answers `422`, and one whose tag names
-  no version `412`, as the twin answers; neither voids the
-  authorization, where several were `403 action_not_authorized` and
-  voided it. Send the one tag the twin held. An authorization asked
-  without `If-Match` holds as before, whatever the act sends.
+  An act that sends several tags, on one line or several, answers
+  `422`, and one whose tag names no version `412`, as the twin answers,
+  unless it holds an authorization asked without `If-Match`; either
+  voids the authorization, as other arguments do, where several were
+  `403 action_not_authorized`. Send the one tag the twin held. The same
+  act, with an authorization asked without `If-Match`, holds it as
+  before, whatever `If-Match` it sends.
 
 ## 2.8 to 2.9
 
