@@ -835,7 +835,10 @@ PATCH /admin/auth/users/6f1c... {"is_staff": true}                       200: th
   back with. Since 2.10 `auth.set_staff` shows what the user comes back
   with too, as `auth.reactivate` does: "Superuser" where they are one,
   "Grants" (below), their "Groups", and "Also holds", then what else the
-  call sets.
+  call sets. Since 2.10 the "Groups" a user comes back with are read as
+  typed, as a group added is: with auth's `TYPED_LINKS` refused, a group
+  whose stored name holds a link is refused there until it is renamed
+  ([Text a person typed](../auth/actions.md#text-a-person-typed)).
 - **A key that matters is named, not counted** (since 2.8). A count
   ("readers (…9abc) 3 perms", "Also holds: 3 permissions") does not say
   which keys; auth's `AUTHORIZATIONS.NAMED_PERMISSIONS` lists the keys

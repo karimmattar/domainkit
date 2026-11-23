@@ -56,17 +56,19 @@ what a project that relied on 2.9's behaviour changes, and what to run.
 - **A group's stored name is read where it is granted.** With
   `AUTH.AUTHORIZATIONS.TYPED_LINKS` set to `"refused"`, the admin API's
   act and approvals' `auth.set_groups` read the name of each group a
-  grant adds as typed text, whole and as its item may show it cut. A
-  group whose name holds a link is refused where it is granted (`422
-  link_not_shown`): one named before 2.8, or while the setting was
-  `"shown"`, and also one that 2.9's own check accepted under
-  `"refused"`, whose name holds a top-level domain inside it
-  (`acme.finance.readers`, `cairo.office.staff`, `finance.team.lead`).
-  Rename the group: the new name is checked as any is, and grants of it
-  are shown again. A request held before is still rejected or
-  cancelled; approving it waits for the rename. The `on_typed_text`
-  checks now get these names too. Before you deploy, read every stored
-  group's name as each line may cut it, and rename those it finds:
+  grant adds as typed text, whole and as its item may show it cut;
+  approvals' `auth.set_staff` and `auth.reactivate` read each group they
+  give back ("Groups") so. A group whose name holds a link is refused
+  where it is granted or given back (`422 link_not_shown`): one named
+  before 2.8, or while the setting was `"shown"`, and also one that
+  2.9's own check accepted under `"refused"`, whose name holds a
+  top-level domain inside it (`acme.finance.readers`,
+  `cairo.office.staff`, `finance.team.lead`). Rename the group: the new
+  name is checked as any is, and grants of it are shown again. A request
+  held before is still rejected or cancelled; approving it waits for the
+  rename. The `on_typed_text` checks now get these names too. Before you
+  deploy, read every stored group's name as each line may cut it, and
+  rename those it finds:
 
   ```python
   from domainkit.contrib.auth.screens import shows_link

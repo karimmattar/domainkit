@@ -95,9 +95,15 @@ def group_item(
     return TypedName(make(shown), name, shown)
 
 
-def list_item(name: str) -> str:
-    """``name``, cut where need be, so that a list shows it on one line."""
-    return _fitting(lambda text: text, name)
+def list_item(name: str, *, typed: bool = False) -> str:
+    """``name``, cut where need be, so that a list shows it on one line.
+
+    With ``typed`` (since 2.10), the name is marked typed, as
+    ``group_item`` marks a group's: a ``TypedName``, which ``laid_out``
+    reads whole and as the line shows it.
+    """
+    shown = _fitting(lambda text: text, name)
+    return TypedName(shown, name, shown) if typed else shown
 
 
 def _fitting(make: Callable[[str], str], name: str) -> str:

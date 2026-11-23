@@ -156,10 +156,12 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   0180) (user report A17).
 - `group_item` marks a group's stored name typed, on approvals'
   `auth.set_groups`, the admin API's act of a change of groups, and a
-  project's own screens: the `on_typed_text` checks get the name, and
-  with `AUTH.AUTHORIZATIONS.TYPED_LINKS` set to `"refused"`, a group
-  whose name holds a link, whole, as a screen prints it, or as a line
-  may cut it, is refused where it is granted (`422 link_not_shown`)
+  project's own screens; approvals' `auth.set_staff` and
+  `auth.reactivate` mark each group they give back ("Groups") typed too
+  (`list_item(name, typed=True)`): the `on_typed_text` checks get the
+  name, and with `AUTH.AUTHORIZATIONS.TYPED_LINKS` set to `"refused"`, a
+  group whose name holds a link, whole, as a screen prints it, or as a
+  line may cut it, is refused where it is granted (`422 link_not_shown`)
   until it is renamed, a name 2.9's check accepted with a top-level
   domain inside it too (`acme.finance.readers`). Its id and counts are
   not read. A request held before is still rejected or cancelled
