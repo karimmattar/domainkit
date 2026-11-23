@@ -28,6 +28,7 @@ from domainkit.management import call_command
 from domainkit.management.commands.init import (
     EXTRAS,
     PROFILES,
+    SERVER_EXTRAS,
     TEMPLATE_DIR,
     docs_url,
     namespace_for,
@@ -181,7 +182,7 @@ def test_fintech_writes_the_controls_over_the_project(tmp_path: Path) -> None:
     assert output.splitlines()[3:] == [
         (
             '  pip install "domainkit[audit,immudb,keys,mfa,postgres,redis,'
-            'sqlite,testing]"   # or: uv sync, for both'
+            'sqlite,uvicorn,testing]"   # or: uv sync, for both'
         ),
         "  pip install --group dev   # ruff formats what the generators write",
         "  python manage.py check",
@@ -197,7 +198,7 @@ def test_fintech_writes_the_controls_over_the_project(tmp_path: Path) -> None:
     ]
     pyproject = tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))
     assert pyproject["project"]["dependencies"] == [
-        requirement(domainkit.__version__, EXTRAS["fintech"])
+        requirement(domainkit.__version__, (*EXTRAS["fintech"], "uvicorn"))
     ]
     assert pyproject["tool"]["mypy"]["strict"] is True
     production = (project / "src/config/settings/production.py").read_text(
@@ -223,11 +224,14 @@ def test_a_projects_namespace_on_the_ledger_follows_its_name(
 
 
 def test_the_profiles_extras_are_extras_of_domainkit() -> None:
-    """Each extra a profile depends on is one domainkit's pyproject.toml offers."""
+    """Each extra a profile or a server adds is one domainkit's pyproject offers."""
     own = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     offered = set(own["project"]["optional-dependencies"])
 
     assert set(EXTRAS["fintech"]) <= offered
+    for server, extras in SERVER_EXTRAS.items():
+        assert extras, server
+        assert set(extras) <= offered, server
     assert set(EXTRAS[None]) < set(EXTRAS["fintech"])
     assert requirement("0.15.0", EXTRAS["fintech"]) == (
         "domainkit[audit,immudb,keys,mfa,postgres,redis,sqlite]>=0.15.0,<0.16"
