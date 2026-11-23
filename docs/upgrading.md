@@ -36,6 +36,27 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.9 to 2.10
+
+2.10 follows up a project's notes on 2.9. Each section below says what
+a project that relied on 2.9's behaviour notices, and what to run.
+`ARCHITECTURE` takes a new key, `LAYER_MODULES`, which defaults to none
+([below](#a-module-of-the-projects-own-can-be-a-built-in-layer)).
+
+### A module of the project's own can be a built-in layer
+
+`ARCHITECTURE["LAYER_MODULES"]` makes a module of each domain one of the
+built-in layers: `{"gateways": "infrastructure"}` holds `gateways.py` to
+the infrastructure layer's rules, as `models.py` is
+([Layer rules](reference/settings.md#layer-rules),
+[ADR 0199](adr/0199-let-a-projects-module-be-a-built-in-layer.md)). A
+project that made such a module a layer of its own (`EXTRA_LAYERS`)
+moves it, with its `FORBIDDEN_LAYERS` and `FORBIDDEN_LIBRARIES` entries,
+to `LAYER_MODULES`: the settings refuse a module in both. Once named,
+`check` reports the module's imports as the layer's: a web library is
+`architecture.E001`, and a name outside `domainkit.http.uploads`'
+`__all__` is `architecture.W001`, which `check --deploy` refuses.
+
 ## 2.8 to 2.9
 
 2.9 follows up the audit of 2.8. Each item of this list says what a

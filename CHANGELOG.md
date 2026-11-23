@@ -10,6 +10,17 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 
 ## [Unreleased]
 
+### Added
+
+- `ARCHITECTURE["LAYER_MODULES"]` names a module of the project's own as
+  a built-in layer. With `{"gateways": "infrastructure"}`, a domain's
+  `gateways.py` is held, as `models.py` is, to that layer's libraries and
+  their exceptions (the client, the uploads' checks, the problems), to the
+  warning of the names 3.0 refuses (`architecture.W001`), and to the
+  layers that may not import it. A built-in layer or module, or a module
+  also in `EXTRA_LAYERS`, is refused. ADR 0199
+  ([Layer rules](docs/reference/settings.md#layer-rules)) (user report D2).
+
 ## [2.9.0] - 2026-11-18
 
 2.9 follows up the audit of 2.8: with 2.8.1 and 2.8.2, it fixes 58 of

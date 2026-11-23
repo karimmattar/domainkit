@@ -10,6 +10,7 @@ import re
 from collections.abc import Callable, Iterator, Mapping
 from ipaddress import ip_address
 from pathlib import Path
+from types import MappingProxyType
 from typing import Annotated, Any, Final, Literal, NamedTuple, Self
 from urllib.parse import SplitResult, parse_qs, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -1044,6 +1045,15 @@ LAYER_NAME: Final = r"^[A-Za-z_][A-Za-z0-9_]{0,63}$"
 """A layer package's name, as ``ports``."""
 LAYERS: Final = ("domain", "application", "infrastructure", "api")
 """Layer packages of a domain, innermost first; ``domainkit.architecture``'s."""
+LAYER_MODULES: Final = MappingProxyType(
+    {
+        "domain": "domain",
+        "controllers": "application",
+        "models": "infrastructure",
+        "routes": "api",
+    }
+)
+"""The simple layout's modules, and the layer each one is."""
 MAX_ARCHITECTURE_ENTRIES: Final = 64
 """The most names one ``ARCHITECTURE`` list may hold."""
 MAX_EXTRA_LAYERS: Final = 8
@@ -1084,6 +1094,14 @@ class ArchitectureConfig(BaseModel):
     """More layers of the same domain a layer must not import, by layer."""
     PUBLIC_SURFACE: _Modules = ()
     """More parts of a domain other domains may import, as ``domain.values``."""
+    LAYER_MODULES: dict[_LayerName, _LayerName] = Field(
+        default_factory=dict, max_length=MAX_ARCHITECTURE_ENTRIES
+    )
+    """Modules of the project's own that are a built-in layer (since 2.10).
+
+    ``{"gateways": "infrastructure"}``: a domain's ``gateways.py`` (or
+    ``gateways/``) is held to that layer's rules, as ``models.py`` is.
+    """
 
     @model_validator(mode="after")
     def check_layers(self) -> Self:
@@ -1093,6 +1111,7 @@ class ArchitectureConfig(BaseModel):
             raise ValueError(f"EXTRA_LAYERS repeats a built-in layer: {clash}")
         if len(set(self.EXTRA_LAYERS)) != len(self.EXTRA_LAYERS):
             raise ValueError("EXTRA_LAYERS names a layer twice")
+        self._check_layer_modules()
         layers = {*builtin, *self.EXTRA_LAYERS}
         for name, table in (
             ("FORBIDDEN_LIBRARIES", self.FORBIDDEN_LIBRARIES),
@@ -1118,14 +1137,37 @@ class ArchitectureConfig(BaseModel):
                 raise ValueError(
                     f"FORBIDDEN_LAYERS[{layer!r}] forbids the layer itself"
                 )
+        parts = {*layers, *self.LAYER_MODULES}
         if outside := sorted(
-            part for part in self.PUBLIC_SURFACE if part.partition(".")[0] not in layers
+            part for part in self.PUBLIC_SURFACE if part.partition(".")[0] not in parts
         ):
             raise ValueError(
                 f"PUBLIC_SURFACE names parts outside the layers: {outside}; "
                 "start each with a layer, as domain.values"
             )
         return self
+
+    def _check_layer_modules(self) -> None:
+        """Each module names a built-in layer, and is no layer or module already.
+
+        A module named in ``EXTRA_LAYERS`` too would be two layers: refused,
+        rather than one of them silently winning.
+        """
+        if unknown := sorted(set(self.LAYER_MODULES.values()) - set(LAYERS)):
+            raise ValueError(
+                f"LAYER_MODULES names layers that are not built in: {unknown}; "
+                "name domain, application, infrastructure, or api"
+            )
+        if clash := sorted(set(self.LAYER_MODULES) & {*LAYERS, *LAYER_MODULES}):
+            raise ValueError(
+                f"LAYER_MODULES names built-in layers or their modules: {clash}; "
+                "they keep their layers"
+            )
+        if both := sorted(set(self.LAYER_MODULES) & set(self.EXTRA_LAYERS)):
+            raise ValueError(
+                f"LAYER_MODULES and EXTRA_LAYERS both name {both}: a module is "
+                "one layer, so name it in one of them"
+            )
 
 
 ABSOLUTE_URI: Final = r"^[A-Za-z][A-Za-z0-9+.-]*:[^\s]+$"
