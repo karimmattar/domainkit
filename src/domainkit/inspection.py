@@ -39,38 +39,45 @@ An Office document is refused when its ZIP holds more than ``max_parts``
 parts, inflates past ``max_expansion`` times its own size (or
 ``max_size``) in all, or a part more than ``max_ratio`` times; when a
 part is encrypted, compressed but by deflate, or named differently in
-its header; when its main part is macro-enabled (a ``.docm`` named
-``.docx``) or not of the type asked; when it holds macros
+its header; when a part's name, or a relationship's target inside the
+package, is not one Office writes (ASCII letters, digits and
+``-._~!$&'()*+,;=@``, no empty segment, and no ``.`` or ``..`` segment
+in a name; a target that is a fragment alone passes, and so do the items
+of Office's trash, ``[trash]/0000.dat``), as readers resolve any other
+each their own way; when its main part is macro-enabled (a ``.docm``
+named ``.docx``) or not of the type asked; when it holds macros
 (``vbaProject.bin``, Excel 4.0 macro sheets), OLE objects, ActiveX
-controls, or a chunk imported from another format (``altChunk``); when a
-relationship points outside the package but for a hyperlink to ``http``,
-``https`` or ``mailto`` (a remote template, a linked image or object:
-CVE-2022-30190 opened one), whatever its ``TargetMode`` says; when a
-Word field pulls content in or runs a program (``INCLUDEPICTURE``,
-``INCLUDETEXT``, ``INCLUDE``, ``IMPORT``, ``LINK``, ``DATABASE``,
-``DDE``, ``DDEAUTO``), with or without its tracked deletions
-(``w:delInstrText``), ended or not, its name read in any case past white
-space, invisible marks, backslashes and quotes, as Word and LibreOffice
-read it, or its instruction starts with another field, which hides its
-name; when a mail merge names its data source or a connection to one
-(``w:connectString``, ``w:query``, ``w:dataSource``); when an Excel
-workbook links to another workbook, holds a data connection or a query
-table, or a formula anywhere in a sheet calls a web service
-(``WEBSERVICE``, ``RTD``), a picture from a URL (``IMAGE``) or DDE
-(``cmd|'...'!A0``); when its XML writes an OLE object or a control
-(``w:object``, ``o:OLEObject``, ``w:control``), a picture names a
-hyperlink's relationship (``r:id``, VML's ``o:relid``), or a VML picture
-or fill names a source of its own (``src``, a picture's ``o:href``);
-when an SVG picture (a part SVG by its name, its type or its bytes, gzip
-or not) loads anything but a fragment of itself or a ``data:`` URL (an
-``href``, CSS's ``url()`` or ``@import``), or holds a ``data:`` URL of
-an SVG that does; or when an XML part declares a DTD or an entity, which
-the Open Packaging Conventions forbid, or is in an encoding but UTF-8
-and UTF-16. A part is XML by its name or its content type, never by its
-first bytes, and is read whole; a DTD is refused in its bytes, before
-lxml parses them, so nothing outside the file is ever opened. An
-embedded workbook, document or presentation (a chart's data) is checked
-the same way, one level deep, from a temporary file.
+controls, or a chunk imported from another document (``w:altChunk``,
+whatever its relationship's type); when a relationship points outside
+the package but for a hyperlink to ``http``, ``https`` or ``mailto`` (a
+remote template, a linked image or object: CVE-2022-30190 opened one),
+whatever its ``TargetMode`` says; when a Word field pulls content in or
+runs a program (``INCLUDEPICTURE``, ``INCLUDETEXT``, ``INCLUDE``,
+``IMPORT``, ``LINK``, ``DATABASE``, ``DDE``, ``DDEAUTO``), with or
+without its tracked deletions (``w:delInstrText``), ended or not, its
+name read in any case past white space, invisible marks, backslashes and
+quotes, as Word and LibreOffice read it, or its instruction starts with
+another field, which hides its name, or instruction text stands outside
+a field's instruction (in its result, or in no field); when a mail merge
+names its data source or a connection to one (``w:connectString``,
+``w:query``, ``w:dataSource``); when an Excel workbook links to another
+workbook, holds a data connection or a query table, or a formula
+anywhere in a sheet calls a web service (``WEBSERVICE``, ``RTD``), a
+picture from a URL (``IMAGE``) or DDE (``cmd|'...'!A0``); when its XML
+writes an OLE object or a control (``w:object``, ``o:OLEObject``,
+``w:control``), a picture names a hyperlink's relationship (``r:id``,
+VML's ``o:relid``), or a VML picture or fill names a source of its own
+(``src``, a picture's ``o:href``); when an SVG picture (a part SVG by
+its name, its type or its bytes, gzip or not) loads anything but a
+fragment of itself or a ``data:`` URL (an ``href``, CSS's ``url()`` or
+``@import``), or holds a ``data:`` URL of an SVG that does; or when an
+XML part declares a DTD or an entity, which the Open Packaging
+Conventions forbid, or is in an encoding but UTF-8 and UTF-16. A part is
+XML by its name or its content type, or by its first bytes whatever
+names it, and is read whole; a DTD is refused in its bytes, before lxml
+parses them, so nothing outside the file is ever opened. An embedded
+workbook, document or presentation (a chart's data) is checked the same
+way, one level deep, from a temporary file.
 
 ``save_upload`` runs the checks in a process of their own
 (``run_checks``): the system holds it to an address space and CPU time,
@@ -128,7 +135,7 @@ from dataclasses import dataclass, field
 from functools import cache
 from posixpath import dirname, join, normpath
 from typing import IO, TYPE_CHECKING, Any, Final, Literal, Self
-from urllib.parse import unquote, unquote_to_bytes, urlsplit
+from urllib.parse import unquote_to_bytes, urlsplit
 
 from domainkit.exceptions import DomainkitError, ImproperlyConfigured, ServiceBusy
 from domainkit.i18n.lazy import LazyString, gettext_lazy, ngettext_lazy, pgettext_lazy
@@ -308,7 +315,8 @@ OFFICE_FIELDS: Final = {
 }
 """Word fields that run a program or pull content in when they are updated."""
 RESULT: Final = "\x00"
-"""Stands for a field's result, whose own fields are not its instruction."""
+"""Stands for a field's result, whose own fields are not its instruction, and
+which holds no instruction text."""
 FIELD_QUOTES: Final = "\"'\u201c\u201d\u201e\u201f\u2018\u2019\u201a\u201b\u00ab\u00bb"
 """Quotes a field's name may be written in: straight, curly, low, and guillemets."""
 IGNORED: Final = re.compile(f"[{IGNORABLE}]")
@@ -347,12 +355,14 @@ OBJECTS: Final = frozenset(
         *(
             f"{namespace}{name}"
             for namespace in WORDML
-            for name in ("object", "control")
+            for name in ("object", "control", "altChunk")
         ),
         "{urn:schemas-microsoft-com:office:office}OLEObject",
     }
 )
-"""Elements of an OLE object or an ActiveX control, refused wherever they are."""
+"""Elements of an OLE object, an ActiveX control, or a chunk imported from another
+document (``w:altChunk``, whatever its relationship's type), refused wherever
+they are."""
 RELATIONSHIP_NAMESPACES: Final = (
     "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}",
     "{http://purl.oclc.org/ooxml/officeDocument/relationships}",
@@ -401,6 +411,15 @@ LINKS: Final = (
 RELATIONSHIPS: Final = (
     "{http://schemas.openxmlformats.org/package/2006/relationships}Relationship"
 )
+PLAIN_SEGMENT: Final = re.compile(r"[A-Za-z0-9._~!$&'()*+,;=@-]+")
+"""A segment of a part's name, or of a target in the package, as Office writes
+them: ASCII letters, digits, and what RFC 3986 lets a path's segment hold but
+``%`` and ``:``. Readers resolve anything else each their own way."""
+CONTENT_TYPES_PART: Final = "[content_types].xml"
+"""The package's content types, in lower case: a ZIP item, not a part."""
+TRASH: Final = re.compile(r"\[trash\]/[0-9a-f]{4}\.dat", re.IGNORECASE)
+"""An item of a package's trash (``[trash]/0000.dat``), which Office 2007 and
+later leave of a part discarded: no part, and no target can name one."""
 CONTENT_TYPES: Final = "{http://schemas.openxmlformats.org/package/2006/content-types}"
 RATIO_FLOOR: Final = 1024 * 1024
 """A part inflating to less than this is not held to ``max_ratio``."""
@@ -1584,9 +1603,6 @@ class _Package:
     """Each part's content type, by its name in lower case."""
     hyperlinks: dict[str, set[str]] = field(default_factory=dict)
     """The ids of each part's hyperlinks to outside the package, by part."""
-    reached: set[str] = field(default_factory=set)
-    """The parts a relationship names, which a reader may parse as XML: a header,
-    a footnote, whatever their content type, or their relationship's, says."""
     work: int = 0
     """What reading SVGs did since it last looked at the clock: values, matches,
     escapes, and each KiB scanned."""
@@ -1603,6 +1619,7 @@ class _Package:
                 self.parts = self._bounded(archive)
                 self.types = self._content_types(archive)
                 self._check_main(self._main(archive), kind)
+                self._check_names()
                 for rels in (True, False):  # Relationships first: parts name them.
                     for name, info in self.parts.items():
                         if name.endswith(".rels") is rels:
@@ -1660,7 +1677,7 @@ class _Package:
                 defaults[extension] = str(element.get("ContentType", ""))
             elif element.tag == f"{CONTENT_TYPES}Override":
                 name = str(element.get("PartName", "")).lstrip("/").lower()
-                overrides[unquote(name)] = str(element.get("ContentType", ""))
+                overrides[name] = str(element.get("ContentType", ""))  # As written.
         return {
             name: overrides.get(name) or defaults.get(_extension(name), "")
             for name in self.parts
@@ -1676,12 +1693,26 @@ class _Package:
             raise NotOfType
         found = [
             target
-            for kind, target, external, _ in self._relationships(archive, "_rels/.rels")
+            for kind, target, external, _ in self._relationships(
+                archive, "_rels/.rels", plain=False
+            )
             if kind.endswith("/officedocument") and not external
         ]
         if len(found) != 1:
             raise NotOfType
         return self.types.get(found[0], "")
+
+    def _check_names(self) -> None:
+        """Refuse a part named otherwise than Office names one (``_plain_name``).
+
+        Read once the package is known to be ``kind``'s: a ZIP of another
+        kind is not of the type, whatever its names.
+
+        Raises:
+            FileRefused: A part is.
+        """
+        if not all(_plain_name(info.filename) for info in self.parts.values()):
+            raise FileRefused(DAMAGED, code=UNREADABLE)
 
     def _check_main(self, main: str, kind: Kind) -> None:
         """Refuse a main part that is macro-enabled, or not ``kind``'s.
@@ -1724,8 +1755,6 @@ class _Package:
                 self._check_relationship(archive, kind, target, external, nested=nested)
                 if external:  # A hyperlink, as the check of it found.
                     self.hyperlinks.setdefault(source, set()).add(rid)
-                else:  # Whatever its type: a header may be called an image.
-                    self.reached.add(target)
             return
         data = self._xml(archive, name)
         if data is None:
@@ -1796,16 +1825,17 @@ class _Package:
         """The part ``name``, if it is XML, or may be read as XML; refused if bad.
 
         A part is XML by its name or its content type, whatever its bytes
-        start with. A part a relationship names (``reached``), of any type,
-        may be read as XML whatever its content type, as a reader follows a
-        header's relationship to it: it is XML too when its bytes start as
-        XML does, after any white space; one lxml stops reading is passed
-        over only if it is binary data (``_binary``, ``_check_part``). It
-        is read whole, but never past its stated size; another part (an
-        image) is opened all the same, and not read. A part a relationship
-        names that is a gzip stream, or an SVG by its name or type that is
-        one, is read as what it inflates to, as LibreOffice reads an SVG
-        compressed (``.svgz``) whatever its name.
+        start with. Any other part may be read as XML whatever its name,
+        its content type, or what names it, as a reader follows a header's
+        relationship to it, resolving the target its own way: it is XML too
+        when its bytes start as XML does, after any white space; one lxml
+        stops reading is passed over only if it is binary data
+        (``_binary``, ``_check_part``). It is read whole, but never past its
+        stated size; another part (an image) is opened all the same, and
+        not read. Such a part that is a gzip stream, or an SVG by its name
+        or type that is one, is read as what it inflates to, as LibreOffice
+        reads an SVG compressed (``.svgz``) whatever its name. An item of
+        the trash is read by its name and type alone: no target reaches it.
 
         Raises:
             FileRefused: It declares a DTD or an entity, or is XML in an
@@ -1817,9 +1847,9 @@ class _Package:
         xml = _is_xml(name, content_type)
         buffer = io.BytesIO()
         with archive.open(info) as part:
-            if not xml and not (
-                name in self.reached
-                and (
+            if not xml and (
+                TRASH.fullmatch(name) is not None
+                or not (
                     _starts_as_xml(part, buffer)
                     or buffer.getvalue()[: len(GZIP)] == GZIP
                 )
@@ -1877,7 +1907,7 @@ class _Package:
                     raise FileRefused(EMBEDDED) from None
 
     def _relationships(
-        self, archive: zipfile.ZipFile, name: str
+        self, archive: zipfile.ZipFile, name: str, *, plain: bool = True
     ) -> Iterator[tuple[str, str, bool, str]]:
         r"""Each relationship of the ``.rels`` part ``name``: type, target, mode, id.
 
@@ -1885,7 +1915,14 @@ class _Package:
         ``TargetMode`` is absent or ``Internal``, or when its target names
         a scheme or a share (``http:``, ``C:``, ``\\\\host``, ``//host``),
         whatever its mode says. An internal target is the part's name, in
-        lower case, resolved from the part the relationships are of.
+        lower case, resolved from the part the relationships are of, as
+        written: nothing in it is decoded. With ``plain``, it must be one
+        Office writes; ``_main`` reads ``_rels/.rels`` before the package
+        is known to be Office's, and ``_check_part`` reads it again.
+
+        Raises:
+            FileRefused: With ``plain``, an internal target is not one Office
+                writes (``_plain_target``).
         """
         source = dirname(dirname(name))  # word/_rels/document.xml.rels: word
         for element in self._elements(self._xml(archive, name) or b""):
@@ -1902,10 +1939,12 @@ class _Package:
             ):
                 yield kind, target, True, rid
                 continue
+            if plain and not _plain_target(target):
+                raise FileRefused(DAMAGED, code=UNREADABLE)
             within = (
                 target.lstrip("/") if target.startswith("/") else join(source, target)
             )
-            yield kind, unquote(normpath(within)).lower(), False, rid
+            yield kind, normpath(within).lower(), False, rid
 
     def _elements(self, data: bytes) -> Iterator[Any]:
         """The elements of the XML ``data``, each once it ends.
@@ -2321,6 +2360,38 @@ def _xml_encoding(data: bytes) -> str:
     return encoding
 
 
+def _plain_name(name: str) -> bool:
+    """Whether the ZIP item ``name`` is named as Office names a part.
+
+    Segments of ``PLAIN_SEGMENT``, none empty, ``.`` or ``..``: so every
+    reader finds the part by the name a target resolves to, matched as
+    written. ``[Content_Types].xml`` and the trash's items are no parts,
+    and pass.
+    """
+    if name.lower() == CONTENT_TYPES_PART or TRASH.fullmatch(name):
+        return True
+    return all(
+        PLAIN_SEGMENT.fullmatch(each) and each not in {".", ".."}
+        for each in name.split("/")
+    )
+
+
+def _plain_target(target: str) -> bool:
+    """Whether ``target``, in the package, is written as Office writes one.
+
+    A fragment alone names a place in the part itself. Any other is a
+    path, from the package's root when it starts with ``/``, of segments
+    of ``PLAIN_SEGMENT``, none empty: no query, no fragment, no ``%``, no
+    backslash, no space. ``.`` and ``..`` segments pass, as Office writes
+    ``../media/image1.png``; readers resolve a ``..`` past the package's
+    root differently, so every part is read by its bytes (``_xml``).
+    """
+    if target.startswith("#"):
+        return True
+    path = target.removeprefix("/")
+    return all(PLAIN_SEGMENT.fullmatch(each) for each in path.split("/"))
+
+
 def _extension(name: str) -> str:
     """The extension of the part ``name``, without its dot; empty if none."""
     last = name.rpartition("/")[2]
@@ -2417,11 +2488,16 @@ class _Fields:
         A tracked deletion of an instruction (``w:delInstrText``) is read
         too: the instruction is checked with it, as rejecting the change
         leaves it, and without it, as accepting the change leaves it.
+        Instruction text is read only in a field's instruction, between its
+        ``begin`` and its ``separate`` or ``end``: no writer puts it in a
+        result or outside any field, and a reader that took it for an
+        instruction there would run it.
 
         Raises:
             FileRefused: A field runs a program or pulls content in, or its
-                instruction starts with another field, which hides its name;
-                or a mail merge names its data source (``_check_mail_merge``).
+                instruction starts with another field, which hides its name,
+                as instruction text outside an instruction does; or a mail
+                merge names its data source (``_check_mail_merge``).
         """
         local = _local(element, WORDML)
         if local == "fldSimple":
@@ -2430,7 +2506,9 @@ class _Fields:
                     _check_field(str(value))
         elif local in MAIL_MERGE_SOURCES:
             _check_mail_merge(element)
-        elif local in INSTRUCTIONS and self.open:
+        elif local in INSTRUCTIONS:
+            if not self.open or self.open[-1][:1] == [(RESULT, False)]:
+                raise FileRefused(ACTIONS)  # In a result, or in no field.
             self.open[-1].append((element.text or "", local == "delInstrText"))
         elif local == "fldChar":
             mark = next(

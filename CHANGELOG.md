@@ -68,6 +68,38 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
   build left invalid (`pg_index.indisvalid`), by hand or by `migrate`: it
   drops the index, and builds it. 2.9 took it as made, and the lookups it
   serves read the whole table (user report D2).
+- `afill_docx` and `aplaceholders`, the async forms of `fill_docx` and
+  `placeholders`, read at most `DOCUMENTS["DOCX_AT_ONCE"]` Word documents
+  at once in a process (2 by default), every event loop's and thread's
+  calls together; the others wait their turn, holding no thread, and one
+  cancelled while it waits never runs. The sync functions are unchanged
+  ([Documents read at once](docs/documents.md#documents-read-at-once),
+  ADR 0201) (user report U7).
+
+### Security
+
+- `DOCX` (`OfficeCheck`) refuses an imported chunk (`w:altChunk`)
+  wherever it is, in any part read as XML, transitional or strict, and
+  whatever its relationship's type, as files with embedded files or
+  objects ([Checking documents](docs/uploads.md#checking-documents),
+  ADR 0175) (user report U9).
+- `DOCX`, `XLSX` and `PPTX` (`OfficeCheck`) refuse, as `unreadable_file`,
+  a part named, or a relationship's target inside the package written,
+  otherwise than Office writes them: ASCII letters, digits and
+  `-._~!$&'()*+,;=@`, no empty segment, and in a name no `.` or `..`
+  segment; a target that is a fragment alone passes, and so does the
+  trash Office leaves (`[trash]/0000.dat`), unread. Targets and the
+  content types' part names are matched to the archive's names as
+  written, nothing decoded. Every part is read as XML when its bytes
+  start as XML does, whatever its name, its type, or what names it
+  ([Checking documents](docs/uploads.md#checking-documents), ADR 0175)
+  (user report U9).
+- `DOCX` (`OfficeCheck`) refuses instruction text (`w:instrText`,
+  `w:delInstrText`) outside a field's instruction, after its `separate`
+  mark or in no field, as a field that hides its name; fields begun in a
+  result, as a table of contents' are, pass
+  ([Checking documents](docs/uploads.md#checking-documents), ADR 0175)
+  (user report U9).
 
 ## [2.9.0] - 2026-11-18
 

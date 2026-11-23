@@ -20,7 +20,7 @@ On this page you find:
 | --- | --- |
 | Core settings, layer rules, languages and time zones, the debug toolbar | this page |
 | Databases, ledgers, shards, caches, storages, search, tenancy, brokers | [backends.md](backends.md) |
-| `DOCUMENTS`: the Gotenberg server that renders documents (new in 2.5) | [backends.md](backends.md#documents) |
+| `DOCUMENTS`: the Gotenberg server that renders documents (new in 2.5), and `DOCUMENTS["DOCX_AT_ONCE"]`, the Word documents read at once in a process (new in 2.10) | [backends.md](backends.md#documents) |
 | HTTP, security headers, CORS, outgoing calls, live connections, middleware | [http.md](http.md) |
 | `PROBE_PATHS`: the paths of the probes and the metrics scrape, which every list of exempt paths adds to (new in 2.9) | [http.md](http.md#probe-paths) |
 | Each optional app's settings (`AUTH`, `MESSAGING`, `AUDIT`, ...) | the app's own page ([contrib.md](../contrib.md)) |

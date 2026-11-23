@@ -2,11 +2,11 @@
 
 ::
 
-    from domainkit.documents import clean_html, fill_docx, overlay_pdf, renderer
+    from domainkit.documents import afill_docx, clean_html, overlay_pdf, renderer
 
     body = clean_html(contract.terms)  # rich text a user wrote
     pdf = await renderer().html_to_pdf(template.render(body=body))
-    filled = await asyncio.to_thread(fill_docx, template, {"client": "Salma"})
+    filled = await afill_docx(template, {"client": "Salma"})
     pdf = await renderer().office_to_pdf(filled)
 
 - ``Renderer`` is the port that turns HTML, or an Office document, into a
@@ -14,7 +14,8 @@
   Gotenberg (``domainkit.documents.gotenberg``, ``domainkit[httpclient]``).
 - ``fill_docx`` fills ``{{ name }}`` placeholders in a Word document,
   wherever Word split them into runs; ``placeholders`` lists them as it
-  reads them.
+  reads them. ``afill_docx`` and ``aplaceholders`` are their async forms,
+  at most ``DOCUMENTS["DOCX_AT_ONCE"]`` at once in the process.
 - ``overlay_pdf`` lays rendered pages over a PDF's pages, rotated and
   cropped pages too; ``page_sizes`` gives the size to render each at.
   Both decode no more than ``max_decoded`` bytes.
@@ -43,6 +44,8 @@ from domainkit.documents.base import (
 from domainkit.documents.docx import (
     ArchiveLimits,
     Placeholders,
+    afill_docx,
+    aplaceholders,
     fill_docx,
     placeholders,
 )
@@ -59,6 +62,8 @@ __all__ = [
     "RendererNotConfigured",
     "RendererUnavailable",
     "RenderingRefused",
+    "afill_docx",
+    "aplaceholders",
     "clean_html",
     "fill_docx",
     "overlay_pdf",

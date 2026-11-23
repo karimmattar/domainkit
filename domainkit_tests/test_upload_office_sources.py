@@ -706,12 +706,13 @@ def test_a_part_with_a_comment_before_its_root_is_read() -> None:
     )
 
 
-def test_an_svg_no_relationship_names_is_not_read() -> None:
-    """No reader loads a part nothing names, as 2.7 reads none but XML ones.
+def test_an_svg_no_relationship_names_is_read_too() -> None:
+    """A reader may reach a part this check's resolution does not: it is read.
 
-    Typed an SVG, it is XML by its type, and read.
+    Since 2.10, every part that starts as XML is read whatever names it;
+    2.8 passed one called ``x.png`` that no relationship named.
     """
-    assert verdict(pictured(FETCHING, name="media/x.png", reached=False)) == "ok"
+    assert verdict(pictured(FETCHING, name="media/x.png", reached=False)) == EXTERNAL
     assert verdict(pictured(FETCHING, reached=False)) == EXTERNAL
 
 

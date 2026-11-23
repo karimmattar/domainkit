@@ -891,7 +891,8 @@ for plain Python work, never across an `await`:
 
 - the in-memory rate limiter (`MemoryBackend`) and its callers;
 - `AuthenticationMiddleware`'s refused-credential holds;
-- the password hashing pool's count of pending calls;
+- the password hashing pool's count of pending calls, and the making of
+  the threads that read Word documents (`DOCUMENTS["DOCX_AT_ONCE"]`);
 - the logging and reporting queues, and memory caches (`cache/memory.py`);
 - the registries that keep each loop's background tasks
   (`domainkit.tasks`), commit publishers, and brokers, which a new loop

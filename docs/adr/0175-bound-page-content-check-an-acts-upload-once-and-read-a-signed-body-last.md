@@ -1,6 +1,6 @@
 # 0175. Bound a PDF's page content, check an act's upload once, and read a signed body last
 
-- Status: Accepted; amended 2026-11-17 (at the end), and by [0181](0181-decide-a-body-limit-per-request-count-before-the-rules-hand-over-the-file-received-and-bound-the-xml-parsed.md)
+- Status: Accepted; amended 2026-11-17 and 2026-11-23 (at the end), and by [0181](0181-decide-a-body-limit-per-request-count-before-the-rules-hand-over-the-file-received-and-bound-the-xml-parsed.md)
 - Date: 2026-11-17
 
 ## Context
@@ -404,3 +404,149 @@ How a mail merge is held:
 25. RFC 1952, GZIP file format specification (2.3): <https://www.rfc-editor.org/rfc/rfc1952.html>
 26. LibreOffice, `tools/source/zcodec/zcodec.cxx` (`ZCodec::InitDecompress`):
     <https://docs.libreoffice.org/tools/html/zcodec_8cxx_source.html>
+
+## Amendment (2026-11-23): imported chunks, part names and targets, instructions outside a field
+
+A project reported three gaps in `OfficeCheck` on 2.9 (user report U9),
+found by an independent audit. Each let a template reach the renderer
+(LibreOffice, through Gotenberg) holding something that fetches:
+
+1. **An imported chunk was refused by its relationship's type alone.**
+   `w:altChunk` was refused only where its relationship was typed
+   `aFChunk`; the element itself was not read.
+2. **Part names and targets were resolved as no reader resolves them.**
+   A target was percent-decoded and kept its query and fragment, its
+   empty segments collapsed, while the archive's names were matched as
+   written. A part the check's own resolution did not reach was read as
+   XML only by its name or its type.
+3. **Instruction text outside a field's instruction was not read.**
+   After a field's `separate` mark it was taken as the field's result;
+   outside any field it was passed over.
+
+### What was found
+
+- LibreOffice finds the part a chunk names by the relationship's id
+  alone: `getTargetForId` asks for no type (`StreamType_t::UNKNOWN`, which
+  matches no type and so falls back to the id) [27], [28]. It imports the
+  part with the filter it detects. ECMA-376 says the relationship is
+  typed `aFChunk`, and that a chunk's content, once imported, "may
+  henceforth be emitted as regular WordprocessingML" [29]: a document to
+  fill or to show has no use for one.
+- LibreOffice resolves an internal target against its part's path as a
+  URI reference (`makeAbsolute`, a `..` past the root kept), takes its
+  path (`getPath()`), so its query and fragment go and nothing is
+  decoded, and opens the archive's item of that name as written, empty
+  segments and all [27]. It keeps a target that is a fragment alone as it
+  is. Its ZIP reader refuses an archive whose directory names an item
+  with `\`, `?`, `<`, `>`, `"`, `|`, `:` or a control character; its
+  repair mode reads the names without that check [30], [31].
+- Other readers resolve otherwise. Apache POI un-percent-encodes an
+  unreserved character in a part name [32]; .NET's packaging takes a
+  backslash in a part's path for a slash [33]; RFC 3986 drops a `..`
+  past the root [34]. No one resolution is every reader's.
+- RFC 3986 lets a path's segment hold letters, digits, `-._~`,
+  `!$&'()*+,;=`, `:`, `@` and percent-encodings [34]. The Open Packaging
+  Conventions hold a part name to non-empty segments, with no
+  percent-encoded unreserved character, compared without case [35].
+  The documents tried, from LibreOffice and pandoc, name their parts
+  with ASCII letters, digits, `.`, `_` and `/` (`word/media/image1.png`),
+  and their targets so too (`media/image1.png`, `../media/image1.png`),
+  and every relationship of theirs names a part. Office 2007 and later
+  leave what they discarded in `[trash]/0000.dat` items, no parts, which
+  no target names [36].
+- A field's instruction runs from its `begin` to its `separate` or its
+  `end`; its result, from `separate` to `end` [6]. Word writes a table of
+  contents' page numbers as fields of their own in its result, each with
+  its own `begin`. LibreOffice takes instruction text in a result for
+  result text; a reader that takes it for an instruction wherever it is
+  would run it.
+
+### Options
+
+How a chunk is held:
+
+| Option | What it costs |
+| --- | --- |
+| Check the part a chunk names as the document it is | A reader for each format LibreOffice detects: a Word document, a web page, RTF, text. |
+| **Refuse `w:altChunk` wherever it is, in any part read as XML, transitional or strict, whatever its relationship's type (`EMBEDDED`, as `aFChunk`'s)** | A document a merging tool built from chunks, never opened and saved by Word, is refused. |
+
+How names and targets are read:
+
+| Option | What it costs |
+| --- | --- |
+| Resolve as LibreOffice does: RFC 3986, the path alone, nothing decoded, empty segments kept, matched to the archive's names as written | It matches one reader. Apache POI, .NET, and RFC 3986 past the root resolve otherwise, and each difference is a part one reads and the check does not. |
+| **Refuse a name, or a target inside the package, outside what Office writes: ASCII letters, digits and `-._~!$&'()*+,;=@`; no empty segment; in a name, no `.` or `..` segment; a target that is a fragment alone, and the trash's items, taken; else `unreadable_file`. Content types' part names are matched as written too** | A package whose names hold `%20` or letters outside ASCII, valid in the Open Packaging Conventions and written by no Office, is refused. |
+
+Which parts are read by their bytes:
+
+| Option | What it costs |
+| --- | --- |
+| A part a relationship names, as the check resolves it (2.7) | A reader that resolves a target otherwise reads parts the check never opened. |
+| **Every part whose bytes start as XML, whatever its name, its type, or what names it** | A part no relationship names has its first 64 KiB read. One that starts as XML and is not binary data is refused, as one named would be (a PNG part that starts with a DTD). Every part of the real documents tried is named. |
+
+How instruction text is read:
+
+| Option | What it costs |
+| --- | --- |
+| Check instruction text in a result, or in no field, as an instruction | A second reading of text no writer writes. |
+| **Refuse instruction text after a field's `separate` mark or in no field (`ACTIONS`, as a field that hides its name), the fields delimited as 2.7 delimits them; a field begun in a result, or in an instruction, read as its own** | None found: no writer puts instruction text there. |
+
+### Decision
+
+- `OfficeCheck` refuses `w:altChunk`, in either namespace, wherever it
+  is: in any part read as XML, whatever its relationship's type, or
+  with none (`EMBEDDED`).
+- Every name in the archive but `[Content_Types].xml` and the trash's,
+  and every target inside the package (`TargetMode` not `External`, no
+  scheme or share), must be one Office writes, as the second option for
+  names says; else the document is `unreadable_file`. They are read once
+  the main part says the package is of the kind asked: a ZIP of another
+  kind is still not of the type, whatever its names. A target is
+  resolved as written: no `%` is decoded, here or in the content types'
+  part names.
+- Every part is read as XML when its bytes start as XML does, whatever
+  its name, its type, or what names it; a gzip part is read as it
+  inflates. `reached` is gone. The trash's items are taken unread, as
+  2.9 took them: no target holds a `[`.
+- `w:instrText` and `w:delInstrText` outside a field's instruction (after
+  its `separate`, or in no field) are refused as `ACTIONS`.
+
+### Consequences
+
+- These are security fixes in a minor release: documents 2.9 took are
+  refused (`docs/upgrading.md`, 2.9 to 2.10). The real documents tried
+  pass as on 2.9: LibreOffice 24.2's exports of a Word file (a table of
+  contents, `REF`, `PAGEREF`, `SEQ`, `PAGE`, `NUMPAGES` and `DATE` fields,
+  hyperlinks, an SVG), a workbook and a presentation; a pandoc document
+  of 4.6 MB of XML and LibreOffice's save of it; and a table of contents
+  built as Word 365 writes one, its entries' `PAGEREF` fields in its
+  result. 84
+  crafted documents of earlier reports kept their verdicts.
+- The check costs what it cost. A Word document of 200,000 paragraphs, a
+  table of contents of 500 entries, fields, and 50 pictures (14 MB, 41
+  MiB of XML) took 3.6 to 4.1 s and 83 MiB on 2.9 and on 2.10 alike, in
+  five runs each. 1,990 parts that start as XML, 104 MiB in all, that
+  nothing names, 2.9 never read (0.02 s); 2.10 reads them as 2.9 read
+  them named (4.6 to 5.1 s against 4.6 to 4.9 s, 3 MiB over the
+  interpreter), within the check's 10 s. Each part is still read within
+  the check's bytes and parsed one element at a time.
+- A part named outside what Office writes is refused even where every
+  reader would agree on it (`word/media/image 1.png`). A project that
+  takes documents from such a tool repacks them.
+
+### Sources
+
+27. LibreOffice, `writerfilter/source/ooxml/OOXMLStreamImpl.cxx`
+    (`lcl_getTarget`, `getTargetForId`, `init`): <https://docs.libreoffice.org/writerfilter/html/OOXMLStreamImpl_8cxx_source.html>
+28. LibreOffice, `OOXMLAltChunkHandler`: <https://docs.libreoffice.org/writerfilter/html/classwriterfilter_1_1ooxml_1_1OOXMLAltChunkHandler.html>
+29. ECMA-376, `altChunk` (Anchor for Imported External Content): <https://webapp.docx4java.org/OnlineDemo/ecma376/WordML/altChunk.html>
+30. LibreOffice, `package/source/zipapi/ZipFile.cxx` (`readCEN`, `recover`): <https://docs.libreoffice.org/package/html/ZipFile_8cxx_source.html>
+31. LibreOffice, `comphelper/source/misc/storagehelper.cxx`
+    (`IsValidZipEntryFileName`): <https://docs.libreoffice.org/comphelper/html/storagehelper_8cxx_source.html>
+32. Apache POI, `PackagingURIHelper`: <https://poi.apache.org/apidocs/org/apache/poi/openxml4j/opc/PackagingURIHelper.html>
+33. Microsoft, `PackUriHelper.CreatePartUri`: <https://learn.microsoft.com/en-us/dotnet/api/system.io.packaging.packurihelper.createparturi>
+34. RFC 3986, Uniform Resource Identifier: Generic Syntax (3.3, 5.2): <https://www.rfc-editor.org/rfc/rfc3986.html>
+35. Ecma International, ECMA-376 Part 2, Open Packaging Conventions (part
+    names): <https://ecma-international.org/publications-and-standards/standards/ecma-376/>
+36. Ubuntu, bug 1166852, "file reports office trash files as .exe-ms" (an
+    Office workbook's `[trash]/0000.dat`): <https://lists.snapcraft.io/archives/foundations-bugs/2013-April/144324.html>

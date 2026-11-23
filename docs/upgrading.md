@@ -53,6 +53,34 @@ what a project that relied on 2.9's behaviour changes, and what to run.
   ```toml
   dependencies = ["domainkit[postgres,redis,sqlite,uvicorn]>=2.10.0,<3"]
   ```
+- **`OfficeCheck` refuses more Office documents** (security). `DOCX`,
+  `XLSX` and `PPTX` refuse an imported chunk (`w:altChunk`) wherever it
+  is and whatever its relationship's type (`422 unsafe_file`, "Files
+  with embedded files or objects are not accepted."), and instruction
+  text (`w:instrText`, `w:delInstrText`) after a field's `separate` mark
+  or in no field (`422 unsafe_file`, "Files with actions that run by
+  themselves, ..."). A part named, or a target inside the package
+  written, otherwise than Office writes them is `422 unreadable_file`:
+  only ASCII letters, digits and `-._~!$&'()*+,;=@`, no empty segment,
+  and in a name no `.` or `..` segment (the trash Office leaves,
+  `[trash]/0000.dat`, passes). Every part whose bytes start as XML is
+  read as XML, whatever names it: such a part that 2.9 passed unread
+  because nothing named it is now checked, and refused if it is refused
+  when named. Word, LibreOffice and pandoc name parts so; a
+  package made by a tool that names a part with `%20` or letters outside
+  ASCII is refused, and is taken once repacked with plain names
+  ([Checking documents](uploads.md#checking-documents)). Reading every
+  such part costs more time on a document of many parts: one of some
+  2,000 parts that 2.9 checked in a fraction of a second takes some
+  5 seconds, within the check's own bounds (`UPLOAD_CHECKS`), which
+  refuse what runs past them.
+- **Await `afill_docx` and `aplaceholders` in async code.** They read at
+  most `DOCUMENTS["DOCX_AT_ONCE"]` Word documents at once in the process
+  (2 by default, 680 MiB at most at the default `ArchiveLimits`), where
+  `asyncio.to_thread(fill_docx, ...)` ran as many as the loop's executor
+  allowed. `fill_docx` and `placeholders` are unchanged; replace a limiter
+  of your own with the setting, sized for the worker's memory
+  ([Documents read at once](documents.md#documents-read-at-once)).
 - **A 503 for a commit in doubt carries `"in_doubt": true`.** A `503
   deadline_exceeded` or `503 database_unavailable` whose change may have
   been made has a member more in its body, after the others, in either
