@@ -10,6 +10,54 @@ listed on [docs/audit/2.8.0.md](docs/audit/2.8.0.md).
 
 ## [Unreleased]
 
+### Added
+
+- `shows_link(text, length=LINE_LENGTH)`, in
+  `domainkit.contrib.auth.screens`, says whether a screen that shows
+  stored text on a line shows a link, as `laid_out` reads typed text:
+  whole, with the readings of a name spaced out, and as the line shows
+  it (escaped, cut to `length` characters and `…`), without them. Read
+  with them, a cut made prose a name: `approved. commercial` cut to
+  `approved. com…`
+  ([Text a person typed](docs/auth/actions.md#text-a-person-typed), ADR
+  0180) (user report A17).
+- `holds_link(text, numbers=False)`, and `shows_link`'s, read seven
+  digits or more as a number to call only as an amount or a code is
+  read: with a plus sign, a bracket, or beside a word that asks for a
+  call. For a field whose digits are a licence's or a file's number
+  (`No. 123 456 789`); links and addresses are read as ever
+  ([Text a person typed](docs/auth/actions.md#text-a-person-typed), ADR
+  0180) (user report A17).
+
+### Security
+
+- `group_item` marks a group's stored name typed, on approvals'
+  `auth.set_groups`, the admin API's act of a change of groups, and a
+  project's own screens: the `on_typed_text` checks get the name, and
+  with `AUTH.AUTHORIZATIONS.TYPED_LINKS` set to `"refused"`, a group
+  whose name holds a link, whole or as the item shows it cut, is refused
+  where it is granted (`422 link_not_shown`) until it is renamed. Its id
+  and counts are not read. A request held before is still rejected or
+  cancelled ([upgrading.md](docs/upgrading.md#29-to-210), ADR 0180)
+  (user report A17).
+- `holds_link` reads a top-level domain where a phone's linker ends a
+  word: at a name's end, or before a dot, a middle dot, or a hyphen.
+  `evil.com.xy`, `evil.com-login`, `evil.com·xy` and `foo.bar.baz` hold
+  a link, in typed text and in what `shows_link` reads; so does a file
+  named with a top-level domain before its extension
+  (`report.final.docx`), which a phone links too
+  ([upgrading.md](docs/upgrading.md#29-to-210), ADR 0180) (user report
+  A17).
+- `holds_link` reads an Arabic-Indic zero between two letters as a dot
+  with white space on either side too, when it touches no digit: `evil
+  ٠ com`, `evil٠ com` and `evil ٠com` hold a link; `٢٠٢٦`, `٠١٠٠` and
+  `الرصيد ٠ جنيه` hold none (ADR 0180) (user report A17).
+- `holds_link` reads `Com` after a dot spaced on both sides, or after a
+  dot and white space, as `com`: `evil . Com` and `evil. Com` hold a link
+  (ADR 0180) (user report A17).
+- `holds_link` reads text in time that grows in step with its length,
+  white space included (ADR 0180) (found in review).
+
 ## [2.9.0] - 2026-11-18
 
 2.9 follows up the audit of 2.8: with 2.8.1 and 2.8.2, it fixes 58 of

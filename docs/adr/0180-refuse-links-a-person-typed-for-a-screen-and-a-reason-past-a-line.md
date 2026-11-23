@@ -1,6 +1,6 @@
 # 0180. Refuse links a person typed for a screen, and a reason past a line
 
-- Status: Accepted; amended 2026-11-18 (at the end)
+- Status: Accepted; amended 2026-11-18 and 2026-11-23 (at the end)
 - Date: 2026-11-17
 - Amends: [0173](0173-show-an-act-whole-or-refuse-it.md)
 
@@ -250,3 +250,119 @@ not to be a link:
   decided.
 
 The docs list what it still does not read: it is a heuristic.
+
+## Amendment (2026-11-23): a group's stored name, a name inside a name, a screen's reading
+
+A project's notes on 2.9 (user report A17) found five gaps in what this
+record and its first amendment decided:
+
+- **A group added shows its name unread.** `group_item` ("readers
+  (…9abc) 3 perms") gave plain text to approvals' `auth.set_groups`, the
+  admin API's act of a change of groups, and a project's own screens.
+  Neither `TYPED_LINKS` nor `on_typed_text` read the name: one stored
+  before 2.8, which took any name, reached the approver's phone as it was.
+- **A top-level domain inside a name** held none: only a name's last
+  label was read, so `evil.com.xy`, `evil.com-login` and `evil.com·xy`
+  passed. Android's linker [11] takes a host as labels and a known
+  top-level domain, ended at a word's boundary, which a dot or a hyphen
+  is and an underscore is not; a phone links `evil.com` in each.
+- **A screen's cut has no public reading.** A project reading stored
+  text as a screen shows it (`holds_link(fitted(text))`) read the cut
+  with the spaced readings, which the first amendment keeps to the text
+  as typed: `approved. commercial` cut to `approved. com…` held one.
+- **An Arabic-Indic zero spaced out** (`evil ٠ com`, drawn as `evil ·
+  com`) was no dot, so the spaced readings never met it.
+- **Digits that are never a number to call.** A field holding a
+  licence's number (`No. 123 456 789`) reads as one; a project could not
+  read its digits as a number only beside a word that asks for a call.
+
+### Options
+
+**How a group's stored name is read.**
+
+| Option | What it costs |
+| --- | --- |
+| `group_item` returns its item `Typed` | The id's end and the counts are read as typed: "(…1234) 100 perms" holds a number to call, and a hook gets the item, not the name. |
+| `group_item` checks the name itself | It raises where the screen is built: rejecting or cancelling a request held before, which drop the request's marks, would be refused too. |
+| A check that lists the stored names that hold one | The project runs it; a name renamed since passes until it is run again. |
+| **A `Typed` that carries the name (`TypedName`), which `laid_out` reads alone** | One more class, not public. A line of such items is not read again as shown: the name is read where it is checked, as the item shows it. |
+
+**A public reading of a screen's line.**
+
+| Option | What it costs |
+| --- | --- |
+| `holds_link(text, spaced=False)` public | Each caller pairs two calls, and may read the cut with the spaced readings, or skip the whole. |
+| **`shows_link(text, length=LINE_LENGTH)`: the whole with the spaced readings, the line as shown without** | One name more; it reads what `laid_out` reads of a `Typed` text on a line. |
+
+**Digits that are never a number to call.**
+
+| Option | What it costs |
+| --- | --- |
+| `asks_for_a_call(text)` public | The project still reads links and addresses only with `holds_link`, which reads the number too. |
+| **`holds_link(text, numbers=False)`, and `shows_link`'s** | A keyword more; the reading of a word that asks for a call stays the module's to change. |
+
+**The misses the first amendment named.** `Com` after a spaced dot
+(`evil . Com`, `evil. Com`) is no word in English or Arabic prose: read.
+`dot`, or a dot with white space on one side, before another top-level
+domain (`evil dot io`, `evil. net`), and a name split by a space alone
+(`evil com`) stay unread: many top-level domains are words after a full
+stop or `dot` (`a dot in the name`, `on the dot at nine`, `vs. net`), and
+`com` is a word in Portuguese and Catalan.
+
+### Decision
+
+- **`group_item` marks the group's name** (`TypedName`, a `Typed` that
+  holds the name and how the item shows it). `laid_out` runs the
+  `on_typed_text` checks on the name as stored, and with `TYPED_LINKS`
+  refused refuses it where it holds a link, whole as typed or as the
+  item shows it (escaped, cut and `…`), without the spaced readings for
+  the latter. The id and the counts are not read. Rejecting and
+  cancelling drop the mark, as for any of a request's typed text.
+- **A top-level domain ends a name where a linker ends a word**: at the
+  name's end, or before a dot (a middle dot is one) or a hyphen. A
+  label that starts with one before a hyphen counts (`com-login`); an
+  IDN's A-label counts whole, as no other top-level domain holds a
+  hyphen; an underscore joins a word.
+- **`shows_link(text, length=LINE_LENGTH, *, numbers=True)`** reads the
+  text whole with `holds_link`, and `fitted(text, length)` without the
+  spaced readings.
+- **`numbers=False`** on `holds_link` and `shows_link` reads seven digits
+  or more as a number to call only as an amount or a code is read: with
+  a plus sign, a bracket, or beside a word that asks for a call.
+- **An Arabic-Indic zero** is a dot between two letters with white space
+  on either side too, when it touches no digit; the spaced readings then
+  meet it.
+- **Bounded work**: a run of white space is read as one space once the
+  spaced readings have read it, so the bracketed readings read a long run
+  once; a label past 63 characters (RFC 1035 [12]) is not read for a
+  top-level domain.
+
+### Consequences
+
+- **Behaviour changes, under `TYPED_LINKS` refused**: a group whose
+  stored name holds a link is refused where a screen grants it, until it
+  is renamed; the rename is checked as any new name is. Text that holds a
+  name inside a name is refused where 2.9 showed it.
+- **False positives** grow by a file named with a top-level domain before
+  its extension (`report.final.docx`, `libssl.so.3`), which a phone links
+  too, and an Arabic-Indic zero spaced out between two words, the second
+  a top-level domain (`تمت إضافة ٠ موقع`): the zero is written `0`. A
+  corpus of notes in English and Arabic (versions, files, abbreviations,
+  decimals, dates) pins what still passes.
+- **Speed**: `holds_link` reads each label of a dotted run where it read
+  the last; its time stays linear in the text's length. On 100,000
+  characters, dotted labels that each read the 256 ways `READINGS`
+  allows take about half a second (2.9: a tenth), and a run of white
+  space about 30 milliseconds (2.9: over a minute).
+- **Not covered**: a group's name that `list_item` shows, as approvals'
+  "Takes away" and a return's "Groups" do, is not marked: taking a user
+  out of a group is never refused for the group's name.
+- **New names**: `shows_link`, and `numbers` on `holds_link`.
+
+### References
+
+11. Android, `android.util.Patterns` source, `STRICT_HOST_NAME`,
+    `WORD_BOUNDARY`, `AUTOLINK_WEB_URL`:
+    <https://android.googlesource.com/platform/frameworks/base/+/master/core/java/android/util/Patterns.java>
+12. RFC 1035, *Domain names: implementation and specification*, 2.3.4
+    (labels of 63 octets or less): <https://www.rfc-editor.org/rfc/rfc1035#section-2.3.4>

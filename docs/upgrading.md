@@ -36,6 +36,37 @@ never published), with each section below.
    for the deployment checks this version adds.
 7. Deploy as usual: [operations.md](operations.md#migrations-in-a-rollout).
 
+## 2.9 to 2.10
+
+2.10 closes a project's notes on 2.9. Each item of this list says what a
+project that relied on 2.9's behaviour changes, and what to run.
+
+- **A group's stored name is read where it is granted.** With
+  `AUTH.AUTHORIZATIONS.TYPED_LINKS` set to `"refused"`, the admin API's
+  act and approvals' `auth.set_groups` read the name of each group a
+  grant adds as typed text: a group named before 2.8, or while the
+  setting was `"shown"`, whose name holds a link, whole or as its item
+  shows it cut, is refused where it is granted (`422 link_not_shown`).
+  Rename the group: the new name is checked as any is, and grants of it
+  are shown again. A request held before is still rejected or
+  cancelled; approving it waits for the rename. The `on_typed_text`
+  checks now get these names too. To find such groups before you
+  deploy, read their names (`GET /groups`) with `shows_link`.
+- **A name inside a name holds a link.** `holds_link` reads a top-level
+  domain before a dot, a middle dot, or a hyphen, as at a name's end:
+  `evil.com.xy` and `evil.com-login` hold one, and with `TYPED_LINKS`
+  refused are refused where 2.9 showed them. So is a file named with a
+  top-level domain before its extension (`report.final.docx`), which a
+  phone links too: write it otherwise. An Arabic-Indic zero spaced out
+  between two letters reads as a dot (`evil ٠ com`): a zero as a count
+  before a word that is a top-level domain (`تمت إضافة ٠ موقع`) is
+  written `0`.
+- **A stored text read as a screen shows it.** A project that read
+  `holds_link(fitted(text))` reads `shows_link(text)` instead: the cut
+  is read without the spaced readings, so `approved. com…` holds none.
+  A field whose digits are never a number to call reads
+  `holds_link(text, numbers=False)`.
+
 ## 2.8 to 2.9
 
 2.9 follows up the audit of 2.8. Each item of this list says what a
