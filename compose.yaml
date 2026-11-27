@@ -46,7 +46,7 @@ services:
       - ./.ci:/ci
 
   postgres:
-    image: postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+    image: postgres:18.6-alpine@sha256:9ba53c7d41ea093baf5c1ba635ba5434c4f979880527d49bb7d9237d3193085b
     environment:
       POSTGRES_PASSWORD: postgres
     ports:
@@ -73,7 +73,7 @@ services:
   # The oldest PostgreSQL domainkit supports, as CI's postgresql (16) job
   # runs it: DOMAINKIT_TEST_POSTGRES_URL=postgresql+asyncpg://postgres:postgres@localhost:5433/postgres
   postgres-16:
-    image: postgres:16.15-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+    image: postgres:16.15-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
     environment:
       POSTGRES_PASSWORD: postgres
     ports:
@@ -101,7 +101,7 @@ services:
         condition: service_completed_successfully
 
   redis:
-    image: redis:8.10.2-alpine@sha256:9f8d2d789b9a1d1e3f283f979aa9cbf393373806472e1ccd460e2f9c869b833b
+    image: redis:8.10.3-alpine@sha256:7958cfbb9d152f87dadfbc89f1b0b15938f0b81ff8982feb327476f4911935c3
     command:
       - redis-server
       - --port
